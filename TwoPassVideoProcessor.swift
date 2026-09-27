@@ -28,37 +28,26 @@ final class TwoPassVideoProcessor {
         let audioBitrate: Double
         if let audio = try await sourceAsset.loadTracks(withMediaType: .audio).first {
             audioBitrate = Double(try await audio.load(.estimatedDataRate))
-        } else {
-            audioBitrate = 0
-        }
+        } else { audioBitrate = 0 }
 
         let needsRestoration = config.compressionProtection || config.outlineProtection
         let rifeSourceURL: URL
-
         if needsRestoration {
             progress(0.001, "Pass 1/3 • Starting restoration…")
-            let restoration = RestorationPass(
-                compressionEnabled: config.compressionProtection,
-                outlineEnabled: config.outlineProtection
-            )
+            let restoration = RestorationPass(compressionEnabled: config.compressionProtection, outlineEnabled: config.outlineProtection)
             let result = try await restoration.run(
                 sourceURL: sourceURL,
                 progress: { p, message in
                     let local = min(max(p / 0.28, 0), 1)
                     progress(local * 0.18, message.replacingOccurrences(of: "Pass 1/2", with: "Pass 1/3"))
                 },
-                telemetry: { t in
-                    restorationTelemetry = t
-                    telemetry(t)
-                }
+                telemetry: { t in restorationTelemetry = t; telemetry(t) }
             )
             restoredURL = result.url
             rifeSourceURL = result.url
             autoreleasepool { }
             try await thermalHandoff(progress: progress, position: 0.18, next: "RIFE HQ")
-        } else {
-            rifeSourceURL = sourceURL
-        }
+        } else { rifeSourceURL = sourceURL }
 
         progress(0.19, "Pass 2/3 • Loading full-frame RIFE HQ…")
         let pass2Config = ProcessorConfiguration(
@@ -71,7 +60,6 @@ final class TwoPassVideoProcessor {
             preserveAudio: false,
             targetFPS: config.targetFPS
         )
-
         let rife = RIFEVideoProcessor(configuration: pass2Config)
         let rifeResult = try await rife.process(
             sourceURL: rifeSourceURL,
@@ -99,9 +87,7 @@ final class TwoPassVideoProcessor {
             videoForMux = try await cugan.run(
                 sourceURL: rifeResult,
                 finalAudioBitrate: audioBitrate,
-                progress: { p, message in
-                    progress(0.56 + min(max(p, 0), 1) * 0.41, message)
-                },
+                progress: { p, message in progress(0.56 + min(max(p, 0), 1) * 0.41, message) },
                 telemetry: { cuganSample in
                     var combined = rifeTelemetry
                     combined.sourceFrames = max(rifeTelemetry.sourceFrames, restorationTelemetry.sourceFrames)
@@ -124,21 +110,15 @@ final class TwoPassVideoProcessor {
 
         if config.preserveAudio {
             progress(0.98, "Finalizing • Restoring original audio…")
-            let muxer = FinalAudioMuxer()
-            let final = try await muxer.addOriginalAudio(videoURL: videoForMux, sourceURL: sourceURL)
+            let final = try await FinalAudioMuxer().addOriginalAudio(videoURL: videoForMux, sourceURL: sourceURL)
             progress(1.0, upscaleTo4K ? "Finished • 4K60 • Real-CUGAN" : "Finished • 1080p60")
             return final
         }
-
         progress(1.0, upscaleTo4K ? "Finished • 4K60 • Real-CUGAN" : "Finished • 1080p60")
         return videoForMux
     }
 
-    private func thermalHandoff(
-        progress: @escaping @Sendable (Double, String) -> Void,
-        position: Double,
-        next: String
-    ) async throws {
+    private func thermalHandoff(progress: @escaping @Sendable (Double, String) -> Void, position: Double, next: String) async throws {
         let state = ProcessInfo.processInfo.thermalState
         guard state == .serious || state == .critical else { return }
         progress(position, "Thermal handoff • Cooling briefly before \(next)…")
@@ -155,10 +135,8 @@ final class TwoPassVideoProcessor {
 final class FinalAudioMuxer {
     func addOriginalAudio(videoURL: URL, sourceURL: URL) async throws -> URL {
         let sourceAsset = AVURLAsset(url: sourceURL)
-        let outputURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("RIFE60-4K60-\(UUID().uuidString).mp4")
+        let outputURL = FileManager.default.temporaryDirectory.appendingPathComponent("RIFE60-4K60-\(UUID().uuidString).mov")
         try? FileManager.default.removeItem(at: outputURL)
-
         let composition = AVMutableComposition()
         let processed = AVURLAsset(url: videoURL)
         guard let pv = try await processed.loadTracks(withMediaType: .video).first,
@@ -168,25 +146,17 @@ final class FinalAudioMuxer {
         let pDuration = try await processed.load(.duration)
         try cv.insertTimeRange(CMTimeRange(start: .zero, duration: pDuration), of: pv, at: .zero)
         cv.preferredTransform = try await pv.load(.preferredTransform)
-
         if let audio = try await sourceAsset.loadTracks(withMediaType: .audio).first,
            let ca = composition.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid) {
             let aDuration = try await sourceAsset.load(.duration)
             let d = CMTimeMinimum(pDuration, aDuration)
             try ca.insertTimeRange(CMTimeRange(start: .zero, duration: d), of: audio, at: .zero)
         }
-
-        guard let exporter = AVAssetExportSession(asset: composition, presetName: AVAssetExportPresetPassthrough) else {
-            throw ProcessorError.noOutput
-        }
+        guard let exporter = AVAssetExportSession(asset: composition, presetName: AVAssetExportPresetPassthrough) else { throw ProcessorError.noOutput }
         exporter.outputURL = outputURL
-        exporter.outputFileType = .mp4
-        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-            exporter.exportAsynchronously { continuation.resume() }
-        }
-        guard exporter.status == .completed else {
-            throw ProcessorError.writer(exporter.error?.localizedDescription ?? "audio mux failed")
-        }
+        exporter.outputFileType = .mov
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in exporter.exportAsynchronously { continuation.resume() } }
+        guard exporter.status == .completed else { throw ProcessorError.writer(exporter.error?.localizedDescription ?? "audio mux failed") }
         try? FileManager.default.removeItem(at: videoURL)
         return outputURL
     }
