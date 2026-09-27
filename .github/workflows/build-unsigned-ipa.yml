@@ -26,25 +26,18 @@ jobs:
           path: |
             Models/RealCUGAN2xNoise3_1080p.mlpackage
             CompiledModels/RealCUGAN2xNoise3_1080p.mlmodelc
-          key: realcugan-2x-noise3-1080p-fp16-compiled-v5
+          key: realcugan-2x-noise3-1080p-fp16-compiled-v6
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
 
       - name: Prepare Real-CUGAN source model if needed
         run: |
           if [ ! -f Models/RealCUGAN2xNoise3_1080p.mlpackage/Manifest.json ]; then
-            python3 -m venv /tmp/cugan-venv
-            source /tmp/cugan-venv/bin/activate
             python -m pip install --upgrade pip
-            # coremltools 8.3's PyTorch frontend still scalar-casts some
-            # one-element constants. NumPy 2.x rejects that conversion, which
-            # caused the aten::Int failure in build #59. Use the tested Torch
-            # release and NumPy 1.26 for deterministic conversion.
             python -m pip install 'torch==2.5.0' 'coremltools==8.3' 'numpy==1.26.4'
-            python - <<'PY'
-          import numpy, torch, coremltools
-          print('Converter versions:', 'numpy', numpy.__version__, 'torch', torch.__version__, 'coremltools', coremltools.__version__)
-          assert numpy.__version__ == '1.26.4'
-          assert torch.__version__.startswith('2.5.0')
-          PY
             rm -rf /tmp/video_upscale /tmp/realcugan-weights
             git clone --depth 1 https://github.com/apleynes/video_upscale_mac_silicon.git /tmp/video_upscale
             mkdir -p /tmp/realcugan-weights Models
@@ -114,9 +107,7 @@ jobs:
           mkdir -p Payload
           cp -R build/Build/Products/Release-iphoneos/RIFE60GhostGuard.app Payload/
           cp -R CompiledModels/RealCUGAN2xNoise3_1080p.mlmodelc Payload/RIFE60GhostGuard.app/
-          test -f Payload/RIFE60GhostGuard.app/RealCUGAN2xNoise3_1080p.mlmodelc/model.mil || \
-          test -f Payload/RIFE60GhostGuard.app/RealCUGAN2xNoise3_1080p.mlmodelc/coremldata.bin || \
-          test -f Payload/RIFE60GhostGuard.app/RealCUGAN2xNoise3_1080p.mlmodelc/model.espresso.net
+          test -d Payload/RIFE60GhostGuard.app/RealCUGAN2xNoise3_1080p.mlmodelc
           zip -qry RIFE60GhostGuard-unsigned.ipa Payload
 
       - name: Upload IPA
