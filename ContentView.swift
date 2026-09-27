@@ -15,24 +15,23 @@ struct ContentView: View {
                     PhotosPicker(selection: $photoItem, matching: .videos) {
                         Label("Select from Photos", systemImage: "photo.on.rectangle")
                     }
-                    .disabled(vm.isImporting || vm.isProcessing)
 
                     Button {
                         showingImporter = true
                     } label: {
                         Label("Select from Files", systemImage: "folder")
                     }
-                    .disabled(vm.isImporting || vm.isProcessing)
 
                     if vm.isImporting {
                         VStack(alignment: .leading, spacing: 6) {
-                            Text("Importing video…")
-                                .font(.caption)
-                            if let p = vm.importProgress {
-                                ProgressView(value: p)
+                            if let importProgress = vm.importProgress {
+                                ProgressView(value: importProgress)
                             } else {
                                 ProgressView()
                             }
+                            Text("Importing video…")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
                         }
                     }
 
@@ -48,7 +47,7 @@ struct ContentView: View {
                     Toggle("Ghost protection", isOn: $vm.ghostProtection)
                     Toggle("Scene-cut protection", isOn: $vm.sceneCutProtection)
                     LabeledContent("Target", value: "60.00 fps")
-                    Text("Uses adaptive tiled HQ with persistent per-band RIFE streams.")
+                    Text("Uses persistent streaming tiled RIFE HQ for lower memory usage and cached previous-frame features.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -56,14 +55,7 @@ struct ContentView: View {
                 Section("Anime Restoration") {
                     Toggle("Compression Guard", isOn: $vm.compressionProtection)
                     Toggle("Sharpie Outline Subtle", isOn: $vm.outlineProtection)
-                    Text("The outline is the final slightly-reduced Subtle version: a tiny amount of the cleaned source is mixed back in so the added ink reads a little narrower without losing the trained line placement.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-
-                Section("Render Power Mode") {
-                    Toggle("Dim screen while processing", isOn: $vm.renderPowerMode)
-                    Text("Dims the display to about 5%, prevents auto-lock, keeps the render task high priority, and restores your previous brightness afterward. iOS Low Power Mode is not enabled because it would also throttle this app.")
+                    Text("The outline is the final slightly-thinner revision. Source frames are cleaned and outlined before RIFE; generated frames inherit the processed line style.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -77,7 +69,11 @@ struct ContentView: View {
                         }
                         Slider(value: $vm.ghostSensitivity, in: 0.65...1.35, step: 0.05)
                     }
-                    Text("Rejected synthetic frames are replaced by the nearest processed real source frame instead of another generated frame.")
+                }
+
+                Section("Render Power") {
+                    Toggle("Render power mode", isOn: $vm.renderPowerMode)
+                    Text("Dims the display to 5%, prevents auto-lock, and keeps the render task high-priority. It does not enable iOS Low Power Mode, which would throttle processing.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -87,37 +83,39 @@ struct ContentView: View {
                     LabeledContent("Pixel format", value: "10-bit P010")
                     LabeledContent("Quality", value: "Maximum")
                     Toggle("Preserve original audio", isOn: $vm.preserveAudio)
-                    Text("Export is always high-bitrate H.265/HEVC Main10. There is no lower-quality codec mode.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
                 }
 
                 if vm.isProcessing {
                     Section("Processing") {
-                        VStack(alignment: .leading, spacing: 6) {
-                            HStack {
-                                Text("Overall")
-                                Spacer()
-                                Text("\(Int(vm.progress * 100))%")
-                                    .monospacedDigit()
-                            }
+                        Text("Overall")
                             .font(.caption)
-                            ProgressView(value: vm.progress)
-                        }
+                            .foregroundStyle(.secondary)
+                        ProgressView(value: vm.progress)
 
-                        VStack(alignment: .leading, spacing: 6) {
-                            HStack {
-                                Text("Cleanup + outline")
-                                Spacer()
-                                Text("\(Int(vm.restorationProgress * 100))%")
-                                    .monospacedDigit()
-                            }
+                        Text("Restoration / outline")
                             .font(.caption)
-                            ProgressView(value: vm.restorationProgress)
-                        }
+                            .foregroundStyle(.secondary)
+                        ProgressView(value: vm.restorationProgress)
 
-                        Text(vm.statusText).font(.caption)
+                        Text(vm.statusText)
+                            .font(.caption)
+
                         Button("Cancel", role: .destructive) { vm.cancel() }
+                    }
+
+                    Section("Live Performance") {
+                        LabeledContent("Thermal", value: vm.telemetry.thermalState)
+                        LabeledContent("Compression", value: String(format: "%.1f ms/source", vm.telemetry.compressionMsPerFrame))
+                        LabeledContent("Outline", value: String(format: "%.1f ms/source", vm.telemetry.outlineMsPerFrame))
+                        LabeledContent("RIFE HQ", value: String(format: "%.1f ms/generated", vm.telemetry.rifeMsPerGeneratedFrame))
+                        LabeledContent("GhostGuard", value: String(format: "%.1f ms/generated", vm.telemetry.ghostMsPerGeneratedFrame))
+                        LabeledContent("Encode", value: String(format: "%.1f ms/output", vm.telemetry.encodeMsPerOutputFrame))
+                        LabeledContent("RIFE speed", value: String(format: "%.2f gen fps", vm.telemetry.generatedFPS))
+                        LabeledContent("Generated", value: "\(vm.telemetry.generatedFrames)")
+                        LabeledContent("Rejected", value: "\(vm.telemetry.rejectedFrames)")
+                        Text("If RIFE ms/generated rises while Thermal changes from Nominal → Fair → Serious, that confirms thermal throttling is the main slowdown.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                     }
                 } else {
                     Section {
@@ -126,7 +124,7 @@ struct ContentView: View {
                         } label: {
                             Label("Create 60 FPS Video", systemImage: "wand.and.stars")
                         }
-                        .disabled(vm.inputURL == nil || vm.isImporting)
+                        .disabled(vm.inputURL == nil)
                     }
                 }
 
