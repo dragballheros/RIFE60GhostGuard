@@ -73,7 +73,7 @@ final class VideoProcessorViewModel: ObservableObject {
         progress = 0
         outputURL = nil
         errorText = nil
-        statusText = "Preparing RIFE 4.26 HQ…"
+        statusText = "Preparing RIFE 4.26…"
 
         let guardEnabled = ghostProtection
         let cuts = sceneCutProtection
@@ -86,8 +86,10 @@ final class VideoProcessorViewModel: ObservableObject {
                 let secured = source.startAccessingSecurityScopedResource()
                 defer { if secured { source.stopAccessingSecurityScopedResource() } }
 
+                // Balanced is the stable full-resolution iPhone tier. Export quality remains
+                // maximum HEVC Main10/P010; this only controls RIFE inference memory use.
                 let config = ProcessorConfiguration(
-                    quality: .hq,
+                    quality: .balanced,
                     ghostProtection: guardEnabled,
                     sceneCutProtection: cuts,
                     compressionProtection: compressionEnabled,
