@@ -51,14 +51,16 @@ jobs:
               raise SystemExit(f'Unexpected RifeMetal manifest layout: target patches={n1}, plugin patches={n2}')
           pkg.write_text(text3)
 
+          # Keep RifeMetal's original Bundle.module shader lookup. Xcode now compiles the
+          # .metal files into the RifeMetalCore resource bundle, so Bundle.module is the
+          # correct runtime location for default.metallib on iOS.
           warp = Path('Vendor/rife-metal/Sources/RifeMetalCore/BackwardWarpKernel.swift')
           w = warp.read_text()
           needle = 'device.makeDefaultLibrary(bundle: Bundle.module)'
           count = w.count(needle)
           if count < 1:
-              raise SystemExit('RifeMetal shader loader patch target not found')
-          warp.write_text(w.replace(needle, 'device.makeDefaultLibrary()!'))
-          print(f'Patched {count} default-library call(s)')
+              raise SystemExit('Expected Bundle.module shader loader not found')
+          print(f'Keeping {count} Bundle.module shader loader call(s) unchanged')
           PY
 
           echo '--- patched Package.swift ---'
