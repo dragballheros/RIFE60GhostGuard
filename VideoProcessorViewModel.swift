@@ -108,7 +108,7 @@ final class VideoProcessorViewModel: ObservableObject {
         telemetry = PerformanceTelemetry()
         outputURL = nil
         errorText = nil
-        statusText = "Preparing RIFE 4.26 HQ…"
+        statusText = "Preparing two-pass HQ pipeline…"
 
         if renderPowerMode { applyRenderPowerMode() }
 
@@ -135,14 +135,18 @@ final class VideoProcessorViewModel: ObservableObject {
                     targetFPS: 60
                 )
 
-                let processor = RIFEVideoProcessor(configuration: config)
+                let processor = TwoPassVideoProcessor(configuration: config)
                 let result = try await processor.process(
                     sourceURL: source,
                     progress: { p, message in
                         Task { @MainActor [weak self] in
                             guard let self else { return }
                             self.progress = p
-                            self.restorationProgress = min(max(p / 0.92, 0), 1)
+                            if message.contains("Pass 1/2") {
+                                self.restorationProgress = min(max(p / 0.28, 0), 1)
+                            } else if p >= 0.29 {
+                                self.restorationProgress = 1
+                            }
                             self.statusText = message
                         }
                     },
