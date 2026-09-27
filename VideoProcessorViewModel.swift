@@ -46,12 +46,28 @@ final class VideoProcessorViewModel: ObservableObject {
     @Published var processingScreenAwake = false
     @Published var elapsedSeconds: Double = 0
     @Published var etaSeconds: Double? = nil
+    @Published var recoveryAvailable = false
+    @Published var recoveryStatusText = ""
+    @Published var diagnosticsCopyStatus = ""
 
     private var currentTask: Task<Void, Never>?
     private var blackScreenTask: Task<Void, Never>?
     private var savedBrightness: CGFloat?
     private var savedIdleTimerDisabled: Bool?
     private var renderStartedAt: Date?
+
+    init() {
+        if let job = RecoveryStore.existingJob() {
+            inputURL = job.sourceURL
+            progress = job.manifest.progress
+            recoveryAvailable = true
+            recoveryStatusText = "Interrupted render recovered at \(String(format: "%.1f", job.manifest.progress * 100))% • \(job.manifest.lastMessage)"
+            statusText = "Recovery ready"
+            DiagnosticsLogger.shared.log("App relaunched with unfinished recovery job at \(Int(job.manifest.progress * 100))%. Previous process may have been terminated or crashed.")
+        } else {
+            DiagnosticsLogger.shared.log("App launched.")
+        }
+    }
 
     func handleImport(_ result: Result<[URL], Error>) {
         isImporting = true
@@ -60,12 +76,19 @@ final class VideoProcessorViewModel: ObservableObject {
         do {
             guard let url = try result.get().first else { return }
             importProgress = 0.5
+            RecoveryStore.discardCurrent()
+            recoveryAvailable = false
+            recoveryStatusText = ""
             inputURL = url
             outputURL = nil
             errorText = nil
             saveStatusText = ""
             importProgress = 1.0
-        } catch { errorText = error.localizedDescription }
+            DiagnosticsLogger.shared.log("Selected input from Files: \(url.lastPathComponent)")
+        } catch {
+            errorText = error.localizedDescription
+            DiagnosticsLogger.shared.log("Files import failed: \(error.localizedDescription)")
+        }
     }
 
     func handlePhotoSelection(_ item: PhotosPickerItem) async {
@@ -76,20 +99,47 @@ final class VideoProcessorViewModel: ObservableObject {
             guard let picked = try await item.loadTransferable(type: PickedVideo.self) else {
                 throw NSError(domain: "RIFE60GhostGuard", code: 1, userInfo: [NSLocalizedDescriptionKey: "The selected Photos video could not be loaded."])
             }
+            RecoveryStore.discardCurrent()
+            recoveryAvailable = false
+            recoveryStatusText = ""
             inputURL = picked.url
             outputURL = nil
             errorText = nil
             saveStatusText = ""
             statusText = "Import complete"
+            DiagnosticsLogger.shared.log("Selected input from Photos: \(picked.url.lastPathComponent)")
         } catch {
             errorText = error.localizedDescription
             statusText = ""
+            DiagnosticsLogger.shared.log("Photos import failed: \(error.localizedDescription)")
         }
         isImporting = false
         importProgress = nil
     }
 
     func cancel() { currentTask?.cancel() }
+
+    func copyErrorLogs() {
+        var report = DiagnosticsLogger.shared.text()
+        report += """
+
+        Current UI state
+        Processing: \(isProcessing)
+        Progress: \(String(format: "%.2f", progress * 100))%
+        Status: \(statusText)
+        Last error: \(errorText ?? "none")
+        Recovery available: \(recoveryAvailable)
+        Recovery status: \(recoveryStatusText)
+        Thermal: \(telemetry.thermalState)
+        Source frames: \(telemetry.sourceFrames)
+        Generated frames: \(telemetry.generatedFrames)
+        Upscaled frames: \(telemetry.upscaledFrames)
+        RIFE gen fps: \(String(format: "%.3f", telemetry.generatedFPS))
+        Real-CUGAN fps: \(String(format: "%.3f", telemetry.upscaleFPS))
+        """
+        UIPasteboard.general.string = report
+        diagnosticsCopyStatus = "Error logs copied to clipboard"
+    }
 
     func wakeProcessingScreen() {
         guard isProcessing else { return }
@@ -121,17 +171,20 @@ final class VideoProcessorViewModel: ObservableObject {
         guard let source = inputURL, !isProcessing else { return }
         isProcessing = true
         processingScreenAwake = false
-        progress = 0
-        restorationProgress = 0
-        upscaleProgress = 0
+        if !recoveryAvailable {
+            progress = 0
+            restorationProgress = 0
+            upscaleProgress = 0
+        }
         telemetry = PerformanceTelemetry()
         outputURL = nil
         errorText = nil
         saveStatusText = ""
+        diagnosticsCopyStatus = ""
         elapsedSeconds = 0
         etaSeconds = nil
         renderStartedAt = Date()
-        statusText = "Preparing 4K60 HQ pipeline…"
+        statusText = recoveryAvailable ? "Validating crash-recovery checkpoints…" : "Creating crash-safe source checkpoint…"
         if renderPowerMode { applyRenderPowerMode() }
 
         let guardEnabled = ghostProtection
@@ -142,11 +195,29 @@ final class VideoProcessorViewModel: ObservableObject {
         let audio = preserveAudio
         let upscale = upscaleTo4K
         let autoPhotos = autoSaveToPhotos
+        let configKey = [
+            "pipeline-v2",
+            "hq",
+            "ghost=\(guardEnabled)",
+            "cuts=\(cuts)",
+            "compression=\(compressionEnabled)",
+            "outline=\(outlineEnabled)",
+            String(format: "sensitivity=%.2f", sensitivity),
+            "audio=\(audio)",
+            "upscale=\(upscale)",
+            "fps=60"
+        ].joined(separator: "|")
+
+        DiagnosticsLogger.shared.log("Render requested • \(configKey)")
 
         currentTask = Task.detached(priority: .userInitiated) { [weak self] in
             do {
                 let secured = source.startAccessingSecurityScopedResource()
                 defer { if secured { source.stopAccessingSecurityScopedResource() } }
+
+                let job = try RecoveryStore.prepare(source: source, configurationKey: configKey)
+                RecoveryStore.update(progress: job.manifest.progress, message: "Recovery source secured", force: true)
+
                 let config = ProcessorConfiguration(
                     quality: .hq,
                     ghostProtection: guardEnabled,
@@ -159,11 +230,15 @@ final class VideoProcessorViewModel: ObservableObject {
                 )
                 let processor = TwoPassVideoProcessor(configuration: config, upscaleTo4K: upscale)
                 let result = try await processor.process(
-                    sourceURL: source,
+                    sourceURL: job.sourceURL,
+                    recoveryDirectory: job.directory,
                     progress: { p, message in
+                        RecoveryStore.update(progress: p, message: message)
                         Task { @MainActor [weak self] in
                             guard let self else { return }
                             self.progress = p
+                            self.recoveryAvailable = true
+                            self.recoveryStatusText = "Crash-safe checkpoints active • \(String(format: "%.1f", p * 100))%"
                             if message.contains("Pass 1/3") {
                                 self.restorationProgress = min(max(p / 0.18, 0), 1)
                             } else if p >= 0.19 { self.restorationProgress = 1 }
@@ -183,7 +258,9 @@ final class VideoProcessorViewModel: ObservableObject {
                     self?.statusText = "Saving result…"
                     self?.progress = 0.995
                 }
+                RecoveryStore.update(progress: 0.995, message: "Saving finished result", force: true)
                 let saved = try await self?.saveFinishedVideo(result, preferPhotos: autoPhotos)
+                RecoveryStore.finishAndClean()
                 await MainActor.run { [weak self] in
                     guard let self else { return }
                     self.outputURL = saved?.url ?? result
@@ -194,6 +271,8 @@ final class VideoProcessorViewModel: ObservableObject {
                     self.updateClock(progress: 1)
                     self.etaSeconds = 0
                     self.statusText = "Finished"
+                    self.recoveryAvailable = false
+                    self.recoveryStatusText = ""
                     self.isProcessing = false
                     self.currentTask = nil
                     self.blackScreenTask?.cancel()
@@ -201,9 +280,12 @@ final class VideoProcessorViewModel: ObservableObject {
                     self.restoreDisplayState()
                 }
             } catch is CancellationError {
+                RecoveryStore.markCancelled()
                 await MainActor.run { [weak self] in
                     guard let self else { return }
-                    self.statusText = "Cancelled"
+                    self.statusText = "Cancelled • checkpoints kept"
+                    self.recoveryAvailable = true
+                    self.recoveryStatusText = "Resume available from the last completed checkpoint"
                     self.isProcessing = false
                     self.currentTask = nil
                     self.blackScreenTask?.cancel()
@@ -211,10 +293,13 @@ final class VideoProcessorViewModel: ObservableObject {
                     self.restoreDisplayState()
                 }
             } catch {
+                RecoveryStore.markFailed(error)
                 await MainActor.run { [weak self] in
                     guard let self else { return }
                     self.errorText = error.localizedDescription
-                    self.statusText = "Failed"
+                    self.statusText = "Failed • recovery data kept"
+                    self.recoveryAvailable = RecoveryStore.existingJob() != nil
+                    self.recoveryStatusText = self.recoveryAvailable ? "Resume available from the last completed checkpoint" : ""
                     self.isProcessing = false
                     self.currentTask = nil
                     self.blackScreenTask?.cancel()
@@ -255,6 +340,7 @@ final class VideoProcessorViewModel: ObservableObject {
                 try await saveToPhotos(source)
                 return SavedResult(url: source, message: "Automatically saved to Photos")
             } catch {
+                DiagnosticsLogger.shared.log("Photos save failed: \(error.localizedDescription). Falling back to Files.")
                 let fallback = try saveToFiles(source)
                 return SavedResult(url: fallback, message: "Photos save failed, so the video was saved to Files: On My iPhone > RIFE 60 Ghost Guard > Exports > \(fallback.lastPathComponent)")
             }
