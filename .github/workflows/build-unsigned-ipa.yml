@@ -13,13 +13,10 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
       - name: Select Xcode 16.4
         run: sudo xcode-select -s /Applications/Xcode_16.4.app/Contents/Developer
-
       - name: Show Xcode version
         run: xcodebuild -version
-
       - name: Install XcodeGen
         run: brew install xcodegen
 
@@ -28,7 +25,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: Models/RealCUGAN2xNoise3_1080p.mlpackage
-          key: realcugan-2x-noise3-1080p-fp16-v2
+          key: realcugan-2x-noise3-1080p-fp16-v3
 
       - name: Set up Python for Real-CUGAN conversion
         if: steps.cugan-cache.outputs.cache-hit != 'true'
@@ -44,8 +41,7 @@ jobs:
           rm -rf /tmp/video_upscale /tmp/realcugan-weights
           git clone --depth 1 https://github.com/apleynes/video_upscale_mac_silicon.git /tmp/video_upscale
           mkdir -p /tmp/realcugan-weights Models
-          curl -L --fail --retry 3 \
-            -o /tmp/updated_weights.zip \
+          curl -L --fail --retry 3 -o /tmp/updated_weights.zip \
             https://github.com/bilibili/ailab/releases/download/Real-CUGAN/updated_weights.zip
           unzip -q /tmp/updated_weights.zip -d /tmp/realcugan-weights
           WEIGHT=$(find /tmp/realcugan-weights -name 'up2x-latest-denoise3x.pth' -print -quit)
@@ -71,15 +67,10 @@ jobs:
           python3 - <<'PY'
           from pathlib import Path
           import re
-
           pkg = Path('Vendor/rife-metal/Package.swift')
           text = pkg.read_text()
-          text2, n1 = re.subn(
-              r'\.target\(\s*name:\s*"RifeMetalCore",\s*exclude:\s*\["Shaders"\],\s*plugins:\s*\[\.plugin\(name:\s*"CompileMetalShaders"\)\]\s*\),',
-              '.target(\n            name: "RifeMetalCore"\n        ),', text, flags=re.S)
-          text3, n2 = re.subn(
-              r'\s*\.plugin\(\s*name:\s*"CompileMetalShaders",\s*capability:\s*\.buildTool\(\)\s*\),',
-              '', text2, flags=re.S)
+          text2, n1 = re.subn(r'\.target\(\s*name:\s*"RifeMetalCore",\s*exclude:\s*\["Shaders"\],\s*plugins:\s*\[\.plugin\(name:\s*"CompileMetalShaders"\)\]\s*\),', '.target(\n            name: "RifeMetalCore"\n        ),', text, flags=re.S)
+          text3, n2 = re.subn(r'\s*\.plugin\(\s*name:\s*"CompileMetalShaders",\s*capability:\s*\.buildTool\(\)\s*\),', '', text2, flags=re.S)
           if n1 != 1 or n2 != 1:
               raise SystemExit(f'Unexpected RifeMetal manifest layout: target patches={n1}, plugin patches={n2}')
           pkg.write_text(text3)
@@ -90,42 +81,27 @@ jobs:
 
       - name: Generate Xcode project
         run: xcodegen generate
-
       - name: Resolve packages
-        run: |
-          xcodebuild -resolvePackageDependencies \
-            -project RIFE60GhostGuard.xcodeproj \
-            -scheme RIFE60GhostGuard
-
+        run: xcodebuild -resolvePackageDependencies -project RIFE60GhostGuard.xcodeproj -scheme RIFE60GhostGuard
       - name: Build unsigned app
         run: |
           set -o pipefail
-          xcodebuild \
-            -project RIFE60GhostGuard.xcodeproj \
-            -scheme RIFE60GhostGuard \
-            -configuration Release \
-            -sdk iphoneos \
-            -destination 'generic/platform=iOS' \
-            -derivedDataPath build \
-            CODE_SIGNING_ALLOWED=NO \
-            CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGN_IDENTITY='' \
-            build | tee xcodebuild.log
-
+          xcodebuild -project RIFE60GhostGuard.xcodeproj -scheme RIFE60GhostGuard \
+            -configuration Release -sdk iphoneos -destination 'generic/platform=iOS' \
+            -derivedDataPath build CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY='' build | tee xcodebuild.log
       - name: Create IPA
         run: |
           rm -rf Payload
           mkdir -p Payload
           cp -R build/Build/Products/Release-iphoneos/RIFE60GhostGuard.app Payload/
           zip -qry RIFE60GhostGuard-unsigned.ipa Payload
-
       - name: Upload IPA
         uses: actions/upload-artifact@v4
         with:
           name: RIFE60GhostGuard-unsigned-ipa
           path: RIFE60GhostGuard-unsigned.ipa
           retention-days: 30
-
       - name: Upload build log on failure
         if: failure()
         uses: actions/upload-artifact@v4
