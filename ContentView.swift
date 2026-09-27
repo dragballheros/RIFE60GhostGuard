@@ -6,6 +6,7 @@ struct ContentView: View {
     @Environment(\.scenePhase) private var scenePhase
     @StateObject private var vm = VideoProcessorViewModel()
     @State private var showingImporter = false
+    @State private var showingPhotosPicker = false
     @State private var photoItem: PhotosPickerItem?
 
     var body: some View {
@@ -13,7 +14,7 @@ struct ContentView: View {
             NavigationStack {
                 Form {
                     Section("Input") {
-                        PhotosPicker(selection: $photoItem, matching: .videos) { Label("Select from Photos", systemImage: "photo.on.rectangle") }
+                        Button { showingPhotosPicker = true } label: { Label("Select from Photos", systemImage: "photo.on.rectangle") }
                         Button { showingImporter = true } label: { Label("Select from Files", systemImage: "folder") }
                         if vm.isImporting {
                             VStack(alignment: .leading, spacing: 6) {
@@ -77,18 +78,13 @@ struct ContentView: View {
                             LabeledContent("Remaining", value: vm.etaSeconds.map(formatDuration) ?? "Calibrating…")
                             if let eta = vm.etaSeconds, eta > 0 { LabeledContent("Estimated finish", value: finishTime(after: eta)) }
                         }
-
                         Section("Processing") {
                             Text("Restoration / outline").font(.caption).foregroundStyle(.secondary)
                             ProgressView(value: vm.restorationProgress)
-                            if vm.upscaleTo4K {
-                                Text("Real-CUGAN 4K upscale").font(.caption).foregroundStyle(.secondary)
-                                ProgressView(value: vm.upscaleProgress)
-                            }
+                            if vm.upscaleTo4K { Text("Real-CUGAN 4K upscale").font(.caption).foregroundStyle(.secondary); ProgressView(value: vm.upscaleProgress) }
                             Text(vm.statusText).font(.caption)
                             Button("Cancel", role: .destructive) { vm.cancel() }
                         }
-
                         Section("Live Performance") {
                             LabeledContent("Thermal", value: vm.telemetry.thermalState)
                             LabeledContent("Compression", value: String(format: "%.1f ms/source", vm.telemetry.compressionMsPerFrame))
@@ -106,11 +102,7 @@ struct ContentView: View {
                             LabeledContent("Rejected", value: "\(vm.telemetry.rejectedFrames)")
                         }
                     } else {
-                        Section {
-                            Button { Task { await vm.start() } } label: {
-                                Label(vm.upscaleTo4K ? "Create 4K 60 FPS Video" : "Create 60 FPS Video", systemImage: "wand.and.stars")
-                            }.disabled(vm.inputURL == nil)
-                        }
+                        Section { Button { Task { await vm.start() } } label: { Label(vm.upscaleTo4K ? "Create 4K 60 FPS Video" : "Create 60 FPS Video", systemImage: "wand.and.stars") }.disabled(vm.inputURL == nil) }
                     }
 
                     if let out = vm.outputURL {
@@ -123,15 +115,14 @@ struct ContentView: View {
                     if let err = vm.errorText { Section("Error") { Text(err).foregroundStyle(.red) } }
                 }
                 .navigationTitle("RIFE 60")
-                .fileImporter(isPresented: $showingImporter, allowedContentTypes: [.video], allowsMultipleSelection: false) { result in vm.handleImport(result) }
+                .photosPicker(isPresented: $showingPhotosPicker, selection: $photoItem, matching: .videos, photoLibrary: .shared())
+                .fileImporter(isPresented: $showingImporter, allowedContentTypes: [.movie, .mpeg4Movie, .quickTimeMovie, .video], allowsMultipleSelection: false) { result in vm.handleImport(result) }
                 .onChange(of: photoItem) { item in
                     guard let item else { return }
                     Task { await vm.handlePhotoSelection(item); photoItem = nil }
                 }
                 .onChange(of: scenePhase) { phase in vm.handleScenePhase(phase) }
-                .simultaneousGesture(TapGesture().onEnded { if vm.isProcessing && vm.processingScreenAwake { vm.wakeProcessingScreen() } })
             }
-
             if vm.isProcessing && !vm.processingScreenAwake {
                 Color.black.ignoresSafeArea().contentShape(Rectangle()).onTapGesture { vm.wakeProcessingScreen() }.zIndex(999)
             }
