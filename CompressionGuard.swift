@@ -5,11 +5,10 @@ import CoreVideo
 final class CompressionGuard {
     enum Error: Swift.Error {
         case allocationFailed
-        case renderFailed
     }
 
     private let context = CIContext(options: [.cacheIntermediates: false])
-    private let colorSpace = CGColorSpace(name: CGColorSpace.sRGB)!
+    private let colorSpace = CGColorSpace(name: CGColorSpace.sRGB)
 
     func clean(_ input: CVPixelBuffer) throws -> CVPixelBuffer {
         let width = CVPixelBufferGetWidth(input)
@@ -36,8 +35,6 @@ final class CompressionGuard {
 
         var image = CIImage(cvPixelBuffer: input)
 
-        // Conservative cleanup intended for compressed anime sources:
-        // remove low-amplitude ringing/mosquito noise without softening line art heavily.
         if let noise = CIFilter(name: "CINoiseReduction") {
             noise.setValue(image, forKey: kCIInputImageKey)
             noise.setValue(0.012, forKey: "inputNoiseLevel")
