@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import UIKit
 import PhotosUI
 import CoreTransferable
 import UniformTypeIdentifiers
@@ -27,30 +28,47 @@ final class VideoProcessorViewModel: ObservableObject {
     @Published var inputURL: URL?
     @Published var outputURL: URL?
     @Published var progress: Double = 0
+    @Published var restorationProgress: Double = 0
     @Published var statusText = ""
     @Published var errorText: String?
     @Published var isProcessing = false
+    @Published var isImporting = false
+    @Published var importProgress: Double? = nil
     @Published var ghostProtection = true
     @Published var sceneCutProtection = true
     @Published var compressionProtection = true
     @Published var outlineProtection = true
     @Published var ghostSensitivity = 1.0
     @Published var preserveAudio = true
+    @Published var renderPowerMode = true
 
     private var currentTask: Task<Void, Never>?
+    private var savedBrightness: CGFloat?
+    private var savedIdleTimerDisabled: Bool?
 
     func handleImport(_ result: Result<[URL], Error>) {
+        isImporting = true
+        importProgress = 0
+        defer {
+            isImporting = false
+            importProgress = nil
+        }
+
         do {
             guard let url = try result.get().first else { return }
+            importProgress = 0.5
             inputURL = url
             outputURL = nil
             errorText = nil
+            importProgress = 1.0
         } catch {
             errorText = error.localizedDescription
         }
     }
 
     func handlePhotoSelection(_ item: PhotosPickerItem) async {
+        isImporting = true
+        importProgress = nil // PhotosUI does not expose byte-level transfer progress here.
         do {
             statusText = "Importing from Photos…"
             guard let picked = try await item.loadTransferable(type: PickedVideo.self) else {
@@ -59,23 +77,41 @@ final class VideoProcessorViewModel: ObservableObject {
             inputURL = picked.url
             outputURL = nil
             errorText = nil
-            statusText = ""
+            statusText = "Import complete"
         } catch {
             errorText = error.localizedDescription
             statusText = ""
         }
+        isImporting = false
+        importProgress = nil
     }
 
     func cancel() { currentTask?.cancel() }
+
+    func handleScenePhase(_ phase: ScenePhase) {
+        switch phase {
+        case .active:
+            if isProcessing && renderPowerMode { applyRenderPowerMode() }
+        case .inactive, .background:
+            restoreDisplayState()
+        @unknown default:
+            break
+        }
+    }
 
     func start() async {
         guard let source = inputURL, !isProcessing else { return }
 
         isProcessing = true
         progress = 0
+        restorationProgress = 0
         outputURL = nil
         errorText = nil
         statusText = "Preparing RIFE 4.26 HQ…"
+
+        if renderPowerMode {
+            applyRenderPowerMode()
+        }
 
         let guardEnabled = ghostProtection
         let cuts = sceneCutProtection
@@ -84,7 +120,9 @@ final class VideoProcessorViewModel: ObservableObject {
         let sensitivity = ghostSensitivity
         let audio = preserveAudio
 
-        currentTask = Task.detached(priority: .utility) { [weak self] in
+        // High task priority keeps our render work responsive. We deliberately do
+        // not enable iOS Low Power Mode because iOS would throttle this app too.
+        currentTask = Task.detached(priority: .userInitiated) { [weak self] in
             do {
                 let secured = source.startAccessingSecurityScopedResource()
                 defer { if secured { source.stopAccessingSecurityScopedResource() } }
@@ -103,33 +141,67 @@ final class VideoProcessorViewModel: ObservableObject {
                 let processor = RIFEVideoProcessor(configuration: config)
                 let result = try await processor.process(sourceURL: source) { p, message in
                     Task { @MainActor [weak self] in
-                        self?.progress = p
-                        self?.statusText = message
+                        guard let self else { return }
+                        self.progress = p
+                        // Source restoration happens before RIFE for each source frame.
+                        // The processor reserves the final ~8% for finalization/audio.
+                        self.restorationProgress = min(max(p / 0.92, 0), 1)
+                        self.statusText = message
                     }
                 }
 
                 try Task.checkCancellation()
                 await MainActor.run { [weak self] in
-                    self?.outputURL = result
-                    self?.progress = 1
-                    self?.statusText = "Finished"
-                    self?.isProcessing = false
-                    self?.currentTask = nil
+                    guard let self else { return }
+                    self.outputURL = result
+                    self.progress = 1
+                    self.restorationProgress = 1
+                    self.statusText = "Finished"
+                    self.isProcessing = false
+                    self.currentTask = nil
+                    self.restoreDisplayState()
                 }
             } catch is CancellationError {
                 await MainActor.run { [weak self] in
-                    self?.statusText = "Cancelled"
-                    self?.isProcessing = false
-                    self?.currentTask = nil
+                    guard let self else { return }
+                    self.statusText = "Cancelled"
+                    self.isProcessing = false
+                    self.currentTask = nil
+                    self.restoreDisplayState()
                 }
             } catch {
                 await MainActor.run { [weak self] in
-                    self?.errorText = error.localizedDescription
-                    self?.statusText = "Failed"
-                    self?.isProcessing = false
-                    self?.currentTask = nil
+                    guard let self else { return }
+                    self.errorText = error.localizedDescription
+                    self.statusText = "Failed"
+                    self.isProcessing = false
+                    self.currentTask = nil
+                    self.restoreDisplayState()
                 }
             }
+        }
+    }
+
+    private func applyRenderPowerMode() {
+        if savedBrightness == nil {
+            savedBrightness = UIScreen.main.brightness
+        }
+        if savedIdleTimerDisabled == nil {
+            savedIdleTimerDisabled = UIApplication.shared.isIdleTimerDisabled
+        }
+
+        UIScreen.main.brightness = 0.05
+        UIApplication.shared.isIdleTimerDisabled = true
+    }
+
+    private func restoreDisplayState() {
+        if let savedBrightness {
+            UIScreen.main.brightness = savedBrightness
+            self.savedBrightness = nil
+        }
+        if let savedIdleTimerDisabled {
+            UIApplication.shared.isIdleTimerDisabled = savedIdleTimerDisabled
+            self.savedIdleTimerDisabled = nil
         }
     }
 }
