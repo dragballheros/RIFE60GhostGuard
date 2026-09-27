@@ -68,7 +68,6 @@ final class RIFEVideoProcessor {
 
         let writer = try AVAssetWriter(outputURL: silentURL, fileType: .mov)
 
-        // High-bitrate HEVC Main10. For 1080p60 this targets ~62 Mbps; for 4K60 ~249 Mbps.
         let calculatedBitrate = width * height * Int(config.targetFPS) / 2
         let bitrate = min(max(60_000_000, calculatedBitrate), 800_000_000)
 
@@ -143,8 +142,9 @@ final class RIFEVideoProcessor {
 
             let currentTime = CMSampleBufferGetPresentationTimeStamp(sample)
             let currentPB: CVPixelBuffer
-            if let compressionGuard {
-                currentPB = try compressionGuard.clean(decodedPB)
+            if let compressionGuard,
+               let cleanedPB = try? compressionGuard.clean(decodedPB) {
+                currentPB = cleanedPB
                 cleaned += 1
             } else {
                 currentPB = decodedPB
@@ -202,7 +202,7 @@ final class RIFEVideoProcessor {
             let cleanText = config.compressionProtection ? " • \(cleaned) cleaned" : ""
             progress(
                 frac * 0.92,
-                "Interpolating HQ • \(generated) generated • \(rejected) rejected\(cleanText)"
+                "Interpolating • \(generated) generated • \(rejected) rejected\(cleanText)"
             )
         }
 
