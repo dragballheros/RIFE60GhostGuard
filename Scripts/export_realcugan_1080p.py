@@ -20,14 +20,12 @@ upsampler = RealWaifuUpScaler(scale=2, weight_path=str(weight_path), half=False,
 pro = upsampler.pro
 
 class FullFrame2x(torch.nn.Module):
-    """Exact tile_mode=0 2x path, but leaves the result float for Core ML ImageType."""
     def __init__(self, base):
         super().__init__()
         self.unet1 = base.unet1.eval()
         self.unet2 = base.unet2.eval()
 
     def forward(self, image, alpha):
-        # 1080 and 1920 are both even, so upstream ph/pw equal the input size.
         x = F.pad(image, (18, 18, 18, 18), "reflect")
         x = self.unet1(x)
         x0 = self.unet2(x, alpha[0])
@@ -37,14 +35,14 @@ class FullFrame2x(torch.nn.Module):
             x = (x - 0.15) * (255.0 / 0.7)
         else:
             x = x * 255.0
-        # Upstream rounds/clamps/casts to byte. Keep the same rounding/clamp,
-        # but leave float so Core ML can expose the result directly as ImageType.
         return torch.round(x).clamp(0.0, 255.0)
 
 model = FullFrame2x(upsampler.model).eval()
-image_example = torch.zeros(1, 3, H, W, dtype=torch.float32)
+# The traced graph is fully convolutional with constant padding/crops. Trace on
+# a compact tensor to avoid doing a full 1080p CPU inference during CI; Core ML
+# receives the real fixed 1920x1080 deployment shape below.
+image_example = torch.zeros(1, 3, 128, 128, dtype=torch.float32)
 alpha_example = torch.tensor([1.0], dtype=torch.float32)
-
 with torch.no_grad():
     traced = torch.jit.trace(model, (image_example, alpha_example), strict=False, check_trace=False)
 
