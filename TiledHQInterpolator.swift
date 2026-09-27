@@ -2,10 +2,9 @@ import Foundation
 import CoreVideo
 import RifeMetal
 
-/// Runs true RIFE HQ on overlapping horizontal bands while keeping a persistent
-/// RifeStream for every band. Each stream caches the previous source frame's
-/// encoder features, avoiding the duplicated previous-frame encode work that the
-/// stateless tiled implementation performed for every frame pair.
+/// Runs true RIFE HQ using the smallest spatial split needed for memory safety.
+/// 1080p-class video now uses one persistent full-frame RifeStream. Larger
+/// sources keep overlapping horizontal streams as a memory-safe fallback.
 final class TiledHQInterpolator {
     private let width: Int
     private let height: Int
@@ -20,25 +19,24 @@ final class TiledHQInterpolator {
          width: Int,
          height: Int,
          bandCount: Int = 3,
-         overlap: Int = 64) throws {
+         overlap: Int = 32) throws {
         self.width = width
         self.height = height
 
-        // Adaptive HQ tiling preserves the HQ model itself. Only the spatial
-        // working set changes to fit iPhone memory limits.
+        // After the two-pass redesign, Core ML/Core Image are fully released
+        // before RIFE is created. That gives 1080p-class sources enough headroom
+        // to use a single full-frame HQ stream and avoid duplicate band work.
         let adaptiveBands: Int
-        if height <= 720 {
+        if height <= 1200 {
             adaptiveBands = 1
-        } else if height <= 1200 {
-            adaptiveBands = 2
         } else {
             adaptiveBands = max(3, bandCount)
         }
 
         self.bandCount = adaptiveBands
-        self.overlap = max(0, overlap)
+        self.overlap = adaptiveBands == 1 ? 0 : max(0, overlap)
         self.coreHeight = Int(ceil(Double(height) / Double(adaptiveBands)))
-        self.tileHeight = self.coreHeight + self.overlap * 2
+        self.tileHeight = adaptiveBands == 1 ? height : self.coreHeight + self.overlap * 2
 
         var sessions: [RifeStream] = []
         sessions.reserveCapacity(adaptiveBands)
@@ -48,9 +46,18 @@ final class TiledHQInterpolator {
         self.streams = sessions
     }
 
-    /// Seeds every band stream with the first processed source frame.
-    /// No synthetic frame is produced; encoder features are cached for the next push.
     func seed(_ frame: CVPixelBuffer) throws {
+        if bandCount == 1 {
+            let outputs = try autoreleasepool {
+                try streams[0].push(frame, timesteps: [])
+            }
+            guard outputs.isEmpty else {
+                throw ProcessorError.conversionFailed("HQ stream seed unexpectedly returned output")
+            }
+            seeded = true
+            return
+        }
+
         for band in 0..<bandCount {
             let coreStart = band * coreHeight
             guard coreStart < height else { break }
@@ -65,12 +72,17 @@ final class TiledHQInterpolator {
         seeded = true
     }
 
-    /// Advances all band streams to `current`. Even when `timesteps` is empty,
-    /// every stream is pushed so its cached previous-frame state remains correct.
     func interpolate(current: CVPixelBuffer,
                      timesteps: [Float]) throws -> [CVPixelBuffer] {
         guard seeded else {
-            throw ProcessorError.conversionFailed("HQ tile streams were not seeded")
+            throw ProcessorError.conversionFailed("HQ streams were not seeded")
+        }
+
+        // Fast path: no extraction, stitching, overlap, or second RIFE stream.
+        if bandCount == 1 {
+            return try autoreleasepool {
+                try streams[0].push(current, timesteps: timesteps)
+            }
         }
 
         var fullOutputs: [CVPixelBuffer] = []
