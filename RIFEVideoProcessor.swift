@@ -110,23 +110,33 @@ final class RIFEVideoProcessor {
         }
         writer.add(input)
 
-        progress(0.001, "Loading RIFE 4.26 HQ stream…")
-        let interpolator = try autoreleasepool {
-            try RifeInterpolator(configuration: .bundled(qualityTier: config.quality))
-        }
-        let stream = try interpolator.makeStream(width: width, height: height)
         let guarder = GhostGuard(
             sensitivity: config.ghostSensitivity,
             enableSceneCuts: config.sceneCutProtection
         )
         let compressionGuard = config.compressionProtection ? CompressionGuard() : nil
+
+        // Compile/load the tiny outline model before RIFE allocates its HQ Metal graph.
+        // This avoids stacking Core ML compilation memory on top of RIFE HQ memory.
         let outlineEnhancer: OutlineEnhancer?
         if config.outlineProtection {
-            progress(0.002, "Loading Sharpie Outline Subtle…")
-            outlineEnhancer = try OutlineEnhancer()
+            progress(0.001, "Loading Sharpie Outline Subtle…")
+            outlineEnhancer = try autoreleasepool { try OutlineEnhancer() }
         } else {
             outlineEnhancer = nil
         }
+
+        progress(0.002, "Loading tiled RIFE 4.26 HQ…")
+        let interpolator = try autoreleasepool {
+            try RifeInterpolator(configuration: .bundled(qualityTier: config.quality))
+        }
+        let tiledHQ = TiledHQInterpolator(
+            interpolator: interpolator,
+            width: width,
+            height: height,
+            bandCount: 3,
+            overlap: 64
+        )
 
         guard reader.startReading() else {
             throw ProcessorError.reader(reader.error?.localizedDescription ?? "unknown error")
@@ -171,7 +181,6 @@ final class RIFEVideoProcessor {
 
             if previousPB == nil {
                 try await append10Bit(currentPB, at: .zero, input: input, adaptor: adaptor, pool: pool)
-                _ = try autoreleasepool { try stream.push(currentPB, timesteps: []) }
                 nextOutputTime = frameStep
                 previousPB = currentPB
                 previousTime = currentTime
@@ -198,12 +207,21 @@ final class RIFEVideoProcessor {
                 nextOutputTime = CMTimeAdd(nextOutputTime, frameStep)
             }
 
-            let synthesized: [CVPixelBuffer] = try autoreleasepool {
-                try stream.push(currentPB, timesteps: requestedTimesteps)
+            let synthesized: [CVPixelBuffer]
+            if requestedTimesteps.isEmpty {
+                synthesized = []
+            } else {
+                synthesized = try autoreleasepool {
+                    try tiledHQ.interpolate(
+                        previous: prevPB,
+                        current: currentPB,
+                        timesteps: requestedTimesteps
+                    )
+                }
             }
 
             guard synthesized.count == requestedTimesteps.count else {
-                throw ProcessorError.conversionFailed("RIFE stream returned an unexpected frame count")
+                throw ProcessorError.conversionFailed("Tiled HQ RIFE returned an unexpected frame count")
             }
 
             for index in synthesized.indices {
@@ -235,7 +253,7 @@ final class RIFEVideoProcessor {
             previousPB = currentPB
             previousTime = currentTime
 
-            if sourceFrames % 12 == 0 {
+            if sourceFrames % 6 == 0 {
                 let frac = min(
                     max(CMTimeGetSeconds(currentTime) / max(CMTimeGetSeconds(duration), 0.001), 0),
                     1
@@ -246,12 +264,12 @@ final class RIFEVideoProcessor {
                 let stageText = stages.isEmpty ? "" : " • " + stages.joined(separator: " • ")
                 progress(
                     frac * 0.92,
-                    "HQ Streaming RIFE • \(generated) generated • \(rejected) rejected\(stageText)"
+                    "Tiled HQ RIFE • \(generated) generated • \(rejected) rejected\(stageText)"
                 )
                 await Task.yield()
             }
 
-            if sourceFrames % 24 == 0 {
+            if sourceFrames % 12 == 0 {
                 CVPixelBufferPoolFlush(pool, .excessBuffers)
             }
         }
@@ -274,7 +292,7 @@ final class RIFEVideoProcessor {
             return try await addOriginalAudio(videoURL: silentURL, sourceAsset: asset)
         }
 
-        progress(1.0, "Finished • HQ • HEVC Main10")
+        progress(1.0, "Finished • Tiled HQ • HEVC Main10")
         return silentURL
     }
 
