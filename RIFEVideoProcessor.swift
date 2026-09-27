@@ -1,13 +1,14 @@
 import Foundation
 import AVFoundation
+import VideoToolbox
 import RifeMetal
 
 struct ProcessorConfiguration {
     let quality: RifeQualityTier
     let ghostProtection: Bool
     let sceneCutProtection: Bool
+    let compressionProtection: Bool
     let ghostSensitivity: Double
-    let codec: OutputCodec
     let preserveAudio: Bool
     let targetFPS: Double
 }
@@ -32,13 +33,19 @@ enum ProcessorError: LocalizedError {
 
 final class RIFEVideoProcessor {
     private let config: ProcessorConfiguration
+    private var transferSession: VTPixelTransferSession?
 
-    init(configuration: ProcessorConfiguration) { self.config = configuration }
+    init(configuration: ProcessorConfiguration) {
+        self.config = configuration
+    }
 
     func process(sourceURL: URL,
                  progress: @escaping @Sendable (Double, String) -> Void) async throws -> URL {
         let asset = AVURLAsset(url: sourceURL)
-        guard let track = try await asset.loadTracks(withMediaType: .video).first else { throw ProcessorError.missingVideoTrack }
+        guard let track = try await asset.loadTracks(withMediaType: .video).first else {
+            throw ProcessorError.missingVideoTrack
+        }
+
         let duration = try await asset.load(.duration)
         let naturalSize = try await track.load(.naturalSize)
         let transform = try await track.load(.preferredTransform)
@@ -54,150 +61,272 @@ final class RIFEVideoProcessor {
             kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA
         ])
         output.alwaysCopiesSampleData = false
-        guard reader.canAdd(output) else { throw ProcessorError.reader("cannot attach video output") }
+        guard reader.canAdd(output) else {
+            throw ProcessorError.reader("cannot attach video output")
+        }
         reader.add(output)
 
         let writer = try AVAssetWriter(outputURL: silentURL, fileType: .mov)
-        let codec: AVVideoCodecType = config.codec == .hevc ? .hevc : .h264
+
+        // High-bitrate HEVC Main10. For 1080p60 this targets ~62 Mbps; for 4K60 ~249 Mbps.
+        let calculatedBitrate = width * height * Int(config.targetFPS) / 2
+        let bitrate = min(max(60_000_000, calculatedBitrate), 800_000_000)
+
         let compression: [String: Any] = [
-            AVVideoAverageBitRateKey: max(12_000_000, width * height * 10),
+            AVVideoAverageBitRateKey: bitrate,
+            AVVideoQualityKey: 1.0,
             AVVideoExpectedSourceFrameRateKey: Int(config.targetFPS),
-            AVVideoMaxKeyFrameIntervalKey: Int(config.targetFPS * 2)
+            AVVideoMaxKeyFrameIntervalKey: Int(config.targetFPS * 2),
+            AVVideoAllowFrameReorderingKey: true,
+            AVVideoProfileLevelKey: kVTProfileLevel_HEVC_Main10_AutoLevel as String
         ]
+
         let input = AVAssetWriterInput(mediaType: .video, outputSettings: [
-            AVVideoCodecKey: codec,
+            AVVideoCodecKey: AVVideoCodecType.hevc,
             AVVideoWidthKey: width,
             AVVideoHeightKey: height,
-            AVVideoCompressionPropertiesKey: compression
+            AVVideoCompressionPropertiesKey: compression,
+            AVVideoColorPropertiesKey: [
+                AVVideoColorPrimariesKey: AVVideoColorPrimaries_ITU_R_709_2,
+                AVVideoTransferFunctionKey: AVVideoTransferFunction_ITU_R_709_2,
+                AVVideoYCbCrMatrixKey: AVVideoYCbCrMatrix_ITU_R_709_2
+            ]
         ])
         input.expectsMediaDataInRealTime = false
         input.transform = transform
-        let adaptor = AVAssetWriterInputPixelBufferAdaptor(assetWriterInput: input, sourcePixelBufferAttributes: [
-            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
-            kCVPixelBufferWidthKey as String: width,
-            kCVPixelBufferHeightKey as String: height,
-            kCVPixelBufferIOSurfacePropertiesKey as String: [:]
-        ])
-        guard writer.canAdd(input) else { throw ProcessorError.writer("cannot attach video input") }
+
+        let adaptor = AVAssetWriterInputPixelBufferAdaptor(
+            assetWriterInput: input,
+            sourcePixelBufferAttributes: [
+                kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange,
+                kCVPixelBufferWidthKey as String: width,
+                kCVPixelBufferHeightKey as String: height,
+                kCVPixelBufferIOSurfacePropertiesKey as String: [:]
+            ]
+        )
+
+        guard writer.canAdd(input) else {
+            throw ProcessorError.writer("cannot attach HEVC Main10 video input")
+        }
         writer.add(input)
 
         let interpolator = try RifeInterpolator(configuration: .bundled(qualityTier: config.quality))
-        let guarder = GhostGuard(sensitivity: config.ghostSensitivity, enableSceneCuts: config.sceneCutProtection)
+        let guarder = GhostGuard(
+            sensitivity: config.ghostSensitivity,
+            enableSceneCuts: config.sceneCutProtection
+        )
+        let compressionGuard = config.compressionProtection ? CompressionGuard() : nil
 
-        guard reader.startReading() else { throw ProcessorError.reader(reader.error?.localizedDescription ?? "unknown error") }
-        guard writer.startWriting() else { throw ProcessorError.writer(writer.error?.localizedDescription ?? "unknown error") }
+        guard reader.startReading() else {
+            throw ProcessorError.reader(reader.error?.localizedDescription ?? "unknown error")
+        }
+        guard writer.startWriting() else {
+            throw ProcessorError.writer(writer.error?.localizedDescription ?? "unknown error")
+        }
         writer.startSession(atSourceTime: .zero)
-        guard let pool = adaptor.pixelBufferPool else { throw ProcessorError.writer("pixel buffer pool unavailable") }
+
+        guard let pool = adaptor.pixelBufferPool else {
+            throw ProcessorError.writer("10-bit pixel buffer pool unavailable")
+        }
 
         let frameStep = CMTime(value: 1, timescale: CMTimeScale(config.targetFPS.rounded()))
         var nextOutputTime = CMTime.zero
-        var previousSample: CMSampleBuffer?
+        var previousPB: CVPixelBuffer?
+        var previousTime = CMTime.zero
         var rejected = 0
         var generated = 0
+        var cleaned = 0
 
         while let sample = output.copyNextSampleBuffer() {
             try Task.checkCancellation()
-            guard let pb = CMSampleBufferGetImageBuffer(sample) else { continue }
+            guard let decodedPB = CMSampleBufferGetImageBuffer(sample) else { continue }
+
             let currentTime = CMSampleBufferGetPresentationTimeStamp(sample)
-            if previousSample == nil {
-                try await append(pb, at: .zero, input: input, adaptor: adaptor)
+            let currentPB: CVPixelBuffer
+            if let compressionGuard {
+                currentPB = try compressionGuard.clean(decodedPB)
+                cleaned += 1
+            } else {
+                currentPB = decodedPB
+            }
+
+            if previousPB == nil {
+                try await append10Bit(currentPB, at: .zero, input: input, adaptor: adaptor, pool: pool)
                 nextOutputTime = frameStep
-                previousSample = sample
+                previousPB = currentPB
+                previousTime = currentTime
                 continue
             }
 
-            guard let prevSample = previousSample, let prevPB = CMSampleBufferGetImageBuffer(prevSample) else { continue }
-            let prevTime = CMSampleBufferGetPresentationTimeStamp(prevSample)
-            let span = CMTimeSubtract(currentTime, prevTime)
-            let spanSeconds = max(CMTimeGetSeconds(span), 1.0/240.0)
+            guard let prevPB = previousPB else { continue }
+            let span = CMTimeSubtract(currentTime, previousTime)
+            let spanSeconds = max(CMTimeGetSeconds(span), 1.0 / 240.0)
 
             while CMTimeCompare(nextOutputTime, currentTime) < 0 {
                 try Task.checkCancellation()
-                let rel = CMTimeGetSeconds(CMTimeSubtract(nextOutputTime, prevTime)) / spanSeconds
+                let rel = CMTimeGetSeconds(CMTimeSubtract(nextOutputTime, previousTime)) / spanSeconds
+
                 if rel <= 0.001 {
-                    try await append(prevPB, at: nextOutputTime, input: input, adaptor: adaptor)
+                    try await append10Bit(prevPB, at: nextOutputTime, input: input, adaptor: adaptor, pool: pool)
                 } else {
                     let t = min(max(rel, 0.001), 0.999)
-                    let synth = try interpolator.interpolate(previous: prevPB, current: pb, timesteps: [Float(t)])[0]
+                    let synth = try interpolator.interpolate(
+                        previous: prevPB,
+                        current: currentPB,
+                        timesteps: [Float(t)]
+                    )[0]
                     generated += 1
+
                     var chosen: CVPixelBuffer = synth
                     if config.ghostProtection {
-                        let check = guarder.inspect(previous: prevPB, generated: synth, current: pb)
+                        let check = guarder.inspect(previous: prevPB, generated: synth, current: currentPB)
                         if check.reject {
                             rejected += 1
-                            chosen = t < 0.5 ? prevPB : pb
+                            chosen = t < 0.5 ? prevPB : currentPB
                         }
                     }
-                    try await append(chosen, at: nextOutputTime, input: input, adaptor: adaptor)
+
+                    try await append10Bit(chosen, at: nextOutputTime, input: input, adaptor: adaptor, pool: pool)
                 }
+
                 nextOutputTime = CMTimeAdd(nextOutputTime, frameStep)
             }
 
-            previousSample = sample
-            let frac = min(max(CMTimeGetSeconds(currentTime) / max(CMTimeGetSeconds(duration), 0.001), 0), 1)
-            progress(frac * 0.92, "Interpolating • \(generated) generated • \(rejected) rejected")
+            previousPB = currentPB
+            previousTime = currentTime
+
+            let frac = min(
+                max(CMTimeGetSeconds(currentTime) / max(CMTimeGetSeconds(duration), 0.001), 0),
+                1
+            )
+            let cleanText = config.compressionProtection ? " • \(cleaned) cleaned" : ""
+            progress(
+                frac * 0.92,
+                "Interpolating HQ • \(generated) generated • \(rejected) rejected\(cleanText)"
+            )
+        }
+
+        if reader.status == .failed {
+            throw ProcessorError.reader(reader.error?.localizedDescription ?? "decode failed")
         }
 
         input.markAsFinished()
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
             writer.finishWriting { continuation.resume() }
         }
-        guard writer.status == .completed else { throw ProcessorError.writer(writer.error?.localizedDescription ?? "finish failed") }
+
+        guard writer.status == .completed else {
+            throw ProcessorError.writer(writer.error?.localizedDescription ?? "finish failed")
+        }
 
         if config.preserveAudio {
             progress(0.95, "Restoring original audio…")
             return try await addOriginalAudio(videoURL: silentURL, sourceAsset: asset)
         }
-        progress(1.0, "Finished")
+
+        progress(1.0, "Finished • HEVC Main10")
         return silentURL
     }
 
-    private func append(_ pixelBuffer: CVPixelBuffer,
-                        at time: CMTime,
-                        input: AVAssetWriterInput,
-                        adaptor: AVAssetWriterInputPixelBufferAdaptor) async throws {
+    private func append10Bit(_ source: CVPixelBuffer,
+                             at time: CMTime,
+                             input: AVAssetWriterInput,
+                             adaptor: AVAssetWriterInputPixelBufferAdaptor,
+                             pool: CVPixelBufferPool) async throws {
         while !input.isReadyForMoreMediaData {
             try Task.checkCancellation()
             try await Task.sleep(nanoseconds: 2_000_000)
         }
-        guard adaptor.append(pixelBuffer, withPresentationTime: time) else {
-            throw ProcessorError.writer("failed appending frame at \(CMTimeGetSeconds(time)) s")
+
+        var destination: CVPixelBuffer?
+        let poolStatus = CVPixelBufferPoolCreatePixelBuffer(nil, pool, &destination)
+        guard poolStatus == kCVReturnSuccess, let destination else {
+            throw ProcessorError.conversionFailed("could not allocate 10-bit P010 output frame")
+        }
+
+        if transferSession == nil {
+            var session: VTPixelTransferSession?
+            let status = VTPixelTransferSessionCreate(allocator: kCFAllocatorDefault, pixelTransferSessionOut: &session)
+            guard status == noErr, let session else {
+                throw ProcessorError.conversionFailed("could not create VideoToolbox pixel transfer session")
+            }
+            transferSession = session
+        }
+
+        guard let transferSession else {
+            throw ProcessorError.conversionFailed("pixel transfer session unavailable")
+        }
+
+        let transferStatus = VTPixelTransferSessionTransferImage(
+            transferSession,
+            from: source,
+            to: destination
+        )
+        guard transferStatus == noErr else {
+            throw ProcessorError.conversionFailed("BGRA→P010 conversion failed (\(transferStatus))")
+        }
+
+        guard adaptor.append(destination, withPresentationTime: time) else {
+            throw ProcessorError.writer("failed appending 10-bit frame at \(CMTimeGetSeconds(time)) s")
         }
     }
 
     private func addOriginalAudio(videoURL: URL, sourceAsset: AVAsset) async throws -> URL {
         let outputURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("RIFE60-\(UUID().uuidString).mp4")
+            .appendingPathComponent("RIFE60-Main10-\(UUID().uuidString).mp4")
         try? FileManager.default.removeItem(at: outputURL)
 
         let composition = AVMutableComposition()
         let processed = AVURLAsset(url: videoURL)
+
         guard let pv = try await processed.loadTracks(withMediaType: .video).first,
-              let cv = composition.addMutableTrack(withMediaType: .video, preferredTrackID: kCMPersistentTrackID_Invalid) else {
+              let cv = composition.addMutableTrack(
+                withMediaType: .video,
+                preferredTrackID: kCMPersistentTrackID_Invalid
+              ) else {
             throw ProcessorError.noOutput
         }
+
         let pDuration = try await processed.load(.duration)
-        try cv.insertTimeRange(CMTimeRange(start: .zero, duration: pDuration), of: pv, at: .zero)
+        try cv.insertTimeRange(
+            CMTimeRange(start: .zero, duration: pDuration),
+            of: pv,
+            at: .zero
+        )
         cv.preferredTransform = try await pv.load(.preferredTransform)
 
         if let audio = try await sourceAsset.loadTracks(withMediaType: .audio).first,
-           let ca = composition.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid) {
+           let ca = composition.addMutableTrack(
+                withMediaType: .audio,
+                preferredTrackID: kCMPersistentTrackID_Invalid
+           ) {
             let aDuration = try await sourceAsset.load(.duration)
             let d = CMTimeMinimum(pDuration, aDuration)
-            try ca.insertTimeRange(CMTimeRange(start: .zero, duration: d), of: audio, at: .zero)
+            try ca.insertTimeRange(
+                CMTimeRange(start: .zero, duration: d),
+                of: audio,
+                at: .zero
+            )
         }
 
-        guard let exporter = AVAssetExportSession(asset: composition, presetName: AVAssetExportPresetPassthrough) else {
+        guard let exporter = AVAssetExportSession(
+            asset: composition,
+            presetName: AVAssetExportPresetPassthrough
+        ) else {
             throw ProcessorError.noOutput
         }
+
         exporter.outputURL = outputURL
         exporter.outputFileType = .mp4
+
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
             exporter.exportAsynchronously { continuation.resume() }
         }
+
         guard exporter.status == .completed else {
             throw ProcessorError.writer(exporter.error?.localizedDescription ?? "audio mux failed")
         }
+
         try? FileManager.default.removeItem(at: videoURL)
         return outputURL
     }
