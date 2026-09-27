@@ -1,4 +1,5 @@
 import Foundation
+import AVFoundation
 
 final class TwoPassVideoProcessor {
     private let config: ProcessorConfiguration
@@ -40,12 +41,12 @@ final class TwoPassVideoProcessor {
             restoredURL = result.url
             rifeSourceURL = result.url
 
-            // Release pass-1 autoreleased Core ML/Core Image objects before RIFE.
+            // Pass 1 has returned, so its Core ML/Core Image objects can be torn
+            // down before the RIFE Metal graphs are created.
             autoreleasepool { }
 
-            // Thermal handoff: only wait when iOS is already actively throttling.
-            // Keep it short so recovery can improve GPU clocks without turning the
-            // cooldown itself into the new bottleneck.
+            // If iOS is already throttling heavily, give it a short recovery window.
+            // This is capped so cooldown cannot dominate total processing time.
             if ProcessInfo.processInfo.thermalState == .serious ||
                ProcessInfo.processInfo.thermalState == .critical {
                 progress(0.285, "Thermal handoff • Cooling briefly before RIFE HQ…")
@@ -78,7 +79,6 @@ final class TwoPassVideoProcessor {
         let silentResult = try await rife.process(
             sourceURL: rifeSourceURL,
             progress: { p, message in
-                // Map legacy RIFE progress into pass 2's 29–94% range.
                 let mapped = 0.29 + min(max(p / 0.95, 0), 1) * 0.65
                 progress(mapped, "Pass 2/2 • \(message)")
             },
@@ -93,20 +93,9 @@ final class TwoPassVideoProcessor {
 
         if config.preserveAudio {
             progress(0.95, "Finalizing • Restoring original audio…")
-            let helperConfig = ProcessorConfiguration(
-                quality: config.quality,
-                ghostProtection: false,
-                sceneCutProtection: false,
-                compressionProtection: false,
-                outlineProtection: false,
-                ghostSensitivity: config.ghostSensitivity,
-                preserveAudio: true,
-                targetFPS: config.targetFPS
-            )
             let muxer = FinalAudioMuxer()
             let final = try await muxer.addOriginalAudio(videoURL: silentResult, sourceURL: sourceURL)
             progress(1.0, "Finished • Two-pass HQ")
-            _ = helperConfig
             return final
         }
 
