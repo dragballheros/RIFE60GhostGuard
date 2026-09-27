@@ -23,7 +23,6 @@ final class OutlineEnhancer {
         }
     }
 
-    // Exact waifu2x-iOS model metadata from Anime Sharpie Outline Subtle.wifm.
     private let tile = 256
     private let shrink = 20
     private let inputName = "x"
@@ -40,11 +39,37 @@ final class OutlineEnhancer {
             throw OutlineError.modelMissing
         }
 
-        let compiledURL = try MLModel.compileModel(at: packageURL)
+        let fm = FileManager.default
+        let cacheRoot = try fm.url(
+            for: .cachesDirectory,
+            in: .userDomainMask,
+            appropriateFor: nil,
+            create: true
+        ).appendingPathComponent("SharpieCoreML", isDirectory: true)
+        try fm.createDirectory(at: cacheRoot, withIntermediateDirectories: true)
+        let cachedCompiled = cacheRoot.appendingPathComponent("AnimeSharpieOutlineSubtle.mlmodelc", isDirectory: true)
+
+        let modelURL: URL
+        if fm.fileExists(atPath: cachedCompiled.path) {
+            modelURL = cachedCompiled
+        } else {
+            let temporaryCompiled = try MLModel.compileModel(at: packageURL)
+            if fm.fileExists(atPath: cachedCompiled.path) {
+                try? fm.removeItem(at: cachedCompiled)
+            }
+            do {
+                try fm.copyItem(at: temporaryCompiled, to: cachedCompiled)
+                modelURL = cachedCompiled
+            } catch {
+                modelURL = temporaryCompiled
+            }
+        }
+
         let configuration = MLModelConfiguration()
-        configuration.computeUnits = .all
-        configuration.allowLowPrecisionAccumulationOnGPU = true
-        self.model = try MLModel(contentsOf: compiledURL, configuration: configuration)
+        // Keep the outline model off the Metal GPU used by RIFE HQ.
+        // The model is tiny and works well on CPU/ANE while RIFE owns GPU memory.
+        configuration.computeUnits = .cpuAndNeuralEngine
+        self.model = try MLModel(contentsOf: modelURL, configuration: configuration)
         self.inputArray = try MLMultiArray(
             shape: [1, 3, 256, 256],
             dataType: .float32
@@ -113,29 +138,29 @@ final class OutlineEnhancer {
 
         for coreY in stride(from: 0, to: height, by: core) {
             for coreX in stride(from: 0, to: width, by: core) {
-                // Fill a 256x256 NCHW tile with edge replication. The 20px
-                // border is discarded when stitching, matching the .wifm shrinkSize.
-                for y in 0..<tile {
-                    let sy = min(max(coreY + y - shrink, 0), height - 1)
-                    let rowOffset = sy * srcRow
-                    for x in 0..<tile {
-                        let sx = min(max(coreX + x - shrink, 0), width - 1)
-                        let i = rowOffset + sx * 4
-                        let r: Float32
-                        let g: Float32
-                        let b: Float32
-                        if format == kCVPixelFormatType_32BGRA {
-                            b = Float32(src[i]) / 255.0
-                            g = Float32(src[i + 1]) / 255.0
-                            r = Float32(src[i + 2]) / 255.0
-                        } else {
-                            r = Float32(src[i]) / 255.0
-                            g = Float32(src[i + 1]) / 255.0
-                            b = Float32(src[i + 2]) / 255.0
+                autoreleasepool {
+                    for y in 0..<tile {
+                        let sy = min(max(coreY + y - shrink, 0), height - 1)
+                        let rowOffset = sy * srcRow
+                        for x in 0..<tile {
+                            let sx = min(max(coreX + x - shrink, 0), width - 1)
+                            let i = rowOffset + sx * 4
+                            let r: Float32
+                            let g: Float32
+                            let b: Float32
+                            if format == kCVPixelFormatType_32BGRA {
+                                b = Float32(src[i]) / 255.0
+                                g = Float32(src[i + 1]) / 255.0
+                                r = Float32(src[i + 2]) / 255.0
+                            } else {
+                                r = Float32(src[i]) / 255.0
+                                g = Float32(src[i + 1]) / 255.0
+                                b = Float32(src[i + 2]) / 255.0
+                            }
+                            inPtr[inputIndex(0, y, x)] = r
+                            inPtr[inputIndex(1, y, x)] = g
+                            inPtr[inputIndex(2, y, x)] = b
                         }
-                        inPtr[inputIndex(0, y, x)] = r
-                        inPtr[inputIndex(1, y, x)] = g
-                        inPtr[inputIndex(2, y, x)] = b
                     }
                 }
 
