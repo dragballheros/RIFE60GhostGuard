@@ -119,6 +119,25 @@ final class VideoProcessorViewModel: ObservableObject {
 
     func cancel() { currentTask?.cancel() }
 
+    func clearRecoveryData() {
+        guard !isProcessing else { return }
+        DiagnosticsLogger.shared.log("User chose Clear Recovery Data. Discarding recovery source and all checkpoints.")
+        RecoveryStore.discardCurrent()
+        recoveryAvailable = false
+        recoveryStatusText = ""
+        inputURL = nil
+        outputURL = nil
+        progress = 0
+        restorationProgress = 0
+        upscaleProgress = 0
+        elapsedSeconds = 0
+        etaSeconds = nil
+        statusText = "Recovery data cleared • select a new video"
+        errorText = nil
+        saveStatusText = ""
+        telemetry = PerformanceTelemetry()
+    }
+
     func copyErrorLogs() {
         var report = DiagnosticsLogger.shared.text()
         report += """
@@ -369,7 +388,7 @@ final class VideoProcessorViewModel: ObservableObject {
         try FileManager.default.createDirectory(at: exports, withIntermediateDirectories: true)
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyyMMdd-HHmmss"
-        let destination = exports.appendingPathComponent("RIFE60-4K60-\(formatter.string(from: Date())).mov")
+        let destination = exports.appendingPathComponent("RIFE60-2X60-\(formatter.string(from: Date())).mov")
         try? FileManager.default.removeItem(at: destination)
         try FileManager.default.copyItem(at: source, to: destination)
         return destination
