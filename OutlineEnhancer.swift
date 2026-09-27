@@ -28,6 +28,12 @@ final class OutlineEnhancer {
     private let inputName = "x"
     private let outputName = "var_244"
 
+    // Final subtle-width correction requested after the original Subtle model:
+    // keep almost all of the learned output, but mix a tiny amount of the
+    // cleaned source back in so the added ink reads just a little narrower.
+    private let modelBlend: Float32 = 0.94
+    private let sourceBlend: Float32 = 0.06
+
     private let model: MLModel
     private let inputArray: MLMultiArray
 
@@ -66,8 +72,6 @@ final class OutlineEnhancer {
         }
 
         let configuration = MLModelConfiguration()
-        // Keep the outline model off the Metal GPU used by RIFE HQ.
-        // The model is tiny and works well on CPU/ANE while RIFE owns GPU memory.
         configuration.computeUnits = .cpuAndNeuralEngine
         self.model = try MLModel(contentsOf: modelURL, configuration: configuration)
         self.inputArray = try MLMultiArray(
@@ -193,18 +197,39 @@ final class OutlineEnhancer {
                 for y in 0..<copyHeight {
                     let dy = coreY + y
                     let oy = y + shrink
-                    let rowOffset = dy * dstRow
+                    let srcRowOffset = dy * srcRow
+                    let dstRowOffset = dy * dstRow
                     for x in 0..<copyWidth {
                         let dx = coreX + x
                         let ox = x + shrink
-                        let r = min(max(outPtr[outputIndex(0, oy, ox)], 0), 1)
-                        let g = min(max(outPtr[outputIndex(1, oy, ox)], 0), 1)
-                        let b = min(max(outPtr[outputIndex(2, oy, ox)], 0), 1)
-                        let i = rowOffset + dx * 4
-                        dst[i] = UInt8((b * 255.0).rounded())
-                        dst[i + 1] = UInt8((g * 255.0).rounded())
-                        dst[i + 2] = UInt8((r * 255.0).rounded())
-                        dst[i + 3] = 255
+                        let si = srcRowOffset + dx * 4
+                        let di = dstRowOffset + dx * 4
+
+                        let modelR = min(max(outPtr[outputIndex(0, oy, ox)], 0), 1)
+                        let modelG = min(max(outPtr[outputIndex(1, oy, ox)], 0), 1)
+                        let modelB = min(max(outPtr[outputIndex(2, oy, ox)], 0), 1)
+
+                        let srcR: Float32
+                        let srcG: Float32
+                        let srcB: Float32
+                        if format == kCVPixelFormatType_32BGRA {
+                            srcB = Float32(src[si]) / 255.0
+                            srcG = Float32(src[si + 1]) / 255.0
+                            srcR = Float32(src[si + 2]) / 255.0
+                        } else {
+                            srcR = Float32(src[si]) / 255.0
+                            srcG = Float32(src[si + 1]) / 255.0
+                            srcB = Float32(src[si + 2]) / 255.0
+                        }
+
+                        let r = modelR * modelBlend + srcR * sourceBlend
+                        let g = modelG * modelBlend + srcG * sourceBlend
+                        let b = modelB * modelBlend + srcB * sourceBlend
+
+                        dst[di] = UInt8((min(max(b, 0), 1) * 255.0).rounded())
+                        dst[di + 1] = UInt8((min(max(g, 0), 1) * 255.0).rounded())
+                        dst[di + 2] = UInt8((min(max(r, 0), 1) * 255.0).rounded())
+                        dst[di + 3] = 255
                     }
                 }
             }
