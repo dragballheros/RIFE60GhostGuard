@@ -28,9 +28,9 @@ jobs:
         uses: actions/cache@v4
         with:
           path: |
-            Models/RealCUGAN2xNoise3_1080p.mlpackage
-            CompiledModels/RealCUGAN2xNoise3_1080p.mlmodelc
-          key: realcugan-2x-noise3-1080p-fp16-compiled-v6
+            Models/RealCUGAN2xNoise3_Tile512.mlpackage
+            CompiledModels/RealCUGAN2xNoise3_Tile512.mlmodelc
+          key: realcugan-2x-noise3-tile512-fp16-compiled-v1
 
       - name: Set up Python 3.11
         uses: actions/setup-python@v5
@@ -39,7 +39,7 @@ jobs:
 
       - name: Prepare Real-CUGAN source model if needed
         run: |
-          if [ ! -f Models/RealCUGAN2xNoise3_1080p.mlpackage/Manifest.json ]; then
+          if [ ! -f Models/RealCUGAN2xNoise3_Tile512.mlpackage/Manifest.json ]; then
             python -m pip install --upgrade pip
             python -m pip install 'torch==2.5.0' 'coremltools==8.3' 'numpy==1.26.4'
             rm -rf /tmp/video_upscale /tmp/realcugan-weights
@@ -52,19 +52,19 @@ jobs:
             test -n "$WEIGHT"
             REALCUGAN_DIR=/tmp/video_upscale/realcugan/Real-CUGAN \
             REALCUGAN_WEIGHT="$WEIGHT" \
-            REALCUGAN_OUT=Models/RealCUGAN2xNoise3_1080p.mlpackage \
+            REALCUGAN_OUT=Models/RealCUGAN2xNoise3_Tile512.mlpackage \
               python Scripts/export_realcugan_1080p.py
           fi
-          test -f Models/RealCUGAN2xNoise3_1080p.mlpackage/Manifest.json
+          test -f Models/RealCUGAN2xNoise3_Tile512.mlpackage/Manifest.json
 
       - name: Compile Real-CUGAN for iOS if needed
         run: |
-          if [ ! -d CompiledModels/RealCUGAN2xNoise3_1080p.mlmodelc ]; then
+          if [ ! -d CompiledModels/RealCUGAN2xNoise3_Tile512.mlmodelc ]; then
             rm -rf CompiledModels
             mkdir -p CompiledModels
-            xcrun coremlcompiler compile Models/RealCUGAN2xNoise3_1080p.mlpackage CompiledModels
+            xcrun coremlcompiler compile Models/RealCUGAN2xNoise3_Tile512.mlpackage CompiledModels
           fi
-          test -d CompiledModels/RealCUGAN2xNoise3_1080p.mlmodelc
+          test -d CompiledModels/RealCUGAN2xNoise3_Tile512.mlmodelc
 
       - name: Generate professional app icon
         run: |
@@ -110,8 +110,8 @@ jobs:
           rm -rf Payload
           mkdir -p Payload
           cp -R build/Build/Products/Release-iphoneos/RIFE60GhostGuard.app Payload/
-          cp -R CompiledModels/RealCUGAN2xNoise3_1080p.mlmodelc Payload/RIFE60GhostGuard.app/
-          test -d Payload/RIFE60GhostGuard.app/RealCUGAN2xNoise3_1080p.mlmodelc
+          cp -R CompiledModels/RealCUGAN2xNoise3_Tile512.mlmodelc Payload/RIFE60GhostGuard.app/
+          test -d Payload/RIFE60GhostGuard.app/RealCUGAN2xNoise3_Tile512.mlmodelc
           zip -qry RIFE60GhostGuard-unsigned.ipa Payload
 
       - name: Upload IPA
