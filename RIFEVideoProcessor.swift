@@ -58,7 +58,7 @@ final class RIFEVideoProcessor {
 
         let reader = try AVAssetReader(asset: asset)
         let output = AVAssetReaderTrackOutput(track: track, outputSettings: [
-            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA
+            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelBufferPixelFormatType_32BGRA
         ])
         output.alwaysCopiesSampleData = false
         guard reader.canAdd(output) else {
@@ -97,7 +97,7 @@ final class RIFEVideoProcessor {
         let adaptor = AVAssetWriterInputPixelBufferAdaptor(
             assetWriterInput: input,
             sourcePixelBufferAttributes: [
-                kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange,
+                kCVPixelBufferPixelFormatTypeKey as String: kCVPixelBufferPixelFormatType_420YpCbCr10BiPlanarVideoRange,
                 kCVPixelBufferWidthKey as String: width,
                 kCVPixelBufferHeightKey as String: height,
                 kCVPixelBufferIOSurfacePropertiesKey as String: [:]
@@ -109,7 +109,10 @@ final class RIFEVideoProcessor {
         }
         writer.add(input)
 
-        let interpolator = try RifeInterpolator(configuration: .bundled(qualityTier: config.quality))
+        progress(0.001, "Loading RIFE 4.26…")
+        let interpolator = try autoreleasepool {
+            try RifeInterpolator(configuration: .bundled(qualityTier: config.quality))
+        }
         let guarder = GhostGuard(
             sensitivity: config.ghostSensitivity,
             enableSceneCuts: config.sceneCutProtection
@@ -135,10 +138,12 @@ final class RIFEVideoProcessor {
         var rejected = 0
         var generated = 0
         var cleaned = 0
+        var sourceFrames = 0
 
         while let sample = output.copyNextSampleBuffer() {
             try Task.checkCancellation()
             guard let decodedPB = CMSampleBufferGetImageBuffer(sample) else { continue }
+            sourceFrames += 1
 
             let currentTime = CMSampleBufferGetPresentationTimeStamp(sample)
             let currentPB: CVPixelBuffer
@@ -170,16 +175,25 @@ final class RIFEVideoProcessor {
                     try await append10Bit(prevPB, at: nextOutputTime, input: input, adaptor: adaptor, pool: pool)
                 } else {
                     let t = min(max(rel, 0.001), 0.999)
-                    let synth = try interpolator.interpolate(
-                        previous: prevPB,
-                        current: currentPB,
-                        timesteps: [Float(t)]
-                    )[0]
+
+                    let synth: CVPixelBuffer = try autoreleasepool {
+                        let frames = try interpolator.interpolate(
+                            previous: prevPB,
+                            current: currentPB,
+                            timesteps: [Float(t)]
+                        )
+                        guard let frame = frames.first else {
+                            throw ProcessorError.conversionFailed("RIFE returned no interpolated frame")
+                        }
+                        return frame
+                    }
                     generated += 1
 
                     var chosen: CVPixelBuffer = synth
                     if config.ghostProtection {
-                        let check = guarder.inspect(previous: prevPB, generated: synth, current: currentPB)
+                        let check = autoreleasepool {
+                            guarder.inspect(previous: prevPB, generated: synth, current: currentPB)
+                        }
                         if check.reject {
                             rejected += 1
                             chosen = t < 0.5 ? prevPB : currentPB
@@ -195,15 +209,19 @@ final class RIFEVideoProcessor {
             previousPB = currentPB
             previousTime = currentTime
 
-            let frac = min(
-                max(CMTimeGetSeconds(currentTime) / max(CMTimeGetSeconds(duration), 0.001), 0),
-                1
-            )
-            let cleanText = config.compressionProtection ? " • \(cleaned) cleaned" : ""
-            progress(
-                frac * 0.92,
-                "Interpolating • \(generated) generated • \(rejected) rejected\(cleanText)"
-            )
+            // Do not enqueue thousands of SwiftUI/MainActor updates during a long video.
+            if sourceFrames % 12 == 0 {
+                let frac = min(
+                    max(CMTimeGetSeconds(currentTime) / max(CMTimeGetSeconds(duration), 0.001), 0),
+                    1
+                )
+                let cleanText = config.compressionProtection ? " • \(cleaned) cleaned" : ""
+                progress(
+                    frac * 0.92,
+                    "Interpolating • \(generated) generated • \(rejected) rejected\(cleanText)"
+                )
+                await Task.yield()
+            }
         }
 
         if reader.status == .failed {
