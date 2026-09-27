@@ -26,9 +26,7 @@ jobs:
           path: |
             Models/RealCUGAN2xNoise3_1080p.mlpackage
             CompiledModels/RealCUGAN2xNoise3_1080p.mlmodelc
-          key: realcugan-2x-noise3-1080p-fp16-compiled-v4
-          restore-keys: |
-            realcugan-2x-noise3-1080p-fp16-v3
+          key: realcugan-2x-noise3-1080p-fp16-compiled-v5
 
       - name: Prepare Real-CUGAN source model if needed
         run: |
@@ -36,7 +34,17 @@ jobs:
             python3 -m venv /tmp/cugan-venv
             source /tmp/cugan-venv/bin/activate
             python -m pip install --upgrade pip
-            python -m pip install 'torch==2.5.1' 'coremltools==8.3' numpy
+            # coremltools 8.3's PyTorch frontend still scalar-casts some
+            # one-element constants. NumPy 2.x rejects that conversion, which
+            # caused the aten::Int failure in build #59. Use the tested Torch
+            # release and NumPy 1.26 for deterministic conversion.
+            python -m pip install 'torch==2.5.0' 'coremltools==8.3' 'numpy==1.26.4'
+            python - <<'PY'
+          import numpy, torch, coremltools
+          print('Converter versions:', 'numpy', numpy.__version__, 'torch', torch.__version__, 'coremltools', coremltools.__version__)
+          assert numpy.__version__ == '1.26.4'
+          assert torch.__version__.startswith('2.5.0')
+          PY
             rm -rf /tmp/video_upscale /tmp/realcugan-weights
             git clone --depth 1 https://github.com/apleynes/video_upscale_mac_silicon.git /tmp/video_upscale
             mkdir -p /tmp/realcugan-weights Models
