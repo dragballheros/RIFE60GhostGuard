@@ -1,50 +1,69 @@
 import SwiftUI
+import PhotosUI
 import UniformTypeIdentifiers
 
 struct ContentView: View {
     @StateObject private var vm = VideoProcessorViewModel()
     @State private var showingImporter = false
+    @State private var photoItem: PhotosPickerItem?
 
     var body: some View {
         NavigationStack {
             Form {
                 Section("Input") {
+                    PhotosPicker(selection: $photoItem, matching: .videos) {
+                        Label("Select from Photos", systemImage: "photo.on.rectangle")
+                    }
+
                     Button {
                         showingImporter = true
                     } label: {
-                        Label(vm.inputURL?.lastPathComponent ?? "Select Video", systemImage: "film")
+                        Label("Select from Files", systemImage: "folder")
                     }
+
                     if let input = vm.inputURL {
-                        Text(input.lastPathComponent).font(.caption).foregroundStyle(.secondary)
+                        Text(input.lastPathComponent)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                     }
                 }
 
-                Section("RIFE") {
-                    Picker("Quality", selection: $vm.quality) {
-                        ForEach(RIFEQualityChoice.allCases) { q in
-                            Text(q.title).tag(q)
-                        }
-                    }
+                Section("RIFE 4.26") {
+                    LabeledContent("Interpolation quality", value: "HQ")
                     Toggle("Ghost protection", isOn: $vm.ghostProtection)
                     Toggle("Scene-cut protection", isOn: $vm.sceneCutProtection)
                     LabeledContent("Target", value: "60.00 fps")
                 }
 
+                Section("Compression Guard") {
+                    Toggle("Anime compression cleanup", isOn: $vm.compressionProtection)
+                    Text("Reduces block, ringing, mosquito-noise and low-bitrate edge damage before interpolation while keeping line art conservative. This replaces the old outline-processing stage; it does not intentionally thicken outlines.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
                 Section("Ghost Guard") {
                     VStack(alignment: .leading, spacing: 5) {
-                        HStack { Text("Sensitivity"); Spacer(); Text(String(format: "%.2f", vm.ghostSensitivity)) }
+                        HStack {
+                            Text("Sensitivity")
+                            Spacer()
+                            Text(String(format: "%.2f", vm.ghostSensitivity))
+                        }
                         Slider(value: $vm.ghostSensitivity, in: 0.65...1.35, step: 0.05)
                     }
-                    Text("Rejected synthetic frames are replaced by the nearest real source frame instead of being repaired by another generated frame.")
+                    Text("Rejected synthetic frames are replaced by the nearest cleaned real source frame instead of another generated frame.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
 
                 Section("Export") {
-                    Picker("Codec", selection: $vm.codec) {
-                        ForEach(OutputCodec.allCases) { c in Text(c.title).tag(c) }
-                    }
+                    LabeledContent("Codec", value: "HEVC Main10")
+                    LabeledContent("Pixel format", value: "10-bit P010")
+                    LabeledContent("Quality", value: "Maximum")
                     Toggle("Preserve original audio", isOn: $vm.preserveAudio)
+                    Text("Export is always high-bitrate H.265/HEVC Main10. There is no lower-quality codec mode.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
 
                 if vm.isProcessing {
@@ -69,19 +88,32 @@ struct ContentView: View {
                         ShareLink(item: out) {
                             Label("Share / Save Output", systemImage: "square.and.arrow.up")
                         }
-                        Text(out.lastPathComponent).font(.caption).foregroundStyle(.secondary)
+                        Text(out.lastPathComponent)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                     }
                 }
 
                 if let err = vm.errorText {
-                    Section("Error") { Text(err).foregroundStyle(.red) }
+                    Section("Error") {
+                        Text(err).foregroundStyle(.red)
+                    }
                 }
             }
             .navigationTitle("RIFE 60")
-            .fileImporter(isPresented: $showingImporter,
-                          allowedContentTypes: [.movie, .mpeg4Movie, .quickTimeMovie],
-                          allowsMultipleSelection: false) { result in
+            .fileImporter(
+                isPresented: $showingImporter,
+                allowedContentTypes: [.movie, .mpeg4Movie, .quickTimeMovie],
+                allowsMultipleSelection: false
+            ) { result in
                 vm.handleImport(result)
+            }
+            .onChange(of: photoItem) { item in
+                guard let item else { return }
+                Task {
+                    await vm.handlePhotoSelection(item)
+                    photoItem = nil
+                }
             }
         }
     }
