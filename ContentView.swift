@@ -29,15 +29,19 @@ struct ContentView: View {
                 }
 
                 Section("RIFE 4.26") {
-                    LabeledContent("Interpolation quality", value: "Balanced (stable)")
+                    LabeledContent("Interpolation quality", value: "High Quality (HQ)")
                     Toggle("Ghost protection", isOn: $vm.ghostProtection)
                     Toggle("Scene-cut protection", isOn: $vm.sceneCutProtection)
                     LabeledContent("Target", value: "60.00 fps")
+                    Text("Uses RIFE HQ with the lower-memory streaming path.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
 
-                Section("Compression Guard") {
-                    Toggle("Anime compression cleanup", isOn: $vm.compressionProtection)
-                    Text("Reduces block, ringing, mosquito-noise and low-bitrate edge damage before interpolation while keeping line art conservative. This replaces the old outline-processing stage; it does not intentionally thicken outlines.")
+                Section("Anime Restoration") {
+                    Toggle("Compression Guard", isOn: $vm.compressionProtection)
+                    Toggle("Sharpie Outline Subtle", isOn: $vm.outlineProtection)
+                    Text("Source frames are cleaned first, then processed by our 1× Anime Sharpie Outline Subtle Core ML model before RIFE. Generated 60 fps frames inherit the processed line style without running the outline model again.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -51,7 +55,7 @@ struct ContentView: View {
                         }
                         Slider(value: $vm.ghostSensitivity, in: 0.65...1.35, step: 0.05)
                     }
-                    Text("Rejected synthetic frames are replaced by the nearest cleaned real source frame instead of another generated frame.")
+                    Text("Rejected synthetic frames are replaced by the nearest processed real source frame instead of another generated frame.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
