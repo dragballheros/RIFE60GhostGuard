@@ -117,11 +117,24 @@ enum RecoveryStore {
             }
         }
 
+        var copySource = source
+        var stagedSource: URL?
+        let recoveryPrefix = currentDirectory.standardizedFileURL.path + "/"
+        if source.standardizedFileURL.path.hasPrefix(recoveryPrefix) {
+            let ext = source.pathExtension.isEmpty ? "mov" : source.pathExtension
+            let staged = fm.temporaryDirectory.appendingPathComponent("recovery-source-\(UUID().uuidString).\(ext)")
+            try? fm.removeItem(at: staged)
+            try fm.copyItem(at: source, to: staged)
+            stagedSource = staged
+            copySource = staged
+        }
+        defer { if let stagedSource { try? fm.removeItem(at: stagedSource) } }
+
         try? fm.removeItem(at: currentDirectory)
         try fm.createDirectory(at: currentDirectory, withIntermediateDirectories: true)
-        let ext = source.pathExtension.isEmpty ? "mov" : source.pathExtension
+        let ext = copySource.pathExtension.isEmpty ? "mov" : copySource.pathExtension
         let localSource = currentDirectory.appendingPathComponent("source.\(ext)")
-        try fm.copyItem(at: source, to: localSource)
+        try fm.copyItem(at: copySource, to: localSource)
         let manifest = RecoveryManifest(
             sourceFilename: localSource.lastPathComponent,
             configurationKey: configurationKey,
@@ -132,6 +145,7 @@ enum RecoveryStore {
             status: "running"
         )
         try writeManifestLocked(manifest)
+        lastPersist = Date.distantPast
         DiagnosticsLogger.shared.log("Started new recovery job: \(localSource.lastPathComponent)")
         return RecoveryJob(directory: currentDirectory, sourceURL: localSource, manifest: manifest)
     }
@@ -186,6 +200,7 @@ enum RecoveryStore {
         lock.lock()
         defer { lock.unlock() }
         try? fm.removeItem(at: currentDirectory)
+        lastPersist = Date.distantPast
     }
 
     private static func writeManifestLocked(_ manifest: RecoveryManifest) throws {
