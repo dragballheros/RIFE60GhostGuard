@@ -2,33 +2,30 @@ import Foundation
 import CoreVideo
 import RifeMetal
 
-/// Runs RIFE HQ on overlapping horizontal bands so peak Metal memory stays
-/// below a full-frame HQ graph. Each band uses the same full-quality HQ
-/// network; only the spatial working set is reduced. Overlap is discarded when
-/// stitching, avoiding visible seams while preserving context near boundaries.
+/// Runs true RIFE HQ on overlapping horizontal bands while keeping a persistent
+/// RifeStream for every band. Each stream caches the previous source frame's
+/// encoder features, avoiding the duplicated previous-frame encode work that the
+/// stateless tiled implementation performed for every frame pair.
 final class TiledHQInterpolator {
-    private let interpolator: RifeInterpolator
     private let width: Int
     private let height: Int
     private let bandCount: Int
     private let overlap: Int
     private let coreHeight: Int
     private let tileHeight: Int
+    private let streams: [RifeStream]
+    private var seeded = false
 
     init(interpolator: RifeInterpolator,
          width: Int,
          height: Int,
          bandCount: Int = 3,
-         overlap: Int = 64) {
-        self.interpolator = interpolator
+         overlap: Int = 64) throws {
         self.width = width
         self.height = height
 
-        // Adaptive HQ tiling: keep true HQ, but avoid doing three HQ passes
-        // when the source does not need that much memory protection.
-        // 720p and below: one HQ pass.
-        // 1080p-class video: two overlapping HQ passes.
-        // Above 1200 px tall: three bands for safer peak Metal memory.
+        // Adaptive HQ tiling preserves the HQ model itself. Only the spatial
+        // working set changes to fit iPhone memory limits.
         let adaptiveBands: Int
         if height <= 720 {
             adaptiveBands = 1
@@ -42,12 +39,39 @@ final class TiledHQInterpolator {
         self.overlap = max(0, overlap)
         self.coreHeight = Int(ceil(Double(height) / Double(adaptiveBands)))
         self.tileHeight = self.coreHeight + self.overlap * 2
+
+        var sessions: [RifeStream] = []
+        sessions.reserveCapacity(adaptiveBands)
+        for _ in 0..<adaptiveBands {
+            sessions.append(try interpolator.makeStream(width: width, height: tileHeight))
+        }
+        self.streams = sessions
     }
 
-    func interpolate(previous: CVPixelBuffer,
-                     current: CVPixelBuffer,
+    /// Seeds every band stream with the first processed source frame.
+    /// No synthetic frame is produced; encoder features are cached for the next push.
+    func seed(_ frame: CVPixelBuffer) throws {
+        for band in 0..<bandCount {
+            let coreStart = band * coreHeight
+            guard coreStart < height else { break }
+            let tile = try extractBand(frame, coreStart: coreStart)
+            let outputs = try autoreleasepool {
+                try streams[band].push(tile, timesteps: [])
+            }
+            guard outputs.isEmpty else {
+                throw ProcessorError.conversionFailed("HQ stream seed unexpectedly returned output")
+            }
+        }
+        seeded = true
+    }
+
+    /// Advances all band streams to `current`. Even when `timesteps` is empty,
+    /// every stream is pushed so its cached previous-frame state remains correct.
+    func interpolate(current: CVPixelBuffer,
                      timesteps: [Float]) throws -> [CVPixelBuffer] {
-        guard !timesteps.isEmpty else { return [] }
+        guard seeded else {
+            throw ProcessorError.conversionFailed("HQ tile streams were not seeded")
+        }
 
         var fullOutputs: [CVPixelBuffer] = []
         fullOutputs.reserveCapacity(timesteps.count)
@@ -59,26 +83,14 @@ final class TiledHQInterpolator {
             let coreStart = band * coreHeight
             guard coreStart < height else { break }
             let coreCount = min(coreHeight, height - coreStart)
-
-            let previousTile = try extractBand(
-                previous,
-                coreStart: coreStart
-            )
-            let currentTile = try extractBand(
-                current,
-                coreStart: coreStart
-            )
+            let currentTile = try extractBand(current, coreStart: coreStart)
 
             let tileOutputs = try autoreleasepool {
-                try interpolator.interpolate(
-                    previous: previousTile,
-                    current: currentTile,
-                    timesteps: timesteps
-                )
+                try streams[band].push(currentTile, timesteps: timesteps)
             }
 
-            guard tileOutputs.count == fullOutputs.count else {
-                throw ProcessorError.conversionFailed("Tiled HQ RIFE returned an unexpected frame count")
+            guard tileOutputs.count == timesteps.count else {
+                throw ProcessorError.conversionFailed("Streaming tiled HQ RIFE returned an unexpected frame count")
             }
 
             for index in tileOutputs.indices {
