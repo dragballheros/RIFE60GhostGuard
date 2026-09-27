@@ -40,8 +40,11 @@ final class RIFEVideoProcessor {
         self.config = configuration
     }
 
-    func process(sourceURL: URL,
-                 progress: @escaping @Sendable (Double, String) -> Void) async throws -> URL {
+    func process(
+        sourceURL: URL,
+        progress: @escaping @Sendable (Double, String) -> Void,
+        telemetry: @escaping @Sendable (PerformanceTelemetry) -> Void = { _ in }
+    ) async throws -> URL {
         let asset = AVURLAsset(url: sourceURL)
         guard let track = try await asset.loadTracks(withMediaType: .video).first else {
             throw ProcessorError.missingVideoTrack
@@ -68,7 +71,6 @@ final class RIFEVideoProcessor {
         reader.add(output)
 
         let writer = try AVAssetWriter(outputURL: silentURL, fileType: .mov)
-
         let calculatedBitrate = width * height * Int(config.targetFPS) / 2
         let bitrate = min(max(60_000_000, calculatedBitrate), 800_000_000)
 
@@ -116,7 +118,6 @@ final class RIFEVideoProcessor {
         )
         let compressionGuard = config.compressionProtection ? CompressionGuard() : nil
 
-        // Load the tiny outline model before RIFE allocates its HQ Metal graphs.
         let outlineEnhancer: OutlineEnhancer?
         if config.outlineProtection {
             progress(0.001, "Loading Sharpie Outline Subtle…")
@@ -158,6 +159,30 @@ final class RIFEVideoProcessor {
         var cleaned = 0
         var outlined = 0
         var sourceFrames = 0
+        var outputFrames = 0
+
+        var compressionSeconds = 0.0
+        var outlineSeconds = 0.0
+        var rifeSeconds = 0.0
+        var ghostSeconds = 0.0
+        var encodeSeconds = 0.0
+        let benchmarkStart = CFAbsoluteTimeGetCurrent()
+
+        func emitTelemetry() {
+            let elapsed = max(CFAbsoluteTimeGetCurrent() - benchmarkStart, 0.001)
+            var t = PerformanceTelemetry()
+            t.sourceFrames = sourceFrames
+            t.generatedFrames = generated
+            t.rejectedFrames = rejected
+            t.compressionMsPerFrame = cleaned > 0 ? compressionSeconds * 1000.0 / Double(cleaned) : 0
+            t.outlineMsPerFrame = outlined > 0 ? outlineSeconds * 1000.0 / Double(outlined) : 0
+            t.rifeMsPerGeneratedFrame = generated > 0 ? rifeSeconds * 1000.0 / Double(generated) : 0
+            t.ghostMsPerGeneratedFrame = generated > 0 ? ghostSeconds * 1000.0 / Double(generated) : 0
+            t.encodeMsPerOutputFrame = outputFrames > 0 ? encodeSeconds * 1000.0 / Double(outputFrames) : 0
+            t.generatedFPS = Double(generated) / elapsed
+            t.thermalState = currentThermalStateName()
+            telemetry(t)
+        }
 
         while let sample = output.copyNextSampleBuffer() {
             try Task.checkCancellation()
@@ -167,39 +192,49 @@ final class RIFEVideoProcessor {
             let currentTime = CMSampleBufferGetPresentationTimeStamp(sample)
             var currentPB = decodedPB
 
-            if let compressionGuard,
-               let cleanedPB = try? compressionGuard.clean(currentPB) {
-                currentPB = cleanedPB
-                cleaned += 1
+            if let compressionGuard {
+                let started = CFAbsoluteTimeGetCurrent()
+                if let cleanedPB = try? compressionGuard.clean(currentPB) {
+                    currentPB = cleanedPB
+                    cleaned += 1
+                    compressionSeconds += CFAbsoluteTimeGetCurrent() - started
+                }
             }
 
             if let outlineEnhancer {
+                let started = CFAbsoluteTimeGetCurrent()
                 currentPB = try outlineEnhancer.enhance(currentPB)
+                outlineSeconds += CFAbsoluteTimeGetCurrent() - started
                 outlined += 1
             }
 
             if previousPB == nil {
+                let started = CFAbsoluteTimeGetCurrent()
                 try await append10Bit(currentPB, at: .zero, input: input, adaptor: adaptor, pool: pool)
+                encodeSeconds += CFAbsoluteTimeGetCurrent() - started
+                outputFrames += 1
                 try autoreleasepool { try tiledHQ.seed(currentPB) }
                 nextOutputTime = frameStep
                 previousPB = currentPB
                 previousTime = currentTime
+                emitTelemetry()
                 continue
             }
 
             guard let prevPB = previousPB else { continue }
             let span = CMTimeSubtract(currentTime, previousTime)
             let spanSeconds = max(CMTimeGetSeconds(span), 1.0 / 240.0)
-
             var requestedTimes: [CMTime] = []
             var requestedTimesteps: [Float] = []
 
             while CMTimeCompare(nextOutputTime, currentTime) < 0 {
                 try Task.checkCancellation()
                 let rel = CMTimeGetSeconds(CMTimeSubtract(nextOutputTime, previousTime)) / spanSeconds
-
                 if rel <= 0.001 {
+                    let started = CFAbsoluteTimeGetCurrent()
                     try await append10Bit(prevPB, at: nextOutputTime, input: input, adaptor: adaptor, pool: pool)
+                    encodeSeconds += CFAbsoluteTimeGetCurrent() - started
+                    outputFrames += 1
                 } else {
                     requestedTimes.append(nextOutputTime)
                     requestedTimesteps.append(Float(min(max(rel, 0.001), 0.999)))
@@ -207,15 +242,11 @@ final class RIFEVideoProcessor {
                 nextOutputTime = CMTimeAdd(nextOutputTime, frameStep)
             }
 
-            // Always push the current source frame through every persistent band stream.
-            // If no synthetic frame is required, timesteps is empty and RifeStream simply
-            // rebases its cached previous-frame features to the current frame.
+            let rifeStarted = CFAbsoluteTimeGetCurrent()
             let synthesized = try autoreleasepool {
-                try tiledHQ.interpolate(
-                    current: currentPB,
-                    timesteps: requestedTimesteps
-                )
+                try tiledHQ.interpolate(current: currentPB, timesteps: requestedTimesteps)
             }
+            rifeSeconds += CFAbsoluteTimeGetCurrent() - rifeStarted
 
             guard synthesized.count == requestedTimesteps.count else {
                 throw ProcessorError.conversionFailed("Streaming tiled HQ RIFE returned an unexpected frame count")
@@ -228,41 +259,38 @@ final class RIFEVideoProcessor {
                 var chosen: CVPixelBuffer = synth
 
                 if config.ghostProtection {
+                    let started = CFAbsoluteTimeGetCurrent()
                     let check = autoreleasepool {
                         guarder.inspect(previous: prevPB, generated: synth, current: currentPB)
                     }
+                    ghostSeconds += CFAbsoluteTimeGetCurrent() - started
                     if check.reject {
                         rejected += 1
                         chosen = t < 0.5 ? prevPB : currentPB
                     }
                 }
 
-                try await append10Bit(
-                    chosen,
-                    at: requestedTimes[index],
-                    input: input,
-                    adaptor: adaptor,
-                    pool: pool
-                )
+                let encodeStarted = CFAbsoluteTimeGetCurrent()
+                try await append10Bit(chosen, at: requestedTimes[index], input: input, adaptor: adaptor, pool: pool)
+                encodeSeconds += CFAbsoluteTimeGetCurrent() - encodeStarted
+                outputFrames += 1
                 generated += 1
             }
 
             previousPB = currentPB
             previousTime = currentTime
 
+            if sourceFrames % 3 == 0 {
+                emitTelemetry()
+            }
+
             if sourceFrames % 6 == 0 {
-                let frac = min(
-                    max(CMTimeGetSeconds(currentTime) / max(CMTimeGetSeconds(duration), 0.001), 0),
-                    1
-                )
+                let frac = min(max(CMTimeGetSeconds(currentTime) / max(CMTimeGetSeconds(duration), 0.001), 0), 1)
                 var stages: [String] = []
                 if config.compressionProtection { stages.append("\(cleaned) cleaned") }
                 if config.outlineProtection { stages.append("\(outlined) outlined") }
                 let stageText = stages.isEmpty ? "" : " • " + stages.joined(separator: " • ")
-                progress(
-                    frac * 0.92,
-                    "Streaming tiled HQ • \(generated) generated • \(rejected) rejected\(stageText)"
-                )
+                progress(frac * 0.92, "Streaming tiled HQ • \(generated) generated • \(rejected) rejected\(stageText)")
                 await Task.yield()
             }
 
@@ -270,6 +298,8 @@ final class RIFEVideoProcessor {
                 CVPixelBufferPoolFlush(pool, .excessBuffers)
             }
         }
+
+        emitTelemetry()
 
         if reader.status == .failed {
             throw ProcessorError.reader(reader.error?.localizedDescription ?? "decode failed")
@@ -322,11 +352,7 @@ final class RIFEVideoProcessor {
             throw ProcessorError.conversionFailed("pixel transfer session unavailable")
         }
 
-        let transferStatus = VTPixelTransferSessionTransferImage(
-            transferSession,
-            from: source,
-            to: destination
-        )
+        let transferStatus = VTPixelTransferSessionTransferImage(transferSession, from: source, to: destination)
         guard transferStatus == noErr else {
             throw ProcessorError.conversionFailed("BGRA→P010 conversion failed (\(transferStatus))")
         }
@@ -345,45 +371,27 @@ final class RIFEVideoProcessor {
         let processed = AVURLAsset(url: videoURL)
 
         guard let pv = try await processed.loadTracks(withMediaType: .video).first,
-              let cv = composition.addMutableTrack(
-                withMediaType: .video,
-                preferredTrackID: kCMPersistentTrackID_Invalid
-              ) else {
+              let cv = composition.addMutableTrack(withMediaType: .video, preferredTrackID: kCMPersistentTrackID_Invalid) else {
             throw ProcessorError.noOutput
         }
 
         let pDuration = try await processed.load(.duration)
-        try cv.insertTimeRange(
-            CMTimeRange(start: .zero, duration: pDuration),
-            of: pv,
-            at: .zero
-        )
+        try cv.insertTimeRange(CMTimeRange(start: .zero, duration: pDuration), of: pv, at: .zero)
         cv.preferredTransform = try await pv.load(.preferredTransform)
 
         if let audio = try await sourceAsset.loadTracks(withMediaType: .audio).first,
-           let ca = composition.addMutableTrack(
-                withMediaType: .audio,
-                preferredTrackID: kCMPersistentTrackID_Invalid
-           ) {
+           let ca = composition.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid) {
             let aDuration = try await sourceAsset.load(.duration)
             let d = CMTimeMinimum(pDuration, aDuration)
-            try ca.insertTimeRange(
-                CMTimeRange(start: .zero, duration: d),
-                of: audio,
-                at: .zero
-            )
+            try ca.insertTimeRange(CMTimeRange(start: .zero, duration: d), of: audio, at: .zero)
         }
 
-        guard let exporter = AVAssetExportSession(
-            asset: composition,
-            presetName: AVAssetExportPresetPassthrough
-        ) else {
+        guard let exporter = AVAssetExportSession(asset: composition, presetName: AVAssetExportPresetPassthrough) else {
             throw ProcessorError.noOutput
         }
 
         exporter.outputURL = outputURL
         exporter.outputFileType = .mp4
-
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
             exporter.exportAsynchronously { continuation.resume() }
         }
