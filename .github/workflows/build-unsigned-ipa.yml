@@ -19,6 +19,35 @@ jobs:
       - name: Install XcodeGen
         run: brew install xcodegen
 
+      - name: Restore Sharpie outline model cache
+        id: outline-cache
+        uses: actions/cache@v4
+        with:
+          path: Models/AnimeSharpieOutlineSubtle.mlpackage
+          key: anime-sharpie-outline-subtle-final-thin-v1
+
+      - name: Recover Sharpie outline model if needed
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ ! -f Models/AnimeSharpieOutlineSubtle.mlpackage/Manifest.json ]; then
+            echo "Outline cache empty; recovering exact final-thin model from known-good Build #49 artifact"
+            rm -rf /tmp/outline-artifact /tmp/outline-ipa /tmp/outline-artifact.zip
+            mkdir -p /tmp/outline-artifact /tmp/outline-ipa Models
+            gh api \
+              -H 'Accept: application/vnd.github+json' \
+              /repos/${{ github.repository }}/actions/artifacts/10943611458/zip \
+              > /tmp/outline-artifact.zip
+            unzip -q /tmp/outline-artifact.zip -d /tmp/outline-artifact
+            IPA=$(find /tmp/outline-artifact -type f -name '*.ipa' -print -quit)
+            test -n "$IPA"
+            unzip -q "$IPA" 'Payload/RIFE60GhostGuard.app/AnimeSharpieOutlineSubtle.mlpackage/*' -d /tmp/outline-ipa
+            cp -R /tmp/outline-ipa/Payload/RIFE60GhostGuard.app/AnimeSharpieOutlineSubtle.mlpackage Models/
+          fi
+          test -f Models/AnimeSharpieOutlineSubtle.mlpackage/Manifest.json
+          test -f Models/AnimeSharpieOutlineSubtle.mlpackage/Data/com.apple.CoreML/weights/weight.bin
+          echo "Sharpie model weights: $(stat -f%z Models/AnimeSharpieOutlineSubtle.mlpackage/Data/com.apple.CoreML/weights/weight.bin) bytes"
+
       - name: Restore Real-CUGAN model cache
         id: cugan-cache
         uses: actions/cache@v4
@@ -101,13 +130,17 @@ jobs:
             -derivedDataPath build CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY='' build | tee xcodebuild.log
 
-      - name: Create IPA with Real-CUGAN
+      - name: Create IPA with AI models
         run: |
           rm -rf Payload
           mkdir -p Payload
           cp -R build/Build/Products/Release-iphoneos/RIFE60GhostGuard.app Payload/
+          cp -R Models/AnimeSharpieOutlineSubtle.mlpackage Payload/RIFE60GhostGuard.app/
           cp -R CompiledModels/RealCUGAN2xNoise3_1080p.mlmodelc Payload/RIFE60GhostGuard.app/
+          test -f Payload/RIFE60GhostGuard.app/AnimeSharpieOutlineSubtle.mlpackage/Manifest.json
+          test -f Payload/RIFE60GhostGuard.app/AnimeSharpieOutlineSubtle.mlpackage/Data/com.apple.CoreML/weights/weight.bin
           test -d Payload/RIFE60GhostGuard.app/RealCUGAN2xNoise3_1080p.mlmodelc
+          test "$(stat -f%z Payload/RIFE60GhostGuard.app/AnimeSharpieOutlineSubtle.mlpackage/Data/com.apple.CoreML/weights/weight.bin)" = "228928"
           zip -qry RIFE60GhostGuard-unsigned.ipa Payload
 
       - name: Upload IPA
