@@ -103,7 +103,7 @@ struct ContentView: View {
             .navigationTitle("RIFE 60")
             .fileImporter(
                 isPresented: $showingImporter,
-                allowedContentTypes: [.movie, .mpeg4Movie, .quickTimeMovie],
+                allowedContentTypes: [.video],
                 allowsMultipleSelection: false
             ) { result in
                 vm.handleImport(result)
