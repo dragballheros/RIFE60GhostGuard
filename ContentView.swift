@@ -29,7 +29,7 @@ struct ContentView: View {
                 }
 
                 Section("RIFE 4.26") {
-                    LabeledContent("Interpolation quality", value: "HQ")
+                    LabeledContent("Interpolation quality", value: "Balanced (stable)")
                     Toggle("Ghost protection", isOn: $vm.ghostProtection)
                     Toggle("Scene-cut protection", isOn: $vm.sceneCutProtection)
                     LabeledContent("Target", value: "60.00 fps")
