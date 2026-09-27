@@ -116,8 +116,7 @@ final class RIFEVideoProcessor {
         )
         let compressionGuard = config.compressionProtection ? CompressionGuard() : nil
 
-        // Compile/load the tiny outline model before RIFE allocates its HQ Metal graph.
-        // This avoids stacking Core ML compilation memory on top of RIFE HQ memory.
+        // Load the tiny outline model before RIFE allocates its HQ Metal graphs.
         let outlineEnhancer: OutlineEnhancer?
         if config.outlineProtection {
             progress(0.001, "Loading Sharpie Outline Subtle…")
@@ -126,11 +125,11 @@ final class RIFEVideoProcessor {
             outlineEnhancer = nil
         }
 
-        progress(0.002, "Loading tiled RIFE 4.26 HQ…")
+        progress(0.002, "Loading streaming tiled RIFE 4.26 HQ…")
         let interpolator = try autoreleasepool {
             try RifeInterpolator(configuration: .bundled(qualityTier: config.quality))
         }
-        let tiledHQ = TiledHQInterpolator(
+        let tiledHQ = try TiledHQInterpolator(
             interpolator: interpolator,
             width: width,
             height: height,
@@ -181,6 +180,7 @@ final class RIFEVideoProcessor {
 
             if previousPB == nil {
                 try await append10Bit(currentPB, at: .zero, input: input, adaptor: adaptor, pool: pool)
+                try autoreleasepool { try tiledHQ.seed(currentPB) }
                 nextOutputTime = frameStep
                 previousPB = currentPB
                 previousTime = currentTime
@@ -207,21 +207,18 @@ final class RIFEVideoProcessor {
                 nextOutputTime = CMTimeAdd(nextOutputTime, frameStep)
             }
 
-            let synthesized: [CVPixelBuffer]
-            if requestedTimesteps.isEmpty {
-                synthesized = []
-            } else {
-                synthesized = try autoreleasepool {
-                    try tiledHQ.interpolate(
-                        previous: prevPB,
-                        current: currentPB,
-                        timesteps: requestedTimesteps
-                    )
-                }
+            // Always push the current source frame through every persistent band stream.
+            // If no synthetic frame is required, timesteps is empty and RifeStream simply
+            // rebases its cached previous-frame features to the current frame.
+            let synthesized = try autoreleasepool {
+                try tiledHQ.interpolate(
+                    current: currentPB,
+                    timesteps: requestedTimesteps
+                )
             }
 
             guard synthesized.count == requestedTimesteps.count else {
-                throw ProcessorError.conversionFailed("Tiled HQ RIFE returned an unexpected frame count")
+                throw ProcessorError.conversionFailed("Streaming tiled HQ RIFE returned an unexpected frame count")
             }
 
             for index in synthesized.indices {
@@ -264,7 +261,7 @@ final class RIFEVideoProcessor {
                 let stageText = stages.isEmpty ? "" : " • " + stages.joined(separator: " • ")
                 progress(
                     frac * 0.92,
-                    "Tiled HQ RIFE • \(generated) generated • \(rejected) rejected\(stageText)"
+                    "Streaming tiled HQ • \(generated) generated • \(rejected) rejected\(stageText)"
                 )
                 await Task.yield()
             }
@@ -292,7 +289,7 @@ final class RIFEVideoProcessor {
             return try await addOriginalAudio(videoURL: silentURL, sourceAsset: asset)
         }
 
-        progress(1.0, "Finished • Tiled HQ • HEVC Main10")
+        progress(1.0, "Finished • Streaming Tiled HQ • HEVC Main10")
         return silentURL
     }
 
