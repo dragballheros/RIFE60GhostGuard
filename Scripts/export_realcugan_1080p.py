@@ -6,7 +6,6 @@ import numpy as np
 import torch
 import coremltools as ct
 
-# The workflow clones a CoreML-compatible Real-CUGAN implementation here.
 realcugan_dir = Path(os.environ.get("REALCUGAN_DIR", "/tmp/video_upscale/realcugan/Real-CUGAN"))
 sys.path.insert(0, str(realcugan_dir))
 from upcunet_v3 import RealWaifuUpScaler  # noqa: E402
@@ -15,14 +14,13 @@ weight_path = Path(os.environ["REALCUGAN_WEIGHT"])
 out_path = Path(os.environ.get("REALCUGAN_OUT", "Models/RealCUGAN2xNoise3_1080p.mlpackage"))
 out_path.parent.mkdir(parents=True, exist_ok=True)
 
-# This model is deliberately fixed to 1920x1080. Real-CUGAN's SE blocks use
-# global spatial means; full-frame inference preserves the exact standard-model
-# behavior and avoids the quality/seam compromises of naive independent tiles.
+# Fixed full-frame 1080p inference preserves Real-CUGAN's global SE behavior
+# and eliminates the crop-line / independent-tile quality compromise.
 H, W = 1080, 1920
 
 upsampler = RealWaifuUpScaler(
     scale=2,
-    weight_path=str(weight_path),
+    model_path=str(weight_path),
     half=False,
     device="cpu",
 )
@@ -34,8 +32,6 @@ class Wrapper(torch.nn.Module):
         self.model = model.eval()
 
     def forward(self, image, alpha):
-        # alpha stays dynamic so the iOS app can reproduce the waifu2x
-        # intensity control without rebuilding the network.
         y = self.model(image, tile_mode=0, cache_mode=0, alpha=alpha[0], pro=pro)
         return y.float()
 
