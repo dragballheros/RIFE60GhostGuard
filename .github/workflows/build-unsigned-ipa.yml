@@ -29,31 +29,36 @@ jobs:
           git clone --depth 1 https://github.com/cinemore/rife-metal.git Vendor/rife-metal
           python3 - <<'PY'
           from pathlib import Path
+          import re
 
           pkg = Path('Vendor/rife-metal/Package.swift')
           text = pkg.read_text()
-          old = '''        .target(
-              name: "RifeMetalCore",
-              exclude: ["Shaders"],
-              plugins: [.plugin(name: "CompileMetalShaders")]
-          ),
-          .plugin(
-              name: "CompileMetalShaders",
-              capability: .buildTool()
-          ),'''
-          new = '''        .target(
-              name: "RifeMetalCore"
-          ),'''
-          if old not in text:
-              raise SystemExit('RifeMetal Package.swift layout changed; patch target not found')
-          pkg.write_text(text.replace(old, new))
+
+          text2, n1 = re.subn(
+              r'\.target\(\s*name:\s*"RifeMetalCore",\s*exclude:\s*\["Shaders"\],\s*plugins:\s*\[\.plugin\(name:\s*"CompileMetalShaders"\)\]\s*\),',
+              '.target(\n            name: "RifeMetalCore"\n        ),',
+              text,
+              flags=re.S,
+          )
+          text3, n2 = re.subn(
+              r'\s*\.plugin\(\s*name:\s*"CompileMetalShaders",\s*capability:\s*\.buildTool\(\)\s*\),',
+              '',
+              text2,
+              flags=re.S,
+          )
+          if n1 != 1 or n2 != 1:
+              print(text)
+              raise SystemExit(f'Unexpected RifeMetal manifest layout: target patches={n1}, plugin patches={n2}')
+          pkg.write_text(text3)
 
           warp = Path('Vendor/rife-metal/Sources/RifeMetalCore/BackwardWarpKernel.swift')
           w = warp.read_text()
           needle = 'device.makeDefaultLibrary(bundle: Bundle.module)'
-          if needle not in w:
-              raise SystemExit('RifeMetal shader loader layout changed; patch target not found')
+          count = w.count(needle)
+          if count < 1:
+              raise SystemExit('RifeMetal shader loader patch target not found')
           warp.write_text(w.replace(needle, 'device.makeDefaultLibrary()'))
+          print(f'Patched {count} default-library call(s)')
           PY
 
           echo '--- patched Package.swift ---'
