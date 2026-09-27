@@ -7,6 +7,7 @@ struct ContentView: View {
     @StateObject private var vm = VideoProcessorViewModel()
     @State private var showingImporter = false
     @State private var showingPhotosPicker = false
+    @State private var showingClearRecoveryConfirmation = false
     @State private var photoItem: PhotosPickerItem?
 
     var body: some View {
@@ -31,7 +32,10 @@ struct ContentView: View {
                             Text(vm.recoveryStatusText).font(.caption)
                             if !vm.isProcessing {
                                 Button { Task { await vm.start() } } label: {
-                                    Label(vm.upscaleTo4K ? "Resume 4K 60 FPS Render" : "Resume 60 FPS Render", systemImage: "play.fill")
+                                    Label(vm.upscaleTo4K ? "Resume 2× 60 FPS Render" : "Resume 60 FPS Render", systemImage: "play.fill")
+                                }
+                                Button(role: .destructive) { showingClearRecoveryConfirmation = true } label: {
+                                    Label("Clear Recovery Data", systemImage: "trash")
                                 }
                             }
                             Text("Completed AI passes are kept in persistent storage. If iOS terminates the app, reopening it reuses every completed checkpoint instead of starting the whole render over.").font(.caption).foregroundStyle(.secondary)
@@ -52,13 +56,13 @@ struct ContentView: View {
                         Text("Uses the final slightly-thinner Sharpie revision on source frames before RIFE.").font(.caption).foregroundStyle(.secondary)
                     }
 
-                    Section("4K Anime Upscale") {
-                        Toggle("Real-CUGAN 2× to 4K", isOn: $vm.upscaleTo4K).disabled(vm.recoveryAvailable)
+                    Section("2× Anime Upscale") {
+                        Toggle("Real-CUGAN Native 2×", isOn: $vm.upscaleTo4K).disabled(vm.recoveryAvailable)
                         LabeledContent("Model", value: "Real-CUGAN – Anime")
-                        LabeledContent("Upscale", value: "2× • 3840×2160")
+                        LabeledContent("Upscale", value: "2× source resolution")
                         LabeledContent("Noise", value: "Level 3")
                         LabeledContent("Intensity", value: "1.30")
-                        Text("Runs as a separate final AI pass after RIFE so RIFE and Real-CUGAN do not compete for the phone at the same time. The 1080p→4K model uses full-frame inference to avoid tile seams.").font(.caption).foregroundStyle(.secondary)
+                        Text("Runs as a separate final AI pass after RIFE. Real-CUGAN processes overlapping tiles and stitches them back to exactly 2× the original source dimensions without converting the source to 1080p first.").font(.caption).foregroundStyle(.secondary)
                     }
 
                     Section("Ghost Guard") {
@@ -94,7 +98,7 @@ struct ContentView: View {
                         Section("Processing") {
                             Text("Restoration / outline").font(.caption).foregroundStyle(.secondary)
                             ProgressView(value: vm.restorationProgress)
-                            if vm.upscaleTo4K { Text("Real-CUGAN 4K upscale").font(.caption).foregroundStyle(.secondary); ProgressView(value: vm.upscaleProgress) }
+                            if vm.upscaleTo4K { Text("Real-CUGAN native 2× upscale").font(.caption).foregroundStyle(.secondary); ProgressView(value: vm.upscaleProgress) }
                             Text(vm.statusText).font(.caption)
                             Button("Cancel", role: .destructive) { vm.cancel() }
                         }
@@ -117,7 +121,7 @@ struct ContentView: View {
                     } else if !vm.recoveryAvailable {
                         Section {
                             Button { Task { await vm.start() } } label: {
-                                Label(vm.upscaleTo4K ? "Create 4K 60 FPS Video" : "Create 60 FPS Video", systemImage: "wand.and.stars")
+                                Label(vm.upscaleTo4K ? "Create 2× 60 FPS Video" : "Create 60 FPS Video", systemImage: "wand.and.stars")
                             }.disabled(vm.inputURL == nil)
                         }
                     }
@@ -138,7 +142,6 @@ struct ContentView: View {
                     if let err = vm.errorText {
                         Section("Error") {
                             Text(err).foregroundStyle(.red)
-                            Button { vm.copyErrorLogs() } label: { Label("Copy Error Logs", systemImage: "doc.on.doc") }
                         }
                     }
                 }
@@ -150,6 +153,12 @@ struct ContentView: View {
                     Task { await vm.handlePhotoSelection(item); photoItem = nil }
                 }
                 .onChange(of: scenePhase) { phase in vm.handleScenePhase(phase) }
+                .alert("Clear Recovery Data?", isPresented: $showingClearRecoveryConfirmation) {
+                    Button("Clear Recovery Data", role: .destructive) { vm.clearRecoveryData() }
+                    Button("Cancel", role: .cancel) { }
+                } message: {
+                    Text("This permanently deletes the saved source copy and completed render checkpoints for this interrupted job. You can then select a new video and start fresh.")
+                }
             }
             if vm.isProcessing && !vm.processingScreenAwake {
                 Color.black.ignoresSafeArea().contentShape(Rectangle()).onTapGesture { vm.wakeProcessingScreen() }.zIndex(999)
