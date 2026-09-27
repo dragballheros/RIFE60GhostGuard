@@ -9,7 +9,6 @@ jobs:
   build:
     runs-on: macos-15
     timeout-minutes: 45
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -20,37 +19,47 @@ jobs:
       - name: Install XcodeGen
         run: brew install xcodegen
 
-      - name: Restore Real-CUGAN Core ML cache
+      - name: Restore Real-CUGAN model cache
         id: cugan-cache
         uses: actions/cache@v4
         with:
-          path: Models/RealCUGAN2xNoise3_1080p.mlpackage
-          key: realcugan-2x-noise3-1080p-fp16-v3
+          path: |
+            Models/RealCUGAN2xNoise3_1080p.mlpackage
+            CompiledModels/RealCUGAN2xNoise3_1080p.mlmodelc
+          key: realcugan-2x-noise3-1080p-fp16-compiled-v4
+          restore-keys: |
+            realcugan-2x-noise3-1080p-fp16-v3
 
-      - name: Set up Python for Real-CUGAN conversion
-        if: steps.cugan-cache.outputs.cache-hit != 'true'
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      - name: Convert Real-CUGAN Anime 2x Noise 3 to Core ML
-        if: steps.cugan-cache.outputs.cache-hit != 'true'
+      - name: Prepare Real-CUGAN source model if needed
         run: |
-          python -m pip install --upgrade pip
-          python -m pip install 'torch==2.5.1' 'coremltools==8.3' numpy
-          rm -rf /tmp/video_upscale /tmp/realcugan-weights
-          git clone --depth 1 https://github.com/apleynes/video_upscale_mac_silicon.git /tmp/video_upscale
-          mkdir -p /tmp/realcugan-weights Models
-          curl -L --fail --retry 3 -o /tmp/updated_weights.zip \
-            https://github.com/bilibili/ailab/releases/download/Real-CUGAN/updated_weights.zip
-          unzip -q /tmp/updated_weights.zip -d /tmp/realcugan-weights
-          WEIGHT=$(find /tmp/realcugan-weights -name 'up2x-latest-denoise3x.pth' -print -quit)
-          test -n "$WEIGHT"
-          REALCUGAN_DIR=/tmp/video_upscale/realcugan/Real-CUGAN \
-          REALCUGAN_WEIGHT="$WEIGHT" \
-          REALCUGAN_OUT=Models/RealCUGAN2xNoise3_1080p.mlpackage \
-            python Scripts/export_realcugan_1080p.py
+          if [ ! -f Models/RealCUGAN2xNoise3_1080p.mlpackage/Manifest.json ]; then
+            python3 -m venv /tmp/cugan-venv
+            source /tmp/cugan-venv/bin/activate
+            python -m pip install --upgrade pip
+            python -m pip install 'torch==2.5.1' 'coremltools==8.3' numpy
+            rm -rf /tmp/video_upscale /tmp/realcugan-weights
+            git clone --depth 1 https://github.com/apleynes/video_upscale_mac_silicon.git /tmp/video_upscale
+            mkdir -p /tmp/realcugan-weights Models
+            curl -L --fail --retry 3 -o /tmp/updated_weights.zip \
+              https://github.com/bilibili/ailab/releases/download/Real-CUGAN/updated_weights.zip
+            unzip -q /tmp/updated_weights.zip -d /tmp/realcugan-weights
+            WEIGHT=$(find /tmp/realcugan-weights -name 'up2x-latest-denoise3x.pth' -print -quit)
+            test -n "$WEIGHT"
+            REALCUGAN_DIR=/tmp/video_upscale/realcugan/Real-CUGAN \
+            REALCUGAN_WEIGHT="$WEIGHT" \
+            REALCUGAN_OUT=Models/RealCUGAN2xNoise3_1080p.mlpackage \
+              python Scripts/export_realcugan_1080p.py
+          fi
           test -f Models/RealCUGAN2xNoise3_1080p.mlpackage/Manifest.json
+
+      - name: Compile Real-CUGAN for iOS if needed
+        run: |
+          if [ ! -d CompiledModels/RealCUGAN2xNoise3_1080p.mlmodelc ]; then
+            rm -rf CompiledModels
+            mkdir -p CompiledModels
+            xcrun coremlcompiler compile Models/RealCUGAN2xNoise3_1080p.mlpackage CompiledModels
+          fi
+          test -d CompiledModels/RealCUGAN2xNoise3_1080p.mlmodelc
 
       - name: Generate professional app icon
         run: |
@@ -90,12 +99,18 @@ jobs:
             -configuration Release -sdk iphoneos -destination 'generic/platform=iOS' \
             -derivedDataPath build CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY='' build | tee xcodebuild.log
-      - name: Create IPA
+
+      - name: Create IPA with Real-CUGAN
         run: |
           rm -rf Payload
           mkdir -p Payload
           cp -R build/Build/Products/Release-iphoneos/RIFE60GhostGuard.app Payload/
+          cp -R CompiledModels/RealCUGAN2xNoise3_1080p.mlmodelc Payload/RIFE60GhostGuard.app/
+          test -f Payload/RIFE60GhostGuard.app/RealCUGAN2xNoise3_1080p.mlmodelc/model.mil || \
+          test -f Payload/RIFE60GhostGuard.app/RealCUGAN2xNoise3_1080p.mlmodelc/coremldata.bin || \
+          test -f Payload/RIFE60GhostGuard.app/RealCUGAN2xNoise3_1080p.mlmodelc/model.espresso.net
           zip -qry RIFE60GhostGuard-unsigned.ipa Payload
+
       - name: Upload IPA
         uses: actions/upload-artifact@v4
         with:
