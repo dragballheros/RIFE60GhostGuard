@@ -1,0 +1,36 @@
+name: RIFE60GhostGuard
+options:
+  bundleIdPrefix: com.za
+  deploymentTarget:
+    iOS: "16.0"
+packages:
+  RifeMetal:
+    url: https://github.com/cinemore/rife-metal.git
+    exactVersion: 0.1.6
+targets:
+  RIFE60GhostGuard:
+    type: application
+    platform: iOS
+    sources:
+      - path: RIFE60GhostGuard
+    dependencies:
+      - package: RifeMetal
+        product: RifeMetal
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.za.rife60ghostguard
+        PRODUCT_NAME: RIFE60GhostGuard
+        SWIFT_VERSION: 5.10
+        IPHONEOS_DEPLOYMENT_TARGET: 16.0
+        TARGETED_DEVICE_FAMILY: "1,2"
+        SUPPORTS_MACCATALYST: NO
+        CODE_SIGN_STYLE: Automatic
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_CFBundleDisplayName: RIFE 60 Ghost Guard
+        INFOPLIST_KEY_NSPhotoLibraryUsageDescription: Select videos to interpolate locally on this device.
+        INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription: Save interpolated videos to Photos.
+        INFOPLIST_KEY_UIFileSharingEnabled: YES
+        INFOPLIST_KEY_LSSupportsOpeningDocumentsInPlace: YES
+        INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents: YES
+    scheme:
+      testTargets: []
