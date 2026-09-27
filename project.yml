@@ -33,6 +33,7 @@ targets:
         SUPPORTS_MACCATALYST: NO
         CODE_SIGN_STYLE: Automatic
         GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
         INFOPLIST_KEY_CFBundleDisplayName: RIFE 60 Ghost Guard
         INFOPLIST_KEY_NSPhotoLibraryUsageDescription: Select videos to interpolate locally on this device.
         INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription: Save interpolated videos to Photos.
