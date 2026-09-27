@@ -19,9 +19,8 @@ targets:
         includes:
           - "*.swift"
       - path: Assets.xcassets
-
-    resources:
       - path: Models/RealCUGAN2xNoise3_1080p.mlpackage
+        buildPhase: resources
 
     dependencies:
       - package: RifeMetal
