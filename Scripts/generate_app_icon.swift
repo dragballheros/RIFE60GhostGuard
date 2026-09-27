@@ -14,11 +14,9 @@ ctx.setShouldAntialias(true)
 
 let rect = CGRect(x: 0, y: 0, width: 1024, height: 1024)
 
-// Opaque near-black/navy base so the final app icon has no alpha channel.
 ctx.setFillColor(NSColor(calibratedRed: 0.015, green: 0.025, blue: 0.07, alpha: 1).cgColor)
 ctx.fill(rect)
 
-// Deep blue-violet vertical glow.
 let bgColors = [
     NSColor(calibratedRed: 0.01, green: 0.10, blue: 0.28, alpha: 1).cgColor,
     NSColor(calibratedRed: 0.015, green: 0.025, blue: 0.08, alpha: 1).cgColor,
@@ -28,7 +26,6 @@ if let gradient = CGGradient(colorsSpace: CGColorSpaceCreateDeviceRGB(), colors:
     ctx.drawLinearGradient(gradient, start: CGPoint(x: 100, y: 1000), end: CGPoint(x: 900, y: 20), options: [])
 }
 
-// Neon rounded border.
 let borderRect = CGRect(x: 34, y: 34, width: 956, height: 956)
 let borderPath = CGPath(roundedRect: borderRect, cornerWidth: 185, cornerHeight: 185, transform: nil)
 ctx.addPath(borderPath)
@@ -40,7 +37,6 @@ ctx.setLineWidth(5)
 ctx.setStrokeColor(NSColor(calibratedRed: 0.80, green: 0.20, blue: 1.0, alpha: 0.9).cgColor)
 ctx.strokePath()
 
-// Motion streaks.
 for i in 0..<18 {
     let y = 610 + CGFloat(i) * 10
     let alpha = max(0.04, 0.30 - CGFloat(i) * 0.012)
@@ -54,7 +50,6 @@ for i in 0..<18 {
     ctx.strokePath()
 }
 
-// Layered play triangles to suggest interpolation frames.
 func drawTriangle(centerX: CGFloat, centerY: CGFloat, width: CGFloat, height: CGFloat, alpha: CGFloat, hueShift: CGFloat) {
     let path = CGMutablePath()
     path.move(to: CGPoint(x: centerX - width * 0.34, y: centerY - height * 0.5))
@@ -88,7 +83,6 @@ for i in 0..<5 {
                  hueShift: CGFloat(i) * 0.02)
 }
 
-// Main play triangle with cyan-to-violet gradient.
 let main = CGMutablePath()
 main.move(to: CGPoint(x: 435, y: 542))
 main.addLine(to: CGPoint(x: 435, y: 865))
@@ -110,7 +104,6 @@ ctx.setLineWidth(8)
 ctx.setStrokeColor(NSColor.white.withAlphaComponent(0.88).cgColor)
 ctx.strokePath()
 
-// Star glint at the play point.
 ctx.setStrokeColor(NSColor.white.cgColor)
 ctx.setLineWidth(4)
 ctx.move(to: CGPoint(x: 730, y: 704)); ctx.addLine(to: CGPoint(x: 795, y: 704)); ctx.strokePath()
@@ -129,15 +122,11 @@ func centeredText(_ text: String, y: CGFloat, font: NSFont, color: NSColor, kern
     text.draw(in: r, withAttributes: attrs)
 }
 
-// 60 FPS marking.
 centeredText("60", y: 592, font: NSFont.systemFont(ofSize: 150, weight: .heavy), color: .white)
 centeredText("FPS", y: 548, font: NSFont.systemFont(ofSize: 58, weight: .heavy), color: NSColor(calibratedRed: 0.72, green: 0.88, blue: 1, alpha: 1), kern: 4)
-
-// Main RIFE title.
 centeredText("RIFE", y: 300, font: NSFont.systemFont(ofSize: 205, weight: .black), color: NSColor(calibratedRed: 0.83, green: 0.94, blue: 1, alpha: 1), kern: -8)
 centeredText("GHOST  GUARD", y: 245, font: NSFont.systemFont(ofSize: 48, weight: .bold), color: NSColor(calibratedRed: 0.82, green: 0.90, blue: 1, alpha: 1), kern: 10)
 
-// Curved neon filmstrip across the bottom.
 ctx.saveGState()
 ctx.setLineCap(.round)
 let film = CGMutablePath()
@@ -153,13 +142,14 @@ ctx.setStrokeColor(NSColor(calibratedRed: 0.65, green: 0.30, blue: 1.0, alpha: 0
 ctx.strokePath()
 ctx.restoreGState()
 
-// Film perforations.
 for i in 0..<12 {
     let x = 110 + CGFloat(i) * 72
     let y = 142 + sin(CGFloat(i) * 0.7) * 24
     let hole = CGRect(x: x, y: y, width: 30, height: 17)
+    let holePath = CGPath(roundedRect: hole, cornerWidth: 4, cornerHeight: 4, transform: nil)
     ctx.setFillColor(NSColor.black.withAlphaComponent(0.72).cgColor)
-    ctx.fill(CGPath(roundedRect: hole, cornerWidth: 4, cornerHeight: 4, transform: nil))
+    ctx.addPath(holePath)
+    ctx.fillPath()
 }
 
 image.unlockFocus()
