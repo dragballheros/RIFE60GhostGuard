@@ -109,10 +109,11 @@ final class RIFEVideoProcessor {
         }
         writer.add(input)
 
-        progress(0.001, "Loading RIFE 4.26…")
+        progress(0.001, "Loading RIFE 4.26 stream…")
         let interpolator = try autoreleasepool {
             try RifeInterpolator(configuration: .bundled(qualityTier: config.quality))
         }
+        let stream = try interpolator.makeStream(width: width, height: height)
         let guarder = GhostGuard(
             sensitivity: config.ghostSensitivity,
             enableSceneCuts: config.sceneCutProtection
@@ -157,6 +158,7 @@ final class RIFEVideoProcessor {
 
             if previousPB == nil {
                 try await append10Bit(currentPB, at: .zero, input: input, adaptor: adaptor, pool: pool)
+                _ = try autoreleasepool { try stream.push(currentPB, timesteps: []) }
                 nextOutputTime = frameStep
                 previousPB = currentPB
                 previousTime = currentTime
@@ -167,6 +169,9 @@ final class RIFEVideoProcessor {
             let span = CMTimeSubtract(currentTime, previousTime)
             let spanSeconds = max(CMTimeGetSeconds(span), 1.0 / 240.0)
 
+            var requestedTimes: [CMTime] = []
+            var requestedTimesteps: [Float] = []
+
             while CMTimeCompare(nextOutputTime, currentTime) < 0 {
                 try Task.checkCancellation()
                 let rel = CMTimeGetSeconds(CMTimeSubtract(nextOutputTime, previousTime)) / spanSeconds
@@ -174,36 +179,44 @@ final class RIFEVideoProcessor {
                 if rel <= 0.001 {
                     try await append10Bit(prevPB, at: nextOutputTime, input: input, adaptor: adaptor, pool: pool)
                 } else {
-                    let t = min(max(rel, 0.001), 0.999)
+                    requestedTimes.append(nextOutputTime)
+                    requestedTimesteps.append(Float(min(max(rel, 0.001), 0.999)))
+                }
+                nextOutputTime = CMTimeAdd(nextOutputTime, frameStep)
+            }
 
-                    let synth: CVPixelBuffer = try autoreleasepool {
-                        let frames = try interpolator.interpolate(
-                            previous: prevPB,
-                            current: currentPB,
-                            timesteps: [Float(t)]
-                        )
-                        guard let frame = frames.first else {
-                            throw ProcessorError.conversionFailed("RIFE returned no interpolated frame")
-                        }
-                        return frame
+            let synthesized: [CVPixelBuffer] = try autoreleasepool {
+                try stream.push(currentPB, timesteps: requestedTimesteps)
+            }
+
+            guard synthesized.count == requestedTimesteps.count else {
+                throw ProcessorError.conversionFailed("RIFE stream returned an unexpected frame count")
+            }
+
+            for index in synthesized.indices {
+                try Task.checkCancellation()
+                let synth = synthesized[index]
+                let t = Double(requestedTimesteps[index])
+                var chosen: CVPixelBuffer = synth
+
+                if config.ghostProtection {
+                    let check = autoreleasepool {
+                        guarder.inspect(previous: prevPB, generated: synth, current: currentPB)
                     }
-                    generated += 1
-
-                    var chosen: CVPixelBuffer = synth
-                    if config.ghostProtection {
-                        let check = autoreleasepool {
-                            guarder.inspect(previous: prevPB, generated: synth, current: currentPB)
-                        }
-                        if check.reject {
-                            rejected += 1
-                            chosen = t < 0.5 ? prevPB : currentPB
-                        }
+                    if check.reject {
+                        rejected += 1
+                        chosen = t < 0.5 ? prevPB : currentPB
                     }
-
-                    try await append10Bit(chosen, at: nextOutputTime, input: input, adaptor: adaptor, pool: pool)
                 }
 
-                nextOutputTime = CMTimeAdd(nextOutputTime, frameStep)
+                try await append10Bit(
+                    chosen,
+                    at: requestedTimes[index],
+                    input: input,
+                    adaptor: adaptor,
+                    pool: pool
+                )
+                generated += 1
             }
 
             previousPB = currentPB
@@ -217,9 +230,13 @@ final class RIFEVideoProcessor {
                 let cleanText = config.compressionProtection ? " • \(cleaned) cleaned" : ""
                 progress(
                     frac * 0.92,
-                    "Interpolating • \(generated) generated • \(rejected) rejected\(cleanText)"
+                    "Streaming RIFE • \(generated) generated • \(rejected) rejected\(cleanText)"
                 )
                 await Task.yield()
+            }
+
+            if sourceFrames % 24 == 0 {
+                CVPixelBufferPoolFlush(pool, .excessBuffers)
             }
         }
 
