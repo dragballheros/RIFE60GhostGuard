@@ -1,6 +1,26 @@
 import Foundation
 import SwiftUI
+import PhotosUI
+import CoreTransferable
+import UniformTypeIdentifiers
 import RifeMetal
+
+struct PickedVideo: Transferable {
+    let url: URL
+
+    static var transferRepresentation: some TransferRepresentation {
+        FileRepresentation(contentType: .movie) { video in
+            SentTransferredFile(video.url)
+        } importing: { received in
+            let ext = received.file.pathExtension.isEmpty ? "mov" : received.file.pathExtension
+            let destination = FileManager.default.temporaryDirectory
+                .appendingPathComponent("photos-\(UUID().uuidString).\(ext)")
+            try? FileManager.default.removeItem(at: destination)
+            try FileManager.default.copyItem(at: received.file, to: destination)
+            return PickedVideo(url: destination)
+        }
+    }
+}
 
 @MainActor
 final class VideoProcessorViewModel: ObservableObject {
@@ -10,11 +30,10 @@ final class VideoProcessorViewModel: ObservableObject {
     @Published var statusText = ""
     @Published var errorText: String?
     @Published var isProcessing = false
-    @Published var quality: RIFEQualityChoice = .balanced
     @Published var ghostProtection = true
     @Published var sceneCutProtection = true
+    @Published var compressionProtection = true
     @Published var ghostSensitivity = 1.0
-    @Published var codec: OutputCodec = .h264
     @Published var preserveAudio = true
 
     private var currentTask: Task<Void, Never>?
@@ -30,6 +49,22 @@ final class VideoProcessorViewModel: ObservableObject {
         }
     }
 
+    func handlePhotoSelection(_ item: PhotosPickerItem) async {
+        do {
+            statusText = "Importing from Photos…"
+            guard let picked = try await item.loadTransferable(type: PickedVideo.self) else {
+                throw NSError(domain: "RIFE60GhostGuard", code: 1, userInfo: [NSLocalizedDescriptionKey: "The selected Photos video could not be loaded."])
+            }
+            inputURL = picked.url
+            outputURL = nil
+            errorText = nil
+            statusText = ""
+        } catch {
+            errorText = error.localizedDescription
+            statusText = ""
+        }
+    }
+
     func cancel() { currentTask?.cancel() }
 
     func start() async {
@@ -38,13 +73,12 @@ final class VideoProcessorViewModel: ObservableObject {
         progress = 0
         outputURL = nil
         errorText = nil
-        statusText = "Preparing RIFE 4.26…"
+        statusText = "Preparing RIFE 4.26 HQ…"
 
-        let q = quality
         let guardEnabled = ghostProtection
         let cuts = sceneCutProtection
+        let compressionEnabled = compressionProtection
         let sensitivity = ghostSensitivity
-        let selectedCodec = codec
         let audio = preserveAudio
 
         currentTask = Task {
@@ -53,11 +87,11 @@ final class VideoProcessorViewModel: ObservableObject {
                 defer { if secured { source.stopAccessingSecurityScopedResource() } }
 
                 let config = ProcessorConfiguration(
-                    quality: q.rifeTier,
+                    quality: .hq,
                     ghostProtection: guardEnabled,
                     sceneCutProtection: cuts,
+                    compressionProtection: compressionEnabled,
                     ghostSensitivity: sensitivity,
-                    codec: selectedCodec,
                     preserveAudio: audio,
                     targetFPS: 60
                 )
@@ -82,21 +116,4 @@ final class VideoProcessorViewModel: ObservableObject {
             currentTask = nil
         }
     }
-}
-
-enum RIFEQualityChoice: String, CaseIterable, Identifiable {
-    case hq, balanced, fast
-    var id: String { rawValue }
-    var title: String {
-        switch self { case .hq: return "HQ"; case .balanced: return "Balanced"; case .fast: return "Fast" }
-    }
-    var rifeTier: RifeQualityTier {
-        switch self { case .hq: return .hq; case .balanced: return .balanced; case .fast: return .fast }
-    }
-}
-
-enum OutputCodec: String, CaseIterable, Identifiable {
-    case h264, hevc
-    var id: String { rawValue }
-    var title: String { self == .h264 ? "H.264" : "HEVC" }
 }
