@@ -20,7 +20,7 @@ H, W = 1080, 1920
 
 upsampler = RealWaifuUpScaler(
     scale=2,
-    model_path=str(weight_path),
+    weight_path=str(weight_path),
     half=False,
     device="cpu",
 )
