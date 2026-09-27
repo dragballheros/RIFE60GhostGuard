@@ -1,18 +1,23 @@
 import Foundation
 import AVFoundation
 import CoreML
+import CoreImage
 import VideoToolbox
 
 final class RealCUGANPass {
     private let intensity: Double
     private var outputTransferSession: VTPixelTransferSession?
-    private var modelInputTransferSession: VTPixelTransferSession?
-    private var modelInputPool: CVPixelBufferPool?
 
-    private let modelInputWidth = 1920
-    private let modelInputHeight = 1080
-    private let modelOutputWidth = 3840
-    private let modelOutputHeight = 2160
+    // The Core ML model operates on fixed 512px tiles to keep peak memory low.
+    // We keep 32px of context on every side and only stitch the 448px center.
+    // This means the FINAL frame is always exactly 2x the ORIGINAL frame size.
+    private let tileSize = 512
+    private let tileOverlap = 32
+    private var tileStep: Int { tileSize - tileOverlap * 2 }
+    private var tileInputPool: CVPixelBufferPool?
+    private var stitchedFramePool: CVPixelBufferPool?
+    private let ciContext = CIContext(options: [.cacheIntermediates: false])
+    private let colorSpace = CGColorSpaceCreateDeviceRGB()
 
     init(intensity: Double = 1.30) { self.intensity = intensity }
 
@@ -30,18 +35,22 @@ final class RealCUGANPass {
         let transform = try await track.load(.preferredTransform)
         let width = Int(abs(naturalSize.width).rounded())
         let height = Int(abs(naturalSize.height).rounded())
+        let targetWidth = width * 2
+        let targetHeight = height * 2
+        let tilesAcross = Int(ceil(Double(width) / Double(tileStep)))
+        let tilesDown = Int(ceil(Double(height) / Double(tileStep)))
+        let tilesPerFrame = tilesAcross * tilesDown
 
-        DiagnosticsLogger.shared.log("Real-CUGAN entered • source=\(width)x\(height) • duration=\(String(format: "%.3f", seconds))s • thermal=\(currentThermalStateName())")
-        if width != modelInputWidth || height != modelInputHeight {
-            DiagnosticsLogger.shared.log("Real-CUGAN source normalization enabled • \(width)x\(height) -> \(modelInputWidth)x\(modelInputHeight) using aspect-preserving letterbox")
-            progress(0.001, "Pass 3/3 • Normalizing \(width)×\(height) for Real-CUGAN…")
-            try prepareModelInputScaler()
-        }
+        DiagnosticsLogger.shared.log("Real-CUGAN entered • native source=\(width)x\(height) • native 2x target=\(targetWidth)x\(targetHeight) • tiles/frame=\(tilesPerFrame) • duration=\(String(format: "%.3f", seconds))s • thermal=\(currentThermalStateName())")
+        progress(0.001, "Pass 3/3 • Real-CUGAN native 2× • \(width)×\(height) → \(targetWidth)×\(targetHeight)…")
+
+        try preparePools(targetWidth: targetWidth, targetHeight: targetHeight)
+        DiagnosticsLogger.shared.log("Real-CUGAN tile pools ready • tile=\(tileSize) • overlap=\(tileOverlap) • core=\(tileStep)")
 
         progress(0.002, "Pass 3/3 • Loading Real-CUGAN Anime 2x Noise 3…")
-        DiagnosticsLogger.shared.log("Real-CUGAN model load begin")
+        DiagnosticsLogger.shared.log("Real-CUGAN tiled model load begin")
         let model = try loadModel()
-        DiagnosticsLogger.shared.log("Real-CUGAN model load complete")
+        DiagnosticsLogger.shared.log("Real-CUGAN tiled model load complete")
 
         let reader = try AVAssetReader(asset: asset)
         let output = AVAssetReaderTrackOutput(track: track, outputSettings: [
@@ -51,10 +60,12 @@ final class RealCUGANPass {
         guard reader.canAdd(output) else { throw ProcessorError.reader("cannot attach Real-CUGAN reader") }
         reader.add(output)
 
-        let outURL = FileManager.default.temporaryDirectory.appendingPathComponent("RIFE60-CUGAN-4K-\(UUID().uuidString).mov")
+        let outURL = FileManager.default.temporaryDirectory.appendingPathComponent("RIFE60-CUGAN-2X-\(UUID().uuidString).mov")
         try? FileManager.default.removeItem(at: outURL)
         let writer = try AVAssetWriter(outputURL: outURL, fileType: .mov)
 
+        // Keep the final file below the requested ~1 GB ceiling while preserving
+        // the highest practical HEVC Main10 quality inside that size budget.
         let targetTotalBytes = 950_000_000.0
         let containerReserveBytes = 12_000_000.0
         let usableBits = max((targetTotalBytes - containerReserveBytes) * 8.0, 8_000_000.0)
@@ -70,8 +81,8 @@ final class RealCUGANPass {
         ]
         let input = AVAssetWriterInput(mediaType: .video, outputSettings: [
             AVVideoCodecKey: AVVideoCodecType.hevc,
-            AVVideoWidthKey: modelOutputWidth,
-            AVVideoHeightKey: modelOutputHeight,
+            AVVideoWidthKey: targetWidth,
+            AVVideoHeightKey: targetHeight,
             AVVideoCompressionPropertiesKey: compression,
             AVVideoColorPropertiesKey: [
                 AVVideoColorPrimariesKey: AVVideoColorPrimaries_ITU_R_709_2,
@@ -83,17 +94,17 @@ final class RealCUGANPass {
         input.transform = transform
         let adaptor = AVAssetWriterInputPixelBufferAdaptor(assetWriterInput: input, sourcePixelBufferAttributes: [
             kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange,
-            kCVPixelBufferWidthKey as String: modelOutputWidth,
-            kCVPixelBufferHeightKey as String: modelOutputHeight,
+            kCVPixelBufferWidthKey as String: targetWidth,
+            kCVPixelBufferHeightKey as String: targetHeight,
             kCVPixelBufferIOSurfacePropertiesKey as String: [:]
         ])
-        guard writer.canAdd(input) else { throw ProcessorError.writer("cannot attach 4K HEVC Main10 writer") }
+        guard writer.canAdd(input) else { throw ProcessorError.writer("cannot attach native 2x HEVC Main10 writer") }
         writer.add(input)
         guard reader.startReading() else { throw ProcessorError.reader(reader.error?.localizedDescription ?? "Real-CUGAN reader failed") }
-        guard writer.startWriting() else { throw ProcessorError.writer(writer.error?.localizedDescription ?? "4K writer failed") }
+        guard writer.startWriting() else { throw ProcessorError.writer(writer.error?.localizedDescription ?? "native 2x writer failed") }
         writer.startSession(atSourceTime: .zero)
-        guard let pool = adaptor.pixelBufferPool else { throw ProcessorError.writer("4K P010 pixel buffer pool unavailable") }
-        DiagnosticsLogger.shared.log("Real-CUGAN reader/writer started • target=3840x2160 HEVC Main10 • bitrate=\(videoBitrate)")
+        guard let writerPool = adaptor.pixelBufferPool else { throw ProcessorError.writer("native 2x P010 pixel buffer pool unavailable") }
+        DiagnosticsLogger.shared.log("Real-CUGAN reader/writer started • target=\(targetWidth)x\(targetHeight) HEVC Main10 • bitrate=\(videoBitrate)")
 
         let alphaValue = Float(1.0 / max(intensity, 0.01))
         let alpha = try MLMultiArray(shape: [1], dataType: .float16)
@@ -110,39 +121,29 @@ final class RealCUGANPass {
             let frameNumber = frames + 1
 
             if frameNumber == 1 {
-                DiagnosticsLogger.shared.log("Real-CUGAN first frame decoded • pixel=\(CVPixelBufferGetWidth(decodedFrame))x\(CVPixelBufferGetHeight(decodedFrame))")
+                DiagnosticsLogger.shared.log("Real-CUGAN first frame decoded • pixel=\(CVPixelBufferGetWidth(decodedFrame))x\(CVPixelBufferGetHeight(decodedFrame)) • tiled prediction begin")
             }
 
-            let modelFrame = try normalizedModelInput(decodedFrame)
-            if frameNumber == 1 {
-                DiagnosticsLogger.shared.log("Real-CUGAN first model input ready • pixel=\(CVPixelBufferGetWidth(modelFrame))x\(CVPixelBufferGetHeight(modelFrame)) • prediction begin")
-            }
-
-            let started = CFAbsoluteTimeGetCurrent()
-            let upscaled: CVPixelBuffer = try autoreleasepool {
-                let provider = try MLDictionaryFeatureProvider(dictionary: [
-                    "image": MLFeatureValue(pixelBuffer: modelFrame),
-                    "alpha": MLFeatureValue(multiArray: alpha)
-                ])
-                let prediction = try model.prediction(from: provider)
-                guard let buffer = prediction.featureValue(for: "output")?.imageBufferValue else {
-                    throw ProcessorError.conversionFailed("Real-CUGAN did not return a 4K image buffer")
-                }
-                return buffer
-            }
-            inferenceSeconds += CFAbsoluteTimeGetCurrent() - started
+            let inferenceStart = CFAbsoluteTimeGetCurrent()
+            let upscaled = try upscaleNative2x(
+                decodedFrame,
+                model: model,
+                alpha: alpha,
+                frameNumber: frameNumber
+            )
+            inferenceSeconds += CFAbsoluteTimeGetCurrent() - inferenceStart
 
             if frameNumber == 1 {
-                DiagnosticsLogger.shared.log("Real-CUGAN first prediction complete • output=\(CVPixelBufferGetWidth(upscaled))x\(CVPixelBufferGetHeight(upscaled))")
+                DiagnosticsLogger.shared.log("Real-CUGAN first tiled frame complete • output=\(CVPixelBufferGetWidth(upscaled))x\(CVPixelBufferGetHeight(upscaled))")
             }
 
             let encodeStart = CFAbsoluteTimeGetCurrent()
-            try await append10Bit(upscaled, at: pts, input: input, adaptor: adaptor, pool: pool)
+            try await append10Bit(upscaled, at: pts, input: input, adaptor: adaptor, pool: writerPool)
             encodeSeconds += CFAbsoluteTimeGetCurrent() - encodeStart
             frames += 1
 
             if frames == 1 || frames % 10 == 0 {
-                DiagnosticsLogger.shared.log("Real-CUGAN frame \(frames) complete • inference=\(String(format: "%.1f", inferenceSeconds * 1000.0 / Double(frames)))ms/frame • thermal=\(currentThermalStateName())")
+                DiagnosticsLogger.shared.log("Real-CUGAN frame \(frames) complete • \(tilesPerFrame) tiles/frame • inference=\(String(format: "%.1f", inferenceSeconds * 1000.0 / Double(frames)))ms/frame • thermal=\(currentThermalStateName())")
             }
 
             if frames % 3 == 0 {
@@ -155,28 +156,28 @@ final class RealCUGANPass {
                 t.thermalState = currentThermalStateName()
                 telemetry(t)
             }
-            if frames % 6 == 0 {
+            if frames % 3 == 0 {
                 let frac = min(max(CMTimeGetSeconds(pts) / seconds, 0), 1)
                 let fps = Double(frames) / max(CFAbsoluteTimeGetCurrent() - passStart, 0.001)
                 let remaining = fps > 0 ? (seconds * 60.0 - Double(frames)) / fps : 0
-                progress(frac, "Pass 3/3 • Real-CUGAN 4K • \(frames) frames • ETA \(formatDuration(remaining))")
+                progress(frac, "Pass 3/3 • Real-CUGAN native 2× • \(frames) frames • ETA \(formatDuration(remaining))")
                 await Task.yield()
             }
         }
 
         if reader.status == .failed { throw ProcessorError.reader(reader.error?.localizedDescription ?? "Real-CUGAN decode failed") }
         guard frames > 0 else { throw ProcessorError.conversionFailed("Real-CUGAN received zero decoded frames") }
-        DiagnosticsLogger.shared.log("Real-CUGAN inference loop complete • frames=\(frames) • finishing writer")
+        DiagnosticsLogger.shared.log("Real-CUGAN tiled inference complete • frames=\(frames) • finishing writer")
         input.markAsFinished()
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in writer.finishWriting { continuation.resume() } }
-        guard writer.status == .completed else { throw ProcessorError.writer(writer.error?.localizedDescription ?? "4K finish failed") }
-        DiagnosticsLogger.shared.log("Real-CUGAN writer completed • frames=\(frames)")
+        guard writer.status == .completed else { throw ProcessorError.writer(writer.error?.localizedDescription ?? "native 2x finish failed") }
+        DiagnosticsLogger.shared.log("Real-CUGAN writer completed • native 2x=\(targetWidth)x\(targetHeight) • frames=\(frames)")
         return outURL
     }
 
     private func loadModel() throws -> MLModel {
-        guard let url = Bundle.main.url(forResource: "RealCUGAN2xNoise3_1080p", withExtension: "mlmodelc") else {
-            throw ProcessorError.conversionFailed("Bundled Real-CUGAN model is missing")
+        guard let url = Bundle.main.url(forResource: "RealCUGAN2xNoise3_Tile512", withExtension: "mlmodelc") else {
+            throw ProcessorError.conversionFailed("Bundled tiled Real-CUGAN model is missing")
         }
         let configuration = MLModelConfiguration()
         configuration.computeUnits = .all
@@ -184,53 +185,145 @@ final class RealCUGANPass {
         return try MLModel(contentsOf: url, configuration: configuration)
     }
 
-    private func prepareModelInputScaler() throws {
-        if modelInputPool == nil {
-            let attributes: [String: Any] = [
+    private func preparePools(targetWidth: Int, targetHeight: Int) throws {
+        if tileInputPool == nil {
+            let attrs: [String: Any] = [
                 kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
-                kCVPixelBufferWidthKey as String: modelInputWidth,
-                kCVPixelBufferHeightKey as String: modelInputHeight,
+                kCVPixelBufferWidthKey as String: tileSize,
+                kCVPixelBufferHeightKey as String: tileSize,
                 kCVPixelBufferIOSurfacePropertiesKey as String: [:]
             ]
             var pool: CVPixelBufferPool?
-            let status = CVPixelBufferPoolCreate(kCFAllocatorDefault, nil, attributes as CFDictionary, &pool)
-            guard status == kCVReturnSuccess, let pool else {
-                throw ProcessorError.conversionFailed("could not create 1920×1080 Real-CUGAN input pool")
+            guard CVPixelBufferPoolCreate(kCFAllocatorDefault, nil, attrs as CFDictionary, &pool) == kCVReturnSuccess,
+                  let pool else {
+                throw ProcessorError.conversionFailed("could not create Real-CUGAN 512px tile pool")
             }
-            modelInputPool = pool
+            tileInputPool = pool
         }
-        if modelInputTransferSession == nil {
-            var session: VTPixelTransferSession?
-            let status = VTPixelTransferSessionCreate(allocator: kCFAllocatorDefault, pixelTransferSessionOut: &session)
-            guard status == noErr, let session else {
-                throw ProcessorError.conversionFailed("could not create Real-CUGAN input scaler")
-            }
-            let propertyStatus = VTSessionSetProperty(session, key: kVTPixelTransferPropertyKey_ScalingMode, value: kVTScalingMode_Letterbox)
-            guard propertyStatus == noErr else {
-                throw ProcessorError.conversionFailed("could not configure Real-CUGAN aspect-preserving scaler")
-            }
-            modelInputTransferSession = session
+
+        let stitchedAttrs: [String: Any] = [
+            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
+            kCVPixelBufferWidthKey as String: targetWidth,
+            kCVPixelBufferHeightKey as String: targetHeight,
+            kCVPixelBufferIOSurfacePropertiesKey as String: [:]
+        ]
+        var stitched: CVPixelBufferPool?
+        guard CVPixelBufferPoolCreate(kCFAllocatorDefault, nil, stitchedAttrs as CFDictionary, &stitched) == kCVReturnSuccess,
+              let stitched else {
+            throw ProcessorError.conversionFailed("could not create native 2x Real-CUGAN frame pool")
         }
+        stitchedFramePool = stitched
     }
 
-    private func normalizedModelInput(_ source: CVPixelBuffer) throws -> CVPixelBuffer {
-        let width = CVPixelBufferGetWidth(source)
-        let height = CVPixelBufferGetHeight(source)
-        if width == modelInputWidth && height == modelInputHeight { return source }
+    private func upscaleNative2x(
+        _ source: CVPixelBuffer,
+        model: MLModel,
+        alpha: MLMultiArray,
+        frameNumber: Int
+    ) throws -> CVPixelBuffer {
+        let sourceWidth = CVPixelBufferGetWidth(source)
+        let sourceHeight = CVPixelBufferGetHeight(source)
+        let targetWidth = sourceWidth * 2
+        let targetHeight = sourceHeight * 2
 
-        try prepareModelInputScaler()
-        guard let modelInputPool else {
-            throw ProcessorError.conversionFailed("Real-CUGAN input pool unavailable")
+        guard let tileInputPool, let stitchedFramePool else {
+            throw ProcessorError.conversionFailed("Real-CUGAN tile pools are unavailable")
         }
-        var destination: CVPixelBuffer?
-        guard CVPixelBufferPoolCreatePixelBuffer(nil, modelInputPool, &destination) == kCVReturnSuccess, let destination else {
-            throw ProcessorError.conversionFailed("could not allocate normalized 1920×1080 Real-CUGAN frame")
+        var stitched: CVPixelBuffer?
+        guard CVPixelBufferPoolCreatePixelBuffer(nil, stitchedFramePool, &stitched) == kCVReturnSuccess,
+              let stitched else {
+            throw ProcessorError.conversionFailed("could not allocate native 2x stitched frame")
         }
-        guard let modelInputTransferSession,
-              VTPixelTransferSessionTransferImage(modelInputTransferSession, from: source, to: destination) == noErr else {
-            throw ProcessorError.conversionFailed("Real-CUGAN input normalization failed for \(width)×\(height)")
+
+        let sourceImage = CIImage(cvPixelBuffer: source).clampedToExtent()
+        var tileIndex = 0
+        let totalTiles = Int(ceil(Double(sourceWidth) / Double(tileStep))) * Int(ceil(Double(sourceHeight) / Double(tileStep)))
+
+        var y = 0
+        while y < sourceHeight {
+            let coreHeight = min(tileStep, sourceHeight - y)
+            var x = 0
+            while x < sourceWidth {
+                try Task.checkCancellation()
+                let coreWidth = min(tileStep, sourceWidth - x)
+                tileIndex += 1
+
+                var tileBuffer: CVPixelBuffer?
+                guard CVPixelBufferPoolCreatePixelBuffer(nil, tileInputPool, &tileBuffer) == kCVReturnSuccess,
+                      let tileBuffer else {
+                    throw ProcessorError.conversionFailed("could not allocate Real-CUGAN input tile")
+                }
+
+                let inputRect = CGRect(
+                    x: x - tileOverlap,
+                    y: y - tileOverlap,
+                    width: tileSize,
+                    height: tileSize
+                )
+                let tileImage = sourceImage
+                    .cropped(to: inputRect)
+                    .transformed(by: CGAffineTransform(
+                        translationX: -inputRect.origin.x,
+                        y: -inputRect.origin.y
+                    ))
+                ciContext.render(
+                    tileImage,
+                    to: tileBuffer,
+                    bounds: CGRect(x: 0, y: 0, width: tileSize, height: tileSize),
+                    colorSpace: colorSpace
+                )
+
+                try autoreleasepool {
+                    let provider = try MLDictionaryFeatureProvider(dictionary: [
+                        "image": MLFeatureValue(pixelBuffer: tileBuffer),
+                        "alpha": MLFeatureValue(multiArray: alpha)
+                    ])
+                    let prediction = try model.prediction(from: provider)
+                    guard let modelOutput = prediction.featureValue(for: "output")?.imageBufferValue else {
+                        throw ProcessorError.conversionFailed("Real-CUGAN tile did not return an image buffer")
+                    }
+
+                    let outputImage = CIImage(cvPixelBuffer: modelOutput)
+                    let cropOrigin = tileOverlap * 2
+                    let cropRect = CGRect(
+                        x: cropOrigin,
+                        y: cropOrigin,
+                        width: coreWidth * 2,
+                        height: coreHeight * 2
+                    )
+                    let destinationRect = CGRect(
+                        x: x * 2,
+                        y: y * 2,
+                        width: coreWidth * 2,
+                        height: coreHeight * 2
+                    )
+                    let translated = outputImage
+                        .cropped(to: cropRect)
+                        .transformed(by: CGAffineTransform(
+                            translationX: destinationRect.origin.x - cropRect.origin.x,
+                            y: destinationRect.origin.y - cropRect.origin.y
+                        ))
+                    ciContext.render(
+                        translated,
+                        to: stitched,
+                        bounds: destinationRect,
+                        colorSpace: colorSpace
+                    )
+                }
+
+                if frameNumber == 1 && (tileIndex == 1 || tileIndex == totalTiles) {
+                    DiagnosticsLogger.shared.log("Real-CUGAN first-frame tile \(tileIndex)/\(totalTiles) complete • core=\(coreWidth)x\(coreHeight)")
+                }
+                x += tileStep
+            }
+            y += tileStep
         }
-        return destination
+
+        guard CVPixelBufferGetWidth(stitched) == targetWidth,
+              CVPixelBufferGetHeight(stitched) == targetHeight else {
+            throw ProcessorError.conversionFailed("Real-CUGAN stitched frame size mismatch")
+        }
+        return stitched
     }
 
     private func append10Bit(_ source: CVPixelBuffer, at time: CMTime, input: AVAssetWriterInput, adaptor: AVAssetWriterInputPixelBufferAdaptor, pool: CVPixelBufferPool) async throws {
@@ -240,20 +333,22 @@ final class RealCUGANPass {
         }
         var destination: CVPixelBuffer?
         guard CVPixelBufferPoolCreatePixelBuffer(nil, pool, &destination) == kCVReturnSuccess, let destination else {
-            throw ProcessorError.conversionFailed("could not allocate 4K P010 frame")
+            throw ProcessorError.conversionFailed("could not allocate native 2x P010 frame")
         }
         if outputTransferSession == nil {
             var session: VTPixelTransferSession?
             guard VTPixelTransferSessionCreate(allocator: kCFAllocatorDefault, pixelTransferSessionOut: &session) == noErr, let session else {
-                throw ProcessorError.conversionFailed("could not create 4K pixel transfer session")
+                throw ProcessorError.conversionFailed("could not create native 2x pixel transfer session")
             }
             outputTransferSession = session
         }
         guard let outputTransferSession,
               VTPixelTransferSessionTransferImage(outputTransferSession, from: source, to: destination) == noErr else {
-            throw ProcessorError.conversionFailed("4K BGRA→P010 conversion failed")
+            throw ProcessorError.conversionFailed("native 2x BGRA→P010 conversion failed")
         }
-        guard adaptor.append(destination, withPresentationTime: time) else { throw ProcessorError.writer("failed appending 4K frame") }
+        guard adaptor.append(destination, withPresentationTime: time) else {
+            throw ProcessorError.writer("failed appending native 2x frame")
+        }
     }
 }
 
