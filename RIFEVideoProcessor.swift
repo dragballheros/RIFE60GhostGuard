@@ -58,7 +58,7 @@ final class RIFEVideoProcessor {
 
         let reader = try AVAssetReader(asset: asset)
         let output = AVAssetReaderTrackOutput(track: track, outputSettings: [
-            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelBufferPixelFormatType_32BGRA
+            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA
         ])
         output.alwaysCopiesSampleData = false
         guard reader.canAdd(output) else {
@@ -97,7 +97,7 @@ final class RIFEVideoProcessor {
         let adaptor = AVAssetWriterInputPixelBufferAdaptor(
             assetWriterInput: input,
             sourcePixelBufferAttributes: [
-                kCVPixelBufferPixelFormatTypeKey as String: kCVPixelBufferPixelFormatType_420YpCbCr10BiPlanarVideoRange,
+                kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange,
                 kCVPixelBufferWidthKey as String: width,
                 kCVPixelBufferHeightKey as String: height,
                 kCVPixelBufferIOSurfacePropertiesKey as String: [:]
@@ -209,7 +209,6 @@ final class RIFEVideoProcessor {
             previousPB = currentPB
             previousTime = currentTime
 
-            // Do not enqueue thousands of SwiftUI/MainActor updates during a long video.
             if sourceFrames % 12 == 0 {
                 let frac = min(
                     max(CMTimeGetSeconds(currentTime) / max(CMTimeGetSeconds(duration), 0.001), 0),
