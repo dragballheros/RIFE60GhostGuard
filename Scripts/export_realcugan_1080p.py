@@ -4,6 +4,7 @@ from pathlib import Path
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 import coremltools as ct
 
 realcugan_dir = Path(os.environ.get("REALCUGAN_DIR", "/tmp/video_upscale/realcugan/Real-CUGAN"))
@@ -13,29 +14,34 @@ from upcunet_v3 import RealWaifuUpScaler  # noqa: E402
 weight_path = Path(os.environ["REALCUGAN_WEIGHT"])
 out_path = Path(os.environ.get("REALCUGAN_OUT", "Models/RealCUGAN2xNoise3_1080p.mlpackage"))
 out_path.parent.mkdir(parents=True, exist_ok=True)
-
-# Fixed full-frame 1080p inference preserves Real-CUGAN's global SE behavior
-# and eliminates the crop-line / independent-tile quality compromise.
 H, W = 1080, 1920
 
-upsampler = RealWaifuUpScaler(
-    scale=2,
-    weight_path=str(weight_path),
-    half=False,
-    device="cpu",
-)
+upsampler = RealWaifuUpScaler(scale=2, weight_path=str(weight_path), half=False, device="cpu")
 pro = upsampler.pro
 
-class Wrapper(torch.nn.Module):
-    def __init__(self, model):
+class FullFrame2x(torch.nn.Module):
+    """Exact tile_mode=0 2x path, but leaves the result float for Core ML ImageType."""
+    def __init__(self, base):
         super().__init__()
-        self.model = model.eval()
+        self.unet1 = base.unet1.eval()
+        self.unet2 = base.unet2.eval()
 
     def forward(self, image, alpha):
-        y = self.model(image, tile_mode=0, cache_mode=0, alpha=alpha[0], pro=pro)
-        return y.float()
+        # 1080 and 1920 are both even, so upstream ph/pw equal the input size.
+        x = F.pad(image, (18, 18, 18, 18), "reflect")
+        x = self.unet1(x)
+        x0 = self.unet2(x, alpha[0])
+        x = x[:, :, 20:-20, 20:-20]
+        x = x0 + x
+        if pro:
+            x = (x - 0.15) * (255.0 / 0.7)
+        else:
+            x = x * 255.0
+        # Upstream rounds/clamps/casts to byte. Keep the same rounding/clamp,
+        # but leave float so Core ML can expose the result directly as ImageType.
+        return torch.round(x).clamp(0.0, 255.0)
 
-model = Wrapper(upsampler.model).eval()
+model = FullFrame2x(upsampler.model).eval()
 image_example = torch.zeros(1, 3, H, W, dtype=torch.float32)
 alpha_example = torch.tensor([1.0], dtype=torch.float32)
 
