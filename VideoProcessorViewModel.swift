@@ -68,7 +68,9 @@ final class VideoProcessorViewModel: ObservableObject {
     func cancel() { currentTask?.cancel() }
 
     func start() async {
-        guard let source = inputURL else { return }
+        guard let source = inputURL, !isProcessing else { return }
+
+        // Update the UI immediately before any expensive RIFE/Metal initialization.
         isProcessing = true
         progress = 0
         outputURL = nil
@@ -81,13 +83,11 @@ final class VideoProcessorViewModel: ObservableObject {
         let sensitivity = ghostSensitivity
         let audio = preserveAudio
 
-        currentTask = Task {
+        currentTask = Task.detached(priority: .userInitiated) { [weak self] in
             do {
                 let secured = source.startAccessingSecurityScopedResource()
                 defer { if secured { source.stopAccessingSecurityScopedResource() } }
 
-                // Balanced is the stable full-resolution iPhone tier. Export quality remains
-                // maximum HEVC Main10/P010; this only controls RIFE inference memory use.
                 let config = ProcessorConfiguration(
                     quality: .balanced,
                     ghostProtection: guardEnabled,
@@ -97,25 +97,37 @@ final class VideoProcessorViewModel: ObservableObject {
                     preserveAudio: audio,
                     targetFPS: 60
                 )
+
                 let processor = RIFEVideoProcessor(configuration: config)
-                let result = try await processor.process(sourceURL: source) { [weak self] p, message in
-                    Task { @MainActor in
+                let result = try await processor.process(sourceURL: source) { p, message in
+                    Task { @MainActor [weak self] in
                         self?.progress = p
                         self?.statusText = message
                     }
                 }
-                if Task.isCancelled { throw CancellationError() }
-                outputURL = result
-                progress = 1
-                statusText = "Finished"
+
+                try Task.checkCancellation()
+                await MainActor.run { [weak self] in
+                    self?.outputURL = result
+                    self?.progress = 1
+                    self?.statusText = "Finished"
+                    self?.isProcessing = false
+                    self?.currentTask = nil
+                }
             } catch is CancellationError {
-                statusText = "Cancelled"
+                await MainActor.run { [weak self] in
+                    self?.statusText = "Cancelled"
+                    self?.isProcessing = false
+                    self?.currentTask = nil
+                }
             } catch {
-                errorText = error.localizedDescription
-                statusText = "Failed"
+                await MainActor.run { [weak self] in
+                    self?.errorText = error.localizedDescription
+                    self?.statusText = "Failed"
+                    self?.isProcessing = false
+                    self?.currentTask = nil
+                }
             }
-            isProcessing = false
-            currentTask = nil
         }
     }
 }
