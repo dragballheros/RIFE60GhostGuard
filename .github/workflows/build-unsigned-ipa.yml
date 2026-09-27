@@ -57,7 +57,7 @@ jobs:
           count = w.count(needle)
           if count < 1:
               raise SystemExit('RifeMetal shader loader patch target not found')
-          warp.write_text(w.replace(needle, 'device.makeDefaultLibrary()'))
+          warp.write_text(w.replace(needle, 'device.makeDefaultLibrary()!'))
           print(f'Patched {count} default-library call(s)')
           PY
 
