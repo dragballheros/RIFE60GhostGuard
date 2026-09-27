@@ -3,7 +3,7 @@ import CoreVideo
 import RifeMetal
 
 /// Runs RIFE HQ on overlapping horizontal bands so peak Metal memory stays
-/// well below a full-frame HQ graph. Each band uses the same full-quality HQ
+/// below a full-frame HQ graph. Each band uses the same full-quality HQ
 /// network; only the spatial working set is reduced. Overlap is discarded when
 /// stitching, avoiding visible seams while preserving context near boundaries.
 final class TiledHQInterpolator {
@@ -23,9 +23,24 @@ final class TiledHQInterpolator {
         self.interpolator = interpolator
         self.width = width
         self.height = height
-        self.bandCount = max(1, bandCount)
+
+        // Adaptive HQ tiling: keep true HQ, but avoid doing three HQ passes
+        // when the source does not need that much memory protection.
+        // 720p and below: one HQ pass.
+        // 1080p-class video: two overlapping HQ passes.
+        // Above 1200 px tall: three bands for safer peak Metal memory.
+        let adaptiveBands: Int
+        if height <= 720 {
+            adaptiveBands = 1
+        } else if height <= 1200 {
+            adaptiveBands = 2
+        } else {
+            adaptiveBands = max(3, bandCount)
+        }
+
+        self.bandCount = adaptiveBands
         self.overlap = max(0, overlap)
-        self.coreHeight = Int(ceil(Double(height) / Double(max(1, bandCount))))
+        self.coreHeight = Int(ceil(Double(height) / Double(adaptiveBands)))
         self.tileHeight = self.coreHeight + self.overlap * 2
     }
 
