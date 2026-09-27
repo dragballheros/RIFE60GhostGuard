@@ -25,22 +25,35 @@ struct ContentView: View {
                         if let input = vm.inputURL { Text(input.lastPathComponent).font(.caption).foregroundStyle(.secondary) }
                     }
 
+                    if vm.recoveryAvailable {
+                        Section("Crash Recovery") {
+                            Label("Recovery data found", systemImage: "arrow.clockwise.circle.fill").foregroundStyle(.orange)
+                            Text(vm.recoveryStatusText).font(.caption)
+                            if !vm.isProcessing {
+                                Button { Task { await vm.start() } } label: {
+                                    Label(vm.upscaleTo4K ? "Resume 4K 60 FPS Render" : "Resume 60 FPS Render", systemImage: "play.fill")
+                                }
+                            }
+                            Text("Completed AI passes are kept in persistent storage. If iOS terminates the app, reopening it reuses every completed checkpoint instead of starting the whole render over.").font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+
                     Section("RIFE 4.26") {
                         LabeledContent("Interpolation quality", value: "High Quality (HQ)")
-                        Toggle("Ghost protection", isOn: $vm.ghostProtection)
-                        Toggle("Scene-cut protection", isOn: $vm.sceneCutProtection)
+                        Toggle("Ghost protection", isOn: $vm.ghostProtection).disabled(vm.recoveryAvailable)
+                        Toggle("Scene-cut protection", isOn: $vm.sceneCutProtection).disabled(vm.recoveryAvailable)
                         LabeledContent("Target", value: "60.00 fps")
                         Text("1080p-class video uses one persistent full-frame HQ stream for maximum speed without dropping RIFE quality.").font(.caption).foregroundStyle(.secondary)
                     }
 
                     Section("Anime Restoration") {
-                        Toggle("Compression Guard", isOn: $vm.compressionProtection)
-                        Toggle("Sharpie Outline Subtle", isOn: $vm.outlineProtection)
+                        Toggle("Compression Guard", isOn: $vm.compressionProtection).disabled(vm.recoveryAvailable)
+                        Toggle("Sharpie Outline Subtle", isOn: $vm.outlineProtection).disabled(vm.recoveryAvailable)
                         Text("Uses the final slightly-thinner Sharpie revision on source frames before RIFE.").font(.caption).foregroundStyle(.secondary)
                     }
 
                     Section("4K Anime Upscale") {
-                        Toggle("Real-CUGAN 2× to 4K", isOn: $vm.upscaleTo4K)
+                        Toggle("Real-CUGAN 2× to 4K", isOn: $vm.upscaleTo4K).disabled(vm.recoveryAvailable)
                         LabeledContent("Model", value: "Real-CUGAN – Anime")
                         LabeledContent("Upscale", value: "2× • 3840×2160")
                         LabeledContent("Noise", value: "Level 3")
@@ -51,7 +64,7 @@ struct ContentView: View {
                     Section("Ghost Guard") {
                         VStack(alignment: .leading, spacing: 5) {
                             HStack { Text("Sensitivity"); Spacer(); Text(String(format: "%.2f", vm.ghostSensitivity)) }
-                            Slider(value: $vm.ghostSensitivity, in: 0.65...1.35, step: 0.05)
+                            Slider(value: $vm.ghostSensitivity, in: 0.65...1.35, step: 0.05).disabled(vm.recoveryAvailable)
                         }
                     }
 
@@ -65,7 +78,7 @@ struct ContentView: View {
                         LabeledContent("Container", value: "MOV")
                         LabeledContent("Pixel format", value: "10-bit P010")
                         LabeledContent("File-size target", value: "< 1 GB")
-                        Toggle("Preserve original audio", isOn: $vm.preserveAudio)
+                        Toggle("Preserve original audio", isOn: $vm.preserveAudio).disabled(vm.recoveryAvailable)
                         Toggle("Auto-save to Photos", isOn: $vm.autoSaveToPhotos)
                         Text("Final bitrate is duration-aware to stay below the 1 GB target. If Photos cannot save the result, the app automatically falls back to On My iPhone > RIFE 60 Ghost Guard > Exports and shows the exact filename.").font(.caption).foregroundStyle(.secondary)
                     }
@@ -101,8 +114,18 @@ struct ContentView: View {
                             LabeledContent("Generated", value: "\(vm.telemetry.generatedFrames)")
                             LabeledContent("Rejected", value: "\(vm.telemetry.rejectedFrames)")
                         }
-                    } else {
-                        Section { Button { Task { await vm.start() } } label: { Label(vm.upscaleTo4K ? "Create 4K 60 FPS Video" : "Create 60 FPS Video", systemImage: "wand.and.stars") }.disabled(vm.inputURL == nil) }
+                    } else if !vm.recoveryAvailable {
+                        Section {
+                            Button { Task { await vm.start() } } label: {
+                                Label(vm.upscaleTo4K ? "Create 4K 60 FPS Video" : "Create 60 FPS Video", systemImage: "wand.and.stars")
+                            }.disabled(vm.inputURL == nil)
+                        }
+                    }
+
+                    Section("Diagnostics") {
+                        Button { vm.copyErrorLogs() } label: { Label("Copy Error Logs", systemImage: "doc.on.doc") }
+                        if !vm.diagnosticsCopyStatus.isEmpty { Text(vm.diagnosticsCopyStatus).font(.caption).foregroundStyle(.secondary) }
+                        Text("Copies the persistent render log, last stage/progress, thermal state, frame counters, RIFE speed, Real-CUGAN speed, and the last error directly to the clipboard so you can paste it here.").font(.caption).foregroundStyle(.secondary)
                     }
 
                     if let out = vm.outputURL {
@@ -112,7 +135,12 @@ struct ContentView: View {
                             Text(out.lastPathComponent).font(.caption).foregroundStyle(.secondary)
                         }
                     }
-                    if let err = vm.errorText { Section("Error") { Text(err).foregroundStyle(.red) } }
+                    if let err = vm.errorText {
+                        Section("Error") {
+                            Text(err).foregroundStyle(.red)
+                            Button { vm.copyErrorLogs() } label: { Label("Copy Error Logs", systemImage: "doc.on.doc") }
+                        }
+                    }
                 }
                 .navigationTitle("RIFE 60")
                 .photosPicker(isPresented: $showingPhotosPicker, selection: $photoItem, matching: .videos, photoLibrary: .shared())
