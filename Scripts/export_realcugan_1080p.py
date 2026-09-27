@@ -12,14 +12,19 @@ sys.path.insert(0, str(realcugan_dir))
 from upcunet_v3 import RealWaifuUpScaler  # noqa: E402
 
 weight_path = Path(os.environ["REALCUGAN_WEIGHT"])
-out_path = Path(os.environ.get("REALCUGAN_OUT", "Models/RealCUGAN2xNoise3_1080p.mlpackage"))
+out_path = Path(os.environ.get("REALCUGAN_OUT", "Models/RealCUGAN2xNoise3_Tile512.mlpackage"))
 out_path.parent.mkdir(parents=True, exist_ok=True)
-H, W = 1080, 1920
+
+# A fixed 512x512 Core ML tile keeps peak iPhone memory far below a full-frame
+# 1080p inference. The app overlaps/crops these tiles and stitches them back to
+# exactly 2x the ORIGINAL frame size (e.g. 1280x720 -> 2560x1440).
+H, W = 512, 512
 
 upsampler = RealWaifuUpScaler(scale=2, weight_path=str(weight_path), half=False, device="cpu")
 pro = upsampler.pro
 
-class FullFrame2x(torch.nn.Module):
+
+class Tile2x(torch.nn.Module):
     def __init__(self, base):
         super().__init__()
         self.unet1 = base.unet1.eval()
@@ -37,10 +42,9 @@ class FullFrame2x(torch.nn.Module):
             x = x * 255.0
         return torch.round(x).clamp(0.0, 255.0)
 
-model = FullFrame2x(upsampler.model).eval()
-# The traced graph is fully convolutional with constant padding/crops. Trace on
-# a compact tensor to avoid doing a full 1080p CPU inference during CI; Core ML
-# receives the real fixed 1920x1080 deployment shape below.
+
+model = Tile2x(upsampler.model).eval()
+# Trace compactly; Core ML receives the deployment tile shape below.
 image_example = torch.zeros(1, 3, 128, 128, dtype=torch.float32)
 alpha_example = torch.tensor([1.0], dtype=torch.float32)
 with torch.no_grad():
@@ -63,8 +67,8 @@ mlmodel = ct.convert(
     minimum_deployment_target=ct.target.iOS16,
     compute_precision=ct.precision.FLOAT16,
 )
-mlmodel.author = "bilibili/ailab Real-CUGAN; iOS conversion for RIFE60GhostGuard"
-mlmodel.short_description = "Real-CUGAN Anime 2x, Noise Level 3, full-frame 1920x1080 -> 3840x2160"
-mlmodel.version = "1.0"
+mlmodel.author = "bilibili/ailab Real-CUGAN; iOS tiled conversion for RIFE60GhostGuard"
+mlmodel.short_description = "Real-CUGAN Anime 2x Noise 3, 512px tile -> 1024px tile; native-resolution 2x stitching in app"
+mlmodel.version = "2.0"
 mlmodel.save(str(out_path))
 print(f"Saved {out_path}")
