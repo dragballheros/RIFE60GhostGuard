@@ -8,6 +8,7 @@ struct ProcessorConfiguration {
     let ghostProtection: Bool
     let sceneCutProtection: Bool
     let compressionProtection: Bool
+    let outlineProtection: Bool
     let ghostSensitivity: Double
     let preserveAudio: Bool
     let targetFPS: Double
@@ -109,7 +110,7 @@ final class RIFEVideoProcessor {
         }
         writer.add(input)
 
-        progress(0.001, "Loading RIFE 4.26 stream…")
+        progress(0.001, "Loading RIFE 4.26 HQ stream…")
         let interpolator = try autoreleasepool {
             try RifeInterpolator(configuration: .bundled(qualityTier: config.quality))
         }
@@ -119,6 +120,13 @@ final class RIFEVideoProcessor {
             enableSceneCuts: config.sceneCutProtection
         )
         let compressionGuard = config.compressionProtection ? CompressionGuard() : nil
+        let outlineEnhancer: OutlineEnhancer?
+        if config.outlineProtection {
+            progress(0.002, "Loading Sharpie Outline Subtle…")
+            outlineEnhancer = try OutlineEnhancer()
+        } else {
+            outlineEnhancer = nil
+        }
 
         guard reader.startReading() else {
             throw ProcessorError.reader(reader.error?.localizedDescription ?? "unknown error")
@@ -139,6 +147,7 @@ final class RIFEVideoProcessor {
         var rejected = 0
         var generated = 0
         var cleaned = 0
+        var outlined = 0
         var sourceFrames = 0
 
         while let sample = output.copyNextSampleBuffer() {
@@ -147,13 +156,17 @@ final class RIFEVideoProcessor {
             sourceFrames += 1
 
             let currentTime = CMSampleBufferGetPresentationTimeStamp(sample)
-            let currentPB: CVPixelBuffer
+            var currentPB = decodedPB
+
             if let compressionGuard,
-               let cleanedPB = try? compressionGuard.clean(decodedPB) {
+               let cleanedPB = try? compressionGuard.clean(currentPB) {
                 currentPB = cleanedPB
                 cleaned += 1
-            } else {
-                currentPB = decodedPB
+            }
+
+            if let outlineEnhancer {
+                currentPB = try outlineEnhancer.enhance(currentPB)
+                outlined += 1
             }
 
             if previousPB == nil {
@@ -227,10 +240,13 @@ final class RIFEVideoProcessor {
                     max(CMTimeGetSeconds(currentTime) / max(CMTimeGetSeconds(duration), 0.001), 0),
                     1
                 )
-                let cleanText = config.compressionProtection ? " • \(cleaned) cleaned" : ""
+                var stages: [String] = []
+                if config.compressionProtection { stages.append("\(cleaned) cleaned") }
+                if config.outlineProtection { stages.append("\(outlined) outlined") }
+                let stageText = stages.isEmpty ? "" : " • " + stages.joined(separator: " • ")
                 progress(
                     frac * 0.92,
-                    "Streaming RIFE • \(generated) generated • \(rejected) rejected\(cleanText)"
+                    "HQ Streaming RIFE • \(generated) generated • \(rejected) rejected\(stageText)"
                 )
                 await Task.yield()
             }
@@ -258,7 +274,7 @@ final class RIFEVideoProcessor {
             return try await addOriginalAudio(videoURL: silentURL, sourceAsset: asset)
         }
 
-        progress(1.0, "Finished • HEVC Main10")
+        progress(1.0, "Finished • HQ • HEVC Main10")
         return silentURL
     }
 
