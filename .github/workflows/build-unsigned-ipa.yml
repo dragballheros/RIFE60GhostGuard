@@ -1,0 +1,49 @@
+name: Build Unsigned IPA
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: Resolve Swift packages
+        run: |
+          xcodebuild \
+            -project RIFE60GhostGuard.xcodeproj \
+            -scheme RIFE60GhostGuard \
+            -resolvePackageDependencies
+
+      - name: Build app
+        run: |
+          xcodebuild \
+            -project RIFE60GhostGuard.xcodeproj \
+            -scheme RIFE60GhostGuard \
+            -sdk iphoneos \
+            -configuration Release \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY=""
+
+      - name: Create unsigned IPA
+        run: |
+          mkdir -p Payload
+          cp -R build/Build/Products/Release-iphoneos/RIFE60GhostGuard.app Payload/
+          zip -r RIFE60GhostGuard-unsigned.ipa Payload
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: RIFE60GhostGuard-unsigned
+          path: RIFE60GhostGuard-unsigned.ipa
