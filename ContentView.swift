@@ -3,6 +3,7 @@ import PhotosUI
 import UniformTypeIdentifiers
 
 struct ContentView: View {
+    @Environment(\.scenePhase) private var scenePhase
     @StateObject private var vm = VideoProcessorViewModel()
     @State private var showingImporter = false
     @State private var photoItem: PhotosPickerItem?
@@ -14,11 +15,25 @@ struct ContentView: View {
                     PhotosPicker(selection: $photoItem, matching: .videos) {
                         Label("Select from Photos", systemImage: "photo.on.rectangle")
                     }
+                    .disabled(vm.isImporting || vm.isProcessing)
 
                     Button {
                         showingImporter = true
                     } label: {
                         Label("Select from Files", systemImage: "folder")
+                    }
+                    .disabled(vm.isImporting || vm.isProcessing)
+
+                    if vm.isImporting {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("Importing video…")
+                                .font(.caption)
+                            if let p = vm.importProgress {
+                                ProgressView(value: p)
+                            } else {
+                                ProgressView()
+                            }
+                        }
                     }
 
                     if let input = vm.inputURL {
@@ -33,7 +48,7 @@ struct ContentView: View {
                     Toggle("Ghost protection", isOn: $vm.ghostProtection)
                     Toggle("Scene-cut protection", isOn: $vm.sceneCutProtection)
                     LabeledContent("Target", value: "60.00 fps")
-                    Text("Uses RIFE HQ with the lower-memory streaming path.")
+                    Text("Uses adaptive tiled HQ with persistent per-band RIFE streams.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -41,7 +56,14 @@ struct ContentView: View {
                 Section("Anime Restoration") {
                     Toggle("Compression Guard", isOn: $vm.compressionProtection)
                     Toggle("Sharpie Outline Subtle", isOn: $vm.outlineProtection)
-                    Text("Source frames are cleaned first, then processed by our 1× Anime Sharpie Outline Subtle Core ML model before RIFE. Generated 60 fps frames inherit the processed line style without running the outline model again.")
+                    Text("The outline is the final slightly-reduced Subtle version: a tiny amount of the cleaned source is mixed back in so the added ink reads a little narrower without losing the trained line placement.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                Section("Render Power Mode") {
+                    Toggle("Dim screen while processing", isOn: $vm.renderPowerMode)
+                    Text("Dims the display to about 5%, prevents auto-lock, keeps the render task high priority, and restores your previous brightness afterward. iOS Low Power Mode is not enabled because it would also throttle this app.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -72,7 +94,28 @@ struct ContentView: View {
 
                 if vm.isProcessing {
                     Section("Processing") {
-                        ProgressView(value: vm.progress)
+                        VStack(alignment: .leading, spacing: 6) {
+                            HStack {
+                                Text("Overall")
+                                Spacer()
+                                Text("\(Int(vm.progress * 100))%")
+                                    .monospacedDigit()
+                            }
+                            .font(.caption)
+                            ProgressView(value: vm.progress)
+                        }
+
+                        VStack(alignment: .leading, spacing: 6) {
+                            HStack {
+                                Text("Cleanup + outline")
+                                Spacer()
+                                Text("\(Int(vm.restorationProgress * 100))%")
+                                    .monospacedDigit()
+                            }
+                            .font(.caption)
+                            ProgressView(value: vm.restorationProgress)
+                        }
+
                         Text(vm.statusText).font(.caption)
                         Button("Cancel", role: .destructive) { vm.cancel() }
                     }
@@ -83,7 +126,7 @@ struct ContentView: View {
                         } label: {
                             Label("Create 60 FPS Video", systemImage: "wand.and.stars")
                         }
-                        .disabled(vm.inputURL == nil)
+                        .disabled(vm.inputURL == nil || vm.isImporting)
                     }
                 }
 
@@ -118,6 +161,9 @@ struct ContentView: View {
                     await vm.handlePhotoSelection(item)
                     photoItem = nil
                 }
+            }
+            .onChange(of: scenePhase) { phase in
+                vm.handleScenePhase(phase)
             }
         }
     }
