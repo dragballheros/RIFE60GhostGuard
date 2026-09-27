@@ -33,6 +33,7 @@ final class VideoProcessorViewModel: ObservableObject {
     @Published var ghostProtection = true
     @Published var sceneCutProtection = true
     @Published var compressionProtection = true
+    @Published var outlineProtection = true
     @Published var ghostSensitivity = 1.0
     @Published var preserveAudio = true
 
@@ -74,27 +75,26 @@ final class VideoProcessorViewModel: ObservableObject {
         progress = 0
         outputURL = nil
         errorText = nil
-        statusText = "Preparing iPhone-optimized RIFE 4.26…"
+        statusText = "Preparing RIFE 4.26 HQ…"
 
         let guardEnabled = ghostProtection
         let cuts = sceneCutProtection
         let compressionEnabled = compressionProtection
+        let outlineEnabled = outlineProtection
         let sensitivity = ghostSensitivity
         let audio = preserveAudio
 
-        // Utility priority keeps SwiftUI responsive while Metal/MPSGraph work is active.
         currentTask = Task.detached(priority: .utility) { [weak self] in
             do {
                 let secured = source.startAccessingSecurityScopedResource()
                 defer { if secured { source.stopAccessingSecurityScopedResource() } }
 
-                // RifeMetal's fast tier keeps the final output full-resolution but uses a
-                // quarter-resolution internal IFNet grid, dramatically reducing iPhone RAM/GPU load.
                 let config = ProcessorConfiguration(
-                    quality: .fast,
+                    quality: .hq,
                     ghostProtection: guardEnabled,
                     sceneCutProtection: cuts,
                     compressionProtection: compressionEnabled,
+                    outlineProtection: outlineEnabled,
                     ghostSensitivity: sensitivity,
                     preserveAudio: audio,
                     targetFPS: 60
