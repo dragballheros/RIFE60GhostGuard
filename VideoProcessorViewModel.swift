@@ -41,6 +41,7 @@ final class VideoProcessorViewModel: ObservableObject {
     @Published var ghostSensitivity = 1.0
     @Published var preserveAudio = true
     @Published var renderPowerMode = true
+    @Published var telemetry = PerformanceTelemetry()
 
     private var currentTask: Task<Void, Never>?
     private var savedBrightness: CGFloat?
@@ -53,7 +54,6 @@ final class VideoProcessorViewModel: ObservableObject {
             isImporting = false
             importProgress = nil
         }
-
         do {
             guard let url = try result.get().first else { return }
             importProgress = 0.5
@@ -68,7 +68,7 @@ final class VideoProcessorViewModel: ObservableObject {
 
     func handlePhotoSelection(_ item: PhotosPickerItem) async {
         isImporting = true
-        importProgress = nil // PhotosUI does not expose byte-level transfer progress here.
+        importProgress = nil
         do {
             statusText = "Importing from Photos…"
             guard let picked = try await item.loadTransferable(type: PickedVideo.self) else {
@@ -105,13 +105,12 @@ final class VideoProcessorViewModel: ObservableObject {
         isProcessing = true
         progress = 0
         restorationProgress = 0
+        telemetry = PerformanceTelemetry()
         outputURL = nil
         errorText = nil
         statusText = "Preparing RIFE 4.26 HQ…"
 
-        if renderPowerMode {
-            applyRenderPowerMode()
-        }
+        if renderPowerMode { applyRenderPowerMode() }
 
         let guardEnabled = ghostProtection
         let cuts = sceneCutProtection
@@ -120,8 +119,6 @@ final class VideoProcessorViewModel: ObservableObject {
         let sensitivity = ghostSensitivity
         let audio = preserveAudio
 
-        // High task priority keeps our render work responsive. We deliberately do
-        // not enable iOS Low Power Mode because iOS would throttle this app too.
         currentTask = Task.detached(priority: .userInitiated) { [weak self] in
             do {
                 let secured = source.startAccessingSecurityScopedResource()
@@ -139,16 +136,22 @@ final class VideoProcessorViewModel: ObservableObject {
                 )
 
                 let processor = RIFEVideoProcessor(configuration: config)
-                let result = try await processor.process(sourceURL: source) { p, message in
-                    Task { @MainActor [weak self] in
-                        guard let self else { return }
-                        self.progress = p
-                        // Source restoration happens before RIFE for each source frame.
-                        // The processor reserves the final ~8% for finalization/audio.
-                        self.restorationProgress = min(max(p / 0.92, 0), 1)
-                        self.statusText = message
+                let result = try await processor.process(
+                    sourceURL: source,
+                    progress: { p, message in
+                        Task { @MainActor [weak self] in
+                            guard let self else { return }
+                            self.progress = p
+                            self.restorationProgress = min(max(p / 0.92, 0), 1)
+                            self.statusText = message
+                        }
+                    },
+                    telemetry: { sample in
+                        Task { @MainActor [weak self] in
+                            self?.telemetry = sample
+                        }
                     }
-                }
+                )
 
                 try Task.checkCancellation()
                 await MainActor.run { [weak self] in
@@ -183,13 +186,8 @@ final class VideoProcessorViewModel: ObservableObject {
     }
 
     private func applyRenderPowerMode() {
-        if savedBrightness == nil {
-            savedBrightness = UIScreen.main.brightness
-        }
-        if savedIdleTimerDisabled == nil {
-            savedIdleTimerDisabled = UIApplication.shared.isIdleTimerDisabled
-        }
-
+        if savedBrightness == nil { savedBrightness = UIScreen.main.brightness }
+        if savedIdleTimerDisabled == nil { savedIdleTimerDisabled = UIApplication.shared.isIdleTimerDisabled }
         UIScreen.main.brightness = 0.05
         UIApplication.shared.isIdleTimerDisabled = true
     }
