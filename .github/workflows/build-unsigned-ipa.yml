@@ -67,15 +67,24 @@ jobs:
             rm -rf /tmp/video_upscale /tmp/realcugan-weights
             git clone --depth 1 https://github.com/apleynes/video_upscale_mac_silicon.git /tmp/video_upscale
             mkdir -p /tmp/realcugan-weights Models
-            curl -L --fail --retry 3 -o /tmp/updated_weights.zip https://github.com/bilibili/ailab/releases/download/Real-CUGAN/updated_weights.zip
+            curl -L --fail --retry 3 -o /tmp/updated_weights.zip \
+              https://github.com/bilibili/ailab/releases/download/Real-CUGAN/updated_weights.zip
             unzip -q /tmp/updated_weights.zip -d /tmp/realcugan-weights
             WEIGHT=$(find /tmp/realcugan-weights -name 'up2x-latest-denoise3x.pth' -print -quit)
             test -n "$WEIGHT"
             if [ "$NEED512" = 1 ]; then
-              REALCUGAN_DIR=/tmp/video_upscale/realcugan/Real-CUGAN REALCUGAN_WEIGHT="$WEIGHT" REALCUGAN_TILE_WIDTH=512 REALCUGAN_TILE_HEIGHT=512 REALCUGAN_OUT=Models/RealCUGAN2xNoise3_Tile512.mlpackage python Scripts/export_realcugan_1080p.py
+              REALCUGAN_DIR=/tmp/video_upscale/realcugan/Real-CUGAN \
+              REALCUGAN_WEIGHT="$WEIGHT" \
+              REALCUGAN_TILE_WIDTH=512 REALCUGAN_TILE_HEIGHT=512 \
+              REALCUGAN_OUT=Models/RealCUGAN2xNoise3_Tile512.mlpackage \
+                python Scripts/export_realcugan_1080p.py
             fi
             if [ "$NEEDFAST" = 1 ]; then
-              REALCUGAN_DIR=/tmp/video_upscale/realcugan/Real-CUGAN REALCUGAN_WEIGHT="$WEIGHT" REALCUGAN_TILE_WIDTH=704 REALCUGAN_TILE_HEIGHT=608 REALCUGAN_OUT=Models/RealCUGAN2xNoise3_Tile704x608.mlpackage python Scripts/export_realcugan_1080p.py
+              REALCUGAN_DIR=/tmp/video_upscale/realcugan/Real-CUGAN \
+              REALCUGAN_WEIGHT="$WEIGHT" \
+              REALCUGAN_TILE_WIDTH=704 REALCUGAN_TILE_HEIGHT=608 \
+              REALCUGAN_OUT=Models/RealCUGAN2xNoise3_Tile704x608.mlpackage \
+                python Scripts/export_realcugan_1080p.py
             fi
           fi
           test -f Models/RealCUGAN2xNoise3_Tile512.mlpackage/Manifest.json
@@ -85,8 +94,12 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p CompiledModels
-          if [ ! -d CompiledModels/RealCUGAN2xNoise3_Tile512.mlmodelc ]; then xcrun coremlcompiler compile Models/RealCUGAN2xNoise3_Tile512.mlpackage CompiledModels; fi
-          if [ ! -d CompiledModels/RealCUGAN2xNoise3_Tile704x608.mlmodelc ]; then xcrun coremlcompiler compile Models/RealCUGAN2xNoise3_Tile704x608.mlpackage CompiledModels; fi
+          if [ ! -d CompiledModels/RealCUGAN2xNoise3_Tile512.mlmodelc ]; then
+            xcrun coremlcompiler compile Models/RealCUGAN2xNoise3_Tile512.mlpackage CompiledModels
+          fi
+          if [ ! -d CompiledModels/RealCUGAN2xNoise3_Tile704x608.mlmodelc ]; then
+            xcrun coremlcompiler compile Models/RealCUGAN2xNoise3_Tile704x608.mlpackage CompiledModels
+          fi
           test -d CompiledModels/RealCUGAN2xNoise3_Tile512.mlmodelc
           test -d CompiledModels/RealCUGAN2xNoise3_Tile704x608.mlmodelc
 
@@ -109,76 +122,19 @@ jobs:
           text = pkg.read_text()
           text2, n1 = re.subn(r'\.target\(\s*name:\s*"RifeMetalCore",\s*exclude:\s*\["Shaders"\],\s*plugins:\s*\[\.plugin\(name:\s*"CompileMetalShaders"\)\]\s*\),', '.target(\n            name: "RifeMetalCore"\n        ),', text, flags=re.S)
           text3, n2 = re.subn(r'\s*\.plugin\(\s*name:\s*"CompileMetalShaders",\s*capability:\s*\.buildTool\(\)\s*\),', '', text2, flags=re.S)
-          if n1 != 1 or n2 != 1: raise SystemExit(f'Unexpected RifeMetal manifest layout: target patches={n1}, plugin patches={n2}')
+          if n1 != 1 or n2 != 1:
+              raise SystemExit(f'Unexpected RifeMetal manifest layout: target patches={n1}, plugin patches={n2}')
           pkg.write_text(text3)
           warp = Path('Vendor/rife-metal/Sources/RifeMetalCore/BackwardWarpKernel.swift')
-          if 'device.makeDefaultLibrary(bundle: Bundle.module)' not in warp.read_text(): raise SystemExit('Expected Bundle.module shader loader not found')
+          if 'device.makeDefaultLibrary(bundle: Bundle.module)' not in warp.read_text():
+              raise SystemExit('Expected Bundle.module shader loader not found')
           PY
 
-      - name: Disable auto-save and keep manual Share output
+      - name: Disable automatic Files export
         run: |
-          python3 - <<'PY'
-          from pathlib import Path
-
-          vm = Path('VideoProcessorViewModel.swift')
-          text = vm.read_text()
-          old = '''                await MainActor.run { [weak self] in self?.statusText = "Saving to Files…"; self?.progress = 0.995 }
-                RecoveryStore.update(progress: 0.995, message: "Saving finished result to Files", force: true)
-                guard let self else { return }
-                let saved = try await self.saveFinishedVideo(result)
-                RecoveryStore.finishAndClean()
-                await MainActor.run { [weak self] in
-                    guard let self else { return }
-                    self.outputURL = saved.url
-                    self.saveStatusText = saved.message
-'''
-          new = '''                await MainActor.run { [weak self] in self?.statusText = "Finalizing output…"; self?.progress = 0.995 }
-                RecoveryStore.update(progress: 0.995, message: "Finalizing finished result for manual export", force: true)
-                guard let self else { return }
-                try await self.validateFinishedVideo(result)
-                let fm = FileManager.default
-                let manualDir = fm.urls(for: .cachesDirectory, in: .userDomainMask)[0].appendingPathComponent("ManualExport", isDirectory: true)
-                try fm.createDirectory(at: manualDir, withIntermediateDirectories: true)
-                let ext = result.pathExtension.isEmpty ? "mov" : result.pathExtension
-                let manualURL = manualDir.appendingPathComponent("RIFE60-Finished.\\(ext)")
-                try? fm.removeItem(at: manualURL)
-                try fm.copyItem(at: result, to: manualURL)
-                try await self.validateFinishedVideo(manualURL)
-                DiagnosticsLogger.shared.log("Auto-save disabled • finished output retained internally for manual Share: \\(manualURL.path)")
-                RecoveryStore.finishAndClean()
-                await MainActor.run { [weak self] in
-                    guard let self else { return }
-                    self.outputURL = manualURL
-                    self.saveStatusText = "Auto-save disabled • use Share Output to save or share the finished video"
-'''
-          if old not in text: raise SystemExit('Could not locate auto-save completion block')
-          vm.write_text(text.replace(old, new, 1))
-
-          view = Path('ContentView.swift')
-          ui = view.read_text()
-          old_ui = '''                    Section("Export to Files") {
-                        LabeledContent("Final codec", value: "HEVC Main10")
-                        LabeledContent("Pixel format", value: "10-bit P010")
-                        LabeledContent("File-size target", value: "< 1 GB")
-                        Toggle("Preserve original audio", isOn: $vm.preserveAudio).disabled(vm.recoveryAvailable)
-                        LabeledContent("Auto-save folder", value: vm.exportFolderName)
-                        Button { showingExportFolderPicker = true } label: { Label("Choose Files Export Folder", systemImage: "folder.badge.plus") }
-                        Button("Use Default App Export Folder") { vm.useDefaultExportFolder() }
-                        Text("Finished videos are automatically copied into this Files folder. Choose a folder once and the app remembers it for future renders. This avoids the Photos import issue and means you no longer need to use Copy/Paste to get the finished video into Files.").font(.caption).foregroundStyle(.secondary)
-                    }
-'''
-          new_ui = '''                    Section("Export") {
-                        LabeledContent("Final codec", value: "HEVC Main10")
-                        LabeledContent("Pixel format", value: "10-bit P010")
-                        LabeledContent("File-size target", value: "< 1 GB")
-                        Toggle("Preserve original audio", isOn: $vm.preserveAudio).disabled(vm.recoveryAvailable)
-                        LabeledContent("Auto-save", value: "Disabled")
-                        Text("The app will not automatically save finished videos to Photos or Files. When processing finishes, use Share Output and choose Save to Files, Save Video, AirDrop, or another destination yourself.").font(.caption).foregroundStyle(.secondary)
-                    }
-'''
-          if old_ui not in ui: raise SystemExit('Could not locate auto-save UI block')
-          view.write_text(ui.replace(old_ui, new_ui, 1))
-          PY
+          python3 -c 'from pathlib import Path; p=Path("VideoProcessorViewModel.swift"); s=p.read_text(); old="let saved = try saveToFiles(source)"; new="let saved = (url: source, message: \"Auto-save disabled • use Share Output to save manually\")"; assert old in s; p.write_text(s.replace(old,new,1))'
+          sed -i '' 's/Section("Export to Files")/Section("Export • Auto-save disabled")/' ContentView.swift
+          sed -i '' 's/Finished videos are automatically copied into this Files folder. Choose a folder once and the app remembers it for future renders. This avoids the Photos import issue and means you no longer need to use Copy\/Paste to get the finished video into Files./Auto-save is disabled. When processing finishes, use Share Output to choose where you want to save the finished video./' ContentView.swift
 
       - name: Generate Xcode project
         run: xcodegen generate
@@ -187,7 +143,10 @@ jobs:
       - name: Build unsigned app
         run: |
           set -o pipefail
-          xcodebuild -project RIFE60GhostGuard.xcodeproj -scheme RIFE60GhostGuard -configuration Release -sdk iphoneos -destination 'generic/platform=iOS' -derivedDataPath build CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY='' build | tee xcodebuild.log
+          xcodebuild -project RIFE60GhostGuard.xcodeproj -scheme RIFE60GhostGuard \
+            -configuration Release -sdk iphoneos -destination 'generic/platform=iOS' \
+            -derivedDataPath build CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY='' build | tee xcodebuild.log
 
       - name: Create verified IPA with Sharpie and both Real-CUGAN profiles
         run: |
