@@ -33,10 +33,10 @@ final class CompressionGuard {
         return CIKernel(source: source)
     }()
 
-    // CapCut-Clarity replacement for anime. This deliberately avoids chroma sharpening
-    // and hard black clipping. It adds bounded luminance-only local contrast, a small
-    // luma-aware color boost, and a gentle shadow-deepen curve. True black stays black;
-    // dark hair/clothing/shadows retain their internal values instead of being crushed.
+    // Strong anime clarity tuned toward the supplied CapCut Clarity 100 reference.
+    // The contrast boost remains luminance-only: chroma is never sharpened, which avoids
+    // recreating the colored dark noise that motivated replacing CapCut in the first place.
+    // There is also no OLED threshold or forced-black classifier.
     private static let animeClarityKernel: CIKernel? = {
         let source = """
         kernel vec4 animeClarity(sampler original, sampler localBase) {
@@ -49,20 +49,23 @@ final class CompressionGuard {
             float yb = dot(b.rgb, lumaW);
             float detail = y - yb;
 
-            // Do not boost strong edges; Sharpie handles line definition later.
-            float edgeProtect = 1.0 - smoothstep(0.055, 0.145, abs(detail));
-            float clarity = clamp(detail * 0.24, -0.012, 0.012) * edgeProtect;
+            // Stronger mid-scale tonal separation, while tapering on very strong edges
+            // because Sharpie is responsible for the final line definition.
+            float edgeProtect = 1.0 - smoothstep(0.075, 0.190, abs(detail));
+            float tonalWindow = smoothstep(0.025, 0.13, y) * (1.0 - smoothstep(0.90, 0.995, y));
+            float clarity = clamp(detail * 0.58, -0.030, 0.030) * edgeProtect * tonalWindow;
 
-            // Richer blacks without an OLED threshold: at most a few percent darker,
-            // continuously proportional to the existing value, so detail cannot vanish.
-            float shadowWeight = 1.0 - smoothstep(0.045, 0.32, y);
-            float shadowDeepen = y * 0.035 * shadowWeight;
+            // Richer blacks via a continuous proportional curve only. This cannot turn a
+            // normal dark anime region into hard black: the maximum deepening is 5.5% of
+            // its own luminance and fades away through the midtones.
+            float shadowWeight = 1.0 - smoothstep(0.055, 0.38, y);
+            float shadowDeepen = y * 0.055 * shadowWeight;
             float targetY = clamp(y + clarity - shadowDeepen, 0.0, 1.0);
 
-            // Gentle vibrance-like boost. Deep shadows receive almost none so the
-            // Build 115 chroma cleanup is not undone or made visible again.
-            float colorWindow = smoothstep(0.10, 0.28, y) * (1.0 - smoothstep(0.82, 0.98, y));
-            float sat = 1.0 + 0.065 * colorWindow;
+            // Small vibrance boost for the more defined CapCut-like color separation.
+            // Deep shadows remain excluded so Build 115's chroma cleanup stays effective.
+            float colorWindow = smoothstep(0.14, 0.34, y) * (1.0 - smoothstep(0.84, 0.98, y));
+            float sat = 1.0 + 0.085 * colorWindow;
             vec3 chroma = o.rgb - vec3(y);
             vec3 rgb = clamp(vec3(targetY) + chroma * sat, 0.0, 1.0);
             return vec4(rgb, o.a);
@@ -122,11 +125,13 @@ final class CompressionGuard {
             if let kernel = Self.animeClarityKernel,
                let blur = CIFilter(name: "CIGaussianBlur") {
                 blur.setValue(original, forKey: kCIInputImageKey)
-                blur.setValue(6.0, forKey: kCIInputRadiusKey)
+                // Slightly broader base than #122 so the effect reads as clarity/local
+                // contrast rather than conventional edge sharpening.
+                blur.setValue(7.0, forKey: kCIInputRadiusKey)
                 if let base = blur.outputImage?.cropped(to: extent),
                    let result = kernel.apply(
                     extent: extent,
-                    roiCallback: { index, rect in index == 1 ? rect.insetBy(dx: -12, dy: -12) : rect },
+                    roiCallback: { index, rect in index == 1 ? rect.insetBy(dx: -14, dy: -14) : rect },
                     arguments: [original, base]
                    ) {
                     image = result.cropped(to: extent)
@@ -139,7 +144,7 @@ final class CompressionGuard {
     }
 
     /// Post-CUGAN pre-Sharpie path: preserve Build 115 chroma cleanup exactly, then
-    /// add safe Anime Clarity. Sharpie sees the finished color/contrast master.
+    /// add Anime Clarity. Sharpie sees the finished color/contrast master.
     func cleanShadowChroma(_ input: CVPixelBuffer) throws -> CVPixelBuffer {
         let chromaCleaned = try cleanShadowChromaOnly(input)
         return try applyAnimeClarity(chromaCleaned)
