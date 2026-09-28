@@ -15,10 +15,14 @@ weight_path = Path(os.environ["REALCUGAN_WEIGHT"])
 out_path = Path(os.environ.get("REALCUGAN_OUT", "Models/RealCUGAN2xNoise3_Tile512.mlpackage"))
 out_path.parent.mkdir(parents=True, exist_ok=True)
 
-# A fixed 512x512 Core ML tile keeps peak iPhone memory far below a full-frame
-# 1080p inference. The app overlaps/crops these tiles and stitches them back to
-# exactly 2x the ORIGINAL frame size (e.g. 1280x720 -> 2560x1440).
-H, W = 512, 512
+# Fixed deployment shapes let Core ML optimize each model aggressively.  The
+# app keeps the original 512x512 model as a low-memory fallback and also ships
+# a 704x608 model optimized for 1920x1080.  With 32px overlap that second shape
+# has a 640x544 useful core, so 1080p needs only 3x2 = 6 predictions instead of
+# 5x3 = 15.  This changes tiling only; weights, Noise 3 and model math are the
+# same, so image quality and the app's 1.30 intensity remain unchanged.
+H = int(os.environ.get("REALCUGAN_TILE_HEIGHT", "512"))
+W = int(os.environ.get("REALCUGAN_TILE_WIDTH", "512"))
 
 upsampler = RealWaifuUpScaler(scale=2, weight_path=str(weight_path), half=False, device="cpu")
 pro = upsampler.pro
@@ -44,7 +48,7 @@ class Tile2x(torch.nn.Module):
 
 
 model = Tile2x(upsampler.model).eval()
-# Trace compactly; Core ML receives the deployment tile shape below.
+# Trace compactly; Core ML receives the fixed deployment shape below.
 image_example = torch.zeros(1, 3, 128, 128, dtype=torch.float32)
 alpha_example = torch.tensor([1.0], dtype=torch.float32)
 with torch.no_grad():
@@ -68,7 +72,7 @@ mlmodel = ct.convert(
     compute_precision=ct.precision.FLOAT16,
 )
 mlmodel.author = "bilibili/ailab Real-CUGAN; iOS tiled conversion for RIFE60GhostGuard"
-mlmodel.short_description = "Real-CUGAN Anime 2x Noise 3, 512px tile -> 1024px tile; native-resolution 2x stitching in app"
-mlmodel.version = "2.0"
+mlmodel.short_description = f"Real-CUGAN Anime 2x Noise 3, {W}x{H} tile -> {W*2}x{H*2}; native-resolution 2x stitching in app"
+mlmodel.version = "2.1"
 mlmodel.save(str(out_path))
-print(f"Saved {out_path}")
+print(f"Saved {out_path} ({W}x{H})")
