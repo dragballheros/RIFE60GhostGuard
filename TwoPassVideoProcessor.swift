@@ -30,6 +30,15 @@ final class TwoPassVideoProcessor {
 
         let sourceAsset = AVURLAsset(url: sourceURL)
         let sourceDuration = try await sourceAsset.load(.duration)
+        guard let sourceVideoTrack = try await sourceAsset.loadTracks(withMediaType: .video).first else {
+            throw ProcessorError.missingVideoTrack
+        }
+        let sourceSize = try await sourceVideoTrack.load(.naturalSize)
+        let sourceWidth = Int(abs(sourceSize.width).rounded())
+        let sourceHeight = Int(abs(sourceSize.height).rounded())
+        let native2xWidth = sourceWidth * 2
+        let native2xHeight = sourceHeight * 2
+
         let audioBitrate: Double
         if let audio = try await sourceAsset.loadTracks(withMediaType: .audio).first {
             audioBitrate = Double(try await audio.load(.estimatedDataRate))
@@ -37,7 +46,7 @@ final class TwoPassVideoProcessor {
 
         let restoredCheckpoint = recoveryDirectory?.appendingPathComponent("checkpoint-restored.mov")
         let rifeCheckpoint = recoveryDirectory?.appendingPathComponent("checkpoint-rife60.mov")
-        let cuganCheckpoint = recoveryDirectory?.appendingPathComponent("checkpoint-cugan4k.mov")
+        let cuganCheckpoint = recoveryDirectory?.appendingPathComponent("checkpoint-cugan2x.mov")
 
         let needsRestoration = config.compressionProtection || config.outlineProtection
         let rifeSourceURL: URL
@@ -135,16 +144,21 @@ final class TwoPassVideoProcessor {
         let videoForMux: URL
         if upscaleTo4K {
             if let cuganCheckpoint,
-               await validVideo(cuganCheckpoint, expectedDuration: sourceDuration, expectedWidth: 3840, expectedHeight: 2160) {
+               await validVideo(
+                    cuganCheckpoint,
+                    expectedDuration: sourceDuration,
+                    expectedWidth: native2xWidth,
+                    expectedHeight: native2xHeight
+               ) {
                 videoForMux = cuganCheckpoint
-                progress(0.97, "Recovered checkpoint • Real-CUGAN 4K complete")
-                RecoveryStore.update(progress: 0.97, message: "Recovered completed Real-CUGAN checkpoint", force: true)
-                DiagnosticsLogger.shared.log("Recovery: reused completed Real-CUGAN checkpoint.")
+                progress(0.97, "Recovered checkpoint • Real-CUGAN native 2× complete")
+                RecoveryStore.update(progress: 0.97, message: "Recovered completed Real-CUGAN native 2× checkpoint", force: true)
+                DiagnosticsLogger.shared.log("Recovery: reused completed Real-CUGAN native 2× checkpoint.")
             } else {
                 if let cuganCheckpoint { try? fm.removeItem(at: cuganCheckpoint) }
                 autoreleasepool { }
-                try await thermalHandoff(progress: progress, position: 0.55, next: "Real-CUGAN 4K")
-                progress(0.56, "Pass 3/3 • Loading Real-CUGAN Anime 2x…")
+                try await thermalHandoff(progress: progress, position: 0.55, next: "Real-CUGAN native 2×")
+                progress(0.56, "Pass 3/3 • Loading Real-CUGAN Anime native 2×…")
                 let cugan = RealCUGANPass(intensity: 1.30)
                 let generated = try await cugan.run(
                     sourceURL: rifeResult,
@@ -168,8 +182,8 @@ final class TwoPassVideoProcessor {
                     try persistCheckpoint(from: generated, to: cuganCheckpoint)
                     try? fm.removeItem(at: generated)
                     videoForMux = cuganCheckpoint
-                    RecoveryStore.update(progress: 0.97, message: "Pass 3/3 checkpoint saved • Real-CUGAN 4K complete", force: true)
-                    DiagnosticsLogger.shared.log("Checkpoint saved: Real-CUGAN 4K.")
+                    RecoveryStore.update(progress: 0.97, message: "Pass 3/3 checkpoint saved • Real-CUGAN native 2× complete", force: true)
+                    DiagnosticsLogger.shared.log("Checkpoint saved: Real-CUGAN native 2×.")
                     if let rifeCheckpoint { try? fm.removeItem(at: rifeCheckpoint) }
                 } else {
                     transientURLs.append(generated)
@@ -182,8 +196,9 @@ final class TwoPassVideoProcessor {
 
         let finalVideoInput: URL
         if recoveryDirectory != nil {
+            let ext = videoForMux.pathExtension.isEmpty ? "mov" : videoForMux.pathExtension
             let copy = FileManager.default.temporaryDirectory
-                .appendingPathComponent("RIFE60-recovered-final-\(UUID().uuidString).mov")
+                .appendingPathComponent("RIFE60-recovered-final-\(UUID().uuidString).\(ext)")
             try? fm.removeItem(at: copy)
             try fm.copyItem(at: videoForMux, to: copy)
             transientURLs.append(copy)
@@ -195,12 +210,12 @@ final class TwoPassVideoProcessor {
         if config.preserveAudio {
             progress(0.98, "Finalizing • Restoring original audio…")
             let final = try await FinalAudioMuxer().addOriginalAudio(videoURL: finalVideoInput, sourceURL: sourceURL)
-            progress(1.0, upscaleTo4K ? "Finished • 4K60 • Real-CUGAN" : "Finished • 1080p60")
+            progress(1.0, upscaleTo4K ? "Finished • Native 2× 60fps • Real-CUGAN" : "Finished • 60fps")
             return final
         }
 
         transientURLs.removeAll { $0 == finalVideoInput }
-        progress(1.0, upscaleTo4K ? "Finished • 4K60 • Real-CUGAN" : "Finished • 1080p60")
+        progress(1.0, upscaleTo4K ? "Finished • Native 2× 60fps • Real-CUGAN" : "Finished • 60fps")
         return finalVideoInput
     }
 
@@ -261,8 +276,6 @@ final class TwoPassVideoProcessor {
 final class FinalAudioMuxer {
     func addOriginalAudio(videoURL: URL, sourceURL: URL) async throws -> URL {
         let sourceAsset = AVURLAsset(url: sourceURL)
-        let outputURL = FileManager.default.temporaryDirectory.appendingPathComponent("RIFE60-4K60-\(UUID().uuidString).mov")
-        try? FileManager.default.removeItem(at: outputURL)
         let composition = AVMutableComposition()
         let processed = AVURLAsset(url: videoURL)
         guard let pv = try await processed.loadTracks(withMediaType: .video).first,
@@ -278,11 +291,29 @@ final class FinalAudioMuxer {
             let d = CMTimeMinimum(pDuration, aDuration)
             try ca.insertTimeRange(CMTimeRange(start: .zero, duration: d), of: audio, at: .zero)
         }
-        guard let exporter = AVAssetExportSession(asset: composition, presetName: AVAssetExportPresetPassthrough) else { throw ProcessorError.noOutput }
+
+        guard let exporter = AVAssetExportSession(asset: composition, presetName: AVAssetExportPresetPassthrough) else {
+            throw ProcessorError.noOutput
+        }
+        let outputType: AVFileType = exporter.supportedFileTypes.contains(.mp4) ? .mp4 : .mov
+        let ext = outputType == .mp4 ? "mp4" : "mov"
+        let outputURL = FileManager.default.temporaryDirectory.appendingPathComponent("RIFE60-Native2X60-\(UUID().uuidString).\(ext)")
+        try? FileManager.default.removeItem(at: outputURL)
         exporter.outputURL = outputURL
-        exporter.outputFileType = .mov
-        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in exporter.exportAsynchronously { continuation.resume() } }
-        guard exporter.status == .completed else { throw ProcessorError.writer(exporter.error?.localizedDescription ?? "audio mux failed") }
+        exporter.outputFileType = outputType
+        exporter.shouldOptimizeForNetworkUse = true
+        DiagnosticsLogger.shared.log("Final mux begin • container=\(ext) • passthrough HEVC Main10 + original audio")
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            exporter.exportAsynchronously { continuation.resume() }
+        }
+        guard exporter.status == .completed else {
+            throw ProcessorError.writer(exporter.error?.localizedDescription ?? "audio mux failed")
+        }
+        let finalAsset = AVURLAsset(url: outputURL)
+        guard try await finalAsset.loadTracks(withMediaType: .video).first != nil else {
+            throw ProcessorError.noOutput
+        }
+        DiagnosticsLogger.shared.log("Final mux completed • \(outputURL.lastPathComponent)")
         try? FileManager.default.removeItem(at: videoURL)
         return outputURL
     }
