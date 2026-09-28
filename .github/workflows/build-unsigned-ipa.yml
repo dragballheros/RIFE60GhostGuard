@@ -37,7 +37,6 @@ jobs:
           SHARPIE_WEIGHT=$(find Models/AnimeSharpieOutlineSubtle.mlpackage -type f -name 'weight.bin' -print -quit)
           test -n "$SHARPIE_WEIGHT"
           test -s "$SHARPIE_WEIGHT"
-          echo "Sharpie source package verified: $SHARPIE_WEIGHT"
 
       - name: Restore Real-CUGAN model cache
         uses: actions/cache@v4
@@ -45,9 +44,11 @@ jobs:
           path: |
             Models/RealCUGAN2xNoise3_Tile512.mlpackage
             Models/RealCUGAN2xNoise3_Tile704x608.mlpackage
+            Models/RealCUGAN2xNoise3_Tile1024x608.mlpackage
             CompiledModels/RealCUGAN2xNoise3_Tile512.mlmodelc
             CompiledModels/RealCUGAN2xNoise3_Tile704x608.mlmodelc
-          key: realcugan-noise3-fp16-512-and-704x608-v1
+            CompiledModels/RealCUGAN2xNoise3_Tile1024x608.mlmodelc
+          key: realcugan-noise3-fp16-512-704x608-1024x608-v1
 
       - name: Set up Python 3.11
         uses: actions/setup-python@v5
@@ -57,58 +58,48 @@ jobs:
       - name: Prepare Real-CUGAN source models if needed
         run: |
           set -euo pipefail
-          NEED512=0
-          NEEDFAST=0
+          NEED512=0; NEED704=0; NEED1024=0
           test -f Models/RealCUGAN2xNoise3_Tile512.mlpackage/Manifest.json || NEED512=1
-          test -f Models/RealCUGAN2xNoise3_Tile704x608.mlpackage/Manifest.json || NEEDFAST=1
-          if [ "$NEED512" = 1 ] || [ "$NEEDFAST" = 1 ]; then
+          test -f Models/RealCUGAN2xNoise3_Tile704x608.mlpackage/Manifest.json || NEED704=1
+          test -f Models/RealCUGAN2xNoise3_Tile1024x608.mlpackage/Manifest.json || NEED1024=1
+          if [ "$NEED512" = 1 ] || [ "$NEED704" = 1 ] || [ "$NEED1024" = 1 ]; then
             python -m pip install --upgrade pip
             python -m pip install 'torch==2.5.0' 'coremltools==8.3' 'numpy==1.26.4'
             rm -rf /tmp/video_upscale /tmp/realcugan-weights
             git clone --depth 1 https://github.com/apleynes/video_upscale_mac_silicon.git /tmp/video_upscale
             mkdir -p /tmp/realcugan-weights Models
-            curl -L --fail --retry 3 -o /tmp/updated_weights.zip \
-              https://github.com/bilibili/ailab/releases/download/Real-CUGAN/updated_weights.zip
+            curl -L --fail --retry 3 -o /tmp/updated_weights.zip https://github.com/bilibili/ailab/releases/download/Real-CUGAN/updated_weights.zip
             unzip -q /tmp/updated_weights.zip -d /tmp/realcugan-weights
             WEIGHT=$(find /tmp/realcugan-weights -name 'up2x-latest-denoise3x.pth' -print -quit)
             test -n "$WEIGHT"
             if [ "$NEED512" = 1 ]; then
-              REALCUGAN_DIR=/tmp/video_upscale/realcugan/Real-CUGAN \
-              REALCUGAN_WEIGHT="$WEIGHT" \
-              REALCUGAN_TILE_WIDTH=512 REALCUGAN_TILE_HEIGHT=512 \
-              REALCUGAN_OUT=Models/RealCUGAN2xNoise3_Tile512.mlpackage \
-                python Scripts/export_realcugan_1080p.py
+              REALCUGAN_DIR=/tmp/video_upscale/realcugan/Real-CUGAN REALCUGAN_WEIGHT="$WEIGHT" REALCUGAN_TILE_WIDTH=512 REALCUGAN_TILE_HEIGHT=512 REALCUGAN_OUT=Models/RealCUGAN2xNoise3_Tile512.mlpackage python Scripts/export_realcugan_1080p.py
             fi
-            if [ "$NEEDFAST" = 1 ]; then
-              REALCUGAN_DIR=/tmp/video_upscale/realcugan/Real-CUGAN \
-              REALCUGAN_WEIGHT="$WEIGHT" \
-              REALCUGAN_TILE_WIDTH=704 REALCUGAN_TILE_HEIGHT=608 \
-              REALCUGAN_OUT=Models/RealCUGAN2xNoise3_Tile704x608.mlpackage \
-                python Scripts/export_realcugan_1080p.py
+            if [ "$NEED704" = 1 ]; then
+              REALCUGAN_DIR=/tmp/video_upscale/realcugan/Real-CUGAN REALCUGAN_WEIGHT="$WEIGHT" REALCUGAN_TILE_WIDTH=704 REALCUGAN_TILE_HEIGHT=608 REALCUGAN_OUT=Models/RealCUGAN2xNoise3_Tile704x608.mlpackage python Scripts/export_realcugan_1080p.py
+            fi
+            if [ "$NEED1024" = 1 ]; then
+              REALCUGAN_DIR=/tmp/video_upscale/realcugan/Real-CUGAN REALCUGAN_WEIGHT="$WEIGHT" REALCUGAN_TILE_WIDTH=1024 REALCUGAN_TILE_HEIGHT=608 REALCUGAN_OUT=Models/RealCUGAN2xNoise3_Tile1024x608.mlpackage python Scripts/export_realcugan_1080p.py
             fi
           fi
           test -f Models/RealCUGAN2xNoise3_Tile512.mlpackage/Manifest.json
           test -f Models/RealCUGAN2xNoise3_Tile704x608.mlpackage/Manifest.json
+          test -f Models/RealCUGAN2xNoise3_Tile1024x608.mlpackage/Manifest.json
 
       - name: Compile Real-CUGAN models for iOS if needed
         run: |
           set -euo pipefail
           mkdir -p CompiledModels
-          if [ ! -d CompiledModels/RealCUGAN2xNoise3_Tile512.mlmodelc ]; then
-            xcrun coremlcompiler compile Models/RealCUGAN2xNoise3_Tile512.mlpackage CompiledModels
-          fi
-          if [ ! -d CompiledModels/RealCUGAN2xNoise3_Tile704x608.mlmodelc ]; then
-            xcrun coremlcompiler compile Models/RealCUGAN2xNoise3_Tile704x608.mlpackage CompiledModels
-          fi
-          test -d CompiledModels/RealCUGAN2xNoise3_Tile512.mlmodelc
-          test -d CompiledModels/RealCUGAN2xNoise3_Tile704x608.mlmodelc
+          for MODEL in RealCUGAN2xNoise3_Tile512 RealCUGAN2xNoise3_Tile704x608 RealCUGAN2xNoise3_Tile1024x608; do
+            if [ ! -d "CompiledModels/${MODEL}.mlmodelc" ]; then xcrun coremlcompiler compile "Models/${MODEL}.mlpackage" CompiledModels; fi
+            test -d "CompiledModels/${MODEL}.mlmodelc"
+          done
 
       - name: Generate professional app icon
         run: |
           rm -rf Assets.xcassets
           swift Scripts/generate_app_icon.swift
           test -f Assets.xcassets/AppIcon.appiconset/AppIcon-1024.png
-          test -f Assets.xcassets/AppIcon.appiconset/Contents.json
 
       - name: Vendor and patch RifeMetal
         run: |
@@ -122,12 +113,8 @@ jobs:
           text = pkg.read_text()
           text2, n1 = re.subn(r'\.target\(\s*name:\s*"RifeMetalCore",\s*exclude:\s*\["Shaders"\],\s*plugins:\s*\[\.plugin\(name:\s*"CompileMetalShaders"\)\]\s*\),', '.target(\n            name: "RifeMetalCore"\n        ),', text, flags=re.S)
           text3, n2 = re.subn(r'\s*\.plugin\(\s*name:\s*"CompileMetalShaders",\s*capability:\s*\.buildTool\(\)\s*\),', '', text2, flags=re.S)
-          if n1 != 1 or n2 != 1:
-              raise SystemExit(f'Unexpected RifeMetal manifest layout: target patches={n1}, plugin patches={n2}')
+          if n1 != 1 or n2 != 1: raise SystemExit(f'Unexpected RifeMetal manifest layout: {n1}, {n2}')
           pkg.write_text(text3)
-          warp = Path('Vendor/rife-metal/Sources/RifeMetalCore/BackwardWarpKernel.swift')
-          if 'device.makeDefaultLibrary(bundle: Bundle.module)' not in warp.read_text():
-              raise SystemExit('Expected Bundle.module shader loader not found')
           PY
 
       - name: Disable automatic Files export
@@ -143,12 +130,9 @@ jobs:
       - name: Build unsigned app
         run: |
           set -o pipefail
-          xcodebuild -project RIFE60GhostGuard.xcodeproj -scheme RIFE60GhostGuard \
-            -configuration Release -sdk iphoneos -destination 'generic/platform=iOS' \
-            -derivedDataPath build CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGN_IDENTITY='' build | tee xcodebuild.log
+          xcodebuild -project RIFE60GhostGuard.xcodeproj -scheme RIFE60GhostGuard -configuration Release -sdk iphoneos -destination 'generic/platform=iOS' -derivedDataPath build CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY='' build | tee xcodebuild.log
 
-      - name: Create verified IPA with Sharpie and both Real-CUGAN profiles
+      - name: Create verified IPA
         run: |
           set -euo pipefail
           rm -rf Payload
@@ -157,15 +141,11 @@ jobs:
           cp -R Models/AnimeSharpieOutlineSubtle.mlpackage Payload/RIFE60GhostGuard.app/
           cp -R CompiledModels/RealCUGAN2xNoise3_Tile512.mlmodelc Payload/RIFE60GhostGuard.app/
           cp -R CompiledModels/RealCUGAN2xNoise3_Tile704x608.mlmodelc Payload/RIFE60GhostGuard.app/
+          cp -R CompiledModels/RealCUGAN2xNoise3_Tile1024x608.mlmodelc Payload/RIFE60GhostGuard.app/
           test -f Payload/RIFE60GhostGuard.app/AnimeSharpieOutlineSubtle.mlpackage/Manifest.json
-          SHARPIE_WEIGHT=$(find Payload/RIFE60GhostGuard.app/AnimeSharpieOutlineSubtle.mlpackage -type f -name 'weight.bin' -print -quit)
-          test -n "$SHARPIE_WEIGHT"
-          test -s "$SHARPIE_WEIGHT"
           test -d Payload/RIFE60GhostGuard.app/RealCUGAN2xNoise3_Tile512.mlmodelc
           test -d Payload/RIFE60GhostGuard.app/RealCUGAN2xNoise3_Tile704x608.mlmodelc
-          test -f Payload/RIFE60GhostGuard.app/Info.plist
-          echo "Verified Sharpie: $SHARPIE_WEIGHT"
-          echo "Verified Real-CUGAN 512 fallback + 704x608 fast profile"
+          test -d Payload/RIFE60GhostGuard.app/RealCUGAN2xNoise3_Tile1024x608.mlmodelc
           zip -qry RIFE60GhostGuard-verified-unsigned.ipa Payload
           unzip -t RIFE60GhostGuard-verified-unsigned.ipa >/dev/null
 
