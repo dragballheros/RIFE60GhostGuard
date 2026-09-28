@@ -1,6 +1,7 @@
 import Foundation
 import AVFoundation
 import CoreImage
+import CoreVideo
 import VideoToolbox
 
 /// Final visual polish pass. This deliberately runs after Real-CUGAN so the upscaler
@@ -40,7 +41,7 @@ final class FinalOutlinePass {
 
         let reader = try AVAssetReader(asset: asset)
         let output = AVAssetReaderTrackOutput(track: track, outputSettings: [
-            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelBufferPixelFormatType_32BGRA
+            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA
         ])
         output.alwaysCopiesSampleData = false
         guard reader.canAdd(output) else { throw ProcessorError.reader("cannot attach final polish reader") }
@@ -51,7 +52,6 @@ final class FinalOutlinePass {
         try? FileManager.default.removeItem(at: outURL)
         let writer = try AVAssetWriter(outputURL: outURL, fileType: .mov)
 
-        // HQ HEVC Main10 policy: quality target first, <1 GB only acts as a ceiling.
         let targetTotalBytes = 950_000_000.0
         let containerReserveBytes = 16_000_000.0
         let usableBits = max((targetTotalBytes - containerReserveBytes) * 8.0, 8_000_000.0)
@@ -84,7 +84,7 @@ final class FinalOutlinePass {
         input.expectsMediaDataInRealTime = false
         input.transform = transform
         let adaptor = AVAssetWriterInputPixelBufferAdaptor(assetWriterInput: input, sourcePixelBufferAttributes: [
-            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelBufferPixelFormatType_420YpCbCr10BiPlanarVideoRange,
+            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange,
             kCVPixelBufferWidthKey as String: width,
             kCVPixelBufferHeightKey as String: height,
             kCVPixelBufferIOSurfacePropertiesKey as String: [:]
@@ -108,15 +108,11 @@ final class FinalOutlinePass {
             guard let decoded = CMSampleBufferGetImageBuffer(sample) else { continue }
             let pts = CMSampleBufferGetPresentationTimeStamp(sample)
 
-            // Sharpie first: CUGAN has already finished, so it cannot change the final width.
             let outlineStart = CFAbsoluteTimeGetCurrent()
             let enhanced = try autoreleasepool { try enhancer.enhance(decoded) }
             let narrowed = try narrowTowardOriginal(enhanced: enhanced, original: decoded)
             outlineSeconds += CFAbsoluteTimeGetCurrent() - outlineStart
 
-            // Compression cleanup is intentionally the LAST image-processing operation.
-            // If a frame cannot be cleaned for any reason, preserve the Sharpie result
-            // rather than failing or reverting to an earlier frame.
             let compressionStart = CFAbsoluteTimeGetCurrent()
             let polished: CVPixelBuffer
             if let cleaned = try? finalCompressionGuard.clean(narrowed) {
@@ -168,7 +164,7 @@ final class FinalOutlinePass {
 
     private func prepareBlendPool(width: Int, height: Int) throws {
         let attrs: [String: Any] = [
-            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelBufferPixelFormatType_32BGRA,
+            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
             kCVPixelBufferWidthKey as String: width,
             kCVPixelBufferHeightKey as String: height,
             kCVPixelBufferIOSurfacePropertiesKey as String: [:]
