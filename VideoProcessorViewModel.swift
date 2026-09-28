@@ -39,7 +39,6 @@ final class VideoProcessorViewModel: ObservableObject {
     @Published var compressionProtection = true
     @Published var outlineProtection = true
     @Published var upscaleTo4K = true
-    @Published var autoSaveToPhotos = true
     @Published var ghostSensitivity = 1.0
     @Published var preserveAudio = true
     @Published var renderPowerMode = true
@@ -50,14 +49,17 @@ final class VideoProcessorViewModel: ObservableObject {
     @Published var recoveryAvailable = false
     @Published var recoveryStatusText = ""
     @Published var diagnosticsCopyStatus = ""
+    @Published var exportFolderName = "On My iPhone > RIFE 60 Ghost Guard > Exports"
 
     private var currentTask: Task<Void, Never>?
     private var blackScreenTask: Task<Void, Never>?
     private var savedBrightness: CGFloat?
     private var savedIdleTimerDisabled: Bool?
     private var renderStartedAt: Date?
+    private let exportFolderBookmarkKey = "RIFE60.ExportFolderBookmark.v1"
 
     init() {
+        refreshExportFolderName()
         if let job = RecoveryStore.existingJob() {
             inputURL = job.sourceURL
             progress = job.manifest.progress
@@ -118,6 +120,28 @@ final class VideoProcessorViewModel: ObservableObject {
         importProgress = nil
     }
 
+    func handleExportFolderSelection(_ result: Result<[URL], Error>) {
+        do {
+            guard let folder = try result.get().first else { return }
+            let secured = folder.startAccessingSecurityScopedResource()
+            defer { if secured { folder.stopAccessingSecurityScopedResource() } }
+            let bookmark = try folder.bookmarkData(options: .minimalBookmark, includingResourceValuesForKeys: nil, relativeTo: nil)
+            UserDefaults.standard.set(bookmark, forKey: exportFolderBookmarkKey)
+            exportFolderName = folder.lastPathComponent
+            saveStatusText = "Future videos will auto-save to Files > \(folder.lastPathComponent)"
+            DiagnosticsLogger.shared.log("User selected Files export folder: \(folder.path)")
+        } catch {
+            saveStatusText = "Could not use that Files folder: \(error.localizedDescription)"
+            DiagnosticsLogger.shared.log("Export folder selection failed: \(error.localizedDescription)")
+        }
+    }
+
+    func useDefaultExportFolder() {
+        UserDefaults.standard.removeObject(forKey: exportFolderBookmarkKey)
+        exportFolderName = "On My iPhone > RIFE 60 Ghost Guard > Exports"
+        saveStatusText = "Using the app's default Files export folder"
+    }
+
     func cancel() { currentTask?.cancel() }
 
     func clearRecoveryData() {
@@ -150,6 +174,7 @@ final class VideoProcessorViewModel: ObservableObject {
         Last error: \(errorText ?? "none")
         Recovery available: \(recoveryAvailable)
         Recovery status: \(recoveryStatusText)
+        Export folder: \(exportFolderName)
         Thermal: \(telemetry.thermalState)
         Source frames: \(telemetry.sourceFrames)
         Generated frames: \(telemetry.generatedFrames)
@@ -214,118 +239,51 @@ final class VideoProcessorViewModel: ObservableObject {
         let sensitivity = ghostSensitivity
         let audio = preserveAudio
         let upscale = upscaleTo4K
-        let autoPhotos = autoSaveToPhotos
-        let configKey = [
-            "pipeline-v2",
-            "hq",
-            "ghost=\(guardEnabled)",
-            "cuts=\(cuts)",
-            "compression=\(compressionEnabled)",
-            "outline=\(outlineEnabled)",
-            String(format: "sensitivity=%.2f", sensitivity),
-            "audio=\(audio)",
-            "upscale=\(upscale)",
-            "fps=60"
-        ].joined(separator: "|")
-
+        let configKey = ["pipeline-v2", "hq", "ghost=\(guardEnabled)", "cuts=\(cuts)", "compression=\(compressionEnabled)", "outline=\(outlineEnabled)", String(format: "sensitivity=%.2f", sensitivity), "audio=\(audio)", "upscale=\(upscale)", "fps=60"].joined(separator: "|")
         DiagnosticsLogger.shared.log("Render requested • \(configKey)")
 
         currentTask = Task.detached(priority: .userInitiated) { [weak self] in
             do {
                 let secured = source.startAccessingSecurityScopedResource()
                 defer { if secured { source.stopAccessingSecurityScopedResource() } }
-
                 let job = try RecoveryStore.prepare(source: source, configurationKey: configKey)
                 RecoveryStore.update(progress: job.manifest.progress, message: "Recovery source secured", force: true)
-
-                let config = ProcessorConfiguration(
-                    quality: .hq,
-                    ghostProtection: guardEnabled,
-                    sceneCutProtection: cuts,
-                    compressionProtection: compressionEnabled,
-                    outlineProtection: outlineEnabled,
-                    ghostSensitivity: sensitivity,
-                    preserveAudio: audio,
-                    targetFPS: 60
-                )
+                let config = ProcessorConfiguration(quality: .hq, ghostProtection: guardEnabled, sceneCutProtection: cuts, compressionProtection: compressionEnabled, outlineProtection: outlineEnabled, ghostSensitivity: sensitivity, preserveAudio: audio, targetFPS: 60)
                 let processor = TwoPassVideoProcessor(configuration: config, upscaleTo4K: upscale)
-                let result = try await processor.process(
-                    sourceURL: job.sourceURL,
-                    recoveryDirectory: job.directory,
-                    progress: { p, message in
-                        RecoveryStore.update(progress: p, message: message)
-                        Task { @MainActor [weak self] in
-                            guard let self else { return }
-                            self.progress = p
-                            self.recoveryAvailable = true
-                            self.recoveryStatusText = "Crash-safe checkpoints active • \(String(format: "%.1f", p * 100))%"
-                            if message.contains("Pass 1/3") {
-                                self.restorationProgress = min(max(p / 0.18, 0), 1)
-                            } else if p >= 0.19 { self.restorationProgress = 1 }
-                            if p >= 0.56 {
-                                self.upscaleProgress = min(max((p - 0.56) / 0.41, 0), 1)
-                            }
-                            self.statusText = message
-                            self.updateClock(progress: p)
-                        }
-                    },
-                    telemetry: { sample in
-                        Task { @MainActor [weak self] in self?.telemetry = sample }
+                let result = try await processor.process(sourceURL: job.sourceURL, recoveryDirectory: job.directory, progress: { p, message in
+                    RecoveryStore.update(progress: p, message: message)
+                    Task { @MainActor [weak self] in
+                        guard let self else { return }
+                        self.progress = p
+                        self.recoveryAvailable = true
+                        self.recoveryStatusText = "Crash-safe checkpoints active • \(String(format: "%.1f", p * 100))%"
+                        if message.contains("Pass 1/3") { self.restorationProgress = min(max(p / 0.18, 0), 1) } else if p >= 0.19 { self.restorationProgress = 1 }
+                        if p >= 0.56 { self.upscaleProgress = min(max((p - 0.56) / 0.41, 0), 1) }
+                        self.statusText = message
+                        self.updateClock(progress: p)
                     }
-                )
+                }, telemetry: { sample in Task { @MainActor [weak self] in self?.telemetry = sample } })
                 try Task.checkCancellation()
-                await MainActor.run { [weak self] in
-                    self?.statusText = "Saving result…"
-                    self?.progress = 0.995
-                }
-                RecoveryStore.update(progress: 0.995, message: "Saving finished result", force: true)
-                let saved = try await self?.saveFinishedVideo(result, preferPhotos: autoPhotos)
+                await MainActor.run { [weak self] in self?.statusText = "Saving to Files…"; self?.progress = 0.995 }
+                RecoveryStore.update(progress: 0.995, message: "Saving finished result to Files", force: true)
+                guard let self else { return }
+                let saved = try await self.saveFinishedVideo(result)
                 RecoveryStore.finishAndClean()
                 await MainActor.run { [weak self] in
                     guard let self else { return }
-                    self.outputURL = saved?.url ?? result
-                    self.saveStatusText = saved?.message ?? "Finished"
-                    self.progress = 1
-                    self.restorationProgress = 1
-                    self.upscaleProgress = upscale ? 1 : 0
-                    self.updateClock(progress: 1)
-                    self.etaSeconds = 0
-                    self.statusText = "Finished"
-                    self.recoveryAvailable = false
-                    self.recoveryStatusText = ""
-                    self.isProcessing = false
-                    self.currentTask = nil
-                    self.blackScreenTask?.cancel()
-                    self.processingScreenAwake = true
-                    self.restoreDisplayState()
+                    self.outputURL = saved.url
+                    self.saveStatusText = saved.message
+                    self.progress = 1; self.restorationProgress = 1; self.upscaleProgress = upscale ? 1 : 0
+                    self.updateClock(progress: 1); self.etaSeconds = 0; self.statusText = "Finished"
+                    self.recoveryAvailable = false; self.recoveryStatusText = ""; self.isProcessing = false; self.currentTask = nil
+                    self.blackScreenTask?.cancel(); self.processingScreenAwake = true; self.restoreDisplayState()
                 }
             } catch is CancellationError {
                 RecoveryStore.markCancelled()
-                await MainActor.run { [weak self] in
-                    guard let self else { return }
-                    self.statusText = "Cancelled • checkpoints kept"
-                    self.recoveryAvailable = true
-                    self.recoveryStatusText = "Resume available from the last completed checkpoint"
-                    self.isProcessing = false
-                    self.currentTask = nil
-                    self.blackScreenTask?.cancel()
-                    self.processingScreenAwake = true
-                    self.restoreDisplayState()
-                }
+                await MainActor.run { [weak self] in guard let self else { return }; self.statusText = "Cancelled • checkpoints kept"; self.recoveryAvailable = true; self.recoveryStatusText = "Resume available from the last completed checkpoint"; self.isProcessing = false; self.currentTask = nil; self.blackScreenTask?.cancel(); self.processingScreenAwake = true; self.restoreDisplayState() }
             } catch {
                 RecoveryStore.markFailed(error)
-                await MainActor.run { [weak self] in
-                    guard let self else { return }
-                    self.errorText = error.localizedDescription
-                    self.statusText = "Failed • recovery data kept"
-                    self.recoveryAvailable = RecoveryStore.existingJob() != nil
-                    self.recoveryStatusText = self.recoveryAvailable ? "Resume available from the last completed checkpoint" : ""
-                    self.isProcessing = false
-                    self.currentTask = nil
-                    self.blackScreenTask?.cancel()
-                    self.processingScreenAwake = true
-                    self.restoreDisplayState()
-                }
+                await MainActor.run { [weak self] in guard let self else { return }; self.errorText = error.localizedDescription; self.statusText = "Failed • recovery data kept"; self.recoveryAvailable = RecoveryStore.existingJob() != nil; self.recoveryStatusText = self.recoveryAvailable ? "Resume available from the last completed checkpoint" : ""; self.isProcessing = false; self.currentTask = nil; self.blackScreenTask?.cancel(); self.processingScreenAwake = true; self.restoreDisplayState() }
             }
         }
     }
@@ -354,85 +312,91 @@ final class VideoProcessorViewModel: ObservableObject {
 
     private struct SavedResult: Sendable { let url: URL; let message: String }
 
-    private func saveFinishedVideo(_ source: URL, preferPhotos: Bool) async throws -> SavedResult {
-        // Always make a durable Documents copy FIRST. This guarantees that the
-        // result survives temp-directory cleanup and gives the share sheet a
-        // stable URL even when PhotoKit rejects an import.
-        let durable = try saveToFiles(source)
-        try await validateFinishedVideo(durable)
-
-        let attrs = try FileManager.default.attributesOfItem(atPath: durable.path)
+    private func saveFinishedVideo(_ source: URL) async throws -> SavedResult {
+        let saved = try saveToFiles(source)
+        try await validateFinishedVideo(saved.url)
+        let attrs = try FileManager.default.attributesOfItem(atPath: saved.url.path)
         let bytes = (attrs[.size] as? NSNumber)?.int64Value ?? 0
-        DiagnosticsLogger.shared.log("Durable export verified • \(durable.lastPathComponent) • \(bytes) bytes • \(durable.path)")
-
-        guard preferPhotos else {
-            return SavedResult(url: durable, message: "Saved to Files: On My iPhone > RIFE 60 Ghost Guard > \(durable.lastPathComponent)")
-        }
-
-        do {
-            try await saveToPhotos(durable)
-            DiagnosticsLogger.shared.log("PhotoKit save succeeded from durable export.")
-            return SavedResult(url: durable, message: "Saved to Photos • Files backup: On My iPhone > RIFE 60 Ghost Guard > \(durable.lastPathComponent)")
-        } catch {
-            DiagnosticsLogger.shared.log("Photos save failed from durable export: \(error.localizedDescription). Files copy remains available at \(durable.path)")
-            return SavedResult(url: durable, message: "Photos save failed, but the finished video is safe in Files: On My iPhone > RIFE 60 Ghost Guard > \(durable.lastPathComponent)")
-        }
+        DiagnosticsLogger.shared.log("Files export verified • \(saved.url.lastPathComponent) • \(bytes) bytes • \(saved.url.path)")
+        return SavedResult(url: saved.url, message: saved.message)
     }
 
     private func validateFinishedVideo(_ url: URL) async throws {
         let asset = AVURLAsset(url: url)
-        guard let track = try await asset.loadTracks(withMediaType: .video).first else {
-            throw NSError(domain: "RIFE60GhostGuard", code: 30, userInfo: [NSLocalizedDescriptionKey: "Finished export has no readable video track."])
-        }
+        guard let track = try await asset.loadTracks(withMediaType: .video).first else { throw NSError(domain: "RIFE60GhostGuard", code: 30, userInfo: [NSLocalizedDescriptionKey: "Finished export has no readable video track."]) }
         let duration = try await asset.load(.duration)
         let seconds = CMTimeGetSeconds(duration)
-        guard seconds.isFinite, seconds > 0 else {
-            throw NSError(domain: "RIFE60GhostGuard", code: 31, userInfo: [NSLocalizedDescriptionKey: "Finished export has an invalid duration."])
-        }
+        guard seconds.isFinite, seconds > 0 else { throw NSError(domain: "RIFE60GhostGuard", code: 31, userInfo: [NSLocalizedDescriptionKey: "Finished export has an invalid duration."]) }
         let size = try await track.load(.naturalSize)
-        DiagnosticsLogger.shared.log("Finished export AVFoundation validation passed • \(Int(abs(size.width)))x\(Int(abs(size.height))) • \(String(format: "%.3f", seconds))s")
+        DiagnosticsLogger.shared.log("Finished export validation passed • \(Int(abs(size.width)))x\(Int(abs(size.height))) • \(String(format: "%.3f", seconds))s")
     }
 
-    private func saveToPhotos(_ url: URL) async throws {
-        var status = PHPhotoLibrary.authorizationStatus(for: .addOnly)
-        if status == .notDetermined { status = await PHPhotoLibrary.requestAuthorization(for: .addOnly) }
-        guard status == .authorized || status == .limited else {
-            throw NSError(domain: "RIFE60GhostGuard", code: 20, userInfo: [NSLocalizedDescriptionKey: "Photos add permission was not granted."])
-        }
+    private func saveToFiles(_ source: URL) throws -> (url: URL, message: String) {
+        let formatter = DateFormatter(); formatter.dateFormat = "yyyyMMdd-HHmmss"
+        let ext = source.pathExtension.isEmpty ? "mov" : source.pathExtension.lowercased()
+        let filename = "RIFE60-2X60-\(formatter.string(from: Date())).\(ext)"
 
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            PHPhotoLibrary.shared().performChanges({
-                let request = PHAssetCreationRequest.forAsset()
-                let options = PHAssetResourceCreationOptions()
-                options.shouldMoveFile = false
-                options.originalFilename = url.lastPathComponent
-                request.addResource(with: .video, fileURL: url, options: options)
-            }) { success, error in
-                if success {
-                    continuation.resume()
-                } else {
-                    continuation.resume(throwing: error ?? NSError(domain: "RIFE60GhostGuard", code: 21, userInfo: [NSLocalizedDescriptionKey: "Photos could not save the finished video."]))
-                }
+        if let folder = resolveSelectedExportFolder() {
+            let secured = folder.startAccessingSecurityScopedResource()
+            defer { if secured { folder.stopAccessingSecurityScopedResource() } }
+            let destination = uniqueDestination(in: folder, filename: filename)
+            do {
+                try FileManager.default.copyItem(at: source, to: destination)
+                try verifyPersistedFile(destination)
+                return (destination, "Auto-saved to Files > \(folder.lastPathComponent) > \(destination.lastPathComponent)")
+            } catch {
+                DiagnosticsLogger.shared.log("Selected Files folder write failed: \(error.localizedDescription). Falling back to app Exports folder.")
             }
         }
+
+        let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        let exports = documents.appendingPathComponent("Exports", isDirectory: true)
+        try FileManager.default.createDirectory(at: exports, withIntermediateDirectories: true)
+        let destination = uniqueDestination(in: exports, filename: filename)
+        try FileManager.default.copyItem(at: source, to: destination)
+        try verifyPersistedFile(destination)
+        return (destination, "Auto-saved to Files: On My iPhone > RIFE 60 Ghost Guard > Exports > \(destination.lastPathComponent)")
     }
 
-    private func saveToFiles(_ source: URL) throws -> URL {
-        let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-        try FileManager.default.createDirectory(at: documents, withIntermediateDirectories: true)
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyyMMdd-HHmmss"
-        let ext = source.pathExtension.isEmpty ? "mov" : source.pathExtension.lowercased()
-        let destination = documents.appendingPathComponent("RIFE60-2X60-\(formatter.string(from: Date())).\(ext)")
-        try? FileManager.default.removeItem(at: destination)
-        try FileManager.default.copyItem(at: source, to: destination)
-
-        guard FileManager.default.fileExists(atPath: destination.path),
-              let attrs = try? FileManager.default.attributesOfItem(atPath: destination.path),
-              let size = attrs[.size] as? NSNumber,
-              size.int64Value > 0 else {
-            throw NSError(domain: "RIFE60GhostGuard", code: 32, userInfo: [NSLocalizedDescriptionKey: "The finished video could not be persisted to the app's Files folder."])
+    private func verifyPersistedFile(_ url: URL) throws {
+        guard FileManager.default.fileExists(atPath: url.path), let attrs = try? FileManager.default.attributesOfItem(atPath: url.path), let size = attrs[.size] as? NSNumber, size.int64Value > 0 else {
+            throw NSError(domain: "RIFE60GhostGuard", code: 32, userInfo: [NSLocalizedDescriptionKey: "The finished video could not be persisted to Files."])
         }
-        return destination
+    }
+
+    private func uniqueDestination(in folder: URL, filename: String) -> URL {
+        let fm = FileManager.default
+        var candidate = folder.appendingPathComponent(filename)
+        guard fm.fileExists(atPath: candidate.path) else { return candidate }
+        let base = (filename as NSString).deletingPathExtension
+        let ext = (filename as NSString).pathExtension
+        var index = 2
+        while fm.fileExists(atPath: candidate.path) {
+            candidate = folder.appendingPathComponent("\(base)-\(index).\(ext)")
+            index += 1
+        }
+        return candidate
+    }
+
+    private func resolveSelectedExportFolder() -> URL? {
+        guard let data = UserDefaults.standard.data(forKey: exportFolderBookmarkKey) else { return nil }
+        var stale = false
+        do {
+            let url = try URL(resolvingBookmarkData: data, options: [.withoutUI], relativeTo: nil, bookmarkDataIsStale: &stale)
+            if stale {
+                let secured = url.startAccessingSecurityScopedResource()
+                defer { if secured { url.stopAccessingSecurityScopedResource() } }
+                let renewed = try url.bookmarkData(options: .minimalBookmark, includingResourceValuesForKeys: nil, relativeTo: nil)
+                UserDefaults.standard.set(renewed, forKey: exportFolderBookmarkKey)
+            }
+            return url
+        } catch {
+            DiagnosticsLogger.shared.log("Stored Files export bookmark could not be resolved: \(error.localizedDescription)")
+            return nil
+        }
+    }
+
+    private func refreshExportFolderName() {
+        if let url = resolveSelectedExportFolder() { exportFolderName = url.lastPathComponent }
     }
 }
