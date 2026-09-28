@@ -18,8 +18,14 @@ struct GhostGuard {
         }
 
         let ab = a.meanAbsoluteDifference(to: b)
-        if enableSceneCuts && ab > 0.30 / sensitivity {
-            return .init(reject: true, reason: "scene cut")
+
+        // RIFE must never bridge a real shot boundary.  The old 0.30 threshold
+        // was intentionally conservative, but it let a small number of anime
+        // cuts/transitions through and produced one or two visibly mangled
+        // in-between frames.  0.20 is still high enough to leave ordinary
+        // motion alone while catching those high-discontinuity pairs.
+        if enableSceneCuts && ab > 0.20 / sensitivity {
+            return .init(reject: true, reason: "scene cut / transition discontinuity")
         }
 
         let am = a.meanAbsoluteDifference(to: m)
