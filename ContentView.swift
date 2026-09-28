@@ -47,10 +47,10 @@ struct ContentView: View {
                         Text("1080p-class video uses one persistent full-frame HQ stream for maximum speed without dropping RIFE quality.").font(.caption).foregroundStyle(.secondary)
                     }
 
-                    Section("Anime Restoration") {
+                    Section("Anime Processing") {
                         Toggle("Compression Guard", isOn: $vm.compressionProtection).disabled(vm.recoveryAvailable)
-                        Toggle("Sharpie Outline Subtle", isOn: $vm.outlineProtection).disabled(vm.recoveryAvailable)
-                        Text("Uses the final slightly-thinner Sharpie revision on source frames before RIFE.").font(.caption).foregroundStyle(.secondary)
+                        Toggle("Final Sharpie Outline", isOn: $vm.outlineProtection).disabled(vm.recoveryAvailable)
+                        Text("Compression Guard runs before RIFE. Sharpie now runs as the final visual pass after Real-CUGAN, so CUGAN cannot soften or change the finished outlines. This revision is slightly narrower and closer to the original anime line width while remaining a little thicker/sharper than the original.").font(.caption).foregroundStyle(.secondary)
                     }
 
                     Section("2× Anime Upscale") {
@@ -59,7 +59,7 @@ struct ContentView: View {
                         LabeledContent("Upscale", value: "2× source resolution")
                         LabeledContent("Noise", value: "Level 3")
                         LabeledContent("Intensity", value: "1.30")
-                        Text("Runs as a separate final AI pass after RIFE. Real-CUGAN processes overlapping tiles and stitches them back to exactly 2× the original source dimensions without converting the source to 1080p first.").font(.caption).foregroundStyle(.secondary)
+                        Text("Runs after RIFE and before the final Sharpie pass. Real-CUGAN processes overlapping tiles and stitches them back to exactly 2× the original source dimensions without converting the source to 1080p first.").font(.caption).foregroundStyle(.secondary)
                     }
 
                     Section("Ghost Guard") {
@@ -94,16 +94,15 @@ struct ContentView: View {
                             if let eta = vm.etaSeconds, eta > 0 { LabeledContent("Estimated finish", value: finishTime(after: eta)) }
                         }
                         Section("Processing") {
-                            Text("Restoration / outline").font(.caption).foregroundStyle(.secondary)
-                            ProgressView(value: vm.restorationProgress)
-                            if vm.upscaleTo4K { Text("Real-CUGAN native 2× upscale").font(.caption).foregroundStyle(.secondary); ProgressView(value: vm.upscaleProgress) }
+                            Text("Compression Guard → RIFE HQ → Real-CUGAN → Final Sharpie").font(.caption).foregroundStyle(.secondary)
+                            ProgressView(value: vm.progress)
                             Text(vm.statusText).font(.caption)
                             Button("Cancel", role: .destructive) { vm.cancel() }
                         }
                         Section("Live Performance") {
                             LabeledContent("Thermal", value: vm.telemetry.thermalState)
                             LabeledContent("Compression", value: String(format: "%.1f ms/source", vm.telemetry.compressionMsPerFrame))
-                            LabeledContent("Outline", value: String(format: "%.1f ms/source", vm.telemetry.outlineMsPerFrame))
+                            LabeledContent("Final outline", value: String(format: "%.1f ms/frame", vm.telemetry.outlineMsPerFrame))
                             LabeledContent("RIFE HQ", value: String(format: "%.1f ms/generated", vm.telemetry.rifeMsPerGeneratedFrame))
                             LabeledContent("RIFE speed", value: String(format: "%.2f gen fps", vm.telemetry.generatedFPS))
                             if vm.upscaleTo4K {
