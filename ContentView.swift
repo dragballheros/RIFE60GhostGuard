@@ -1,6 +1,7 @@
 import SwiftUI
 import PhotosUI
 import UniformTypeIdentifiers
+import UIKit
 
 struct ContentView: View {
     @Environment(\.scenePhase) private var scenePhase
@@ -10,6 +11,10 @@ struct ContentView: View {
     @State private var showingExportFolderPicker = false
     @State private var showingClearRecoveryConfirmation = false
     @State private var photoItem: PhotosPickerItem?
+    @State private var postRenderSleepTask: Task<Void, Never>?
+    @State private var postRenderScreenDimmed = false
+    @State private var postRenderSavedBrightness: CGFloat?
+    @State private var postRenderSavedIdleTimerDisabled: Bool?
 
     var body: some View {
         ZStack {
@@ -71,7 +76,7 @@ struct ContentView: View {
 
                     Section("Render Power") {
                         Toggle("Render power mode", isOn: $vm.renderPowerMode)
-                        Text("The processing screen turns completely black immediately. Tap once to wake it; after 20 seconds without a touch it returns to black. OLED black + 1% brightness minimizes display heat while processing continues at high priority.").font(.caption).foregroundStyle(.secondary)
+                        Text("The processing screen turns completely black immediately. Tap once to wake it; after 20 seconds without a touch it returns to black. When a render finishes, the screen gets a 1-minute grace period; if you do not touch the app, it goes black and iOS auto-lock is re-enabled.").font(.caption).foregroundStyle(.secondary)
                     }
 
                     Section("Export to Files") {
@@ -142,13 +147,72 @@ struct ContentView: View {
                 .fileImporter(isPresented: $showingExportFolderPicker, allowedContentTypes: [.folder], allowsMultipleSelection: false) { result in vm.handleExportFolderSelection(result) }
                 .onChange(of: photoItem) { item in guard let item else { return }; Task { await vm.handlePhotoSelection(item); photoItem = nil } }
                 .onChange(of: scenePhase) { phase in vm.handleScenePhase(phase) }
+                .onChange(of: vm.isProcessing) { processing in
+                    if processing {
+                        cancelPostRenderSleep(restoreDisplay: true)
+                    } else {
+                        schedulePostRenderSleepIfNeeded()
+                    }
+                }
+                .onChange(of: vm.outputURL) { _ in schedulePostRenderSleepIfNeeded() }
                 .alert("Clear Recovery Data?", isPresented: $showingClearRecoveryConfirmation) {
                     Button("Clear Recovery Data", role: .destructive) { vm.clearRecoveryData() }
                     Button("Cancel", role: .cancel) { }
                 } message: { Text("This permanently deletes the saved source copy and completed render checkpoints for this interrupted job. You can then select a new video and start fresh.") }
             }
-            if vm.isProcessing && !vm.processingScreenAwake { Color.black.ignoresSafeArea().contentShape(Rectangle()).onTapGesture { vm.wakeProcessingScreen() }.zIndex(999) }
+            if vm.isProcessing && !vm.processingScreenAwake {
+                Color.black.ignoresSafeArea().contentShape(Rectangle()).onTapGesture { vm.wakeProcessingScreen() }.zIndex(999)
+            }
+            if postRenderScreenDimmed {
+                Color.black.ignoresSafeArea().contentShape(Rectangle()).onTapGesture { registerPostRenderInteraction() }.zIndex(1000)
+            }
         }
+        .simultaneousGesture(DragGesture(minimumDistance: 0).onChanged { _ in registerPostRenderInteraction() })
+        .onDisappear { cancelPostRenderSleep(restoreDisplay: true) }
+    }
+
+    @MainActor
+    private func schedulePostRenderSleepIfNeeded() {
+        guard !vm.isProcessing, vm.outputURL != nil, vm.statusText == "Finished" else { return }
+        postRenderSleepTask?.cancel()
+        postRenderScreenDimmed = false
+        if postRenderSavedBrightness == nil { postRenderSavedBrightness = UIScreen.main.brightness }
+        if postRenderSavedIdleTimerDisabled == nil { postRenderSavedIdleTimerDisabled = UIApplication.shared.isIdleTimerDisabled }
+
+        // Keep the phone awake for exactly the requested one-minute grace period.
+        // Public iOS APIs cannot force the hardware lock button, so at expiry we
+        // black the OLED immediately and re-enable the normal iOS auto-lock timer.
+        UIApplication.shared.isIdleTimerDisabled = true
+        postRenderSleepTask = Task { @MainActor in
+            do {
+                try await Task.sleep(nanoseconds: 60_000_000_000)
+            } catch {
+                return
+            }
+            guard !Task.isCancelled, !vm.isProcessing, vm.outputURL != nil else { return }
+            postRenderScreenDimmed = true
+            UIScreen.main.brightness = 0.01
+            UIApplication.shared.isIdleTimerDisabled = false
+            postRenderSleepTask = nil
+        }
+    }
+
+    @MainActor
+    private func registerPostRenderInteraction() {
+        guard !vm.isProcessing, vm.outputURL != nil else { return }
+        cancelPostRenderSleep(restoreDisplay: true)
+    }
+
+    @MainActor
+    private func cancelPostRenderSleep(restoreDisplay: Bool) {
+        postRenderSleepTask?.cancel()
+        postRenderSleepTask = nil
+        postRenderScreenDimmed = false
+        guard restoreDisplay else { return }
+        if let brightness = postRenderSavedBrightness { UIScreen.main.brightness = brightness }
+        if let idle = postRenderSavedIdleTimerDisabled { UIApplication.shared.isIdleTimerDisabled = idle }
+        postRenderSavedBrightness = nil
+        postRenderSavedIdleTimerDisabled = nil
     }
 
     private func finishTime(after seconds: Double) -> String {
