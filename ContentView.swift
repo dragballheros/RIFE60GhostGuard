@@ -7,6 +7,7 @@ struct ContentView: View {
     @StateObject private var vm = VideoProcessorViewModel()
     @State private var showingImporter = false
     @State private var showingPhotosPicker = false
+    @State private var showingExportFolderPicker = false
     @State private var showingClearRecoveryConfirmation = false
     @State private var photoItem: PhotosPickerItem?
 
@@ -31,12 +32,8 @@ struct ContentView: View {
                             Label("Recovery data found", systemImage: "arrow.clockwise.circle.fill").foregroundStyle(.orange)
                             Text(vm.recoveryStatusText).font(.caption)
                             if !vm.isProcessing {
-                                Button { Task { await vm.start() } } label: {
-                                    Label(vm.upscaleTo4K ? "Resume 2× 60 FPS Render" : "Resume 60 FPS Render", systemImage: "play.fill")
-                                }
-                                Button(role: .destructive) { showingClearRecoveryConfirmation = true } label: {
-                                    Label("Clear Recovery Data", systemImage: "trash")
-                                }
+                                Button { Task { await vm.start() } } label: { Label(vm.upscaleTo4K ? "Resume 2× 60 FPS Render" : "Resume 60 FPS Render", systemImage: "play.fill") }
+                                Button(role: .destructive) { showingClearRecoveryConfirmation = true } label: { Label("Clear Recovery Data", systemImage: "trash") }
                             }
                             Text("Completed AI passes are kept in persistent storage. If iOS terminates the app, reopening it reuses every completed checkpoint instead of starting the whole render over.").font(.caption).foregroundStyle(.secondary)
                         }
@@ -77,14 +74,15 @@ struct ContentView: View {
                         Text("The processing screen turns completely black immediately. Tap once to wake it; after 20 seconds without a touch it returns to black. OLED black + 1% brightness minimizes display heat while processing continues at high priority.").font(.caption).foregroundStyle(.secondary)
                     }
 
-                    Section("Export") {
+                    Section("Export to Files") {
                         LabeledContent("Final codec", value: "HEVC Main10")
-                        LabeledContent("Container", value: "MOV")
                         LabeledContent("Pixel format", value: "10-bit P010")
                         LabeledContent("File-size target", value: "< 1 GB")
                         Toggle("Preserve original audio", isOn: $vm.preserveAudio).disabled(vm.recoveryAvailable)
-                        Toggle("Auto-save to Photos", isOn: $vm.autoSaveToPhotos)
-                        Text("Final bitrate is duration-aware to stay below the 1 GB target. If Photos cannot save the result, the app automatically falls back to On My iPhone > RIFE 60 Ghost Guard > Exports and shows the exact filename.").font(.caption).foregroundStyle(.secondary)
+                        LabeledContent("Auto-save folder", value: vm.exportFolderName)
+                        Button { showingExportFolderPicker = true } label: { Label("Choose Files Export Folder", systemImage: "folder.badge.plus") }
+                        Button("Use Default App Export Folder") { vm.useDefaultExportFolder() }
+                        Text("Finished videos are automatically copied into this Files folder. Choose a folder once and the app remembers it for future renders. This avoids the Photos import issue and means you no longer need to use Copy/Paste to get the finished video into Files.").font(.caption).foregroundStyle(.secondary)
                     }
 
                     if vm.isProcessing {
@@ -120,49 +118,37 @@ struct ContentView: View {
                         }
                     } else if !vm.recoveryAvailable {
                         Section {
-                            Button { Task { await vm.start() } } label: {
-                                Label(vm.upscaleTo4K ? "Create 2× 60 FPS Video" : "Create 60 FPS Video", systemImage: "wand.and.stars")
-                            }.disabled(vm.inputURL == nil)
+                            Button { Task { await vm.start() } } label: { Label(vm.upscaleTo4K ? "Create 2× 60 FPS Video" : "Create 60 FPS Video", systemImage: "wand.and.stars") }.disabled(vm.inputURL == nil)
                         }
                     }
 
                     Section("Diagnostics") {
                         Button { vm.copyErrorLogs() } label: { Label("Copy Error Logs", systemImage: "doc.on.doc") }
                         if !vm.diagnosticsCopyStatus.isEmpty { Text(vm.diagnosticsCopyStatus).font(.caption).foregroundStyle(.secondary) }
-                        Text("Copies the persistent render log, last stage/progress, thermal state, frame counters, RIFE speed, Real-CUGAN speed, and the last error directly to the clipboard so you can paste it here.").font(.caption).foregroundStyle(.secondary)
+                        Text("Copies the persistent render log, last stage/progress, thermal state, frame counters, RIFE speed, Real-CUGAN speed, export folder, and the last error directly to the clipboard.").font(.caption).foregroundStyle(.secondary)
                     }
 
                     if let out = vm.outputURL {
                         Section("Finished") {
                             if !vm.saveStatusText.isEmpty { Text(vm.saveStatusText).font(.caption) }
-                            ShareLink(item: out) { Label("Share / Save Output", systemImage: "square.and.arrow.up") }
+                            ShareLink(item: out) { Label("Share Output", systemImage: "square.and.arrow.up") }
                             Text(out.lastPathComponent).font(.caption).foregroundStyle(.secondary)
                         }
                     }
-                    if let err = vm.errorText {
-                        Section("Error") {
-                            Text(err).foregroundStyle(.red)
-                        }
-                    }
+                    if let err = vm.errorText { Section("Error") { Text(err).foregroundStyle(.red) } }
                 }
                 .navigationTitle("RIFE 60")
                 .photosPicker(isPresented: $showingPhotosPicker, selection: $photoItem, matching: .videos, photoLibrary: .shared())
                 .fileImporter(isPresented: $showingImporter, allowedContentTypes: [.movie, .mpeg4Movie, .quickTimeMovie, .video], allowsMultipleSelection: false) { result in vm.handleImport(result) }
-                .onChange(of: photoItem) { item in
-                    guard let item else { return }
-                    Task { await vm.handlePhotoSelection(item); photoItem = nil }
-                }
+                .fileImporter(isPresented: $showingExportFolderPicker, allowedContentTypes: [.folder], allowsMultipleSelection: false) { result in vm.handleExportFolderSelection(result) }
+                .onChange(of: photoItem) { item in guard let item else { return }; Task { await vm.handlePhotoSelection(item); photoItem = nil } }
                 .onChange(of: scenePhase) { phase in vm.handleScenePhase(phase) }
                 .alert("Clear Recovery Data?", isPresented: $showingClearRecoveryConfirmation) {
                     Button("Clear Recovery Data", role: .destructive) { vm.clearRecoveryData() }
                     Button("Cancel", role: .cancel) { }
-                } message: {
-                    Text("This permanently deletes the saved source copy and completed render checkpoints for this interrupted job. You can then select a new video and start fresh.")
-                }
+                } message: { Text("This permanently deletes the saved source copy and completed render checkpoints for this interrupted job. You can then select a new video and start fresh.") }
             }
-            if vm.isProcessing && !vm.processingScreenAwake {
-                Color.black.ignoresSafeArea().contentShape(Rectangle()).onTapGesture { vm.wakeProcessingScreen() }.zIndex(999)
-            }
+            if vm.isProcessing && !vm.processingScreenAwake { Color.black.ignoresSafeArea().contentShape(Rectangle()).onTapGesture { vm.wakeProcessingScreen() }.zIndex(999) }
         }
     }
 
