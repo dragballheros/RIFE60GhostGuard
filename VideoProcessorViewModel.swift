@@ -3,6 +3,7 @@ import SwiftUI
 import UIKit
 import Photos
 import PhotosUI
+import AVFoundation
 import CoreTransferable
 import UniformTypeIdentifiers
 import RifeMetal
@@ -354,18 +355,42 @@ final class VideoProcessorViewModel: ObservableObject {
     private struct SavedResult: Sendable { let url: URL; let message: String }
 
     private func saveFinishedVideo(_ source: URL, preferPhotos: Bool) async throws -> SavedResult {
-        if preferPhotos {
-            do {
-                try await saveToPhotos(source)
-                return SavedResult(url: source, message: "Automatically saved to Photos")
-            } catch {
-                DiagnosticsLogger.shared.log("Photos save failed: \(error.localizedDescription). Falling back to Files.")
-                let fallback = try saveToFiles(source)
-                return SavedResult(url: fallback, message: "Photos save failed, so the video was saved to Files: On My iPhone > RIFE 60 Ghost Guard > Exports > \(fallback.lastPathComponent)")
-            }
+        // Always make a durable Documents copy FIRST. This guarantees that the
+        // result survives temp-directory cleanup and gives the share sheet a
+        // stable URL even when PhotoKit rejects an import.
+        let durable = try saveToFiles(source)
+        try await validateFinishedVideo(durable)
+
+        let attrs = try FileManager.default.attributesOfItem(atPath: durable.path)
+        let bytes = (attrs[.size] as? NSNumber)?.int64Value ?? 0
+        DiagnosticsLogger.shared.log("Durable export verified • \(durable.lastPathComponent) • \(bytes) bytes • \(durable.path)")
+
+        guard preferPhotos else {
+            return SavedResult(url: durable, message: "Saved to Files: On My iPhone > RIFE 60 Ghost Guard > \(durable.lastPathComponent)")
         }
-        let fallback = try saveToFiles(source)
-        return SavedResult(url: fallback, message: "Saved to Files: On My iPhone > RIFE 60 Ghost Guard > Exports > \(fallback.lastPathComponent)")
+
+        do {
+            try await saveToPhotos(durable)
+            DiagnosticsLogger.shared.log("PhotoKit save succeeded from durable export.")
+            return SavedResult(url: durable, message: "Saved to Photos • Files backup: On My iPhone > RIFE 60 Ghost Guard > \(durable.lastPathComponent)")
+        } catch {
+            DiagnosticsLogger.shared.log("Photos save failed from durable export: \(error.localizedDescription). Files copy remains available at \(durable.path)")
+            return SavedResult(url: durable, message: "Photos save failed, but the finished video is safe in Files: On My iPhone > RIFE 60 Ghost Guard > \(durable.lastPathComponent)")
+        }
+    }
+
+    private func validateFinishedVideo(_ url: URL) async throws {
+        let asset = AVURLAsset(url: url)
+        guard let track = try await asset.loadTracks(withMediaType: .video).first else {
+            throw NSError(domain: "RIFE60GhostGuard", code: 30, userInfo: [NSLocalizedDescriptionKey: "Finished export has no readable video track."])
+        }
+        let duration = try await asset.load(.duration)
+        let seconds = CMTimeGetSeconds(duration)
+        guard seconds.isFinite, seconds > 0 else {
+            throw NSError(domain: "RIFE60GhostGuard", code: 31, userInfo: [NSLocalizedDescriptionKey: "Finished export has an invalid duration."])
+        }
+        let size = try await track.load(.naturalSize)
+        DiagnosticsLogger.shared.log("Finished export AVFoundation validation passed • \(Int(abs(size.width)))x\(Int(abs(size.height))) • \(String(format: "%.3f", seconds))s")
     }
 
     private func saveToPhotos(_ url: URL) async throws {
@@ -374,23 +399,40 @@ final class VideoProcessorViewModel: ObservableObject {
         guard status == .authorized || status == .limited else {
             throw NSError(domain: "RIFE60GhostGuard", code: 20, userInfo: [NSLocalizedDescriptionKey: "Photos add permission was not granted."])
         }
+
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            PHPhotoLibrary.shared().performChanges({ PHAssetChangeRequest.creationRequestForAssetFromVideo(atFileURL: url) }) { success, error in
-                if success { continuation.resume() }
-                else { continuation.resume(throwing: error ?? NSError(domain: "RIFE60GhostGuard", code: 21, userInfo: [NSLocalizedDescriptionKey: "Photos could not save the finished video."])) }
+            PHPhotoLibrary.shared().performChanges({
+                let request = PHAssetCreationRequest.forAsset()
+                let options = PHAssetResourceCreationOptions()
+                options.shouldMoveFile = false
+                options.originalFilename = url.lastPathComponent
+                request.addResource(with: .video, fileURL: url, options: options)
+            }) { success, error in
+                if success {
+                    continuation.resume()
+                } else {
+                    continuation.resume(throwing: error ?? NSError(domain: "RIFE60GhostGuard", code: 21, userInfo: [NSLocalizedDescriptionKey: "Photos could not save the finished video."]))
+                }
             }
         }
     }
 
     private func saveToFiles(_ source: URL) throws -> URL {
         let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-        let exports = documents.appendingPathComponent("Exports", isDirectory: true)
-        try FileManager.default.createDirectory(at: exports, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: documents, withIntermediateDirectories: true)
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyyMMdd-HHmmss"
-        let destination = exports.appendingPathComponent("RIFE60-2X60-\(formatter.string(from: Date())).mov")
+        let ext = source.pathExtension.isEmpty ? "mov" : source.pathExtension.lowercased()
+        let destination = documents.appendingPathComponent("RIFE60-2X60-\(formatter.string(from: Date())).\(ext)")
         try? FileManager.default.removeItem(at: destination)
         try FileManager.default.copyItem(at: source, to: destination)
+
+        guard FileManager.default.fileExists(atPath: destination.path),
+              let attrs = try? FileManager.default.attributesOfItem(atPath: destination.path),
+              let size = attrs[.size] as? NSNumber,
+              size.int64Value > 0 else {
+            throw NSError(domain: "RIFE60GhostGuard", code: 32, userInfo: [NSLocalizedDescriptionKey: "The finished video could not be persisted to the app's Files folder."])
+        }
         return destination
     }
 }
