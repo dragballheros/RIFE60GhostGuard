@@ -10,9 +10,7 @@ final class CompressionGuard {
     private let context = CIContext(options: [.cacheIntermediates: false])
     private let colorSpace = CGColorSpace(name: CGColorSpace.sRGB)
 
-    // Shadow-only cleanup for colored speckle/blotchy noise in dark anime areas.
-    // It uses a tiny spatial blur as a chroma reference, then preserves the original
-    // luminance and strongly protects edges/black line art. Bright areas are untouched.
+    // Exact Build 115 chroma cleanup. Keep this behavior unchanged.
     private static let shadowChromaKernel: CIKernel? = {
         let source = """
         kernel vec4 shadowChromaCleanup(sampler original, sampler smooth) {
@@ -23,20 +21,50 @@ final class CompressionGuard {
             const vec3 lumaW = vec3(0.2126, 0.7152, 0.0722);
             float yo = dot(o.rgb, lumaW);
             float ys = dot(s.rgb, lumaW);
-
-            // Smooth chroma while restoring the exact source luminance. This attacks
-            // red/green/blue shadow crawling without lifting blacks or erasing line luma.
             vec3 chromaClean = clamp(s.rgb + vec3(yo - ys), 0.0, 1.0);
-
-            // Full strength only in deep shadows, then fade out before midtones.
             float shadow = 1.0 - smoothstep(0.10, 0.30, yo);
-
-            // Strong protection for original anime outlines and cel boundaries.
             float localDelta = length(o.rgb - s.rgb);
             float edgeProtect = 1.0 - smoothstep(0.035, 0.105, localDelta);
-
             float amount = 0.78 * shadow * edgeProtect;
             vec3 rgb = mix(o.rgb, chromaClean, amount);
+            return vec4(rgb, o.a);
+        }
+        """
+        return CIKernel(source: source)
+    }()
+
+    // CapCut-Clarity replacement for anime. This deliberately avoids chroma sharpening
+    // and hard black clipping. It adds bounded luminance-only local contrast, a small
+    // luma-aware color boost, and a gentle shadow-deepen curve. True black stays black;
+    // dark hair/clothing/shadows retain their internal values instead of being crushed.
+    private static let animeClarityKernel: CIKernel? = {
+        let source = """
+        kernel vec4 animeClarity(sampler original, sampler localBase) {
+            vec2 p = samplerCoord(original);
+            vec4 o = sample(original, p);
+            vec4 b = sample(localBase, samplerTransform(localBase, destCoord()));
+            const vec3 lumaW = vec3(0.2126, 0.7152, 0.0722);
+
+            float y = dot(o.rgb, lumaW);
+            float yb = dot(b.rgb, lumaW);
+            float detail = y - yb;
+
+            // Do not boost strong edges; Sharpie handles line definition later.
+            float edgeProtect = 1.0 - smoothstep(0.055, 0.145, abs(detail));
+            float clarity = clamp(detail * 0.24, -0.012, 0.012) * edgeProtect;
+
+            // Richer blacks without an OLED threshold: at most a few percent darker,
+            // continuously proportional to the existing value, so detail cannot vanish.
+            float shadowWeight = 1.0 - smoothstep(0.045, 0.32, y);
+            float shadowDeepen = y * 0.035 * shadowWeight;
+            float targetY = clamp(y + clarity - shadowDeepen, 0.0, 1.0);
+
+            // Gentle vibrance-like boost. Deep shadows receive almost none so the
+            // Build 115 chroma cleanup is not undone or made visible again.
+            float colorWindow = smoothstep(0.10, 0.28, y) * (1.0 - smoothstep(0.82, 0.98, y));
+            float sat = 1.0 + 0.065 * colorWindow;
+            vec3 chroma = o.rgb - vec3(y);
+            vec3 rgb = clamp(vec3(targetY) + chroma * sat, 0.0, 1.0);
             return vec4(rgb, o.a);
         }
         """
@@ -60,14 +88,13 @@ final class CompressionGuard {
         return (output, extent)
     }
 
-    /// Deep-shadow chroma cleanup only. This is intentionally run BEFORE Sharpie so
-    /// the final neural line work can never be softened by this spatial chroma filter.
-    func cleanShadowChroma(_ input: CVPixelBuffer) throws -> CVPixelBuffer {
+    /// Exact Build 115 shadow chroma operation, isolated so pass 1 can keep its old
+    /// behavior while the post-CUGAN pre-Sharpie path can add Anime Clarity afterward.
+    private func cleanShadowChromaOnly(_ input: CVPixelBuffer) throws -> CVPixelBuffer {
         try autoreleasepool {
             let (output, extent) = try allocateLike(input)
             let original = CIImage(cvPixelBuffer: input)
             var image = original
-
             if let kernel = Self.shadowChromaKernel,
                let blur = CIFilter(name: "CIGaussianBlur") {
                 blur.setValue(original, forKey: kCIInputImageKey)
@@ -81,44 +108,70 @@ final class CompressionGuard {
                     image = cleaned.cropped(to: extent)
                 }
             }
-
             context.render(image, to: output, bounds: extent, colorSpace: colorSpace)
             context.clearCaches()
             return output
         }
     }
 
-    /// Light final compression polish only. No shadow/chroma blur is allowed here,
-    /// because this runs AFTER Sharpie and must leave the finished line style intact.
+    private func applyAnimeClarity(_ input: CVPixelBuffer) throws -> CVPixelBuffer {
+        try autoreleasepool {
+            let (output, extent) = try allocateLike(input)
+            let original = CIImage(cvPixelBuffer: input)
+            var image = original
+            if let kernel = Self.animeClarityKernel,
+               let blur = CIFilter(name: "CIGaussianBlur") {
+                blur.setValue(original, forKey: kCIInputImageKey)
+                blur.setValue(6.0, forKey: kCIInputRadiusKey)
+                if let base = blur.outputImage?.cropped(to: extent),
+                   let result = kernel.apply(
+                    extent: extent,
+                    roiCallback: { index, rect in index == 1 ? rect.insetBy(dx: -12, dy: -12) : rect },
+                    arguments: [original, base]
+                   ) {
+                    image = result.cropped(to: extent)
+                }
+            }
+            context.render(image, to: output, bounds: extent, colorSpace: colorSpace)
+            context.clearCaches()
+            return output
+        }
+    }
+
+    /// Post-CUGAN pre-Sharpie path: preserve Build 115 chroma cleanup exactly, then
+    /// add safe Anime Clarity. Sharpie sees the finished color/contrast master.
+    func cleanShadowChroma(_ input: CVPixelBuffer) throws -> CVPixelBuffer {
+        let chromaCleaned = try cleanShadowChromaOnly(input)
+        return try applyAnimeClarity(chromaCleaned)
+    }
+
+    /// Light final compression polish only. No spatial clarity/chroma work after Sharpie.
     func cleanFinalCompression(_ input: CVPixelBuffer) throws -> CVPixelBuffer {
         try autoreleasepool {
             let (output, extent) = try allocateLike(input)
             var image = CIImage(cvPixelBuffer: input)
-
             if let noise = CIFilter(name: "CINoiseReduction") {
                 noise.setValue(image, forKey: kCIInputImageKey)
                 noise.setValue(0.012, forKey: "inputNoiseLevel")
                 noise.setValue(0.50, forKey: "inputSharpness")
                 if let result = noise.outputImage { image = result }
             }
-
             if let sharpen = CIFilter(name: "CISharpenLuminance") {
                 sharpen.setValue(image, forKey: kCIInputImageKey)
                 sharpen.setValue(0.16, forKey: kCIInputSharpnessKey)
                 sharpen.setValue(1.0, forKey: kCIInputRadiusKey)
                 if let result = sharpen.outputImage { image = result }
             }
-
             context.render(image.cropped(to: extent), to: output, bounds: extent, colorSpace: colorSpace)
             context.clearCaches()
             return output
         }
     }
 
-    /// Legacy/full Compression Guard path used by earlier pipeline stages.
-    /// Keep behavior compatible: shadow chroma cleanup followed by normal polish.
+    /// Earlier Compression Guard pass remains Build 115-compatible and does NOT apply
+    /// Anime Clarity here. This prevents the new look from being applied twice.
     func clean(_ input: CVPixelBuffer) throws -> CVPixelBuffer {
-        let shadowCleaned = try cleanShadowChroma(input)
+        let shadowCleaned = try cleanShadowChromaOnly(input)
         return try cleanFinalCompression(shadowCleaned)
     }
 }
