@@ -64,13 +64,21 @@ final class RealCUGANPass {
         try? FileManager.default.removeItem(at: outURL)
         let writer = try AVAssetWriter(outputURL: outURL, fileType: .mov)
 
-        // Keep the final file below the requested ~1 GB ceiling while preserving
-        // the highest practical HEVC Main10 quality inside that size budget.
+        // High-quality HEVC Main10 target, with the ~1 GB limit acting only as
+        // a CEILING. Short clips no longer try to inflate themselves to 1 GB.
+        // 0.30 bits/pixel/frame gives ~149 Mbps for 4K60, ~66 Mbps for 1440p60,
+        // and ~37 Mbps for 1080p60 before the file-size ceiling is applied.
         let targetTotalBytes = 950_000_000.0
-        let containerReserveBytes = 12_000_000.0
+        let containerReserveBytes = 16_000_000.0
         let usableBits = max((targetTotalBytes - containerReserveBytes) * 8.0, 8_000_000.0)
         let audioBits = max(finalAudioBitrate, 0) * seconds
-        let videoBitrate = Int(max((usableBits - audioBits) / seconds * 0.97, 500_000.0))
+        let sizeBudgetBitrate = max((usableBits - audioBits) / seconds * 0.96, 500_000.0)
+        let qualityBitrate = Double(targetWidth * targetHeight) * 60.0 * 0.30
+        let codecSafetyCeiling = 160_000_000.0
+        let videoBitrate = Int(max(500_000.0, min(qualityBitrate, sizeBudgetBitrate, codecSafetyCeiling)))
+        let estimatedTotalMB = ((Double(videoBitrate) + max(finalAudioBitrate, 0)) * seconds / 8.0) / 1_000_000.0
+        DiagnosticsLogger.shared.log("Real-CUGAN bitrate policy • qualityTarget=\(Int(qualityBitrate)) • sizeCeiling=\(Int(sizeBudgetBitrate)) • selected=\(videoBitrate) • estimated=\(String(format: "%.1f", estimatedTotalMB)) MB")
+
         let compression: [String: Any] = [
             AVVideoAverageBitRateKey: videoBitrate,
             AVVideoQualityKey: 1.0,
