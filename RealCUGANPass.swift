@@ -17,12 +17,11 @@ final class RealCUGANPass {
         var stepY: Int { height - overlap * 2 }
     }
 
-    // Keep the proven 512x512 path for smaller inputs.  For 1080p-class input,
-    // 704x608 is deliberately chosen because a 32px overlap leaves a 640x544
-    // useful core: 1920x1080 is covered in only 3x2 = 6 predictions instead of
-    // 5x3 = 15.  The Real-CUGAN weights/math, Noise 3 and intensity are unchanged.
+    // Quality is unchanged: same Real-CUGAN weights, Noise 3, intensity and 32px
+    // overlap.  The 1080p profile simply uses a wider inference surface so a
+    // 1920x1080 frame needs 2x2 = 4 predictions instead of 3x2 = 6.
     private let fallbackProfile = TileProfile(width: 512, height: 512, overlap: 32, modelName: "RealCUGAN2xNoise3_Tile512")
-    private let fast1080Profile = TileProfile(width: 704, height: 608, overlap: 32, modelName: "RealCUGAN2xNoise3_Tile704x608")
+    private let fast1080Profile = TileProfile(width: 1024, height: 608, overlap: 32, modelName: "RealCUGAN2xNoise3_Tile1024x608")
 
     private var tileInputPool: CVPixelBufferPool?
     private var stitchedFramePool: CVPixelBufferPool?
@@ -48,18 +47,16 @@ final class RealCUGANPass {
         let targetWidth = width * 2
         let targetHeight = height * 2
 
-        // 720p is slightly more efficient on 512x512.  1080p-class landscape or
-        // portrait inputs gain substantially from the rectangular six/eight-tile model.
         let profile = (width >= 1600 || height >= 1600) ? fast1080Profile : fallbackProfile
         let tilesAcross = Int(ceil(Double(width) / Double(profile.stepX)))
         let tilesDown = Int(ceil(Double(height) / Double(profile.stepY)))
         let tilesPerFrame = tilesAcross * tilesDown
 
-        DiagnosticsLogger.shared.log("Real-CUGAN entered • native source=\(width)x\(height) • native 2x target=\(targetWidth)x\(targetHeight) • tile=\(profile.width)x\(profile.height) • core=\(profile.stepX)x\(profile.stepY) • tiles/frame=\(tilesPerFrame) • duration=\(String(format: "%.3f", seconds))s • thermal=\(currentThermalStateName())")
+        DiagnosticsLogger.shared.log("Real-CUGAN entered • native source=\(width)x\(height) • native 2x target=\(targetWidth)x\(targetHeight) • tile=\(profile.width)x\(profile.height) • core=\(profile.stepX)x\(profile.stepY) • tiles/frame=\(tilesPerFrame) • bufferReuse=true • duration=\(String(format: "%.3f", seconds))s • thermal=\(currentThermalStateName())")
         progress(0.001, "Pass 3/3 • Real-CUGAN native 2× • \(width)×\(height) → \(targetWidth)×\(targetHeight)…")
 
         try preparePools(targetWidth: targetWidth, targetHeight: targetHeight, profile: profile)
-        DiagnosticsLogger.shared.log("Real-CUGAN tile pools ready • tile=\(profile.width)x\(profile.height) • overlap=\(profile.overlap) • core=\(profile.stepX)x\(profile.stepY)")
+        DiagnosticsLogger.shared.log("Real-CUGAN tile pools ready • Metal compatible • tile=\(profile.width)x\(profile.height) • overlap=\(profile.overlap) • core=\(profile.stepX)x\(profile.stepY)")
 
         progress(0.002, "Pass 3/3 • Loading Real-CUGAN Anime 2x Noise 3…")
         DiagnosticsLogger.shared.log("Real-CUGAN tiled model load begin • \(profile.modelName)")
@@ -68,7 +65,9 @@ final class RealCUGANPass {
 
         let reader = try AVAssetReader(asset: asset)
         let output = AVAssetReaderTrackOutput(track: track, outputSettings: [
-            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA
+            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
+            kCVPixelBufferMetalCompatibilityKey as String: true,
+            kCVPixelBufferIOSurfacePropertiesKey as String: [:]
         ])
         output.alwaysCopiesSampleData = false
         guard reader.canAdd(output) else { throw ProcessorError.reader("cannot attach Real-CUGAN reader") }
@@ -78,7 +77,6 @@ final class RealCUGANPass {
         try? FileManager.default.removeItem(at: outURL)
         let writer = try AVAssetWriter(outputURL: outURL, fileType: .mov)
 
-        // High-quality HEVC Main10 target, with the ~1 GB limit acting only as a ceiling.
         let targetTotalBytes = 950_000_000.0
         let containerReserveBytes = 16_000_000.0
         let usableBits = max((targetTotalBytes - containerReserveBytes) * 8.0, 8_000_000.0)
@@ -115,6 +113,7 @@ final class RealCUGANPass {
             kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange,
             kCVPixelBufferWidthKey as String: targetWidth,
             kCVPixelBufferHeightKey as String: targetHeight,
+            kCVPixelBufferMetalCompatibilityKey as String: true,
             kCVPixelBufferIOSurfacePropertiesKey as String: [:]
         ])
         guard writer.canAdd(input) else { throw ProcessorError.writer("cannot attach native 2x HEVC Main10 writer") }
@@ -147,20 +146,18 @@ final class RealCUGANPass {
             let upscaled = try upscaleNative2x(decodedFrame, model: model, alpha: alpha, frameNumber: frameNumber, profile: profile)
             inferenceSeconds += CFAbsoluteTimeGetCurrent() - inferenceStart
 
-            if frameNumber == 1 {
-                DiagnosticsLogger.shared.log("Real-CUGAN first tiled frame complete • output=\(CVPixelBufferGetWidth(upscaled))x\(CVPixelBufferGetHeight(upscaled))")
-            }
-
             let encodeStart = CFAbsoluteTimeGetCurrent()
             try await append10Bit(upscaled, at: pts, input: input, adaptor: adaptor, pool: writerPool)
             encodeSeconds += CFAbsoluteTimeGetCurrent() - encodeStart
             frames += 1
 
-            if frames == 1 || frames % 10 == 0 {
+            if frames == 1 || frames % 20 == 0 {
                 DiagnosticsLogger.shared.log("Real-CUGAN frame \(frames) complete • \(tilesPerFrame) tiles/frame • inference=\(String(format: "%.1f", inferenceSeconds * 1000.0 / Double(frames)))ms/frame • thermal=\(currentThermalStateName())")
             }
 
-            if frames % 3 == 0 {
+            // UI/diagnostic publishing is deliberately less frequent during CUGAN.
+            // It does not change inference output and avoids waking the main thread every 3 frames.
+            if frames % 12 == 0 {
                 let elapsed = max(CFAbsoluteTimeGetCurrent() - passStart, 0.001)
                 var t = PerformanceTelemetry()
                 t.upscaledFrames = frames
@@ -180,7 +177,6 @@ final class RealCUGANPass {
 
         if reader.status == .failed { throw ProcessorError.reader(reader.error?.localizedDescription ?? "Real-CUGAN decode failed") }
         guard frames > 0 else { throw ProcessorError.conversionFailed("Real-CUGAN received zero decoded frames") }
-        DiagnosticsLogger.shared.log("Real-CUGAN tiled inference complete • frames=\(frames) • finishing writer")
         input.markAsFinished()
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in writer.finishWriting { continuation.resume() } }
         guard writer.status == .completed else { throw ProcessorError.writer(writer.error?.localizedDescription ?? "native 2x finish failed") }
@@ -206,12 +202,12 @@ final class RealCUGANPass {
             kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
             kCVPixelBufferWidthKey as String: profile.width,
             kCVPixelBufferHeightKey as String: profile.height,
+            kCVPixelBufferMetalCompatibilityKey as String: true,
             kCVPixelBufferIOSurfacePropertiesKey as String: [:]
         ]
         var pool: CVPixelBufferPool?
-        guard CVPixelBufferPoolCreate(kCFAllocatorDefault, nil, attrs as CFDictionary, &pool) == kCVReturnSuccess,
-              let pool else {
-            throw ProcessorError.conversionFailed("could not create Real-CUGAN \(profile.width)x\(profile.height) tile pool")
+        guard CVPixelBufferPoolCreate(kCFAllocatorDefault, nil, attrs as CFDictionary, &pool) == kCVReturnSuccess, let pool else {
+            throw ProcessorError.conversionFailed("could not create Real-CUGAN input tile pool")
         }
         tileInputPool = pool
 
@@ -219,11 +215,11 @@ final class RealCUGANPass {
             kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
             kCVPixelBufferWidthKey as String: targetWidth,
             kCVPixelBufferHeightKey as String: targetHeight,
+            kCVPixelBufferMetalCompatibilityKey as String: true,
             kCVPixelBufferIOSurfacePropertiesKey as String: [:]
         ]
         var stitched: CVPixelBufferPool?
-        guard CVPixelBufferPoolCreate(kCFAllocatorDefault, nil, stitchedAttrs as CFDictionary, &stitched) == kCVReturnSuccess,
-              let stitched else {
+        guard CVPixelBufferPoolCreate(kCFAllocatorDefault, nil, stitchedAttrs as CFDictionary, &stitched) == kCVReturnSuccess, let stitched else {
             throw ProcessorError.conversionFailed("could not create native 2x Real-CUGAN frame pool")
         }
         stitchedFramePool = stitched
@@ -245,9 +241,15 @@ final class RealCUGANPass {
             throw ProcessorError.conversionFailed("Real-CUGAN tile pools are unavailable")
         }
         var stitched: CVPixelBuffer?
-        guard CVPixelBufferPoolCreatePixelBuffer(nil, stitchedFramePool, &stitched) == kCVReturnSuccess,
-              let stitched else {
+        guard CVPixelBufferPoolCreatePixelBuffer(nil, stitchedFramePool, &stitched) == kCVReturnSuccess, let stitched else {
             throw ProcessorError.conversionFailed("could not allocate native 2x stitched frame")
+        }
+
+        // One tile buffer is reused for every synchronous prediction in this frame.
+        // This removes repeated IOSurface/CVPixelBuffer pool churn without touching pixels.
+        var reusableTile: CVPixelBuffer?
+        guard CVPixelBufferPoolCreatePixelBuffer(nil, tileInputPool, &reusableTile) == kCVReturnSuccess, let tileBuffer = reusableTile else {
+            throw ProcessorError.conversionFailed("could not allocate reusable Real-CUGAN input tile")
         }
 
         let sourceImage = CIImage(cvPixelBuffer: source).clampedToExtent()
@@ -263,27 +265,11 @@ final class RealCUGANPass {
                 let coreWidth = min(profile.stepX, sourceWidth - x)
                 tileIndex += 1
 
-                var tileBuffer: CVPixelBuffer?
-                guard CVPixelBufferPoolCreatePixelBuffer(nil, tileInputPool, &tileBuffer) == kCVReturnSuccess,
-                      let tileBuffer else {
-                    throw ProcessorError.conversionFailed("could not allocate Real-CUGAN input tile")
-                }
-
-                let inputRect = CGRect(
-                    x: x - profile.overlap,
-                    y: y - profile.overlap,
-                    width: profile.width,
-                    height: profile.height
-                )
+                let inputRect = CGRect(x: x - profile.overlap, y: y - profile.overlap, width: profile.width, height: profile.height)
                 let tileImage = sourceImage
                     .cropped(to: inputRect)
                     .transformed(by: CGAffineTransform(translationX: -inputRect.origin.x, y: -inputRect.origin.y))
-                ciContext.render(
-                    tileImage,
-                    to: tileBuffer,
-                    bounds: CGRect(x: 0, y: 0, width: profile.width, height: profile.height),
-                    colorSpace: colorSpace
-                )
+                ciContext.render(tileImage, to: tileBuffer, bounds: CGRect(x: 0, y: 0, width: profile.width, height: profile.height), colorSpace: colorSpace)
 
                 try autoreleasepool {
                     let provider = try MLDictionaryFeatureProvider(dictionary: [
@@ -297,18 +283,8 @@ final class RealCUGANPass {
 
                     let outputImage = CIImage(cvPixelBuffer: modelOutput)
                     let cropOrigin = profile.overlap * 2
-                    let cropRect = CGRect(
-                        x: cropOrigin,
-                        y: cropOrigin,
-                        width: coreWidth * 2,
-                        height: coreHeight * 2
-                    )
-                    let destinationRect = CGRect(
-                        x: x * 2,
-                        y: y * 2,
-                        width: coreWidth * 2,
-                        height: coreHeight * 2
-                    )
+                    let cropRect = CGRect(x: cropOrigin, y: cropOrigin, width: coreWidth * 2, height: coreHeight * 2)
+                    let destinationRect = CGRect(x: x * 2, y: y * 2, width: coreWidth * 2, height: coreHeight * 2)
                     let translated = outputImage
                         .cropped(to: cropRect)
                         .transformed(by: CGAffineTransform(
@@ -326,8 +302,7 @@ final class RealCUGANPass {
             y += profile.stepY
         }
 
-        guard CVPixelBufferGetWidth(stitched) == targetWidth,
-              CVPixelBufferGetHeight(stitched) == targetHeight else {
+        guard CVPixelBufferGetWidth(stitched) == targetWidth, CVPixelBufferGetHeight(stitched) == targetHeight else {
             throw ProcessorError.conversionFailed("Real-CUGAN stitched frame size mismatch")
         }
         return stitched
