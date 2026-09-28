@@ -24,15 +24,14 @@ final class CompressionGuard {
             float yo = dot(o.rgb, lumaW);
             float ys = dot(s.rgb, lumaW);
 
-            // Smooth chroma while restoring the source luminance. This removes
-            // red/green/blue shadow crawling without washing out legitimate blacks.
+            // Smooth chroma while restoring the exact source luminance. This attacks
+            // red/green/blue shadow crawling without lifting blacks or erasing line luma.
             vec3 chromaClean = clamp(s.rgb + vec3(yo - ys), 0.0, 1.0);
 
-            // Only operate in shadows. Full strength below ~10% luma and smoothly
-            // disappear before midtones so normal anime colors remain unchanged.
+            // Full strength only in deep shadows, then fade out before midtones.
             float shadow = 1.0 - smoothstep(0.10, 0.30, yo);
 
-            // Do not smear outlines, hard cel-shading boundaries, text, or detail.
+            // Strong protection for original anime outlines and cel boundaries.
             float localDelta = length(o.rgb - s.rgb);
             float edgeProtect = 1.0 - smoothstep(0.035, 0.105, localDelta);
 
@@ -44,80 +43,82 @@ final class CompressionGuard {
         return CIKernel(source: source)
     }()
 
-    func clean(_ input: CVPixelBuffer) throws -> CVPixelBuffer {
+    private func allocateLike(_ input: CVPixelBuffer) throws -> (CVPixelBuffer, CGRect) {
+        let width = CVPixelBufferGetWidth(input)
+        let height = CVPixelBufferGetHeight(input)
+        let extent = CGRect(x: 0, y: 0, width: width, height: height)
+        var output: CVPixelBuffer?
+        let attrs: [CFString: Any] = [
+            kCVPixelBufferPixelFormatTypeKey: kCVPixelFormatType_32BGRA,
+            kCVPixelBufferWidthKey: width,
+            kCVPixelBufferHeightKey: height,
+            kCVPixelBufferMetalCompatibilityKey: true,
+            kCVPixelBufferIOSurfacePropertiesKey: [:]
+        ]
+        let status = CVPixelBufferCreate(kCFAllocatorDefault, width, height, kCVPixelFormatType_32BGRA, attrs as CFDictionary, &output)
+        guard status == kCVReturnSuccess, let output else { throw Error.allocationFailed }
+        return (output, extent)
+    }
+
+    /// Deep-shadow chroma cleanup only. This is intentionally run BEFORE Sharpie so
+    /// the final neural line work can never be softened by this spatial chroma filter.
+    func cleanShadowChroma(_ input: CVPixelBuffer) throws -> CVPixelBuffer {
         try autoreleasepool {
-            let width = CVPixelBufferGetWidth(input)
-            let height = CVPixelBufferGetHeight(input)
-            let extent = CGRect(x: 0, y: 0, width: width, height: height)
+            let (output, extent) = try allocateLike(input)
+            let original = CIImage(cvPixelBuffer: input)
+            var image = original
 
-            var output: CVPixelBuffer?
-            let attrs: [CFString: Any] = [
-                kCVPixelBufferPixelFormatTypeKey: kCVPixelFormatType_32BGRA,
-                kCVPixelBufferWidthKey: width,
-                kCVPixelBufferHeightKey: height,
-                kCVPixelBufferMetalCompatibilityKey: true,
-                kCVPixelBufferIOSurfacePropertiesKey: [:]
-            ]
-            let status = CVPixelBufferCreate(
-                kCFAllocatorDefault,
-                width,
-                height,
-                kCVPixelFormatType_32BGRA,
-                attrs as CFDictionary,
-                &output
-            )
-            guard status == kCVReturnSuccess, let output else {
-                throw Error.allocationFailed
-            }
-
-            var image = CIImage(cvPixelBuffer: input)
-
-            // First remove the colored crawling/blotching that is most visible in
-            // near-black gradients. This is deliberately before general NR/sharpen.
             if let kernel = Self.shadowChromaKernel,
                let blur = CIFilter(name: "CIGaussianBlur") {
-                blur.setValue(image, forKey: kCIInputImageKey)
+                blur.setValue(original, forKey: kCIInputImageKey)
                 blur.setValue(1.45, forKey: kCIInputRadiusKey)
                 if let smooth = blur.outputImage?.cropped(to: extent),
                    let cleaned = kernel.apply(
                     extent: extent,
-                    roiCallback: { index, rect in
-                        index == 1 ? rect.insetBy(dx: -3, dy: -3) : rect
-                    },
-                    arguments: [image, smooth]
+                    roiCallback: { index, rect in index == 1 ? rect.insetBy(dx: -3, dy: -3) : rect },
+                    arguments: [original, smooth]
                    ) {
                     image = cleaned.cropped(to: extent)
                 }
             }
 
+            context.render(image, to: output, bounds: extent, colorSpace: colorSpace)
+            context.clearCaches()
+            return output
+        }
+    }
+
+    /// Light final compression polish only. No shadow/chroma blur is allowed here,
+    /// because this runs AFTER Sharpie and must leave the finished line style intact.
+    func cleanFinalCompression(_ input: CVPixelBuffer) throws -> CVPixelBuffer {
+        try autoreleasepool {
+            let (output, extent) = try allocateLike(input)
+            var image = CIImage(cvPixelBuffer: input)
+
             if let noise = CIFilter(name: "CINoiseReduction") {
                 noise.setValue(image, forKey: kCIInputImageKey)
                 noise.setValue(0.012, forKey: "inputNoiseLevel")
                 noise.setValue(0.50, forKey: "inputSharpness")
-                if let result = noise.outputImage {
-                    image = result
-                }
+                if let result = noise.outputImage { image = result }
             }
 
             if let sharpen = CIFilter(name: "CISharpenLuminance") {
                 sharpen.setValue(image, forKey: kCIInputImageKey)
                 sharpen.setValue(0.16, forKey: kCIInputSharpnessKey)
                 sharpen.setValue(1.0, forKey: kCIInputRadiusKey)
-                if let result = sharpen.outputImage {
-                    image = result
-                }
+                if let result = sharpen.outputImage { image = result }
             }
 
-            context.render(
-                image.cropped(to: extent),
-                to: output,
-                bounds: extent,
-                colorSpace: colorSpace
-            )
-
-            // Do not let Core Image retain temporary textures across a long video.
+            context.render(image.cropped(to: extent), to: output, bounds: extent, colorSpace: colorSpace)
             context.clearCaches()
             return output
         }
+    }
+
+    /// Legacy/full Compression Guard path used by earlier pipeline stages.
+    /// Keep behavior compatible: shadow chroma cleanup followed by normal polish.
+    func clean(_ input: CVPixelBuffer) throws -> CVPixelBuffer {
+        let shadowCleaned = try cleanShadowChroma(input)
+        return try cleanFinalCompression(shadowCleaned)
     }
 }
