@@ -3,9 +3,7 @@ import CoreImage
 import CoreVideo
 
 final class CompressionGuard {
-    enum Error: Swift.Error {
-        case allocationFailed
-    }
+    enum Error: Swift.Error { case allocationFailed }
 
     private let context = CIContext(options: [.cacheIntermediates: false])
     private let colorSpace = CGColorSpace(name: CGColorSpace.sRGB)
@@ -17,7 +15,6 @@ final class CompressionGuard {
             vec2 p = samplerCoord(original);
             vec4 o = sample(original, p);
             vec4 s = sample(smooth, samplerTransform(smooth, destCoord()));
-
             const vec3 lumaW = vec3(0.2126, 0.7152, 0.0722);
             float yo = dot(o.rgb, lumaW);
             float ys = dot(s.rgb, lumaW);
@@ -33,10 +30,10 @@ final class CompressionGuard {
         return CIKernel(source: source)
     }()
 
-    // Strong anime clarity tuned toward the supplied CapCut Clarity 100 reference.
-    // The contrast boost remains luminance-only: chroma is never sharpened, which avoids
-    // recreating the colored dark noise that motivated replacing CapCut in the first place.
-    // There is also no OLED threshold or forced-black classifier.
+    // CapCut-Clarity-style anime treatment. Build 123 matched much of the tonal clarity,
+    // but its fixed +8.5% saturation was too weak and its luminance window excluded too
+    // much colored hair. This version adds adaptive vibrance/color separation while still
+    // keeping deep near-black regions protected from chroma amplification.
     private static let animeClarityKernel: CIKernel? = {
         let source = """
         kernel vec4 animeClarity(sampler original, sampler localBase) {
@@ -49,25 +46,37 @@ final class CompressionGuard {
             float yb = dot(b.rgb, lumaW);
             float detail = y - yb;
 
-            // Stronger mid-scale tonal separation, while tapering on very strong edges
-            // because Sharpie is responsible for the final line definition.
+            // Strong local/midtone luminance separation from Build 123.
             float edgeProtect = 1.0 - smoothstep(0.075, 0.190, abs(detail));
             float tonalWindow = smoothstep(0.025, 0.13, y) * (1.0 - smoothstep(0.90, 0.995, y));
             float clarity = clamp(detail * 0.58, -0.030, 0.030) * edgeProtect * tonalWindow;
 
-            // Richer blacks via a continuous proportional curve only. This cannot turn a
-            // normal dark anime region into hard black: the maximum deepening is 5.5% of
-            // its own luminance and fades away through the midtones.
+            // Richer blacks remain proportional only; no hard-black/OLED classifier.
             float shadowWeight = 1.0 - smoothstep(0.055, 0.38, y);
             float shadowDeepen = y * 0.055 * shadowWeight;
             float targetY = clamp(y + clarity - shadowDeepen, 0.0, 1.0);
 
-            // Small vibrance boost for the more defined CapCut-like color separation.
-            // Deep shadows remain excluded so Build 115's chroma cleanup stays effective.
-            float colorWindow = smoothstep(0.14, 0.34, y) * (1.0 - smoothstep(0.84, 0.98, y));
-            float sat = 1.0 + 0.085 * colorWindow;
-            vec3 chroma = o.rgb - vec3(y);
-            vec3 rgb = clamp(vec3(targetY) + chroma * sat, 0.0, 1.0);
+            // Adaptive vibrance is the missing part of the CapCut 100 look. Measure
+            // existing chroma, then boost colorful anime midtones more strongly while
+            // tapering already extreme colors to avoid clipping/neon artifacts.
+            vec3 sourceChroma = o.rgb - vec3(y);
+            float chromaMagnitude = length(sourceChroma);
+            float colorPresence = smoothstep(0.025, 0.115, chromaMagnitude);
+            float extremeProtect = 1.0 - 0.35 * smoothstep(0.28, 0.52, chromaMagnitude);
+
+            // Start the color window lower than #123 so pink/red/blue hair shading is
+            // included. Still fade to zero in near-black shadows so Build 115's cleaned
+            // dark chroma noise is never re-amplified.
+            float shadowColorProtect = smoothstep(0.075, 0.19, y);
+            float highlightColorProtect = 1.0 - smoothstep(0.88, 0.985, y);
+            float colorWindow = shadowColorProtect * highlightColorProtect;
+
+            // Up to ~20% chroma gain on genuinely colorful midtones, versus 8.5% in #123.
+            // Neutral whites/grays barely move because colorPresence approaches zero.
+            float satGain = 0.055 + 0.145 * colorPresence;
+            float sat = 1.0 + satGain * colorWindow * extremeProtect;
+
+            vec3 rgb = clamp(vec3(targetY) + sourceChroma * sat, 0.0, 1.0);
             return vec4(rgb, o.a);
         }
         """
@@ -91,23 +100,18 @@ final class CompressionGuard {
         return (output, extent)
     }
 
-    /// Exact Build 115 shadow chroma operation, isolated so pass 1 can keep its old
-    /// behavior while the post-CUGAN pre-Sharpie path can add Anime Clarity afterward.
     private func cleanShadowChromaOnly(_ input: CVPixelBuffer) throws -> CVPixelBuffer {
         try autoreleasepool {
             let (output, extent) = try allocateLike(input)
             let original = CIImage(cvPixelBuffer: input)
             var image = original
-            if let kernel = Self.shadowChromaKernel,
-               let blur = CIFilter(name: "CIGaussianBlur") {
+            if let kernel = Self.shadowChromaKernel, let blur = CIFilter(name: "CIGaussianBlur") {
                 blur.setValue(original, forKey: kCIInputImageKey)
                 blur.setValue(1.45, forKey: kCIInputRadiusKey)
                 if let smooth = blur.outputImage?.cropped(to: extent),
-                   let cleaned = kernel.apply(
-                    extent: extent,
+                   let cleaned = kernel.apply(extent: extent,
                     roiCallback: { index, rect in index == 1 ? rect.insetBy(dx: -3, dy: -3) : rect },
-                    arguments: [original, smooth]
-                   ) {
+                    arguments: [original, smooth]) {
                     image = cleaned.cropped(to: extent)
                 }
             }
@@ -122,18 +126,13 @@ final class CompressionGuard {
             let (output, extent) = try allocateLike(input)
             let original = CIImage(cvPixelBuffer: input)
             var image = original
-            if let kernel = Self.animeClarityKernel,
-               let blur = CIFilter(name: "CIGaussianBlur") {
+            if let kernel = Self.animeClarityKernel, let blur = CIFilter(name: "CIGaussianBlur") {
                 blur.setValue(original, forKey: kCIInputImageKey)
-                // Slightly broader base than #122 so the effect reads as clarity/local
-                // contrast rather than conventional edge sharpening.
                 blur.setValue(7.0, forKey: kCIInputRadiusKey)
                 if let base = blur.outputImage?.cropped(to: extent),
-                   let result = kernel.apply(
-                    extent: extent,
+                   let result = kernel.apply(extent: extent,
                     roiCallback: { index, rect in index == 1 ? rect.insetBy(dx: -14, dy: -14) : rect },
-                    arguments: [original, base]
-                   ) {
+                    arguments: [original, base]) {
                     image = result.cropped(to: extent)
                 }
             }
@@ -143,14 +142,13 @@ final class CompressionGuard {
         }
     }
 
-    /// Post-CUGAN pre-Sharpie path: preserve Build 115 chroma cleanup exactly, then
-    /// add Anime Clarity. Sharpie sees the finished color/contrast master.
+    // Post-CUGAN, pre-Sharpie: Build 115 chroma cleanup first, clarity/color second.
     func cleanShadowChroma(_ input: CVPixelBuffer) throws -> CVPixelBuffer {
         let chromaCleaned = try cleanShadowChromaOnly(input)
         return try applyAnimeClarity(chromaCleaned)
     }
 
-    /// Light final compression polish only. No spatial clarity/chroma work after Sharpie.
+    // Light final polish only; no spatial color processing after Sharpie.
     func cleanFinalCompression(_ input: CVPixelBuffer) throws -> CVPixelBuffer {
         try autoreleasepool {
             let (output, extent) = try allocateLike(input)
@@ -173,8 +171,7 @@ final class CompressionGuard {
         }
     }
 
-    /// Earlier Compression Guard pass remains Build 115-compatible and does NOT apply
-    /// Anime Clarity here. This prevents the new look from being applied twice.
+    // Earlier Compression Guard remains Build 115-compatible; clarity is not doubled.
     func clean(_ input: CVPixelBuffer) throws -> CVPixelBuffer {
         let shadowCleaned = try cleanShadowChromaOnly(input)
         return try cleanFinalCompression(shadowCleaned)
