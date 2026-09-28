@@ -3,17 +3,16 @@ import AVFoundation
 import CoreImage
 import VideoToolbox
 
-/// Final line-art pass. This deliberately runs after Real-CUGAN so the upscaler
-/// cannot soften, widen, or otherwise alter the finished Sharpie lines.
+/// Final visual polish pass. This deliberately runs after Real-CUGAN so the upscaler
+/// cannot soften, widen, or otherwise alter the finished Sharpie lines. Compression
+/// Guard runs AFTER Sharpie so no later AI/image pass can bring compression artifacts back.
 final class FinalOutlinePass {
     private var transferSession: VTPixelTransferSession?
     private let ciContext = CIContext(options: [.cacheIntermediates: false])
     private var blendPool: CVPixelBufferPool?
 
-    // The bundled Sharpie model already uses the previous 94/6 subtle blend.
-    // A second tiny source blend here makes this revision a little narrower / closer
-    // to the anime's original line width without throwing away the learned line shape.
-    // Effective learned-model contribution is ~88.4% instead of 94%.
+    // Keep the Sharpie look clearly stronger than the original anime line art, while
+    // making it just a little narrower than the previous Sharpie revision.
     private let enhancedWeight: CGFloat = 0.94
 
     func run(
@@ -33,26 +32,26 @@ final class FinalOutlinePass {
         let width = Int(abs(naturalSize.width).rounded())
         let height = Int(abs(naturalSize.height).rounded())
 
-        DiagnosticsLogger.shared.log("Final Sharpie pass entered • post-CUGAN/source=\(width)x\(height) • thinner-v2 • thermal=\(currentThermalStateName())")
-        progress(0.001, "Final outline • Loading thinner Sharpie model…")
+        DiagnosticsLogger.shared.log("Final visual pass entered • post-CUGAN/source=\(width)x\(height) • thinner Sharpie → final Compression Guard • thermal=\(currentThermalStateName())")
+        progress(0.001, "Final polish • Loading thinner Sharpie + Compression Guard…")
         let enhancer = try autoreleasepool { try OutlineEnhancer() }
+        let finalCompressionGuard = CompressionGuard()
         try prepareBlendPool(width: width, height: height)
 
         let reader = try AVAssetReader(asset: asset)
         let output = AVAssetReaderTrackOutput(track: track, outputSettings: [
-            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA
+            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelBufferPixelFormatType_32BGRA
         ])
         output.alwaysCopiesSampleData = false
-        guard reader.canAdd(output) else { throw ProcessorError.reader("cannot attach final outline reader") }
+        guard reader.canAdd(output) else { throw ProcessorError.reader("cannot attach final polish reader") }
         reader.add(output)
 
         let outURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("RIFE60-POST-CUGAN-OUTLINE-\(UUID().uuidString).mov")
+            .appendingPathComponent("RIFE60-POST-CUGAN-SHARPIE-CLEAN-\(UUID().uuidString).mov")
         try? FileManager.default.removeItem(at: outURL)
         let writer = try AVAssetWriter(outputURL: outURL, fileType: .mov)
 
-        // Same sane HQ policy as the CUGAN pass: quality target first, with <1 GB
-        // acting only as a ceiling rather than forcing short clips to absurd bitrates.
+        // HQ HEVC Main10 policy: quality target first, <1 GB only acts as a ceiling.
         let targetTotalBytes = 950_000_000.0
         let containerReserveBytes = 16_000_000.0
         let usableBits = max((targetTotalBytes - containerReserveBytes) * 8.0, 8_000_000.0)
@@ -61,7 +60,7 @@ final class FinalOutlinePass {
         let qualityBitrate = Double(width * height) * 60.0 * 0.30
         let codecSafetyCeiling = 160_000_000.0
         let videoBitrate = Int(max(500_000.0, min(qualityBitrate, sizeBudgetBitrate, codecSafetyCeiling)))
-        DiagnosticsLogger.shared.log("Final Sharpie bitrate • selected=\(videoBitrate) • qualityTarget=\(Int(qualityBitrate)) • sizeCeiling=\(Int(sizeBudgetBitrate))")
+        DiagnosticsLogger.shared.log("Final polish bitrate • selected=\(videoBitrate) • qualityTarget=\(Int(qualityBitrate)) • sizeCeiling=\(Int(sizeBudgetBitrate))")
 
         let compression: [String: Any] = [
             AVVideoAverageBitRateKey: videoBitrate,
@@ -85,20 +84,22 @@ final class FinalOutlinePass {
         input.expectsMediaDataInRealTime = false
         input.transform = transform
         let adaptor = AVAssetWriterInputPixelBufferAdaptor(assetWriterInput: input, sourcePixelBufferAttributes: [
-            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange,
+            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelBufferPixelFormatType_420YpCbCr10BiPlanarVideoRange,
             kCVPixelBufferWidthKey as String: width,
             kCVPixelBufferHeightKey as String: height,
             kCVPixelBufferIOSurfacePropertiesKey as String: [:]
         ])
-        guard writer.canAdd(input) else { throw ProcessorError.writer("cannot attach final outline HEVC Main10 writer") }
+        guard writer.canAdd(input) else { throw ProcessorError.writer("cannot attach final polish HEVC Main10 writer") }
         writer.add(input)
-        guard reader.startReading() else { throw ProcessorError.reader(reader.error?.localizedDescription ?? "final outline reader failed") }
-        guard writer.startWriting() else { throw ProcessorError.writer(writer.error?.localizedDescription ?? "final outline writer failed") }
+        guard reader.startReading() else { throw ProcessorError.reader(reader.error?.localizedDescription ?? "final polish reader failed") }
+        guard writer.startWriting() else { throw ProcessorError.writer(writer.error?.localizedDescription ?? "final polish writer failed") }
         writer.startSession(atSourceTime: .zero)
-        guard let writerPool = adaptor.pixelBufferPool else { throw ProcessorError.writer("final outline P010 pool unavailable") }
+        guard let writerPool = adaptor.pixelBufferPool else { throw ProcessorError.writer("final polish P010 pool unavailable") }
 
         var frames = 0
+        var cleanedFrames = 0
         var outlineSeconds = 0.0
+        var finalCompressionSeconds = 0.0
         var encodeSeconds = 0.0
         let passStart = CFAbsoluteTimeGetCurrent()
 
@@ -107,22 +108,39 @@ final class FinalOutlinePass {
             guard let decoded = CMSampleBufferGetImageBuffer(sample) else { continue }
             let pts = CMSampleBufferGetPresentationTimeStamp(sample)
 
+            // Sharpie first: CUGAN has already finished, so it cannot change the final width.
             let outlineStart = CFAbsoluteTimeGetCurrent()
             let enhanced = try autoreleasepool { try enhancer.enhance(decoded) }
             let narrowed = try narrowTowardOriginal(enhanced: enhanced, original: decoded)
             outlineSeconds += CFAbsoluteTimeGetCurrent() - outlineStart
 
+            // Compression cleanup is intentionally the LAST image-processing operation.
+            // If a frame cannot be cleaned for any reason, preserve the Sharpie result
+            // rather than failing or reverting to an earlier frame.
+            let compressionStart = CFAbsoluteTimeGetCurrent()
+            let polished: CVPixelBuffer
+            if let cleaned = try? finalCompressionGuard.clean(narrowed) {
+                polished = cleaned
+                cleanedFrames += 1
+            } else {
+                polished = narrowed
+            }
+            finalCompressionSeconds += CFAbsoluteTimeGetCurrent() - compressionStart
+
             let encodeStart = CFAbsoluteTimeGetCurrent()
-            try await append10Bit(narrowed, at: pts, input: input, adaptor: adaptor, pool: writerPool)
+            try await append10Bit(polished, at: pts, input: input, adaptor: adaptor, pool: writerPool)
             encodeSeconds += CFAbsoluteTimeGetCurrent() - encodeStart
             frames += 1
 
             if frames == 1 || frames % 10 == 0 {
-                DiagnosticsLogger.shared.log("Final Sharpie frame \(frames) • outline=\(String(format: "%.1f", outlineSeconds * 1000.0 / Double(frames)))ms/frame • thermal=\(currentThermalStateName())")
+                let outlineMs = outlineSeconds * 1000.0 / Double(frames)
+                let compressionMs = finalCompressionSeconds * 1000.0 / Double(frames)
+                DiagnosticsLogger.shared.log("Final polish frame \(frames) • Sharpie=\(String(format: "%.1f", outlineMs))ms/frame • finalCompression=\(String(format: "%.1f", compressionMs))ms/frame • cleaned=\(cleanedFrames) • thermal=\(currentThermalStateName())")
             }
             if frames % 3 == 0 {
                 var t = PerformanceTelemetry()
                 t.outlineMsPerFrame = outlineSeconds * 1000.0 / Double(frames)
+                t.compressionMsPerFrame = finalCompressionSeconds * 1000.0 / Double(frames)
                 t.encodeMsPerOutputFrame = encodeSeconds * 1000.0 / Double(frames)
                 t.thermalState = currentThermalStateName()
                 telemetry(t)
@@ -131,25 +149,26 @@ final class FinalOutlinePass {
                 let frac = min(max(CMTimeGetSeconds(pts) / seconds, 0), 1)
                 let fps = Double(frames) / max(CFAbsoluteTimeGetCurrent() - passStart, 0.001)
                 let remaining = fps > 0 ? max(seconds * 60.0 - Double(frames), 0) / fps : 0
-                progress(frac, "Final outline • \(frames) frames • ETA \(formatDuration(remaining))")
+                progress(frac, "Final polish • Sharpie → Compression Guard • \(frames) frames • ETA \(formatDuration(remaining))")
                 await Task.yield()
             }
         }
 
-        if reader.status == .failed { throw ProcessorError.reader(reader.error?.localizedDescription ?? "final outline decode failed") }
-        guard frames > 0 else { throw ProcessorError.conversionFailed("Final Sharpie pass received zero frames") }
+        if reader.status == .failed { throw ProcessorError.reader(reader.error?.localizedDescription ?? "final polish decode failed") }
+        guard frames > 0 else { throw ProcessorError.conversionFailed("Final polish pass received zero frames") }
         input.markAsFinished()
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
             writer.finishWriting { continuation.resume() }
         }
-        guard writer.status == .completed else { throw ProcessorError.writer(writer.error?.localizedDescription ?? "final outline finish failed") }
-        DiagnosticsLogger.shared.log("Final Sharpie pass complete • frames=\(frames) • post-CUGAN thinner-v2")
+        guard writer.status == .completed else { throw ProcessorError.writer(writer.error?.localizedDescription ?? "final polish finish failed") }
+        let finalCompressionMs = finalCompressionSeconds * 1000.0 / Double(frames)
+        DiagnosticsLogger.shared.log("Final visual pass complete • frames=\(frames) • post-CUGAN thinner Sharpie • final Compression Guard=\(String(format: "%.1f", finalCompressionMs))ms/frame • HEVC Main10")
         return outURL
     }
 
     private func prepareBlendPool(width: Int, height: Int) throws {
         let attrs: [String: Any] = [
-            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
+            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelBufferPixelFormatType_32BGRA,
             kCVPixelBufferWidthKey as String: width,
             kCVPixelBufferHeightKey as String: height,
             kCVPixelBufferIOSurfacePropertiesKey as String: [:]
@@ -199,22 +218,22 @@ final class FinalOutlinePass {
         var destination: CVPixelBuffer?
         guard CVPixelBufferPoolCreatePixelBuffer(nil, pool, &destination) == kCVReturnSuccess,
               let destination else {
-            throw ProcessorError.conversionFailed("could not allocate final outline P010 frame")
+            throw ProcessorError.conversionFailed("could not allocate final polish P010 frame")
         }
         if transferSession == nil {
             var session: VTPixelTransferSession?
             guard VTPixelTransferSessionCreate(allocator: kCFAllocatorDefault, pixelTransferSessionOut: &session) == noErr,
                   let session else {
-                throw ProcessorError.conversionFailed("could not create final outline pixel transfer session")
+                throw ProcessorError.conversionFailed("could not create final polish pixel transfer session")
             }
             transferSession = session
         }
         guard let transferSession,
               VTPixelTransferSessionTransferImage(transferSession, from: source, to: destination) == noErr else {
-            throw ProcessorError.conversionFailed("final outline BGRA→P010 conversion failed")
+            throw ProcessorError.conversionFailed("final polish BGRA→P010 conversion failed")
         }
         guard adaptor.append(destination, withPresentationTime: time) else {
-            throw ProcessorError.writer("failed appending final outline frame")
+            throw ProcessorError.writer("failed appending final polish frame")
         }
     }
 }
