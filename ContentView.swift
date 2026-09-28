@@ -9,9 +9,9 @@ struct ContentView: View {
     @State private var showingImporter = false
     @State private var showingPhotosPicker = false
     @State private var showingExportFolderPicker = false
-    @State private var showingExportsBrowser = false
     @State private var showingClearRecoveryConfirmation = false
     @State private var photoItem: PhotosPickerItem?
+    @State private var lastCompletedVideoURL: URL?
     @State private var postRenderSleepTask: Task<Void, Never>?
     @State private var postRenderScreenDimmed = false
     @State private var postRenderSavedBrightness: CGFloat?
@@ -85,11 +85,13 @@ struct ContentView: View {
                         LabeledContent("Pixel format", value: "10-bit P010")
                         LabeledContent("File-size target", value: "< 1 GB")
                         Toggle("Preserve original audio", isOn: $vm.preserveAudio).disabled(vm.recoveryAvailable)
-                        LabeledContent("Auto-save folder", value: vm.exportFolderName)
-                        Button { showingExportsBrowser = true } label: { Label("Open Video Folder", systemImage: "folder.fill") }
-                        Button { showingExportFolderPicker = true } label: { Label("Choose Files Export Folder", systemImage: "folder.badge.plus") }
-                        Button("Use Default App Export Folder") { vm.useDefaultExportFolder() }
-                        Text("Open Video Folder jumps directly to the Files location used for completed renders. Finished videos are automatically copied into this Files folder. Choose a folder once and the app remembers it for future renders.").font(.caption).foregroundStyle(.secondary)
+                        LabeledContent("Auto-save location", value: vm.exportFolderName)
+                        Button { showingExportFolderPicker = true } label: { Label("Set On My iPhone Save Location", systemImage: "folder.badge.plus") }
+                        if let last = lastCompletedVideoURL {
+                            ShareLink(item: last) { Label("Export Last Completed Video", systemImage: "square.and.arrow.up") }
+                            Text("Last completed: \(last.lastPathComponent)").font(.caption).foregroundStyle(.secondary)
+                        }
+                        Text("For videos to appear directly in On My iPhone instead of the app's private-looking folder, tap Set On My iPhone Save Location, select the On My iPhone folder, and tap Open once. iOS requires this one-time folder permission. The app remembers it and future completed videos are written there directly. Export Last Completed Video remains available after relaunch so a finished render is not lost if the app is closed.").font(.caption).foregroundStyle(.secondary)
                     }
 
                     if vm.isProcessing {
@@ -138,7 +140,6 @@ struct ContentView: View {
                         Section("Finished") {
                             if !vm.saveStatusText.isEmpty { Text(vm.saveStatusText).font(.caption) }
                             ShareLink(item: out) { Label("Share Output", systemImage: "square.and.arrow.up") }
-                            Button { showingExportsBrowser = true } label: { Label("Open Video Folder", systemImage: "folder.fill") }
                             Text(out.lastPathComponent).font(.caption).foregroundStyle(.secondary)
                         }
                     }
@@ -147,10 +148,18 @@ struct ContentView: View {
                 .navigationTitle("RIFE 60")
                 .photosPicker(isPresented: $showingPhotosPicker, selection: $photoItem, matching: .videos, photoLibrary: .shared())
                 .fileImporter(isPresented: $showingImporter, allowedContentTypes: [.movie, .mpeg4Movie, .quickTimeMovie, .video], allowsMultipleSelection: false) { result in vm.handleImport(result) }
-                .fileImporter(isPresented: $showingExportFolderPicker, allowedContentTypes: [.folder], allowsMultipleSelection: false) { result in vm.handleExportFolderSelection(result) }
-                .sheet(isPresented: $showingExportsBrowser) { ExportFolderBrowser(isPresented: $showingExportsBrowser) }
+                .fileImporter(isPresented: $showingExportFolderPicker, allowedContentTypes: [.folder], allowsMultipleSelection: false) { result in
+                    vm.handleExportFolderSelection(result)
+                    lastCompletedVideoURL = LastCompletedVideoStore.latestCompletedVideo() ?? lastCompletedVideoURL
+                }
+                .onAppear {
+                    if lastCompletedVideoURL == nil { lastCompletedVideoURL = LastCompletedVideoStore.latestCompletedVideo() }
+                }
                 .onChange(of: photoItem) { item in guard let item else { return }; Task { await vm.handlePhotoSelection(item); photoItem = nil } }
-                .onChange(of: scenePhase) { phase in vm.handleScenePhase(phase) }
+                .onChange(of: scenePhase) { phase in
+                    vm.handleScenePhase(phase)
+                    if phase == .active, lastCompletedVideoURL == nil { lastCompletedVideoURL = LastCompletedVideoStore.latestCompletedVideo() }
+                }
                 .onChange(of: vm.isProcessing) { processing in
                     if processing {
                         cancelPostRenderSleep(restoreDisplay: true)
@@ -158,11 +167,14 @@ struct ContentView: View {
                         schedulePostRenderSleepIfNeeded()
                     }
                 }
-                .onChange(of: vm.outputURL) { _ in schedulePostRenderSleepIfNeeded() }
+                .onChange(of: vm.outputURL) { newURL in
+                    if let newURL { lastCompletedVideoURL = newURL }
+                    schedulePostRenderSleepIfNeeded()
+                }
                 .alert("Clear Recovery Data?", isPresented: $showingClearRecoveryConfirmation) {
-                    Button("Clear Recovery Data", role: .destructive) { vm.clearRecoveryData() }
+                    Button("Clear Recovery Data", role: .destructive) { showingClearRecoveryConfirmation = false; vm.clearRecoveryData() }
                     Button("Cancel", role: .cancel) { }
-                } message: { Text("This permanently deletes the saved source copy and completed render checkpoints for this interrupted job. You can then select a new video and start fresh.") }
+                } message: { Text("This permanently deletes the saved source copy and completed render checkpoints for this interrupted job. It does not delete your last completed exported video.") }
             }
             if vm.isProcessing && !vm.processingScreenAwake {
                 Color.black.ignoresSafeArea().contentShape(Rectangle()).onTapGesture { vm.wakeProcessingScreen() }.zIndex(999)
@@ -183,9 +195,6 @@ struct ContentView: View {
         if postRenderSavedBrightness == nil { postRenderSavedBrightness = UIScreen.main.brightness }
         if postRenderSavedIdleTimerDisabled == nil { postRenderSavedIdleTimerDisabled = UIApplication.shared.isIdleTimerDisabled }
 
-        // Keep the phone awake for exactly the requested one-minute grace period.
-        // Public iOS APIs cannot force the hardware lock button, so at expiry we
-        // black the OLED immediately and re-enable the normal iOS auto-lock timer.
         UIApplication.shared.isIdleTimerDisabled = true
         postRenderSleepTask = Task { @MainActor in
             do {
