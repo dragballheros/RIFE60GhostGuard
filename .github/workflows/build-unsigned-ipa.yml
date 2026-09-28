@@ -23,6 +23,22 @@ jobs:
       - name: Install XcodeGen
         run: brew install xcodegen
 
+      - name: Prepare permanent Sharpie model
+        run: |
+          set -euo pipefail
+          test -f SharpieModel.mlpackage.zip
+          rm -rf /tmp/sharpie-unpack Models/AnimeSharpieOutlineSubtle.mlpackage
+          mkdir -p /tmp/sharpie-unpack Models
+          unzip -q SharpieModel.mlpackage.zip -d /tmp/sharpie-unpack
+          SHARPIE_PACKAGE=$(find /tmp/sharpie-unpack -type f -name Manifest.json -print -quit | xargs dirname)
+          test -n "$SHARPIE_PACKAGE"
+          cp -R "$SHARPIE_PACKAGE" Models/AnimeSharpieOutlineSubtle.mlpackage
+          test -f Models/AnimeSharpieOutlineSubtle.mlpackage/Manifest.json
+          SHARPIE_WEIGHT=$(find Models/AnimeSharpieOutlineSubtle.mlpackage -type f -name 'weight.bin' -print -quit)
+          test -n "$SHARPIE_WEIGHT"
+          test -s "$SHARPIE_WEIGHT"
+          echo "Sharpie source package verified: $SHARPIE_WEIGHT"
+
       - name: Restore Real-CUGAN model cache
         id: cugan-cache
         uses: actions/cache@v4
@@ -105,20 +121,33 @@ jobs:
             -derivedDataPath build CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY='' build | tee xcodebuild.log
 
-      - name: Create base IPA with native 2x Real-CUGAN
+      - name: Create verified IPA with Sharpie and native 2x Real-CUGAN
         run: |
+          set -euo pipefail
           rm -rf Payload
           mkdir -p Payload
           cp -R build/Build/Products/Release-iphoneos/RIFE60GhostGuard.app Payload/
+          cp -R Models/AnimeSharpieOutlineSubtle.mlpackage Payload/RIFE60GhostGuard.app/
           cp -R CompiledModels/RealCUGAN2xNoise3_Tile512.mlmodelc Payload/RIFE60GhostGuard.app/
-          test -d Payload/RIFE60GhostGuard.app/RealCUGAN2xNoise3_Tile512.mlmodelc
-          zip -qry RIFE60GhostGuard-base-unsigned.ipa Payload
 
-      - name: Upload base IPA
+          # Hard gate: never publish another IPA with either AI model missing.
+          test -f Payload/RIFE60GhostGuard.app/AnimeSharpieOutlineSubtle.mlpackage/Manifest.json
+          SHARPIE_WEIGHT=$(find Payload/RIFE60GhostGuard.app/AnimeSharpieOutlineSubtle.mlpackage -type f -name 'weight.bin' -print -quit)
+          test -n "$SHARPIE_WEIGHT"
+          test -s "$SHARPIE_WEIGHT"
+          test -d Payload/RIFE60GhostGuard.app/RealCUGAN2xNoise3_Tile512.mlmodelc
+          test -f Payload/RIFE60GhostGuard.app/Info.plist
+
+          echo "Verified Sharpie: $SHARPIE_WEIGHT"
+          echo "Verified Real-CUGAN compiled model"
+          zip -qry RIFE60GhostGuard-verified-unsigned.ipa Payload
+          unzip -t RIFE60GhostGuard-verified-unsigned.ipa >/dev/null
+
+      - name: Upload verified IPA
         uses: actions/upload-artifact@v4
         with:
-          name: RIFE60GhostGuard-base-unsigned-ipa
-          path: RIFE60GhostGuard-base-unsigned.ipa
+          name: RIFE60GhostGuard-verified-unsigned-ipa
+          path: RIFE60GhostGuard-verified-unsigned.ipa
           retention-days: 30
       - name: Upload build log on failure
         if: failure()
