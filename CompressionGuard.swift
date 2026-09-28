@@ -10,10 +10,10 @@ final class CompressionGuard {
     private let context = CIContext(options: [.cacheIntermediates: false])
     private let colorSpace = CGColorSpace(name: CGColorSpace.sRGB)
 
-    // Shadow cleanup for dark anime backgrounds. Build 115 deliberately restored the
-    // exact source luminance, which meant dark luma macroblocking/banding could survive
-    // even when the colored noise was removed. This version cleans BOTH components:
-    // chroma strongly and luma moderately, but only in flat shadows and before Sharpie.
+    // Pre-Sharpie dark-region restoration. It removes chroma/luma compression noise,
+    // then gives genuinely flat near-black regions an OLED-black floor. The black-floor
+    // mask deliberately requires low luma + neutral chroma + local/broad flatness, so
+    // normal cast shadows and shaded object detail are preserved instead of crushed.
     private static let shadowNoiseKernel: CIKernel? = {
         let source = """
         kernel vec4 shadowNoiseCleanup(sampler original, sampler smoothWide, sampler smoothLocal) {
@@ -25,25 +25,62 @@ final class CompressionGuard {
             const vec3 lumaW = vec3(0.2126, 0.7152, 0.0722);
             float yo = dot(o.rgb, lumaW);
             float yw = dot(w.rgb, lumaW);
+            float yl = dot(l.rgb, lumaW);
 
-            // Restrict the correction to dark material. It is strongest in deep blacks
-            // and smoothly disappears before normal midtones / skin / bright cel colors.
+            // General dark cleanup fades away before normal midtones.
             float shadow = 1.0 - smoothstep(0.09, 0.31, yo);
 
-            // Detect true line/cel edges with a tiny local reference. Broad compression
-            // blotches and banding are intentionally NOT treated as edges, so they can
-            // be flattened by the wider reference.
+            // A tiny reference identifies true line/cel boundaries and fine object detail.
             float fineDelta = length(o.rgb - l.rgb);
             float edgeProtect = 1.0 - smoothstep(0.045, 0.125, fineDelta);
 
-            // Wide reference removes the large dark patches visible in flat backgrounds.
-            // Chroma follows it strongly. Luma follows it only 58%, preserving intended
-            // lighting gradients while suppressing block/band brightness variation.
+            // First remove broad dark chroma/luma blotching. Luma follows the wide
+            // reference moderately so intended lighting gradients are not flattened.
             float targetY = mix(yo, yw, 0.58);
             vec3 target = clamp(w.rgb + vec3(targetY - yw), 0.0, 1.0);
+            float cleanupAmount = 0.88 * shadow * edgeProtect;
+            vec3 cleaned = mix(o.rgb, target, cleanupAmount);
 
-            float amount = 0.88 * shadow * edgeProtect;
-            vec3 rgb = mix(o.rgb, target, amount);
+            // OLED BLACK FLOOR -------------------------------------------------------
+            // Only consider genuinely near-black pixels. This is intentionally much
+            // narrower than the general shadow-cleanup range.
+            float nearBlack = 1.0 - smoothstep(0.055, 0.135, yo);
+
+            // Background blacks are usually neutral. Colored dark material/shadows get
+            // progressively less black-floor influence.
+            float maxC = max(o.r, max(o.g, o.b));
+            float minC = min(o.r, min(o.g, o.b));
+            float chromaSpread = maxC - minC;
+            float neutral = 1.0 - smoothstep(0.018, 0.075, chromaSpread);
+
+            // Require the area to be spatially flat at BOTH fine and broad scales.
+            // Real shadows cast over an object normally retain a gradient, texture,
+            // highlight, cel boundary, or local variation and therefore fail this mask.
+            float localVariation = abs(yo - yl);
+            float broadVariation = abs(yo - yw);
+            float localFlat = 1.0 - smoothstep(0.004, 0.020, localVariation);
+            float broadFlat = 1.0 - smoothstep(0.010, 0.045, broadVariation);
+            float detailSafe = localFlat * broadFlat * edgeProtect;
+
+            float oledMask = nearBlack * neutral * detailSafe;
+
+            // Soft toe first, then true zero only for the darkest/flattest portion.
+            // This avoids a hard threshold/banding ring around legitimate shadows.
+            float cleanedY = dot(cleaned, lumaW);
+            float toe = smoothstep(0.0, 0.115, cleanedY);
+            float oledY = cleanedY * toe * toe;
+            float hardBlack = 1.0 - smoothstep(0.030, 0.060, cleanedY);
+            oledY = mix(oledY, 0.0, hardBlack);
+
+            vec3 oledRGB;
+            if (cleanedY > 0.0001) {
+                oledRGB = clamp(cleaned * (oledY / cleanedY), 0.0, 1.0);
+            } else {
+                oledRGB = vec3(0.0);
+            }
+
+            // Strong in confidently flat background black, zero on detected detail.
+            vec3 rgb = mix(cleaned, oledRGB, 0.94 * oledMask);
             return vec4(rgb, o.a);
         }
         """
@@ -67,9 +104,8 @@ final class CompressionGuard {
         return (output, extent)
     }
 
-    /// Deep-shadow noise cleanup. Kept under the existing method name so the final
-    /// pipeline order remains unchanged: CUGAN -> shadow cleanup -> Sharpie -> polish.
-    /// Unlike Build 115, this also suppresses low-frequency luminance blotching.
+    /// Deep-shadow cleanup + selective OLED-black floor. This always runs BEFORE
+    /// Sharpie so no spatial denoising can soften the final generated line style.
     func cleanShadowChroma(_ input: CVPixelBuffer) throws -> CVPixelBuffer {
         try autoreleasepool {
             let (output, extent) = try allocateLike(input)
@@ -105,8 +141,8 @@ final class CompressionGuard {
         }
     }
 
-    /// Light final compression polish only. No wide shadow blur is allowed here,
-    /// because this runs AFTER Sharpie and must leave the finished line style intact.
+    /// Light final compression polish only. No wide shadow blur or black-floor operation
+    /// is allowed here because this runs AFTER Sharpie and must leave its lines intact.
     func cleanFinalCompression(_ input: CVPixelBuffer) throws -> CVPixelBuffer {
         try autoreleasepool {
             let (output, extent) = try allocateLike(input)
