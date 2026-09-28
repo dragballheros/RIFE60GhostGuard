@@ -9,6 +9,7 @@ struct ContentView: View {
     @State private var showingImporter = false
     @State private var showingPhotosPicker = false
     @State private var showingExportFolderPicker = false
+    @State private var showingExportsBrowser = false
     @State private var showingClearRecoveryConfirmation = false
     @State private var photoItem: PhotosPickerItem?
     @State private var postRenderSleepTask: Task<Void, Never>?
@@ -85,9 +86,10 @@ struct ContentView: View {
                         LabeledContent("File-size target", value: "< 1 GB")
                         Toggle("Preserve original audio", isOn: $vm.preserveAudio).disabled(vm.recoveryAvailable)
                         LabeledContent("Auto-save folder", value: vm.exportFolderName)
+                        Button { showingExportsBrowser = true } label: { Label("Open Video Folder", systemImage: "folder.fill") }
                         Button { showingExportFolderPicker = true } label: { Label("Choose Files Export Folder", systemImage: "folder.badge.plus") }
                         Button("Use Default App Export Folder") { vm.useDefaultExportFolder() }
-                        Text("Finished videos are automatically copied into this Files folder. Choose a folder once and the app remembers it for future renders. This avoids the Photos import issue and means you no longer need to use Copy/Paste to get the finished video into Files.").font(.caption).foregroundStyle(.secondary)
+                        Text("Open Video Folder jumps directly to the Files location used for completed renders. Finished videos are automatically copied into this Files folder. Choose a folder once and the app remembers it for future renders.").font(.caption).foregroundStyle(.secondary)
                     }
 
                     if vm.isProcessing {
@@ -136,6 +138,7 @@ struct ContentView: View {
                         Section("Finished") {
                             if !vm.saveStatusText.isEmpty { Text(vm.saveStatusText).font(.caption) }
                             ShareLink(item: out) { Label("Share Output", systemImage: "square.and.arrow.up") }
+                            Button { showingExportsBrowser = true } label: { Label("Open Video Folder", systemImage: "folder.fill") }
                             Text(out.lastPathComponent).font(.caption).foregroundStyle(.secondary)
                         }
                     }
@@ -145,6 +148,7 @@ struct ContentView: View {
                 .photosPicker(isPresented: $showingPhotosPicker, selection: $photoItem, matching: .videos, photoLibrary: .shared())
                 .fileImporter(isPresented: $showingImporter, allowedContentTypes: [.movie, .mpeg4Movie, .quickTimeMovie, .video], allowsMultipleSelection: false) { result in vm.handleImport(result) }
                 .fileImporter(isPresented: $showingExportFolderPicker, allowedContentTypes: [.folder], allowsMultipleSelection: false) { result in vm.handleExportFolderSelection(result) }
+                .sheet(isPresented: $showingExportsBrowser) { ExportFolderBrowser(isPresented: $showingExportsBrowser) }
                 .onChange(of: photoItem) { item in guard let item else { return }; Task { await vm.handlePhotoSelection(item); photoItem = nil } }
                 .onChange(of: scenePhase) { phase in vm.handleScenePhase(phase) }
                 .onChange(of: vm.isProcessing) { processing in
