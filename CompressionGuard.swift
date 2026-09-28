@@ -55,7 +55,7 @@ final class CompressionGuard {
             kCVPixelBufferMetalCompatibilityKey: true,
             kCVPixelBufferIOSurfacePropertiesKey: [:]
         ]
-        let status = CVPixelBufferCreate(kCFAllocatorDefault, width, height, kCVPixelBufferPixelFormatTypeKey == kCVPixelBufferPixelFormatTypeKey ? kCVPixelFormatType_32BGRA : kCVPixelFormatType_32BGRA, attrs as CFDictionary, &output)
+        let status = CVPixelBufferCreate(kCFAllocatorDefault, width, height, kCVPixelFormatType_32BGRA, attrs as CFDictionary, &output)
         guard status == kCVReturnSuccess, let output else { throw Error.allocationFailed }
         return (output, extent)
     }
