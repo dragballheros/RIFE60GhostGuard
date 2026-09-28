@@ -38,31 +38,29 @@ jobs:
           test -n "$SHARPIE_WEIGHT"
           test -s "$SHARPIE_WEIGHT"
 
-      - name: Restore Real-CUGAN model cache
+      - name: Restore stable Real-CUGAN model cache
         uses: actions/cache@v4
         with:
           path: |
             Models/RealCUGAN2xNoise3_Tile512.mlpackage
             Models/RealCUGAN2xNoise3_Tile704x608.mlpackage
-            Models/RealCUGAN2xNoise3_Tile1024x608.mlpackage
             CompiledModels/RealCUGAN2xNoise3_Tile512.mlmodelc
             CompiledModels/RealCUGAN2xNoise3_Tile704x608.mlmodelc
-            CompiledModels/RealCUGAN2xNoise3_Tile1024x608.mlmodelc
-          key: realcugan-noise3-fp16-512-704x608-1024x608-v1
+          key: realcugan-noise3-fp16-512-and-704x608-v1
 
       - name: Set up Python 3.11
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
-      - name: Prepare Real-CUGAN source models if needed
+      - name: Prepare stable Real-CUGAN source models if needed
         run: |
           set -euo pipefail
-          NEED512=0; NEED704=0; NEED1024=0
+          NEED512=0
+          NEED704=0
           test -f Models/RealCUGAN2xNoise3_Tile512.mlpackage/Manifest.json || NEED512=1
           test -f Models/RealCUGAN2xNoise3_Tile704x608.mlpackage/Manifest.json || NEED704=1
-          test -f Models/RealCUGAN2xNoise3_Tile1024x608.mlpackage/Manifest.json || NEED1024=1
-          if [ "$NEED512" = 1 ] || [ "$NEED704" = 1 ] || [ "$NEED1024" = 1 ]; then
+          if [ "$NEED512" = 1 ] || [ "$NEED704" = 1 ]; then
             python -m pip install --upgrade pip
             python -m pip install 'torch==2.5.0' 'coremltools==8.3' 'numpy==1.26.4'
             rm -rf /tmp/video_upscale /tmp/realcugan-weights
@@ -78,22 +76,18 @@ jobs:
             if [ "$NEED704" = 1 ]; then
               REALCUGAN_DIR=/tmp/video_upscale/realcugan/Real-CUGAN REALCUGAN_WEIGHT="$WEIGHT" REALCUGAN_TILE_WIDTH=704 REALCUGAN_TILE_HEIGHT=608 REALCUGAN_OUT=Models/RealCUGAN2xNoise3_Tile704x608.mlpackage python Scripts/export_realcugan_1080p.py
             fi
-            if [ "$NEED1024" = 1 ]; then
-              REALCUGAN_DIR=/tmp/video_upscale/realcugan/Real-CUGAN REALCUGAN_WEIGHT="$WEIGHT" REALCUGAN_TILE_WIDTH=1024 REALCUGAN_TILE_HEIGHT=608 REALCUGAN_OUT=Models/RealCUGAN2xNoise3_Tile1024x608.mlpackage python Scripts/export_realcugan_1080p.py
-            fi
           fi
           test -f Models/RealCUGAN2xNoise3_Tile512.mlpackage/Manifest.json
           test -f Models/RealCUGAN2xNoise3_Tile704x608.mlpackage/Manifest.json
-          test -f Models/RealCUGAN2xNoise3_Tile1024x608.mlpackage/Manifest.json
 
-      - name: Compile Real-CUGAN models for iOS if needed
+      - name: Compile stable Real-CUGAN models for iOS if needed
         run: |
           set -euo pipefail
           mkdir -p CompiledModels
-          for MODEL in RealCUGAN2xNoise3_Tile512 RealCUGAN2xNoise3_Tile704x608 RealCUGAN2xNoise3_Tile1024x608; do
-            if [ ! -d "CompiledModels/${MODEL}.mlmodelc" ]; then xcrun coremlcompiler compile "Models/${MODEL}.mlpackage" CompiledModels; fi
-            test -d "CompiledModels/${MODEL}.mlmodelc"
-          done
+          if [ ! -d CompiledModels/RealCUGAN2xNoise3_Tile512.mlmodelc ]; then xcrun coremlcompiler compile Models/RealCUGAN2xNoise3_Tile512.mlpackage CompiledModels; fi
+          if [ ! -d CompiledModels/RealCUGAN2xNoise3_Tile704x608.mlmodelc ]; then xcrun coremlcompiler compile Models/RealCUGAN2xNoise3_Tile704x608.mlpackage CompiledModels; fi
+          test -d CompiledModels/RealCUGAN2xNoise3_Tile512.mlmodelc
+          test -d CompiledModels/RealCUGAN2xNoise3_Tile704x608.mlmodelc
 
       - name: Generate professional app icon
         run: |
@@ -115,6 +109,21 @@ jobs:
           text3, n2 = re.subn(r'\s*\.plugin\(\s*name:\s*"CompileMetalShaders",\s*capability:\s*\.buildTool\(\)\s*\),', '', text2, flags=re.S)
           if n1 != 1 or n2 != 1: raise SystemExit(f'Unexpected RifeMetal manifest layout: {n1}, {n2}')
           pkg.write_text(text3)
+          PY
+
+      - name: Stabilize Real-CUGAN while keeping overhead reductions
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('RealCUGANPass.swift')
+          s = p.read_text()
+          old = 'private let fast1080Profile = TileProfile(width: 1024, height: 608, overlap: 32, modelName: "RealCUGAN2xNoise3_Tile1024x608")'
+          new = 'private let fast1080Profile = TileProfile(width: 704, height: 608, overlap: 32, modelName: "RealCUGAN2xNoise3_Tile704x608")'
+          if old not in s:
+              raise SystemExit('Expected 1024x608 CUGAN profile not found')
+          s = s.replace(old, new, 1)
+          s = s.replace('// 1920x1080 frame needs 2x2 = 4 predictions instead of 3x2 = 6.', '// 1920x1080 uses the proven 3x2 = 6 prediction profile to avoid peak-memory crashes.')
+          p.write_text(s)
           PY
 
       - name: Disable automatic Files export
@@ -141,11 +150,12 @@ jobs:
           cp -R Models/AnimeSharpieOutlineSubtle.mlpackage Payload/RIFE60GhostGuard.app/
           cp -R CompiledModels/RealCUGAN2xNoise3_Tile512.mlmodelc Payload/RIFE60GhostGuard.app/
           cp -R CompiledModels/RealCUGAN2xNoise3_Tile704x608.mlmodelc Payload/RIFE60GhostGuard.app/
-          cp -R CompiledModels/RealCUGAN2xNoise3_Tile1024x608.mlmodelc Payload/RIFE60GhostGuard.app/
           test -f Payload/RIFE60GhostGuard.app/AnimeSharpieOutlineSubtle.mlpackage/Manifest.json
+          SHARPIE_WEIGHT=$(find Payload/RIFE60GhostGuard.app/AnimeSharpieOutlineSubtle.mlpackage -type f -name 'weight.bin' -print -quit)
+          test -n "$SHARPIE_WEIGHT"
+          test -s "$SHARPIE_WEIGHT"
           test -d Payload/RIFE60GhostGuard.app/RealCUGAN2xNoise3_Tile512.mlmodelc
           test -d Payload/RIFE60GhostGuard.app/RealCUGAN2xNoise3_Tile704x608.mlmodelc
-          test -d Payload/RIFE60GhostGuard.app/RealCUGAN2xNoise3_Tile1024x608.mlmodelc
           zip -qry RIFE60GhostGuard-verified-unsigned.ipa Payload
           unzip -t RIFE60GhostGuard-verified-unsigned.ipa >/dev/null
 
