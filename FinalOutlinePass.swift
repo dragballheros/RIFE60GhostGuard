@@ -53,7 +53,15 @@ final class FinalOutlinePass {
 
         let outURL = FileManager.default.temporaryDirectory.appendingPathComponent("RIFE60-FAST-FINAL-SHARPIE-\(UUID().uuidString).mov")
         try? FileManager.default.removeItem(at: outURL)
+        var keepOutput = false
+        defer { if !keepOutput { try? FileManager.default.removeItem(at: outURL) } }
+        let freeAtStart = availableDiskSpaceBytes(at: outURL)
+        if let freeAtStart, freeAtStart < 1_200_000_000 {
+            throw ProcessorError.writer("Not enough free storage for the final 4K Sharpie pass • \(formatStorageMB(freeAtStart)) MB available • at least 1200 MB required")
+        }
+        DiagnosticsLogger.shared.log("Final Sharpie storage preflight • free=\(freeAtStart.map(formatStorageMB) ?? "unknown") MB")
         let writer = try AVAssetWriter(outputURL: outURL, fileType: .mov)
+        writer.movieFragmentInterval = CMTime(seconds: 2, preferredTimescale: 600)
 
         let targetTotalBytes = 950_000_000.0
         let usableBits = max((targetTotalBytes - 16_000_000.0) * 8.0, 8_000_000.0)
@@ -65,7 +73,7 @@ final class FinalOutlinePass {
 
         let compression: [String: Any] = [
             AVVideoAverageBitRateKey: videoBitrate,
-            AVVideoQualityKey: 1.0,
+            AVVideoDataRateLimitsKey: [max(videoBitrate / 8, 62_500), 1],
             AVVideoExpectedSourceFrameRateKey: 60,
             AVVideoMaxKeyFrameIntervalKey: 120,
             AVVideoAllowFrameReorderingKey: true,
@@ -139,7 +147,7 @@ final class FinalOutlinePass {
             finalCompressionSeconds += CFAbsoluteTimeGetCurrent() - compressionStart
 
             let encodeStart = CFAbsoluteTimeGetCurrent()
-            try await append10Bit(polished, at: pts, input: input, adaptor: adaptor, pool: writerPool)
+            try await append10Bit(polished, at: pts, input: input, adaptor: adaptor, pool: writerPool, writer: writer)
             encodeSeconds += CFAbsoluteTimeGetCurrent() - encodeStart
             frames += 1
 
@@ -166,7 +174,9 @@ final class FinalOutlinePass {
         input.markAsFinished()
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in writer.finishWriting { continuation.resume() } }
         guard writer.status == .completed else { throw ProcessorError.writer(writer.error?.localizedDescription ?? "final polish finish failed") }
-        DiagnosticsLogger.shared.log("Final visual pass complete • frames=\(frames) • order=ShadowChroma→Sharpie→FinalCompression • Sharpie style map=\(workingWidth)x\(workingHeight) • Sharpie=\(String(format: "%.1f", outlineSeconds*1000/Double(frames)))ms/frame • HEVC Main10")
+        let completedBytes = (try? FileManager.default.attributesOfItem(atPath: outURL.path)[.size] as? NSNumber)?.int64Value ?? 0
+        DiagnosticsLogger.shared.log("Final visual pass complete • frames=\(frames) • order=ShadowChroma→Sharpie→FinalCompression • Sharpie style map=\(workingWidth)x\(workingHeight) • Sharpie=\(String(format: "%.1f", outlineSeconds*1000/Double(frames)))ms/frame • HEVC Main10 • file=\(formatStorageMB(completedBytes)) MB")
+        keepOutput = true
         return outURL
     }
 
@@ -214,7 +224,7 @@ final class FinalOutlinePass {
         return destination
     }
 
-    private func append10Bit(_ source: CVPixelBuffer, at time: CMTime, input: AVAssetWriterInput, adaptor: AVAssetWriterInputPixelBufferAdaptor, pool: CVPixelBufferPool) async throws {
+    private func append10Bit(_ source: CVPixelBuffer, at time: CMTime, input: AVAssetWriterInput, adaptor: AVAssetWriterInputPixelBufferAdaptor, pool: CVPixelBufferPool, writer: AVAssetWriter) async throws {
         while !input.isReadyForMoreMediaData { try Task.checkCancellation(); try await Task.sleep(nanoseconds: 1_000_000) }
         var destination: CVPixelBuffer?
         guard CVPixelBufferPoolCreatePixelBuffer(nil, pool, &destination) == kCVReturnSuccess, let destination else { throw ProcessorError.conversionFailed("could not allocate final polish P010 frame") }
@@ -224,6 +234,11 @@ final class FinalOutlinePass {
             transferSession = session
         }
         guard let transferSession, VTPixelTransferSessionTransferImage(transferSession, from: source, to: destination) == noErr else { throw ProcessorError.conversionFailed("final polish BGRA→P010 conversion failed") }
-        guard adaptor.append(destination, withPresentationTime: time) else { throw ProcessorError.writer("failed appending final polish frame") }
+        guard adaptor.append(destination, withPresentationTime: time) else {
+            let detail = writer.error?.localizedDescription ?? "writer status \(writer.status.rawValue)"
+            let free = availableDiskSpaceBytes(at: writer.outputURL)
+            DiagnosticsLogger.shared.log("Final Sharpie append rejected • \(detail) • free=\(free.map(formatStorageMB) ?? "unknown") MB")
+            throw ProcessorError.writer("failed appending final polish frame • \(detail) • free storage \(free.map(formatStorageMB) ?? "unknown") MB")
+        }
     }
 }

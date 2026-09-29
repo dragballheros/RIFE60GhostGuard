@@ -176,6 +176,9 @@ final class VideoProcessorViewModel: ObservableObject {
         Recovery status: \(recoveryStatusText)
         Export folder: \(exportFolderName)
         Thermal: \(telemetry.thermalState)
+        Performance tier: \(telemetry.performanceMode)
+        Memory headroom: \(String(format: "%.0f", telemetry.availableMemoryMB)) MB
+        Physical memory: \(String(format: "%.0f", telemetry.physicalMemoryMB)) MB
         Source frames: \(telemetry.sourceFrames)
         Generated frames: \(telemetry.generatedFrames)
         Upscaled frames: \(telemetry.upscaledFrames)

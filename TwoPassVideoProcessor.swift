@@ -193,6 +193,9 @@ final class TwoPassVideoProcessor {
                         combined.upscaleFPS = sample.upscaleFPS
                         combined.encodeMsPerOutputFrame = sample.encodeMsPerOutputFrame
                         combined.thermalState = sample.thermalState
+                        combined.performanceMode = sample.performanceMode
+                        combined.availableMemoryMB = sample.availableMemoryMB
+                        combined.physicalMemoryMB = sample.physicalMemoryMB
                         telemetry(combined)
                     }
                 )
@@ -255,6 +258,9 @@ final class TwoPassVideoProcessor {
                         combined.upscaleFPS = cuganTelemetry.upscaleFPS
                         combined.encodeMsPerOutputFrame = outlineSample.encodeMsPerOutputFrame
                         combined.thermalState = outlineSample.thermalState
+                        combined.performanceMode = outlineSample.performanceMode
+                        combined.availableMemoryMB = outlineSample.availableMemoryMB
+                        combined.physicalMemoryMB = outlineSample.physicalMemoryMB
                         telemetry(combined)
                     }
                 )
@@ -310,7 +316,13 @@ final class TwoPassVideoProcessor {
     private func persistCheckpoint(from source: URL, to destination: URL) throws {
         let fm = FileManager.default
         try? fm.removeItem(at: destination)
-        try fm.copyItem(at: source, to: destination)
+        do {
+            try fm.moveItem(at: source, to: destination)
+            DiagnosticsLogger.shared.log("Checkpoint persisted by move • avoided temporary file duplication")
+        } catch {
+            DiagnosticsLogger.shared.log("Checkpoint move unavailable • falling back to copy: \(error.localizedDescription)")
+            try fm.copyItem(at: source, to: destination)
+        }
     }
 
     private func validVideo(

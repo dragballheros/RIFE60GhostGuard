@@ -182,7 +182,7 @@ jobs:
           replace_required(
               'RealCUGANPass.swift',
               '            frames += 1\n\n            if frames == 1 || frames % 20 == 0 {',
-              '            frames += 1\n            let memory = currentRenderPerformanceSnapshot()\n            if memory.tier != .performance {\n                if let tileInputPool { CVPixelBufferPoolFlush(tileInputPool, .excessBuffers) }\n                if let stitchedFramePool { CVPixelBufferPoolFlush(stitchedFramePool, .excessBuffers) }\n                CVPixelBufferPoolFlush(writerPool, .excessBuffers)\n                ciContext.clearCaches()\n            }\n            try await adaptiveFrameBoundaryPacing(memory)\n\n            if frames == 1 || frames % 20 == 0 {',
+              '            frames += 1\n            let memory = currentRenderPerformanceSnapshot()\n            if memory.tier != .performance {\n                if let tileInputPool { CVPixelBufferPoolFlush(tileInputPool, .excessBuffers) }\n                if let stitchedFramePool { CVPixelBufferPoolFlush(stitchedFramePool, .excessBuffers) }\n                ciContext.clearCaches()\n            }\n            try await adaptiveFrameBoundaryPacing(memory)\n\n            if frames == 1 || frames % 20 == 0 {',
               1
           )
           replace_required(

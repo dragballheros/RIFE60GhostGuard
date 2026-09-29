@@ -75,7 +75,15 @@ final class RealCUGANPass {
 
         let outURL = FileManager.default.temporaryDirectory.appendingPathComponent("RIFE60-CUGAN-2X-\(UUID().uuidString).mov")
         try? FileManager.default.removeItem(at: outURL)
+        var keepOutput = false
+        defer { if !keepOutput { try? FileManager.default.removeItem(at: outURL) } }
+        let freeAtStart = availableDiskSpaceBytes(at: outURL)
+        if let freeAtStart, freeAtStart < 1_500_000_000 {
+            throw ProcessorError.writer("Not enough free storage for the 4K Real-CUGAN pass • \(formatStorageMB(freeAtStart)) MB available • at least 1500 MB required")
+        }
+        DiagnosticsLogger.shared.log("Real-CUGAN storage preflight • free=\(freeAtStart.map(formatStorageMB) ?? "unknown") MB")
         let writer = try AVAssetWriter(outputURL: outURL, fileType: .mov)
+        writer.movieFragmentInterval = CMTime(seconds: 2, preferredTimescale: 600)
 
         let targetTotalBytes = 950_000_000.0
         let containerReserveBytes = 16_000_000.0
@@ -90,7 +98,7 @@ final class RealCUGANPass {
 
         let compression: [String: Any] = [
             AVVideoAverageBitRateKey: videoBitrate,
-            AVVideoQualityKey: 1.0,
+            AVVideoDataRateLimitsKey: [max(videoBitrate / 8, 62_500), 1],
             AVVideoExpectedSourceFrameRateKey: 60,
             AVVideoMaxKeyFrameIntervalKey: 120,
             AVVideoAllowFrameReorderingKey: true,
@@ -147,7 +155,7 @@ final class RealCUGANPass {
             inferenceSeconds += CFAbsoluteTimeGetCurrent() - inferenceStart
 
             let encodeStart = CFAbsoluteTimeGetCurrent()
-            try await append10Bit(upscaled, at: pts, input: input, adaptor: adaptor, pool: writerPool)
+            try await append10Bit(upscaled, at: pts, input: input, adaptor: adaptor, pool: writerPool, writer: writer)
             encodeSeconds += CFAbsoluteTimeGetCurrent() - encodeStart
             frames += 1
 
@@ -180,7 +188,9 @@ final class RealCUGANPass {
         input.markAsFinished()
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in writer.finishWriting { continuation.resume() } }
         guard writer.status == .completed else { throw ProcessorError.writer(writer.error?.localizedDescription ?? "native 2x finish failed") }
-        DiagnosticsLogger.shared.log("Real-CUGAN writer completed • native 2x=\(targetWidth)x\(targetHeight) • frames=\(frames)")
+        let completedBytes = (try? FileManager.default.attributesOfItem(atPath: outURL.path)[.size] as? NSNumber)?.int64Value ?? 0
+        DiagnosticsLogger.shared.log("Real-CUGAN writer completed • native 2x=\(targetWidth)x\(targetHeight) • frames=\(frames) • file=\(formatStorageMB(completedBytes)) MB")
+        keepOutput = true
         return outURL
     }
 
@@ -308,7 +318,7 @@ final class RealCUGANPass {
         return stitched
     }
 
-    private func append10Bit(_ source: CVPixelBuffer, at time: CMTime, input: AVAssetWriterInput, adaptor: AVAssetWriterInputPixelBufferAdaptor, pool: CVPixelBufferPool) async throws {
+    private func append10Bit(_ source: CVPixelBuffer, at time: CMTime, input: AVAssetWriterInput, adaptor: AVAssetWriterInputPixelBufferAdaptor, pool: CVPixelBufferPool, writer: AVAssetWriter) async throws {
         while !input.isReadyForMoreMediaData {
             try Task.checkCancellation()
             try await Task.sleep(nanoseconds: 1_000_000)
@@ -329,7 +339,10 @@ final class RealCUGANPass {
             throw ProcessorError.conversionFailed("native 2x BGRA→P010 conversion failed")
         }
         guard adaptor.append(destination, withPresentationTime: time) else {
-            throw ProcessorError.writer("failed appending native 2x frame")
+            let detail = writer.error?.localizedDescription ?? "writer status \(writer.status.rawValue)"
+            let free = availableDiskSpaceBytes(at: writer.outputURL)
+            DiagnosticsLogger.shared.log("Real-CUGAN append rejected • \(detail) • free=\(free.map(formatStorageMB) ?? "unknown") MB")
+            throw ProcessorError.writer("failed appending native 2x frame • \(detail) • free storage \(free.map(formatStorageMB) ?? "unknown") MB")
         }
     }
 }
@@ -341,4 +354,14 @@ func formatDuration(_ seconds: Double) -> String {
     let m = (total % 3600) / 60
     let s = total % 60
     return h > 0 ? String(format: "%d:%02d:%02d", h, m, s) : String(format: "%02d:%02d", m, s)
+}
+
+func availableDiskSpaceBytes(at url: URL) -> Int64? {
+    try? url.deletingLastPathComponent()
+        .resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey])
+        .volumeAvailableCapacityForImportantUsage
+}
+
+func formatStorageMB(_ bytes: Int64) -> String {
+    String(format: "%.0f", Double(bytes) / 1_000_000.0)
 }
