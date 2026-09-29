@@ -57,7 +57,6 @@ final class VideoProcessorViewModel: ObservableObject {
     private var savedIdleTimerDisabled: Bool?
     private var renderStartedAt: Date?
     private let exportFolderBookmarkKey = "RIFE60.ExportFolderBookmark.v1"
-    private let deliveryCheckpointPrefix = "checkpoint-delivery-ready"
 
     init() {
         refreshExportFolderName()
@@ -126,11 +125,11 @@ final class VideoProcessorViewModel: ObservableObject {
             guard let folder = try result.get().first else { return }
             let secured = folder.startAccessingSecurityScopedResource()
             defer { if secured { folder.stopAccessingSecurityScopedResource() } }
-            let bookmark = try folder.bookmarkData(options: [.withSecurityScope], includingResourceValuesForKeys: nil, relativeTo: nil)
+            let bookmark = try folder.bookmarkData(options: .minimalBookmark, includingResourceValuesForKeys: nil, relativeTo: nil)
             UserDefaults.standard.set(bookmark, forKey: exportFolderBookmarkKey)
             exportFolderName = folder.lastPathComponent
             saveStatusText = "Future videos will auto-save to Files > \(folder.lastPathComponent)"
-            DiagnosticsLogger.shared.log("User selected Files export folder with persistent security scope: \(folder.path)")
+            DiagnosticsLogger.shared.log("User selected Files export folder: \(folder.path)")
         } catch {
             saveStatusText = "Could not use that Files folder: \(error.localizedDescription)"
             DiagnosticsLogger.shared.log("Export folder selection failed: \(error.localizedDescription)")
@@ -462,11 +461,11 @@ final class VideoProcessorViewModel: ObservableObject {
         return candidate
     }
 
-    private func persistDeliveryCheckpoint(from source: URL, in recoveryDirectory: URL) throws -> URL {
+    nonisolated private func persistDeliveryCheckpoint(from source: URL, in recoveryDirectory: URL) throws -> URL {
         let fm = FileManager.default
         for candidate in deliveryCheckpointCandidates(in: recoveryDirectory) { try? fm.removeItem(at: candidate) }
         let ext = source.pathExtension.isEmpty ? "mp4" : source.pathExtension.lowercased()
-        let destination = recoveryDirectory.appendingPathComponent("\(deliveryCheckpointPrefix).\(ext)")
+        let destination = recoveryDirectory.appendingPathComponent("checkpoint-delivery-ready.\(ext)")
         do {
             try fm.moveItem(at: source, to: destination)
             DiagnosticsLogger.shared.log("Delivery-ready checkpoint persisted by move • future export retries skip render and mux")
@@ -477,7 +476,7 @@ final class VideoProcessorViewModel: ObservableObject {
         return destination
     }
 
-    private func existingDeliveryCheckpoint(in recoveryDirectory: URL) -> URL? {
+    nonisolated private func existingDeliveryCheckpoint(in recoveryDirectory: URL) -> URL? {
         let fm = FileManager.default
         for candidate in deliveryCheckpointCandidates(in: recoveryDirectory) {
             if fm.fileExists(atPath: candidate.path),
@@ -490,41 +489,23 @@ final class VideoProcessorViewModel: ObservableObject {
         return nil
     }
 
-    private func deliveryCheckpointCandidates(in recoveryDirectory: URL) -> [URL] {
-        ["mp4", "mov", "m4v"].map { recoveryDirectory.appendingPathComponent("\(deliveryCheckpointPrefix).\($0)") }
+    nonisolated private func deliveryCheckpointCandidates(in recoveryDirectory: URL) -> [URL] {
+        ["mp4", "mov", "m4v"].map { recoveryDirectory.appendingPathComponent("checkpoint-delivery-ready.\($0)") }
     }
 
     private func resolveSelectedExportFolder() -> URL? {
         guard let data = UserDefaults.standard.data(forKey: exportFolderBookmarkKey) else { return nil }
-
         var stale = false
         do {
-            let url = try URL(resolvingBookmarkData: data, options: [.withSecurityScope, .withoutUI], relativeTo: nil, bookmarkDataIsStale: &stale)
+            let url = try URL(resolvingBookmarkData: data, options: [.withoutUI], relativeTo: nil, bookmarkDataIsStale: &stale)
             if stale {
                 let secured = url.startAccessingSecurityScopedResource()
                 defer { if secured { url.stopAccessingSecurityScopedResource() } }
-                let renewed = try url.bookmarkData(options: [.withSecurityScope], includingResourceValuesForKeys: nil, relativeTo: nil)
+                let renewed = try url.bookmarkData(options: .minimalBookmark, includingResourceValuesForKeys: nil, relativeTo: nil)
                 UserDefaults.standard.set(renewed, forKey: exportFolderBookmarkKey)
-                DiagnosticsLogger.shared.log("Renewed stale security-scoped Files export bookmark.")
+                DiagnosticsLogger.shared.log("Renewed stale Files export bookmark.")
             }
             return url
-        } catch {
-            DiagnosticsLogger.shared.log("Security-scoped bookmark resolution failed; attempting legacy bookmark migration: \(error.localizedDescription)")
-        }
-
-        stale = false
-        do {
-            let legacyURL = try URL(resolvingBookmarkData: data, options: [.withoutUI], relativeTo: nil, bookmarkDataIsStale: &stale)
-            let secured = legacyURL.startAccessingSecurityScopedResource()
-            defer { if secured { legacyURL.stopAccessingSecurityScopedResource() } }
-            if secured {
-                let upgraded = try legacyURL.bookmarkData(options: [.withSecurityScope], includingResourceValuesForKeys: nil, relativeTo: nil)
-                UserDefaults.standard.set(upgraded, forKey: exportFolderBookmarkKey)
-                DiagnosticsLogger.shared.log("Migrated legacy Files export bookmark to persistent security scope.")
-            } else {
-                DiagnosticsLogger.shared.log("Legacy Files bookmark resolved but could not activate security scope; it will be used only if still accessible.")
-            }
-            return legacyURL
         } catch {
             DiagnosticsLogger.shared.log("Stored Files export bookmark could not be resolved: \(error.localizedDescription)")
             return nil
