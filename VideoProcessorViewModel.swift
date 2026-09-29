@@ -57,6 +57,7 @@ final class VideoProcessorViewModel: ObservableObject {
     private var savedIdleTimerDisabled: Bool?
     private var renderStartedAt: Date?
     private let exportFolderBookmarkKey = "RIFE60.ExportFolderBookmark.v1"
+    private let deliveryCheckpointPrefix = "checkpoint-delivery-ready"
 
     init() {
         refreshExportFolderName()
@@ -125,11 +126,11 @@ final class VideoProcessorViewModel: ObservableObject {
             guard let folder = try result.get().first else { return }
             let secured = folder.startAccessingSecurityScopedResource()
             defer { if secured { folder.stopAccessingSecurityScopedResource() } }
-            let bookmark = try folder.bookmarkData(options: .minimalBookmark, includingResourceValuesForKeys: nil, relativeTo: nil)
+            let bookmark = try folder.bookmarkData(options: [.withSecurityScope], includingResourceValuesForKeys: nil, relativeTo: nil)
             UserDefaults.standard.set(bookmark, forKey: exportFolderBookmarkKey)
             exportFolderName = folder.lastPathComponent
             saveStatusText = "Future videos will auto-save to Files > \(folder.lastPathComponent)"
-            DiagnosticsLogger.shared.log("User selected Files export folder: \(folder.path)")
+            DiagnosticsLogger.shared.log("User selected Files export folder with persistent security scope: \(folder.path)")
         } catch {
             saveStatusText = "Could not use that Files folder: \(error.localizedDescription)"
             DiagnosticsLogger.shared.log("Export folder selection failed: \(error.localizedDescription)")
@@ -251,29 +252,44 @@ final class VideoProcessorViewModel: ObservableObject {
                 defer { if secured { source.stopAccessingSecurityScopedResource() } }
                 let job = try RecoveryStore.prepare(source: source, configurationKey: configKey)
                 RecoveryStore.update(progress: job.manifest.progress, message: "Recovery source secured", force: true)
-                let config = ProcessorConfiguration(quality: .hq, ghostProtection: guardEnabled, sceneCutProtection: cuts, compressionProtection: compressionEnabled, outlineProtection: outlineEnabled, ghostSensitivity: sensitivity, preserveAudio: audio, targetFPS: 60)
-                let processor = TwoPassVideoProcessor(configuration: config, upscaleTo4K: upscale)
-                let result = try await processor.process(sourceURL: job.sourceURL, recoveryDirectory: job.directory, progress: { p, message in
-                    RecoveryStore.update(progress: p, message: message)
-                    Task { @MainActor [weak self] in
-                        guard let self else { return }
-                        self.progress = p
-                        self.recoveryAvailable = true
-                        self.recoveryStatusText = "Crash-safe checkpoints active • \(String(format: "%.1f", p * 100))%"
-                        if message.contains("Pass 1/3") { self.restorationProgress = min(max(p / 0.18, 0), 1) } else if p >= 0.19 { self.restorationProgress = 1 }
-                        if p >= 0.56 { self.upscaleProgress = min(max((p - 0.56) / 0.41, 0), 1) }
-                        self.statusText = message
-                        self.updateClock(progress: p)
-                    }
-                }, telemetry: { sample in Task { @MainActor [weak self] in self?.telemetry = sample } })
-                try Task.checkCancellation()
                 guard let self else { return }
+
+                let result: URL
+                if let deliveryReady = self.existingDeliveryCheckpoint(in: job.directory) {
+                    DiagnosticsLogger.shared.log("Recovery: reused delivery-ready checkpoint; skipping all render and mux stages.")
+                    RecoveryStore.update(progress: 0.995, message: "Recovered delivery-ready checkpoint • retrying Files export only", force: true)
+                    await MainActor.run {
+                        self.progress = 0.995
+                        self.statusText = "Recovered finished video • retrying Files export only…"
+                        self.etaSeconds = nil
+                    }
+                    result = deliveryReady
+                } else {
+                    let config = ProcessorConfiguration(quality: .hq, ghostProtection: guardEnabled, sceneCutProtection: cuts, compressionProtection: compressionEnabled, outlineProtection: outlineEnabled, ghostSensitivity: sensitivity, preserveAudio: audio, targetFPS: 60)
+                    let processor = TwoPassVideoProcessor(configuration: config, upscaleTo4K: upscale)
+                    let generated = try await processor.process(sourceURL: job.sourceURL, recoveryDirectory: job.directory, progress: { p, message in
+                        RecoveryStore.update(progress: p, message: message)
+                        Task { @MainActor [weak self] in
+                            guard let self else { return }
+                            self.progress = p
+                            self.recoveryAvailable = true
+                            self.recoveryStatusText = "Crash-safe checkpoints active • \(String(format: "%.1f", p * 100))%"
+                            if message.contains("Pass 1/3") { self.restorationProgress = min(max(p / 0.18, 0), 1) } else if p >= 0.19 { self.restorationProgress = 1 }
+                            if p >= 0.56 { self.upscaleProgress = min(max((p - 0.56) / 0.41, 0), 1) }
+                            self.statusText = message
+                            self.updateClock(progress: p)
+                        }
+                    }, telemetry: { sample in Task { @MainActor [weak self] in self?.telemetry = sample } })
+                    try Task.checkCancellation()
+                    result = try self.persistDeliveryCheckpoint(from: generated, in: job.directory)
+                    RecoveryStore.update(progress: 0.97, message: "High-quality master checkpointed • ready for final size/export", force: true)
+                }
+
                 await MainActor.run {
                     self.statusText = "Checking final file size…"
-                    self.progress = 0.97
+                    self.progress = max(self.progress, 0.97)
                     self.etaSeconds = nil
                 }
-                RecoveryStore.update(progress: 0.97, message: "High-quality master complete • checking final delivery size", force: true)
                 let saved = try await self.saveFinishedVideo(result)
                 RecoveryStore.finishAndClean()
                 await MainActor.run { [weak self] in
@@ -334,10 +350,8 @@ final class VideoProcessorViewModel: ObservableObject {
         progress = 0.995
         RecoveryStore.update(progress: 0.995, message: "Saving finished result to Files", force: true)
 
-        let saved = try saveToFiles(optimized.url)
-        try await validateFinishedVideo(saved.url)
-        let attrs = try FileManager.default.attributesOfItem(atPath: saved.url.path)
-        let bytes = (attrs[.size] as? NSNumber)?.int64Value ?? 0
+        let saved = try await saveToFiles(optimized.url)
+        let bytes = saved.bytes
         guard bytes < FinalSizeOptimizer.hardLimitBytes else {
             throw NSError(domain: "RIFE60GhostGuard", code: 33, userInfo: [NSLocalizedDescriptionKey: "The final saved video is still 1 GB or larger."])
         }
@@ -348,9 +362,6 @@ final class VideoProcessorViewModel: ObservableObject {
             DiagnosticsLogger.shared.log("Files export verified • size pass skipped • \(bytes) bytes • \(saved.url.path)")
         }
 
-        // The high-quality master exists only as an intermediate. Once the verified
-        // delivery file is safely persisted, release both temporary files so a
-        // multi-gigabyte master does not remain in the app's temporary storage.
         if optimized.url != saved.url { try? FileManager.default.removeItem(at: optimized.url) }
         if source != saved.url, source != optimized.url { try? FileManager.default.removeItem(at: source) }
 
@@ -371,21 +382,28 @@ final class VideoProcessorViewModel: ObservableObject {
         DiagnosticsLogger.shared.log("Finished export validation passed • \(Int(abs(size.width)))x\(Int(abs(size.height))) • \(String(format: "%.3f", seconds))s")
     }
 
-    private func saveToFiles(_ source: URL) throws -> (url: URL, message: String) {
+    private func saveToFiles(_ source: URL) async throws -> (url: URL, message: String, bytes: Int64) {
         let formatter = DateFormatter(); formatter.dateFormat = "yyyyMMdd-HHmmss"
         let ext = source.pathExtension.isEmpty ? "mp4" : source.pathExtension.lowercased()
         let filename = "RIFE60-2X60-\(formatter.string(from: Date())).\(ext)"
 
         if let folder = resolveSelectedExportFolder() {
             let secured = folder.startAccessingSecurityScopedResource()
-            defer { if secured { folder.stopAccessingSecurityScopedResource() } }
-            let destination = uniqueDestination(in: folder, filename: filename)
-            do {
-                try FileManager.default.copyItem(at: source, to: destination)
-                try verifyPersistedFile(destination)
-                return (destination, "Files > \(folder.lastPathComponent) > \(destination.lastPathComponent)")
-            } catch {
-                DiagnosticsLogger.shared.log("Selected Files folder write failed: \(error.localizedDescription). Falling back to app Exports folder.")
+            if secured {
+                defer { folder.stopAccessingSecurityScopedResource() }
+                do {
+                    let destination = uniqueDestination(in: folder, filename: filename)
+                    let persisted = try coordinatedCopy(source, to: destination, inside: folder)
+                    try verifyPersistedFile(persisted)
+                    try await validateFinishedVideo(persisted)
+                    let attrs = try FileManager.default.attributesOfItem(atPath: persisted.path)
+                    let bytes = (attrs[.size] as? NSNumber)?.int64Value ?? 0
+                    return (persisted, "Files > \(folder.lastPathComponent) > \(persisted.lastPathComponent)", bytes)
+                } catch {
+                    DiagnosticsLogger.shared.log("Selected Files folder write/validation failed while security scope was active: \(error.localizedDescription). Falling back to app Exports folder.")
+                }
+            } else {
+                DiagnosticsLogger.shared.log("Selected Files folder security scope could not be activated. Falling back to app Exports folder.")
             }
         }
 
@@ -395,7 +413,33 @@ final class VideoProcessorViewModel: ObservableObject {
         let destination = uniqueDestination(in: exports, filename: filename)
         try FileManager.default.copyItem(at: source, to: destination)
         try verifyPersistedFile(destination)
-        return (destination, "On My iPhone > RIFE 60 Ghost Guard > Exports > \(destination.lastPathComponent)")
+        try await validateFinishedVideo(destination)
+        let attrs = try FileManager.default.attributesOfItem(atPath: destination.path)
+        let bytes = (attrs[.size] as? NSNumber)?.int64Value ?? 0
+        return (destination, "On My iPhone > RIFE 60 Ghost Guard > Exports > \(destination.lastPathComponent)", bytes)
+    }
+
+    private func coordinatedCopy(_ source: URL, to destination: URL, inside folder: URL) throws -> URL {
+        let fm = FileManager.default
+        let coordinator = NSFileCoordinator(filePresenter: nil)
+        var coordinationError: NSError?
+        var operationError: Error?
+        var actualDestination = destination
+
+        coordinator.coordinate(writingItemAt: folder, options: .forMerging, error: &coordinationError) { coordinatedFolder in
+            let coordinatedDestination = coordinatedFolder.appendingPathComponent(destination.lastPathComponent)
+            actualDestination = coordinatedDestination
+            do {
+                try? fm.removeItem(at: coordinatedDestination)
+                try fm.copyItem(at: source, to: coordinatedDestination)
+            } catch {
+                operationError = error
+            }
+        }
+
+        if let operationError { throw operationError }
+        if let coordinationError { throw coordinationError }
+        return actualDestination
     }
 
     private func verifyPersistedFile(_ url: URL) throws {
@@ -418,18 +462,69 @@ final class VideoProcessorViewModel: ObservableObject {
         return candidate
     }
 
+    private func persistDeliveryCheckpoint(from source: URL, in recoveryDirectory: URL) throws -> URL {
+        let fm = FileManager.default
+        for candidate in deliveryCheckpointCandidates(in: recoveryDirectory) { try? fm.removeItem(at: candidate) }
+        let ext = source.pathExtension.isEmpty ? "mp4" : source.pathExtension.lowercased()
+        let destination = recoveryDirectory.appendingPathComponent("\(deliveryCheckpointPrefix).\(ext)")
+        do {
+            try fm.moveItem(at: source, to: destination)
+            DiagnosticsLogger.shared.log("Delivery-ready checkpoint persisted by move • future export retries skip render and mux")
+        } catch {
+            DiagnosticsLogger.shared.log("Delivery checkpoint move unavailable • falling back to copy: \(error.localizedDescription)")
+            try fm.copyItem(at: source, to: destination)
+        }
+        return destination
+    }
+
+    private func existingDeliveryCheckpoint(in recoveryDirectory: URL) -> URL? {
+        let fm = FileManager.default
+        for candidate in deliveryCheckpointCandidates(in: recoveryDirectory) {
+            if fm.fileExists(atPath: candidate.path),
+               let attrs = try? fm.attributesOfItem(atPath: candidate.path),
+               let size = attrs[.size] as? NSNumber,
+               size.int64Value > 1_000_000 {
+                return candidate
+            }
+        }
+        return nil
+    }
+
+    private func deliveryCheckpointCandidates(in recoveryDirectory: URL) -> [URL] {
+        ["mp4", "mov", "m4v"].map { recoveryDirectory.appendingPathComponent("\(deliveryCheckpointPrefix).\($0)") }
+    }
+
     private func resolveSelectedExportFolder() -> URL? {
         guard let data = UserDefaults.standard.data(forKey: exportFolderBookmarkKey) else { return nil }
+
         var stale = false
         do {
-            let url = try URL(resolvingBookmarkData: data, options: [.withoutUI], relativeTo: nil, bookmarkDataIsStale: &stale)
+            let url = try URL(resolvingBookmarkData: data, options: [.withSecurityScope, .withoutUI], relativeTo: nil, bookmarkDataIsStale: &stale)
             if stale {
                 let secured = url.startAccessingSecurityScopedResource()
                 defer { if secured { url.stopAccessingSecurityScopedResource() } }
-                let renewed = try url.bookmarkData(options: .minimalBookmark, includingResourceValuesForKeys: nil, relativeTo: nil)
+                let renewed = try url.bookmarkData(options: [.withSecurityScope], includingResourceValuesForKeys: nil, relativeTo: nil)
                 UserDefaults.standard.set(renewed, forKey: exportFolderBookmarkKey)
+                DiagnosticsLogger.shared.log("Renewed stale security-scoped Files export bookmark.")
             }
             return url
+        } catch {
+            DiagnosticsLogger.shared.log("Security-scoped bookmark resolution failed; attempting legacy bookmark migration: \(error.localizedDescription)")
+        }
+
+        stale = false
+        do {
+            let legacyURL = try URL(resolvingBookmarkData: data, options: [.withoutUI], relativeTo: nil, bookmarkDataIsStale: &stale)
+            let secured = legacyURL.startAccessingSecurityScopedResource()
+            defer { if secured { legacyURL.stopAccessingSecurityScopedResource() } }
+            if secured {
+                let upgraded = try legacyURL.bookmarkData(options: [.withSecurityScope], includingResourceValuesForKeys: nil, relativeTo: nil)
+                UserDefaults.standard.set(upgraded, forKey: exportFolderBookmarkKey)
+                DiagnosticsLogger.shared.log("Migrated legacy Files export bookmark to persistent security scope.")
+            } else {
+                DiagnosticsLogger.shared.log("Legacy Files bookmark resolved but could not activate security scope; it will be used only if still accessible.")
+            }
+            return legacyURL
         } catch {
             DiagnosticsLogger.shared.log("Stored Files export bookmark could not be resolved: \(error.localizedDescription)")
             return nil
