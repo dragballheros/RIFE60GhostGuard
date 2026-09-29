@@ -4,6 +4,7 @@ import VideoToolbox
 
 /// Delivery-only compression pass. The AI pipeline is allowed to create its
 /// high-quality master first; only the finished master is size-limited.
+/// The final HEVC Main10 encoder is REQUIRED to be hardware accelerated.
 final class FinalSizeOptimizer {
     static let hardLimitBytes: Int64 = 1_000_000_000
     static let targetBytes: Int64 = 900_000_000
@@ -31,9 +32,9 @@ final class FinalSizeOptimizer {
             case .missingVideo: return "Final size optimizer could not find the video track."
             case .invalidDuration: return "Final size optimizer received an invalid video duration."
             case .bitrateTooLow: return "This video is too long to fit safely below 1 GB at the minimum supported quality."
-            case .cannotAddTrack(let name): return "Final size optimizer could not add the \(name) track."
+            case .cannotAddTrack(let name): return "Final size optimizer could not add the \(name) track. Hardware HEVC Main10 is required for the final pass."
             case .reader(let message): return "Final size optimizer reader failed: \(message)"
-            case .writer(let message): return "Final size optimizer writer failed: \(message)"
+            case .writer(let message): return "Final size optimizer hardware encoder failed: \(message)"
             case .emptyOutput: return "Final size optimizer produced an empty file."
             case .couldNotMeetLimit: return "Final size optimizer could not keep the completed video below 1 GB."
             }
@@ -59,11 +60,8 @@ final class FinalSizeOptimizer {
         let fps = max(1.0, Double(try await videoTrack.load(.nominalFrameRate)))
         let audioTracks = try await asset.loadTracks(withMediaType: .audio)
 
-        // Target 900 MB, not 999 MB. This leaves enough room for audio, MP4 mux
-        // overhead and VideoToolbox average-bitrate variance. Audio is re-encoded
-        // at 256 kb/s when present. For a 43.133333 s video this lands around
-        // 162 Mbps video, close to the 165 Mbps a-Shell target while preserving
-        // a safer sub-1-GB margin.
+        // Target 900 MB, not 999 MB. This leaves room for audio, MP4 mux overhead
+        // and hardware VideoToolbox average-bitrate variance. Audio is 256 kb/s.
         let audioBps = audioTracks.isEmpty ? 0.0 : 256_000.0
         let muxReserveBps = 128_000.0
         let totalBudgetBps = (Double(Self.targetBytes) * 8.0 / seconds) * 0.975
@@ -71,8 +69,8 @@ final class FinalSizeOptimizer {
         guard calculated >= 1_000_000 else { throw OptimizerError.bitrateTooLow }
         let bitrate = Int(calculated.rounded(.down))
 
-        DiagnosticsLogger.shared.log("Final size optimizer begin • master=\(formatGB(originalBytes)) GB • duration=\(String(format: "%.3f", seconds))s • target video bitrate=\(String(format: "%.2f", Double(bitrate) / 1_000_000.0)) Mbps • HEVC Main10")
-        progress(0.0, "Final delivery compression • HEVC Main10 • target < 1 GB")
+        DiagnosticsLogger.shared.log("Final size optimizer begin • master=\(formatGB(originalBytes)) GB • duration=\(String(format: "%.3f", seconds))s • target video bitrate=\(String(format: "%.2f", Double(bitrate) / 1_000_000.0)) Mbps • HEVC Main10 • hardware encoder REQUIRED")
+        progress(0.0, "Final delivery compression • Hardware HEVC Main10 • target < 1 GB")
 
         let first = FileManager.default.temporaryDirectory.appendingPathComponent("RIFE60-FinalUnder1GB-\(UUID().uuidString).mp4")
         try? FileManager.default.removeItem(at: first)
@@ -90,8 +88,8 @@ final class FinalSizeOptimizer {
             let retryBitrate = max(1_000_000, Int(Double(bitrate) * ratio * 0.94))
             let retry = FileManager.default.temporaryDirectory.appendingPathComponent("RIFE60-FinalUnder1GB-Retry-\(UUID().uuidString).mp4")
             try? FileManager.default.removeItem(at: retry)
-            DiagnosticsLogger.shared.log("Final size optimizer overshoot • \(formatGB(finalBytes)) GB • retry bitrate=\(String(format: "%.2f", Double(retryBitrate) / 1_000_000.0)) Mbps")
-            progress(0.02, "Final delivery compression • size overshoot • retrying safely")
+            DiagnosticsLogger.shared.log("Final size optimizer overshoot • \(formatGB(finalBytes)) GB • hardware retry bitrate=\(String(format: "%.2f", Double(retryBitrate) / 1_000_000.0)) Mbps")
+            progress(0.02, "Final delivery compression • size overshoot • hardware retry")
             try await transcode(asset: asset, videoTrack: videoTrack, audioTrack: audioTracks.first, outputURL: retry, bitrate: retryBitrate, fps: fps, durationSeconds: seconds, progress: progress)
             let retryBytes = fileSize(retry)
             guard retryBytes > 0, retryBytes < Self.hardLimitBytes else {
@@ -104,8 +102,8 @@ final class FinalSizeOptimizer {
             usedBitrate = retryBitrate
         }
 
-        DiagnosticsLogger.shared.log("Final size optimizer complete • output=\(formatGB(finalBytes)) GB • bitrate=\(String(format: "%.2f", Double(usedBitrate) / 1_000_000.0)) Mbps")
-        progress(1.0, "Final delivery compression complete • \(formatMB(finalBytes)) MB")
+        DiagnosticsLogger.shared.log("Final size optimizer complete • output=\(formatGB(finalBytes)) GB • bitrate=\(String(format: "%.2f", Double(usedBitrate) / 1_000_000.0)) Mbps • hardware HEVC Main10")
+        progress(1.0, "Final hardware compression complete • \(formatMB(finalBytes)) MB")
         return Result(url: finalURL, optimized: true, originalBytes: originalBytes, finalBytes: finalBytes, targetVideoBitrate: usedBitrate)
     }
 
@@ -145,16 +143,25 @@ final class FinalSizeOptimizer {
             AVVideoAllowFrameReorderingKey: true,
             AVVideoProfileLevelKey: kVTProfileLevel_HEVC_Main10_AutoLevel as String
         ]
+
+        // This is deliberately top-level in AVVideoSettings. Requiring hardware
+        // means VideoToolbox may not silently fall back to a software HEVC encoder.
+        // If the requested HEVC Main10 configuration cannot be hardware encoded,
+        // writer setup/start fails and the master is left intact.
+        let encoderSpecification: [String: Any] = [
+            kVTVideoEncoderSpecification_RequireHardwareAcceleratedVideoEncoder as String: true
+        ]
         let videoSettings: [String: Any] = [
             AVVideoCodecKey: AVVideoCodecType.hevc,
             AVVideoWidthKey: width,
             AVVideoHeightKey: height,
-            AVVideoCompressionPropertiesKey: compression
+            AVVideoCompressionPropertiesKey: compression,
+            AVVideoEncoderSpecificationKey: encoderSpecification
         ]
         let videoInput = AVAssetWriterInput(mediaType: .video, outputSettings: videoSettings)
         videoInput.expectsMediaDataInRealTime = false
         videoInput.transform = transform
-        guard writer.canAdd(videoInput) else { throw OptimizerError.cannotAddTrack("video writer") }
+        guard writer.canAdd(videoInput) else { throw OptimizerError.cannotAddTrack("hardware HEVC Main10 video writer") }
         writer.add(videoInput)
 
         var audioOutput: AVAssetReaderTrackOutput?
@@ -187,7 +194,7 @@ final class FinalSizeOptimizer {
             audioInput = ai
         }
 
-        guard writer.startWriting() else { throw OptimizerError.writer(writer.error?.localizedDescription ?? "could not start") }
+        guard writer.startWriting() else { throw OptimizerError.writer(writer.error?.localizedDescription ?? "could not start hardware HEVC Main10 encoder") }
         guard reader.startReading() else { throw OptimizerError.reader(reader.error?.localizedDescription ?? "could not start") }
         writer.startSession(atSourceTime: .zero)
 
@@ -214,14 +221,14 @@ final class FinalSizeOptimizer {
                         videoInput.markAsFinished(); group.leave(); return
                     }
                     if !videoInput.append(sample) {
-                        record(OptimizerError.writer(writer.error?.localizedDescription ?? "video append failed"))
+                        record(OptimizerError.writer(writer.error?.localizedDescription ?? "hardware video append failed"))
                         videoInput.markAsFinished(); group.leave(); return
                     }
                     let t = CMSampleBufferGetPresentationTimeStamp(sample)
                     let s = CMTimeGetSeconds(t)
                     if s.isFinite, durationSeconds > 0 {
                         let p = min(max(s / durationSeconds, 0), 0.999)
-                        progress(p, "Final delivery compression • \(Int(p * 100))% • HEVC Main10")
+                        progress(p, "Final delivery compression • \(Int(p * 100))% • Hardware HEVC Main10")
                     }
                 }
             }
@@ -261,7 +268,7 @@ final class FinalSizeOptimizer {
                     if writer.status == .completed {
                         continuation.resume()
                     } else {
-                        continuation.resume(throwing: OptimizerError.writer(writer.error?.localizedDescription ?? "finish failed"))
+                        continuation.resume(throwing: OptimizerError.writer(writer.error?.localizedDescription ?? "hardware HEVC Main10 finish failed"))
                     }
                 }
             }
