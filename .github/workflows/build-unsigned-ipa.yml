@@ -164,13 +164,13 @@ jobs:
               1
           )
 
-          # CUGAN: in cooled Performance Mode explicitly allow CPU+GPU and keep
-          # the proven 704x608 memory-safe tile profile. Serious/Critical retains
-          # Core ML .all plus frame-boundary thermal pacing.
+          # CUGAN keeps Core ML .all so iOS may use the Neural Engine instead of
+          # forcing a growing GPU allocation. Wide tiles require 1.7 GB of live
+          # process headroom; otherwise the identical 512 model is selected.
           replace_required(
               'RealCUGANPass.swift',
-              'configuration.computeUnits = .all',
-              'configuration.computeUnits = automaticPerformanceModeEnabled() ? .cpuAndGPU : .all',
+              'let profile = (width >= 1600 || height >= 1600) ? fast1080Profile : fallbackProfile',
+              'let memoryAtStart = currentRenderPerformanceSnapshot()\n        let profile = ((width >= 1600 || height >= 1600) && memoryAtStart.allowsWideCUGANTiles) ? fast1080Profile : fallbackProfile',
               1
           )
           replace_required(
@@ -182,13 +182,19 @@ jobs:
           replace_required(
               'RealCUGANPass.swift',
               '            frames += 1\n\n            if frames == 1 || frames % 20 == 0 {',
-              '            frames += 1\n            try await thermalFrameBoundaryPacing()\n\n            if frames == 1 || frames % 20 == 0 {',
+              '            frames += 1\n            let memory = currentRenderPerformanceSnapshot()\n            if memory.tier != .performance {\n                if let tileInputPool { CVPixelBufferPoolFlush(tileInputPool, .excessBuffers) }\n                if let stitchedFramePool { CVPixelBufferPoolFlush(stitchedFramePool, .excessBuffers) }\n                CVPixelBufferPoolFlush(writerPool, .excessBuffers)\n                ciContext.clearCaches()\n            }\n            try await adaptiveFrameBoundaryPacing(memory)\n\n            if frames == 1 || frames % 20 == 0 {',
               1
           )
           replace_required(
               'RealCUGANPass.swift',
               '                await Task.yield()',
               '                if !automaticPerformanceModeEnabled() { await Task.yield() }',
+              1
+          )
+          replace_required(
+              'RealCUGANPass.swift',
+              'if frames % 12 == 0 {',
+              'if frames % 4 == 0 {',
               1
           )
 
