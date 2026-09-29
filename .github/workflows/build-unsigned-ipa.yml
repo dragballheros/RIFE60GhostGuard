@@ -126,12 +126,6 @@ jobs:
           p.write_text(s)
           PY
 
-      - name: Disable automatic Files export
-        run: |
-          python3 -c 'from pathlib import Path; p=Path("VideoProcessorViewModel.swift"); s=p.read_text(); old="let saved = try saveToFiles(source)"; new="let saved = (url: source, message: \"Auto-save disabled • use Share Output to save manually\")"; assert old in s; p.write_text(s.replace(old,new,1))'
-          sed -i '' 's/Section("Export to Files")/Section("Export • Auto-save disabled")/' ContentView.swift
-          sed -i '' 's/Finished videos are automatically copied into this Files folder. Choose a folder once and the app remembers it for future renders. This avoids the Photos import issue and means you no longer need to use Copy\/Paste to get the finished video into Files./Auto-save is disabled. When processing finishes, use Share Output to choose where you want to save the finished video./' ContentView.swift
-
       - name: Generate Xcode project
         run: xcodegen generate
       - name: Resolve packages
