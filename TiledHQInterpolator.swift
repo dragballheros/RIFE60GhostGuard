@@ -3,8 +3,10 @@ import CoreVideo
 import RifeMetal
 
 /// Runs true RIFE HQ using the smallest spatial split needed for memory safety.
-/// 1080p-class video now uses one persistent full-frame RifeStream. Larger
-/// sources keep overlapping horizontal streams as a memory-safe fallback.
+/// 1080p-class video uses one persistent full-frame RifeStream. For larger
+/// sources, automatic Performance Mode uses two larger bands while Nominal/Fair;
+/// a render that starts in Thermal Safe Mode uses the conservative 3-band layout.
+/// Model quality and timesteps are identical in both modes.
 final class TiledHQInterpolator {
     private let width: Int
     private let height: Int
@@ -23,20 +25,25 @@ final class TiledHQInterpolator {
         self.width = width
         self.height = height
 
-        // After the two-pass redesign, Core ML/Core Image are fully released
-        // before RIFE is created. That gives 1080p-class sources enough headroom
-        // to use a single full-frame HQ stream and avoid duplicate band work.
+        // 1080p-class remains the fastest/lowest-overhead full-frame path. Above
+        // that, use fewer/larger bands when thermal headroom exists. We never
+        // rebuild a stateful RIFE stream in the middle of an active frame.
+        let performanceMode = automaticPerformanceModeEnabled()
         let adaptiveBands: Int
         if height <= 1200 {
             adaptiveBands = 1
+        } else if performanceMode {
+            adaptiveBands = 2
         } else {
             adaptiveBands = max(3, bandCount)
         }
 
         self.bandCount = adaptiveBands
-        self.overlap = adaptiveBands == 1 ? 0 : max(0, overlap)
+        self.overlap = adaptiveBands == 1 ? 0 : (performanceMode ? min(max(0, overlap), 48) : max(0, overlap))
         self.coreHeight = Int(ceil(Double(height) / Double(adaptiveBands)))
         self.tileHeight = adaptiveBands == 1 ? height : self.coreHeight + self.overlap * 2
+
+        DiagnosticsLogger.shared.log("RIFE HQ layout • \(width)x\(height) • bands=\(adaptiveBands) • overlap=\(self.overlap) • \(currentThermalStateName())")
 
         var sessions: [RifeStream] = []
         sessions.reserveCapacity(adaptiveBands)
