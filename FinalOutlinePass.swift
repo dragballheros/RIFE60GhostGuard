@@ -15,11 +15,10 @@ final class FinalOutlinePass {
     private var workingPool: CVPixelBufferPool?
     private var fullOutlinePool: CVPixelBufferPool?
 
-    // The lower-resolution style map naturally expands line influence slightly when
-    // returned to 4K. 0.82 keeps the requested Sharpie width: thicker than original,
-    // but a little narrower than the older version.
+    // Use a slightly higher-resolution style map so the Sharpie line expands less
+    // when returned to 4K. Keep the blend strength unchanged so the line stays bold.
     private let enhancedWeight: CGFloat = 0.82
-    private let maxSharpieLongEdge = 2880
+    private let maxSharpieLongEdge = 3072
 
     func run(
         sourceURL: URL,
