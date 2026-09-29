@@ -127,12 +127,15 @@ final class RestorationPass {
 
             while !input.isReadyForMoreMediaData {
                 try Task.checkCancellation()
-                try await Task.sleep(nanoseconds: 1_000_000)
+                try await Task.sleep(nanoseconds: automaticPerformanceModeEnabled() ? 250_000 : 1_000_000)
             }
 
             guard adaptor.append(frame, withPresentationTime: pts) else {
                 throw ProcessorError.writer("failed writing restored source frame")
             }
+
+            // Thermal mode is sampled only after the current frame is complete.
+            try await thermalFrameBoundaryPacing()
 
             if sourceFrames % 3 == 0 {
                 var t = PerformanceTelemetry()
@@ -145,8 +148,8 @@ final class RestorationPass {
 
             if sourceFrames % 6 == 0 {
                 let frac = min(max(CMTimeGetSeconds(pts) / max(CMTimeGetSeconds(duration), 0.001), 0), 1)
-                progress(frac * 0.28, "Pass 1/2 • \(sourceFrames) restored • Thermal \(currentThermalStateName())")
-                await Task.yield()
+                progress(frac * 0.28, "Pass 1/2 • \(sourceFrames) restored • \(currentThermalStateName())")
+                if !automaticPerformanceModeEnabled() { await Task.yield() }
             }
         }
 
