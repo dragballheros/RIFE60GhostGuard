@@ -159,7 +159,8 @@ final class RealCUGANPass {
             frames += 1
 
             if frames == 1 || frames % 20 == 0 {
-                DiagnosticsLogger.shared.log("Real-CUGAN frame \(frames) complete • \(tilesPerFrame) tiles/frame • inference=\(String(format: "%.1f", inferenceSeconds * 1000.0 / Double(frames)))ms/frame • thermal=\(currentThermalStateName())")
+                let memory = currentRenderPerformanceSnapshot()
+                DiagnosticsLogger.shared.log("Real-CUGAN frame \(frames) complete • \(tilesPerFrame) tiles/frame • inference=\(String(format: "%.1f", inferenceSeconds * 1000.0 / Double(frames)))ms/frame • headroom=\(Int(memory.availableMemoryMB.rounded())) MB • thermal=\(memory.thermalAndMode)")
             }
 
             // UI/diagnostic publishing is deliberately less frequent during CUGAN.
@@ -221,7 +222,7 @@ final class RealCUGANPass {
         tileInputPool = pool
 
         let stitchedAttrs: [String: Any] = [
-            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
+            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelBufferPixelFormatTypeKey,
             kCVPixelBufferWidthKey as String: targetWidth,
             kCVPixelBufferHeightKey as String: targetHeight,
             kCVPixelBufferMetalCompatibilityKey as String: true,
@@ -314,6 +315,27 @@ final class RealCUGANPass {
         guard CVPixelBufferGetWidth(stitched) == targetWidth, CVPixelBufferGetHeight(stitched) == targetHeight else {
             throw ProcessorError.conversionFailed("Real-CUGAN stitched frame size mismatch")
         }
+
+        // Performance Mode still needs bounded IOSurface/Core Image caches during long 4K runs.
+        // This does not alter pixels or model execution; it only releases excess reusable resources.
+        let memory = currentRenderPerformanceSnapshot()
+        let cleanupInterval: Int
+        if memory.availableMemoryMB < 1_500 {
+            cleanupInterval = 1
+        } else if memory.availableMemoryMB < 2_000 {
+            cleanupInterval = 4
+        } else {
+            cleanupInterval = 8
+        }
+        if frameNumber % cleanupInterval == 0 {
+            CVPixelBufferPoolFlush(tileInputPool, .excessBuffers)
+            CVPixelBufferPoolFlush(stitchedFramePool, .excessBuffers)
+            ciContext.clearCaches()
+            if frameNumber % 20 == 0 || memory.availableMemoryMB < 1_500 {
+                DiagnosticsLogger.shared.log("Real-CUGAN memory cleanup • frame=\(frameNumber) • headroom=\(Int(memory.availableMemoryMB.rounded())) MB • interval=\(cleanupInterval)")
+            }
+        }
+
         return stitched
     }
 
