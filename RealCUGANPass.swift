@@ -98,7 +98,7 @@ final class RealCUGANPass {
 
         let compression: [String: Any] = [
             AVVideoAverageBitRateKey: videoBitrate,
-            AVVideoDataRateLimitsKey: [max(videoBitrate / 8, 62_500), 1],
+            "AVVideoDataRateLimitsKey": [max(videoBitrate / 8, 62_500), 1],
             AVVideoExpectedSourceFrameRateKey: 60,
             AVVideoMaxKeyFrameIntervalKey: 120,
             AVVideoAllowFrameReorderingKey: true,
