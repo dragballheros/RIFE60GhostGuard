@@ -239,7 +239,7 @@ final class VideoProcessorViewModel: ObservableObject {
         let sensitivity = ghostSensitivity
         let audio = preserveAudio
         let upscale = upscaleTo4K
-        let configKey = ["pipeline-v2", "hq", "ghost=\(guardEnabled)", "cuts=\(cuts)", "compression=\(compressionEnabled)", "outline=\(outlineEnabled)", String(format: "sensitivity=%.2f", sensitivity), "audio=\(audio)", "upscale=\(upscale)", "fps=60"].joined(separator: "|")
+        let configKey = ["pipeline-v3-final-size", "hq", "ghost=\(guardEnabled)", "cuts=\(cuts)", "compression=\(compressionEnabled)", "outline=\(outlineEnabled)", String(format: "sensitivity=%.2f", sensitivity), "audio=\(audio)", "upscale=\(upscale)", "fps=60"].joined(separator: "|")
         DiagnosticsLogger.shared.log("Render requested • \(configKey)")
 
         currentTask = Task.detached(priority: .userInitiated) { [weak self] in
@@ -264,9 +264,13 @@ final class VideoProcessorViewModel: ObservableObject {
                     }
                 }, telemetry: { sample in Task { @MainActor [weak self] in self?.telemetry = sample } })
                 try Task.checkCancellation()
-                await MainActor.run { [weak self] in self?.statusText = "Saving to Files…"; self?.progress = 0.995 }
-                RecoveryStore.update(progress: 0.995, message: "Saving finished result to Files", force: true)
                 guard let self else { return }
+                await MainActor.run {
+                    self.statusText = "Checking final file size…"
+                    self.progress = 0.97
+                    self.etaSeconds = nil
+                }
+                RecoveryStore.update(progress: 0.97, message: "High-quality master complete • checking final delivery size", force: true)
                 let saved = try await self.saveFinishedVideo(result)
                 RecoveryStore.finishAndClean()
                 await MainActor.run { [weak self] in
@@ -292,7 +296,7 @@ final class VideoProcessorViewModel: ObservableObject {
         guard let renderStartedAt else { return }
         let elapsed = Date().timeIntervalSince(renderStartedAt)
         elapsedSeconds = elapsed
-        if progress > 0.025 && progress < 0.995 {
+        if progress > 0.025 && progress < 0.97 {
             let raw = elapsed * (1.0 - progress) / progress
             etaSeconds = etaSeconds.map { $0 > 0 ? $0 * 0.72 + raw * 0.28 : raw } ?? raw
         }
@@ -313,12 +317,45 @@ final class VideoProcessorViewModel: ObservableObject {
     private struct SavedResult: Sendable { let url: URL; let message: String }
 
     private func saveFinishedVideo(_ source: URL) async throws -> SavedResult {
-        let saved = try saveToFiles(source)
+        let optimizer = FinalSizeOptimizer()
+        let optimized = try await optimizer.optimizeIfNeeded(sourceURL: source) { [weak self] p, message in
+            Task { @MainActor in
+                guard let self else { return }
+                self.progress = 0.97 + min(max(p, 0), 1) * 0.025
+                self.statusText = message
+            }
+        }
+        try Task.checkCancellation()
+
+        statusText = optimized.optimized ? "Final compression complete • saving to Files…" : "Master already under 1 GB • saving to Files…"
+        progress = 0.995
+        RecoveryStore.update(progress: 0.995, message: "Saving finished result to Files", force: true)
+
+        let saved = try saveToFiles(optimized.url)
         try await validateFinishedVideo(saved.url)
         let attrs = try FileManager.default.attributesOfItem(atPath: saved.url.path)
         let bytes = (attrs[.size] as? NSNumber)?.int64Value ?? 0
-        DiagnosticsLogger.shared.log("Files export verified • \(saved.url.lastPathComponent) • \(bytes) bytes • \(saved.url.path)")
-        return SavedResult(url: saved.url, message: saved.message)
+        guard bytes < FinalSizeOptimizer.hardLimitBytes else {
+            throw NSError(domain: "RIFE60GhostGuard", code: 33, userInfo: [NSLocalizedDescriptionKey: "The final saved video is still 1 GB or larger."])
+        }
+
+        if optimized.optimized {
+            DiagnosticsLogger.shared.log("Files export verified • final size optimized from \(optimized.originalBytes) to \(bytes) bytes • \(saved.url.path)")
+        } else {
+            DiagnosticsLogger.shared.log("Files export verified • size pass skipped • \(bytes) bytes • \(saved.url.path)")
+        }
+
+        // The high-quality master exists only as an intermediate. Once the verified
+        // delivery file is safely persisted, release both temporary files so a
+        // multi-gigabyte master does not remain in the app's temporary storage.
+        if optimized.url != saved.url { try? FileManager.default.removeItem(at: optimized.url) }
+        if source != saved.url, source != optimized.url { try? FileManager.default.removeItem(at: source) }
+
+        let sizeText = String(format: "%.0f MB", Double(bytes) / 1_000_000.0)
+        let message = optimized.optimized
+            ? "Auto-saved final HEVC Main10 video • \(sizeText) • under 1 GB • \(saved.message)"
+            : "Auto-saved without extra compression • \(sizeText) • \(saved.message)"
+        return SavedResult(url: saved.url, message: message)
     }
 
     private func validateFinishedVideo(_ url: URL) async throws {
@@ -333,7 +370,7 @@ final class VideoProcessorViewModel: ObservableObject {
 
     private func saveToFiles(_ source: URL) throws -> (url: URL, message: String) {
         let formatter = DateFormatter(); formatter.dateFormat = "yyyyMMdd-HHmmss"
-        let ext = source.pathExtension.isEmpty ? "mov" : source.pathExtension.lowercased()
+        let ext = source.pathExtension.isEmpty ? "mp4" : source.pathExtension.lowercased()
         let filename = "RIFE60-2X60-\(formatter.string(from: Date())).\(ext)"
 
         if let folder = resolveSelectedExportFolder() {
@@ -343,7 +380,7 @@ final class VideoProcessorViewModel: ObservableObject {
             do {
                 try FileManager.default.copyItem(at: source, to: destination)
                 try verifyPersistedFile(destination)
-                return (destination, "Auto-saved to Files > \(folder.lastPathComponent) > \(destination.lastPathComponent)")
+                return (destination, "Files > \(folder.lastPathComponent) > \(destination.lastPathComponent)")
             } catch {
                 DiagnosticsLogger.shared.log("Selected Files folder write failed: \(error.localizedDescription). Falling back to app Exports folder.")
             }
@@ -355,7 +392,7 @@ final class VideoProcessorViewModel: ObservableObject {
         let destination = uniqueDestination(in: exports, filename: filename)
         try FileManager.default.copyItem(at: source, to: destination)
         try verifyPersistedFile(destination)
-        return (destination, "Auto-saved to Files: On My iPhone > RIFE 60 Ghost Guard > Exports > \(destination.lastPathComponent)")
+        return (destination, "On My iPhone > RIFE 60 Ghost Guard > Exports > \(destination.lastPathComponent)")
     }
 
     private func verifyPersistedFile(_ url: URL) throws {
