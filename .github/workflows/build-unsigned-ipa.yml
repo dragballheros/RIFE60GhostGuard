@@ -126,6 +126,103 @@ jobs:
           p.write_text(s)
           PY
 
+      - name: Apply automatic cooled Performance Mode
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_required(path, old, new, count=None):
+              p = Path(path)
+              s = p.read_text()
+              found = s.count(old)
+              if found == 0:
+                  raise SystemExit(f'Performance patch target missing in {path}: {old[:80]!r}')
+              if count is not None and found != count:
+                  raise SystemExit(f'Unexpected Performance patch count in {path}: expected {count}, found {found}')
+              s = s.replace(old, new)
+              p.write_text(s)
+
+          # RIFE: keep HQ/model/timesteps unchanged. At Nominal/Fair poll the
+          # hardware writer more aggressively, yield less, and retain buffers
+          # longer so the Metal stream is fed with less CPU-side interruption.
+          replace_required(
+              'RIFEVideoProcessor.swift',
+              'try await Task.sleep(nanoseconds: 2_000_000)',
+              'try await Task.sleep(nanoseconds: automaticPerformanceModeEnabled() ? 250_000 : 2_000_000)',
+              1
+          )
+          replace_required(
+              'RIFEVideoProcessor.swift',
+              'await Task.yield()',
+              'if !automaticPerformanceModeEnabled() { await Task.yield() }',
+              1
+          )
+          replace_required(
+              'RIFEVideoProcessor.swift',
+              'if sourceFrames % 12 == 0 {\n                CVPixelBufferPoolFlush(pool, .excessBuffers)\n            }',
+              'if sourceFrames % (automaticPerformanceModeEnabled() ? 48 : 12) == 0 {\n                CVPixelBufferPoolFlush(pool, .excessBuffers)\n            }',
+              1
+          )
+
+          # CUGAN: in cooled Performance Mode explicitly allow CPU+GPU and keep
+          # the proven 704x608 memory-safe tile profile. Serious/Critical retains
+          # Core ML .all plus frame-boundary thermal pacing.
+          replace_required(
+              'RealCUGANPass.swift',
+              'configuration.computeUnits = .all',
+              'configuration.computeUnits = automaticPerformanceModeEnabled() ? .cpuAndGPU : .all',
+              1
+          )
+          replace_required(
+              'RealCUGANPass.swift',
+              'try await Task.sleep(nanoseconds: 1_000_000)',
+              'try await Task.sleep(nanoseconds: automaticPerformanceModeEnabled() ? 250_000 : 1_000_000)',
+              1
+          )
+          replace_required(
+              'RealCUGANPass.swift',
+              '            frames += 1\n\n            if frames == 1 || frames % 20 == 0 {',
+              '            frames += 1\n            try await thermalFrameBoundaryPacing()\n\n            if frames == 1 || frames % 20 == 0 {',
+              1
+          )
+          replace_required(
+              'RealCUGANPass.swift',
+              '                await Task.yield()',
+              '                if !automaticPerformanceModeEnabled() { await Task.yield() }',
+              1
+          )
+
+          # Sharpie Core ML: use GPU-preferred compute while cooled. The model,
+          # blend strength, line width and pixel math are unchanged.
+          replace_required(
+              'OutlineEnhancer.swift',
+              'configuration.computeUnits = .all',
+              'configuration.computeUnits = automaticPerformanceModeEnabled() ? .cpuAndGPU : .all',
+              1
+          )
+
+          # Final visual pass: reduce writer polling/yield overhead in Performance
+          # Mode and sample thermal state only after each completed frame.
+          replace_required(
+              'FinalOutlinePass.swift',
+              'while !input.isReadyForMoreMediaData { try Task.checkCancellation(); try await Task.sleep(nanoseconds: 1_000_000) }',
+              'while !input.isReadyForMoreMediaData { try Task.checkCancellation(); try await Task.sleep(nanoseconds: automaticPerformanceModeEnabled() ? 250_000 : 1_000_000) }',
+              1
+          )
+          replace_required(
+              'FinalOutlinePass.swift',
+              '            frames += 1\n\n            if frames == 1 || frames % 10 == 0 {',
+              '            frames += 1\n            try await thermalFrameBoundaryPacing()\n\n            if frames == 1 || frames % 10 == 0 {',
+              1
+          )
+          replace_required(
+              'FinalOutlinePass.swift',
+              '                await Task.yield()',
+              '                if !automaticPerformanceModeEnabled() { await Task.yield() }',
+              1
+          )
+          PY
+
       - name: Generate Xcode project
         run: xcodegen generate
       - name: Resolve packages
