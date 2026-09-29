@@ -222,7 +222,7 @@ final class RealCUGANPass {
         tileInputPool = pool
 
         let stitchedAttrs: [String: Any] = [
-            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelBufferPixelFormatTypeKey,
+            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
             kCVPixelBufferWidthKey as String: targetWidth,
             kCVPixelBufferHeightKey as String: targetHeight,
             kCVPixelBufferMetalCompatibilityKey as String: true,
