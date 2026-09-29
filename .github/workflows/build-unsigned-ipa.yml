@@ -197,36 +197,6 @@ jobs:
               'if frames % 4 == 0 {',
               1
           )
-
-          # Sharpie Core ML: use GPU-preferred compute while cooled. The model,
-          # blend strength, line width and pixel math are unchanged.
-          replace_required(
-              'OutlineEnhancer.swift',
-              'configuration.computeUnits = .all',
-              'configuration.computeUnits = automaticPerformanceModeEnabled() ? .cpuAndGPU : .all',
-              1
-          )
-
-          # Final visual pass: reduce writer polling/yield overhead in Performance
-          # Mode and sample thermal state only after each completed frame.
-          replace_required(
-              'FinalOutlinePass.swift',
-              'while !input.isReadyForMoreMediaData { try Task.checkCancellation(); try await Task.sleep(nanoseconds: 1_000_000) }',
-              'while !input.isReadyForMoreMediaData { try Task.checkCancellation(); try await Task.sleep(nanoseconds: automaticPerformanceModeEnabled() ? 250_000 : 1_000_000) }',
-              1
-          )
-          replace_required(
-              'FinalOutlinePass.swift',
-              '            frames += 1\n\n            if frames == 1 || frames % 10 == 0 {',
-              '            frames += 1\n            try await thermalFrameBoundaryPacing()\n\n            if frames == 1 || frames % 10 == 0 {',
-              1
-          )
-          replace_required(
-              'FinalOutlinePass.swift',
-              '                await Task.yield()',
-              '                if !automaticPerformanceModeEnabled() { await Task.yield() }',
-              1
-          )
           PY
 
       - name: Generate Xcode project
