@@ -15,7 +15,7 @@ struct PerformanceTelemetry: Sendable {
     var generatedFPS: Double = 0
     var upscaleFPS: Double = 0
 
-    var thermalState: String = "Nominal"
+    var thermalState: String = currentThermalStateName()
 
     var summary: String {
         String(
@@ -33,12 +33,47 @@ struct PerformanceTelemetry: Sendable {
     }
 }
 
+/// Automatic render policy. There is deliberately no user toggle: the app runs
+/// flat-out while iOS reports thermal headroom and falls back before the next
+/// frame when the system reaches Serious/Critical. No in-flight frame is changed.
+@inline(__always)
+func automaticPerformanceModeEnabled() -> Bool {
+    switch ProcessInfo.processInfo.thermalState {
+    case .nominal, .fair:
+        return true
+    case .serious, .critical:
+        return false
+    @unknown default:
+        return false
+    }
+}
+
+@inline(__always)
 func currentThermalStateName() -> String {
     switch ProcessInfo.processInfo.thermalState {
-    case .nominal: return "Nominal"
-    case .fair: return "Fair"
-    case .serious: return "Serious"
-    case .critical: return "Critical"
-    @unknown default: return "Unknown"
+    case .nominal: return "Nominal • Performance Mode"
+    case .fair: return "Fair • Performance Mode"
+    case .serious: return "Serious • Thermal Safe Mode"
+    case .critical: return "Critical • Thermal Safe Mode"
+    @unknown default: return "Unknown • Thermal Safe Mode"
+    }
+}
+
+/// Called only between completed frames. Performance Mode does not sleep/yield;
+/// Thermal Safe Mode gives iOS a small scheduling window without changing model
+/// weights, RIFE quality, CUGAN strength, Sharpie, GhostGuard, FPS, or export.
+func thermalFrameBoundaryPacing() async throws {
+    switch ProcessInfo.processInfo.thermalState {
+    case .nominal, .fair:
+        return
+    case .serious:
+        try Task.checkCancellation()
+        try await Task.sleep(nanoseconds: 3_000_000)
+    case .critical:
+        try Task.checkCancellation()
+        try await Task.sleep(nanoseconds: 10_000_000)
+    @unknown default:
+        try Task.checkCancellation()
+        await Task.yield()
     }
 }
