@@ -20,6 +20,11 @@ struct ContentView: View {
 
     var body: some View {
         ZStack {
+            ProcessingPiPSourceRepresentable(controller: pipController)
+                .ignoresSafeArea()
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
+
             NavigationStack {
                 Form {
                     Section("Input") {
@@ -78,7 +83,7 @@ struct ContentView: View {
 
                     Section("Render Power") {
                         Toggle("Render power mode", isOn: $vm.renderPowerMode)
-                        Text("The processing screen turns completely black immediately. Tap once to wake it; after 20 seconds without a touch it returns to black. While processing, leaving the app automatically opens a Picture in Picture progress card; returning to the app closes PiP. When a render finishes, the screen gets a 1-minute grace period; if you do not touch the app, it goes black and iOS auto-lock is re-enabled.").font(.caption).foregroundStyle(.secondary)
+                        Text("The processing screen turns completely black immediately. Tap once to wake it; after 20 seconds without a touch it returns to black. While processing, Picture in Picture is armed in the foreground so swiping Home can transition directly into a live progress card without suspending recovery/render work. Returning to the app closes PiP. When a render finishes, the screen gets a 1-minute grace period; if you do not touch the app, it goes black and iOS auto-lock is re-enabled.").font(.caption).foregroundStyle(.secondary)
                     }
 
                     Section("Export to Files") {
@@ -156,6 +161,7 @@ struct ContentView: View {
                 }
                 .onAppear {
                     if lastCompletedVideoURL == nil { lastCompletedVideoURL = LastCompletedVideoStore.latestCompletedVideo() }
+                    if vm.isProcessing { pipController.arm() }
                     refreshPiPStatus(force: true)
                 }
                 .onChange(of: photoItem) { item in guard let item else { return }; Task { await vm.handlePhotoSelection(item); photoItem = nil } }
@@ -169,17 +175,18 @@ struct ContentView: View {
                             pipController.startIfPossible()
                         }
                     } else {
-                        pipController.stop()
+                        pipController.disarmAndStop()
                     }
                     if phase == .active, lastCompletedVideoURL == nil { lastCompletedVideoURL = LastCompletedVideoStore.latestCompletedVideo() }
                 }
                 .onChange(of: vm.isProcessing) { processing in
                     if processing {
                         cancelPostRenderSleep(restoreDisplay: true)
+                        pipController.arm()
                         refreshPiPStatus(force: true)
                         if scenePhase != .active { pipController.startIfPossible() }
                     } else {
-                        pipController.stop()
+                        pipController.disarmAndStop()
                         schedulePostRenderSleepIfNeeded()
                     }
                 }
@@ -196,12 +203,6 @@ struct ContentView: View {
                 } message: { Text("This permanently deletes the saved source copy and completed render checkpoints for this interrupted job. It does not delete your last completed exported video.") }
             }
 
-            ProcessingPiPSourceRepresentable(controller: pipController)
-                .frame(width: 16, height: 9)
-                .allowsHitTesting(false)
-                .accessibilityHidden(true)
-                .opacity(0.001)
-
             if vm.isProcessing && !vm.processingScreenAwake {
                 Color.black.ignoresSafeArea().contentShape(Rectangle()).onTapGesture { vm.wakeProcessingScreen() }.zIndex(999)
             }
@@ -211,7 +212,7 @@ struct ContentView: View {
         }
         .simultaneousGesture(DragGesture(minimumDistance: 0).onChanged { _ in registerPostRenderInteraction() })
         .onDisappear {
-            pipController.stop()
+            pipController.disarmAndStop()
             cancelPostRenderSleep(restoreDisplay: true)
         }
     }
