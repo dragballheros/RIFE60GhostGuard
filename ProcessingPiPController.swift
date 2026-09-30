@@ -5,9 +5,10 @@ import CoreMedia
 import CoreVideo
 import CoreImage
 import UIKit
+import SwiftUI
 
 @MainActor
-final class ProcessingPiPController: NSObject, AVPictureInPictureControllerDelegate, AVPictureInPictureSampleBufferPlaybackDelegate {
+final class ProcessingPiPController: NSObject, ObservableObject, AVPictureInPictureControllerDelegate, AVPictureInPictureSampleBufferPlaybackDelegate {
     private let displayLayer = AVSampleBufferDisplayLayer()
     private let ciContext = CIContext(options: [.cacheIntermediates: false])
     private var pictureInPictureController: AVPictureInPictureController?
@@ -15,7 +16,7 @@ final class ProcessingPiPController: NSObject, AVPictureInPictureControllerDeleg
     private var frameIndex: Int64 = 0
     private var lastFrameDate = Date.distantPast
     private var pendingStartTask: Task<Void, Never>?
-    private(set) var isActive = false
+    @Published private(set) var isActive = false
 
     func attach(to view: UIView) {
         sourceView = view
@@ -79,8 +80,6 @@ final class ProcessingPiPController: NSObject, AVPictureInPictureControllerDeleg
             return
         }
 
-        // During the Home gesture iOS may report PiP as unavailable for a very short
-        // transition window. Retry briefly without blocking the render pipeline.
         pendingStartTask = Task { @MainActor [weak self] in
             for _ in 0..<6 {
                 try? await Task.sleep(nanoseconds: 120_000_000)
@@ -234,8 +233,6 @@ final class ProcessingPiPController: NSObject, AVPictureInPictureControllerDeleg
         return hours > 0 ? String(format: "%d:%02d:%02d", hours, minutes, secs) : String(format: "%02d:%02d", minutes, secs)
     }
 
-    // MARK: - AVPictureInPictureControllerDelegate
-
     func pictureInPictureControllerDidStartPictureInPicture(_ pictureInPictureController: AVPictureInPictureController) {
         isActive = true
         DiagnosticsLogger.shared.log("Processing PiP started.")
@@ -256,10 +253,7 @@ final class ProcessingPiPController: NSObject, AVPictureInPictureControllerDeleg
         deactivatePiPAudioSession()
     }
 
-    // MARK: - AVPictureInPictureSampleBufferPlaybackDelegate
-
     func pictureInPictureController(_ pictureInPictureController: AVPictureInPictureController, setPlaying playing: Bool) {
-        // Render processing is not media playback; keep the status stream logically live.
         pictureInPictureController.invalidatePlaybackState()
     }
 
