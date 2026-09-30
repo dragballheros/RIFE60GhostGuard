@@ -16,12 +16,36 @@ final class ProcessingPiPController: NSObject, ObservableObject, AVPictureInPict
     private var frameIndex: Int64 = 0
     private var lastFrameDate = Date.distantPast
     private var pendingStartTask: Task<Void, Never>?
+    private var resignObserver: NSObjectProtocol?
+    private var isArmed = false
     @Published private(set) var isActive = false
+
+    override init() {
+        super.init()
+        resignObserver = NotificationCenter.default.addObserver(
+            forName: UIApplication.willResignActiveNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                guard let self, self.isArmed else { return }
+                DiagnosticsLogger.shared.log("Processing PiP foreground-exit detected • requesting PiP before suspension.")
+                self.startIfPossible()
+            }
+        }
+    }
+
+    deinit {
+        if let resignObserver {
+            NotificationCenter.default.removeObserver(resignObserver)
+        }
+    }
 
     func attach(to view: UIView) {
         sourceView = view
         displayLayer.videoGravity = .resizeAspect
         displayLayer.backgroundColor = UIColor.black.cgColor
+        displayLayer.preventsDisplaySleepDuringVideoPlayback = false
         displayLayer.frame = view.bounds
 
         if displayLayer.superlayer !== view.layer {
@@ -43,12 +67,26 @@ final class ProcessingPiPController: NSObject, ObservableObject, AVPictureInPict
         pictureInPictureController = controller
 
         enqueueStatusFrame(progress: 0, status: "Ready", elapsed: 0, eta: nil, force: true)
-        DiagnosticsLogger.shared.log("Processing PiP prepared • sample-buffer content source")
+        DiagnosticsLogger.shared.log("Processing PiP prepared • full-window inline sample-buffer source")
     }
 
     func sourceViewDidLayout() {
         guard let sourceView else { return }
         displayLayer.frame = sourceView.bounds
+    }
+
+    func arm() {
+        guard !isArmed else { return }
+        isArmed = true
+        prepareAudioSessionForPiP()
+        pictureInPictureController?.canStartPictureInPictureAutomaticallyFromInline = true
+        pictureInPictureController?.invalidatePlaybackState()
+        DiagnosticsLogger.shared.log("Processing PiP armed while app is foregrounded.")
+    }
+
+    func disarmAndStop() {
+        isArmed = false
+        stop()
     }
 
     func enqueueStatusFrame(progress: Double, status: String, elapsed: Double, eta: Double?, force: Bool = false) {
@@ -64,10 +102,12 @@ final class ProcessingPiPController: NSObject, ObservableObject, AVPictureInPict
         }
         displayLayer.enqueue(sampleBuffer)
         frameIndex += 1
+        pictureInPictureController?.invalidatePlaybackState()
     }
 
     func startIfPossible() {
-        guard !isActive,
+        guard isArmed,
+              !isActive,
               let controller = pictureInPictureController,
               AVPictureInPictureController.isPictureInPictureSupported() else { return }
 
@@ -75,23 +115,23 @@ final class ProcessingPiPController: NSObject, ObservableObject, AVPictureInPict
         pendingStartTask?.cancel()
 
         if controller.isPictureInPicturePossible {
-            DiagnosticsLogger.shared.log("Processing PiP start requested.")
+            DiagnosticsLogger.shared.log("Processing PiP start requested while transition is still foreground-active.")
             controller.startPictureInPicture()
             return
         }
 
         pendingStartTask = Task { @MainActor [weak self] in
-            for _ in 0..<6 {
-                try? await Task.sleep(nanoseconds: 120_000_000)
-                guard let self, !Task.isCancelled, !self.isActive else { return }
+            for _ in 0..<10 {
+                try? await Task.sleep(nanoseconds: 60_000_000)
+                guard let self, !Task.isCancelled, self.isArmed, !self.isActive else { return }
                 guard let controller = self.pictureInPictureController else { return }
                 if controller.isPictureInPicturePossible {
-                    DiagnosticsLogger.shared.log("Processing PiP start requested after transition retry.")
+                    DiagnosticsLogger.shared.log("Processing PiP start requested during foreground-exit retry.")
                     controller.startPictureInPicture()
                     return
                 }
             }
-            DiagnosticsLogger.shared.log("Processing PiP was not possible during this background transition.")
+            DiagnosticsLogger.shared.log("Processing PiP could not become possible before the background transition completed.")
         }
     }
 
@@ -103,7 +143,7 @@ final class ProcessingPiPController: NSObject, ObservableObject, AVPictureInPict
             controller.stopPictureInPicture()
         } else {
             isActive = false
-            deactivatePiPAudioSession()
+            if !isArmed { deactivatePiPAudioSession() }
         }
     }
 
@@ -244,13 +284,13 @@ final class ProcessingPiPController: NSObject, ObservableObject, AVPictureInPict
     ) {
         isActive = false
         DiagnosticsLogger.shared.log("Processing PiP failed to start: \(error.localizedDescription)")
-        deactivatePiPAudioSession()
+        if !isArmed { deactivatePiPAudioSession() }
     }
 
     func pictureInPictureControllerDidStopPictureInPicture(_ pictureInPictureController: AVPictureInPictureController) {
         isActive = false
         DiagnosticsLogger.shared.log("Processing PiP stopped.")
-        deactivatePiPAudioSession()
+        if !isArmed { deactivatePiPAudioSession() }
     }
 
     func pictureInPictureController(_ pictureInPictureController: AVPictureInPictureController, setPlaying playing: Bool) {
@@ -297,7 +337,7 @@ struct ProcessingPiPSourceRepresentable: UIViewRepresentable {
     let controller: ProcessingPiPController
 
     func makeUIView(context: Context) -> ProcessingPiPSourceView {
-        let view = ProcessingPiPSourceView(frame: CGRect(x: 0, y: 0, width: 16, height: 9))
+        let view = ProcessingPiPSourceView(frame: .zero)
         view.backgroundColor = .black
         view.controller = controller
         controller.attach(to: view)
