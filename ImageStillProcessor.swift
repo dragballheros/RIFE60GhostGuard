@@ -23,10 +23,12 @@ final class ImageStillProcessor {
     private let outlineProtection: Bool
     private let upscale2x: Bool
     private let colorPopStrength: Double
+    private let watermark: WatermarkConfiguration
     private let ciContext = CIContext(options: [.cacheIntermediates: false])
     private let colorSpace: CGColorSpace = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
 
-    init(compressionProtection: Bool, outlineProtection: Bool, upscale2x: Bool, colorPopEnabled: Bool = false, colorPopStrength: Double = 0.5) {
+    init(compressionProtection: Bool, outlineProtection: Bool, upscale2x: Bool, colorPopEnabled: Bool = false, colorPopStrength: Double = 0.5, watermark: WatermarkConfiguration = WatermarkConfiguration()) {
+        self.watermark = watermark
         self.colorPopStrength = colorPopEnabled && colorPopStrength.isFinite ? min(max(colorPopStrength, 0), 1) : 0
         self.compressionProtection = compressionProtection
         self.outlineProtection = outlineProtection
@@ -45,6 +47,13 @@ final class ImageStillProcessor {
         let sourceHeight = CVPixelBufferGetHeight(buffer)
         DiagnosticsLogger.shared.log("Image pipeline entered • RIFE skipped • source=\(sourceWidth)x\(sourceHeight) • compression=\(compressionProtection) • cugan2x=\(upscale2x) • outline=\(outlineProtection)")
         try Task.checkCancellation()
+
+        if watermark.enabled {
+            progress(0.05, "Image • Anime watermark removal…")
+            let remover = try AnimeWatermarkRemover(configuration: watermark)
+            buffer = try remover.apply(buffer)
+            try Task.checkCancellation()
+        }
 
         if compressionProtection {
             progress(0.10, "Image • Compression Guard…")

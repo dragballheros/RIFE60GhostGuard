@@ -12,8 +12,10 @@ struct RestorationPassResult: Sendable {
 final class RestorationPass {
     private let compressionEnabled: Bool
     private let outlineEnabled: Bool
+    private let watermark: WatermarkConfiguration
 
-    init(compressionEnabled: Bool, outlineEnabled: Bool) {
+    init(compressionEnabled: Bool, outlineEnabled: Bool, watermark: WatermarkConfiguration = WatermarkConfiguration()) {
+        self.watermark = watermark
         self.compressionEnabled = compressionEnabled
         self.outlineEnabled = outlineEnabled
     }
@@ -79,6 +81,13 @@ final class RestorationPass {
 
         // Keep these resources scoped strictly to pass 1. They are destroyed when
         // this function returns, before the RIFE Metal graphs are created.
+        let encodedWatermark = watermark.inEncodedOrientation(size: naturalSize, transform: transform)
+        let watermarkRemover: AnimeWatermarkRemover?
+        if encodedWatermark.enabled {
+            watermarkRemover = try AnimeWatermarkRemover(configuration: encodedWatermark)
+        } else {
+            watermarkRemover = nil
+        }
         let compressionGuard = compressionEnabled ? CompressionGuard() : nil
         let outlineEnhancer: OutlineEnhancer?
         if outlineEnabled {
@@ -101,6 +110,7 @@ final class RestorationPass {
         var outlined = 0
         var compressionSeconds = 0.0
         var outlineSeconds = 0.0
+        var watermarkSeconds = 0.0
 
         while let sample = output.copyNextSampleBuffer() {
             try Task.checkCancellation()
@@ -108,6 +118,15 @@ final class RestorationPass {
             let pts = CMSampleBufferGetPresentationTimeStamp(sample)
             var frame = decoded
             sourceFrames += 1
+
+            if let watermarkRemover {
+                let started = CFAbsoluteTimeGetCurrent()
+                frame = try watermarkRemover.apply(frame)
+                watermarkSeconds += CFAbsoluteTimeGetCurrent() - started
+                if sourceFrames == 1 || sourceFrames % 6 == 0 {
+                    DiagnosticsLogger.shared.log("Anime watermark frame \(sourceFrames) • \(String(format: "%.1f", watermarkSeconds * 1000 / Double(sourceFrames)))ms/frame")
+                }
+            }
 
             if let compressionGuard {
                 let started = CFAbsoluteTimeGetCurrent()
@@ -148,7 +167,7 @@ final class RestorationPass {
 
             if sourceFrames % 6 == 0 {
                 let frac = min(max(CMTimeGetSeconds(pts) / max(CMTimeGetSeconds(duration), 0.001), 0), 1)
-                progress(frac * 0.28, "Pass 1/2 • \(sourceFrames) restored • \(currentThermalStateName())")
+                progress(frac * 0.28, "Pass 1/2 • \(watermark.enabled ? "Anime watermark removal • " : "")\(sourceFrames) restored • \(currentThermalStateName())")
                 if !automaticPerformanceModeEnabled() { await Task.yield() }
             }
         }

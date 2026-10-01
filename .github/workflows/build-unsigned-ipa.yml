@@ -89,6 +89,28 @@ jobs:
           test -d CompiledModels/RealCUGAN2xNoise3_Tile512.mlmodelc
           test -d CompiledModels/RealCUGAN2xNoise3_Tile704x608.mlmodelc
 
+      - name: Restore anime inpainting model cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            Models/AnimeWatermarkLaMa512.mlpackage
+            CompiledModels/AnimeWatermarkLaMa512.mlmodelc
+          key: anime-lama-29f284f36a0a510bcacf39ecf4c4d54f-fp32-512-ios16-v1
+
+      - name: Prepare verified anime inpainting model
+        run: |
+          set -euo pipefail
+          if [ ! -f Models/AnimeWatermarkLaMa512.mlpackage/Manifest.json ]; then
+            python -m pip install 'torch==2.5.0' 'coremltools==8.3.0' 'numpy==1.26.4'
+            curl -L --fail --retry 3 -o /tmp/anime-manga-big-lama.pt https://github.com/Sanster/models/releases/download/AnimeMangaInpainting/anime-manga-big-lama.pt
+            python Scripts/export_anime_inpaint.py
+          fi
+          mkdir -p CompiledModels
+          if [ ! -d CompiledModels/AnimeWatermarkLaMa512.mlmodelc ]; then
+            xcrun coremlcompiler compile Models/AnimeWatermarkLaMa512.mlpackage CompiledModels
+          fi
+          test -d CompiledModels/AnimeWatermarkLaMa512.mlmodelc
+
       - name: Generate professional app icon
         run: |
           rm -rf Assets.xcassets
@@ -207,6 +229,14 @@ jobs:
           swiftc -swift-version 5 ColorPopGrade.swift /tmp/color-pop-check/main.swift -o /tmp/color-pop-check/check
           /tmp/color-pop-check/check
 
+      - name: Verify anime inpainting inference and mask geometry
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/anime-inpaint-check
+          cp Scripts/check_anime_inpaint.swift /tmp/anime-inpaint-check/main.swift
+          swiftc -swift-version 5 WatermarkConfiguration.swift AnimeWatermarkRemover.swift /tmp/anime-inpaint-check/main.swift -o /tmp/anime-inpaint-check/check
+          /tmp/anime-inpaint-check/check CompiledModels/AnimeWatermarkLaMa512.mlmodelc
+
       - name: Generate Xcode project
         run: xcodegen generate
       - name: Resolve packages
@@ -225,6 +255,10 @@ jobs:
           cp -R Models/AnimeSharpieOutlineSubtle.mlpackage Payload/RIFE60GhostGuard.app/
           cp -R CompiledModels/RealCUGAN2xNoise3_Tile512.mlmodelc Payload/RIFE60GhostGuard.app/
           cp -R CompiledModels/RealCUGAN2xNoise3_Tile704x608.mlmodelc Payload/RIFE60GhostGuard.app/
+          cp -R CompiledModels/AnimeWatermarkLaMa512.mlmodelc Payload/RIFE60GhostGuard.app/
+          cp ThirdPartyNotices-AnimeWatermark.md Payload/RIFE60GhostGuard.app/
+          cp Licenses/LaMa-Apache-2.0.txt Payload/RIFE60GhostGuard.app/
+          test -d Payload/RIFE60GhostGuard.app/AnimeWatermarkLaMa512.mlmodelc
           test -f Payload/RIFE60GhostGuard.app/AnimeSharpieOutlineSubtle.mlpackage/Manifest.json
           SHARPIE_WEIGHT=$(find Payload/RIFE60GhostGuard.app/AnimeSharpieOutlineSubtle.mlpackage -type f -name 'weight.bin' -print -quit)
           test -n "$SHARPIE_WEIGHT"

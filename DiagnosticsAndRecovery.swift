@@ -107,6 +107,10 @@ enum RecoveryStore {
         var parts = key.split(separator: "|").map(String.init)
         if !parts.contains(where: { $0.hasPrefix("colorpop=") }) { parts.append("colorpop=false") }
         if !parts.contains(where: { $0.hasPrefix("colorpopStrength=") }) { parts.append("colorpopStrength=0.50") }
+        if !parts.contains(where: { $0.hasPrefix("watermark=") }) { parts.append("watermark=false") }
+        if !parts.contains(where: { $0.hasPrefix("watermarkMasks=") }) { parts.append("watermarkMasks=W10=") }
+        if !parts.contains(where: { $0.hasPrefix("watermarkPadding=") }) { parts.append("watermarkPadding=3") }
+        if !parts.contains(where: { $0.hasPrefix("watermarkModel=") }) { parts.append("watermarkModel=\(WatermarkConfiguration.modelID)") }
         return parts.sorted()
     }
 

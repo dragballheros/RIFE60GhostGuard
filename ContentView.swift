@@ -8,6 +8,7 @@ struct ContentView: View {
     @StateObject private var vm = VideoProcessorViewModel()
     @StateObject private var pipController = ProcessingPiPController()
     @State private var showingImporter = false
+    @State private var showingWatermarkEditor = false
     @State private var showingPhotosPicker = false
     @State private var showingExportFolderPicker = false
     @State private var showingClearRecoveryConfirmation = false
@@ -64,6 +65,18 @@ struct ContentView: View {
                             Toggle("Scene-cut protection", isOn: $vm.sceneCutProtection).disabled(vm.recoveryAvailable)
                             LabeledContent("Target", value: "60.00 fps")
                             Text("1080p-class video uses one persistent full-frame HQ stream for maximum speed without dropping RIFE quality.").font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+
+                    Section("Anime Watermark Removal") {
+                        Toggle("Remove marked watermarks", isOn: $vm.watermarkRemovalEnabled).disabled(vm.recoveryAvailable)
+                        if vm.watermarkRemovalEnabled {
+                            Button { showingWatermarkEditor = true } label: {
+                                Label(vm.watermarkRegions.isEmpty ? "Mark watermark regions" : "Edit \(vm.watermarkRegions.count) marked regions", systemImage: "rectangle.dashed")
+                            }.disabled(vm.inputURL == nil || vm.recoveryAvailable)
+                            HStack { Text("Mask padding"); Spacer(); Text("\(Int(vm.watermarkPaddingPixels)) px") }
+                            Slider(value: $vm.watermarkPaddingPixels, in: 0...16, step: 1).disabled(vm.recoveryAvailable)
+                            Text("Anime/Manga LaMa reconstructs marked areas before RIFE and upscaling. Fixed boxes apply throughout a video. Smaller, tighter masks preserve more artwork.").font(.caption).foregroundStyle(.secondary)
                         }
                     }
 
@@ -218,6 +231,11 @@ struct ContentView: View {
                 .onChange(of: vm.outputURL) { newURL in
                     if let newURL { lastCompletedVideoURL = newURL }
                     schedulePostRenderSleepIfNeeded()
+                }
+                .sheet(isPresented: $showingWatermarkEditor) {
+                    if let source = vm.inputURL {
+                        WatermarkMaskEditor(sourceURL: source, isImage: vm.inputKind == .image, regions: $vm.watermarkRegions)
+                    }
                 }
                 .alert("Clear Recovery Data?", isPresented: $showingClearRecoveryConfirmation) {
                     Button("Clear Recovery Data", role: .destructive) { showingClearRecoveryConfirmation = false; vm.clearRecoveryData() }

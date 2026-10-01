@@ -6,8 +6,10 @@ final class TwoPassVideoProcessor {
     private let upscaleTo4K: Bool
 
     private let colorPopStrength: Double
+    private let watermark: WatermarkConfiguration
 
-    init(configuration: ProcessorConfiguration, upscaleTo4K: Bool = true, colorPopEnabled: Bool = false, colorPopStrength: Double = 0.5) {
+    init(configuration: ProcessorConfiguration, upscaleTo4K: Bool = true, colorPopEnabled: Bool = false, colorPopStrength: Double = 0.5, watermark: WatermarkConfiguration = WatermarkConfiguration()) {
+        self.watermark = watermark
         self.colorPopStrength = colorPopEnabled && colorPopStrength.isFinite ? min(max(colorPopStrength, 0), 1) : 0
         self.config = configuration
         self.upscaleTo4K = upscaleTo4K
@@ -35,6 +37,8 @@ final class TwoPassVideoProcessor {
             try fm.createDirectory(at: recoveryDirectory, withIntermediateDirectories: true)
         }
 
+        let needsRestoration = config.compressionProtection || watermark.enabled
+        let restorationName = watermark.enabled ? "Anime watermark removal / Compression Guard" : "Compression Guard"
         let sourceAsset = AVURLAsset(url: sourceURL)
         let sourceDuration = try await sourceAsset.load(.duration)
         guard let sourceVideoTrack = try await sourceAsset.loadTracks(withMediaType: .video).first else {
@@ -98,7 +102,7 @@ final class TwoPassVideoProcessor {
         if rifeNeeded, let rifeCheckpoint {
             rifeCheckpointValid = await validVideo(rifeCheckpoint, expectedDuration: sourceDuration)
         }
-        if rifeNeeded, !rifeCheckpointValid, config.compressionProtection, let restoredCheckpoint {
+        if rifeNeeded, !rifeCheckpointValid, needsRestoration, let restoredCheckpoint {
             restoredCheckpointValid = await validVideo(restoredCheckpoint, expectedDuration: sourceDuration)
         }
 
@@ -106,7 +110,7 @@ final class TwoPassVideoProcessor {
             let resumePoint = outlineCheckpointValid ? "final Sharpie"
                 : cuganCheckpointValid ? "Real-CUGAN native 2×"
                 : rifeCheckpointValid ? "RIFE HQ"
-                : "Compression Guard"
+                : restorationName
             DiagnosticsLogger.shared.log("Recovery plan: furthest valid checkpoint is \(resumePoint). Stages before it will NOT be re-run.")
         } else if recoveryDirectory != nil {
             DiagnosticsLogger.shared.log("Recovery plan: no valid checkpoints found. Starting from the first stage.")
@@ -117,18 +121,19 @@ final class TwoPassVideoProcessor {
         var rifeSourceURL: URL?
 
         if rifeNeeded && !rifeCheckpointValid {
-            if config.compressionProtection {
+            if needsRestoration {
                 if restoredCheckpointValid, let restoredCheckpoint {
                     rifeSourceURL = restoredCheckpoint
-                    progress(0.10, "Recovered checkpoint • Compression Guard complete")
-                    RecoveryStore.update(progress: 0.10, message: "Recovered completed compression checkpoint", force: true)
-                    DiagnosticsLogger.shared.log("Recovery: reused completed Compression Guard checkpoint.")
+                    progress(0.10, "Recovered checkpoint • \(restorationName) complete")
+                    RecoveryStore.update(progress: 0.10, message: "Recovered completed source restoration checkpoint", force: true)
+                    DiagnosticsLogger.shared.log("Recovery: reused completed \(restorationName) checkpoint.")
                 } else {
                     if let restoredCheckpoint { try? fm.removeItem(at: restoredCheckpoint) }
-                    progress(0.001, "Pass 1/4 • Starting Compression Guard…")
+                    progress(0.001, "Pass 1/4 • Starting \(restorationName)…")
                     let restoration = RestorationPass(
                         compressionEnabled: config.compressionProtection,
-                        outlineEnabled: false
+                        outlineEnabled: false,
+                        watermark: watermark
                     )
                     let result = try await restoration.run(
                         sourceURL: sourceURL,
@@ -149,8 +154,8 @@ final class TwoPassVideoProcessor {
                         try persistCheckpoint(from: result.url, to: restoredCheckpoint)
                         try? fm.removeItem(at: result.url)
                         rifeSourceURL = restoredCheckpoint
-                        RecoveryStore.update(progress: 0.10, message: "Pass 1/4 checkpoint saved • Compression Guard complete", force: true)
-                        DiagnosticsLogger.shared.log("Checkpoint saved: Compression Guard.")
+                        RecoveryStore.update(progress: 0.10, message: "Pass 1/4 checkpoint saved • \(restorationName) complete", force: true)
+                        DiagnosticsLogger.shared.log("Checkpoint saved: \(restorationName).")
                     } else {
                         transientURLs.append(result.url)
                         rifeSourceURL = result.url
