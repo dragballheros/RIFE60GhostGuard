@@ -47,7 +47,9 @@ final class ColorPopGrade {
         guard CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault, pool, &destination) == kCVReturnSuccess,
               let destination else { throw ProcessorError.conversionFailed("could not allocate Color Pop BGRA frame") }
 
-        filter.setValue(CIImage(cvPixelBuffer: buffer), forKey: kCIInputImageKey)
+        // These pipeline frames are SDR BGRA. Explicit sRGB interpretation
+        // avoids an implicit device/display profile introducing a gray tint.
+        filter.setValue(CIImage(cvPixelBuffer: buffer, options: [.colorSpace: colorSpace]), forKey: kCIInputImageKey)
         // Release the previous input graph promptly; retain the cube for the job.
         defer { filter.setValue(nil, forKey: kCIInputImageKey) }
         let bounds = CGRect(x: 0, y: 0, width: width, height: height)
