@@ -26,7 +26,7 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.za.rife60ghostguard
         PRODUCT_NAME: RIFE60GhostGuard
         MARKETING_VERSION: 1.0
-        CURRENT_PROJECT_VERSION: 149
+        CURRENT_PROJECT_VERSION: 162
         INFOPLIST_KEY_CFBundleShortVersionString: "$(MARKETING_VERSION)"
         INFOPLIST_KEY_CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
         SWIFT_VERSION: 5.10
@@ -38,7 +38,7 @@ targets:
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
         INFOPLIST_KEY_CFBundleDisplayName: RIFE 60 Ghost Guard
-        INFOPLIST_KEY_NSPhotoLibraryUsageDescription: Select videos to process locally on this device.
+        INFOPLIST_KEY_NSPhotoLibraryUsageDescription: Select videos and images to process locally on this device.
         INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription: Automatically save finished 4K videos to Photos.
         INFOPLIST_KEY_UIFileSharingEnabled: YES
         INFOPLIST_KEY_LSSupportsOpeningDocumentsInPlace: YES

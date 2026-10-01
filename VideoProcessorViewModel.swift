@@ -5,6 +5,7 @@ import Photos
 import PhotosUI
 import AVFoundation
 import CoreTransferable
+import ImageIO
 import UniformTypeIdentifiers
 import RifeMetal
 
@@ -21,9 +22,35 @@ struct PickedVideo: Transferable {
     }
 }
 
+struct PickedImage: Transferable {
+    let url: URL
+    static var transferRepresentation: some TransferRepresentation {
+        FileRepresentation(importedContentType: .image) { received in
+            let ext = received.file.pathExtension.isEmpty ? "heic" : received.file.pathExtension
+            let destination = FileManager.default.temporaryDirectory.appendingPathComponent("photos-image-\(UUID().uuidString).\(ext)")
+            try? FileManager.default.removeItem(at: destination)
+            try FileManager.default.copyItem(at: received.file, to: destination)
+            return PickedImage(url: destination)
+        }
+    }
+}
+
+enum InputMediaKind: Sendable {
+    case video
+    case image
+
+    static func detect(for url: URL) -> InputMediaKind {
+        if let type = UTType(filenameExtension: url.pathExtension.lowercased()), type.conforms(to: .image) {
+            return .image
+        }
+        return .video
+    }
+}
+
 @MainActor
 final class VideoProcessorViewModel: ObservableObject {
     @Published var inputURL: URL?
+    @Published var inputKind: InputMediaKind = .video
     @Published var outputURL: URL?
     @Published var progress: Double = 0
     @Published var restorationProgress: Double = 0
@@ -56,11 +83,18 @@ final class VideoProcessorViewModel: ObservableObject {
     private var savedBrightness: CGFloat?
     private var savedIdleTimerDisabled: Bool?
     private var renderStartedAt: Date?
+    private var resumeBaseProgress: Double?
     private let exportFolderBookmarkKey = "RIFE60.ExportFolderBookmark.v1"
 
     init() {
         refreshExportFolderName()
         if let job = RecoveryStore.existingJob() {
+            // The toggles are greyed out while recovery data exists, so they MUST show the
+            // settings the interrupted job was started with. Previously they reset to defaults
+            // on relaunch, the configuration key no longer matched, and RecoveryStore wiped
+            // every checkpoint while the UI still claimed a resume was available.
+            applyRecoveredSettings(from: job.manifest.configurationKey)
+            inputKind = .video
             inputURL = job.sourceURL
             progress = job.manifest.progress
             recoveryAvailable = true
@@ -82,12 +116,13 @@ final class VideoProcessorViewModel: ObservableObject {
             RecoveryStore.discardCurrent()
             recoveryAvailable = false
             recoveryStatusText = ""
+            inputKind = InputMediaKind.detect(for: url)
             inputURL = url
             outputURL = nil
             errorText = nil
             saveStatusText = ""
             importProgress = 1.0
-            DiagnosticsLogger.shared.log("Selected input from Files: \(url.lastPathComponent)")
+            DiagnosticsLogger.shared.log("Selected \(inputKind == .image ? "image" : "video") from Files: \(url.lastPathComponent)")
         } catch {
             errorText = error.localizedDescription
             DiagnosticsLogger.shared.log("Files import failed: \(error.localizedDescription)")
@@ -99,18 +134,31 @@ final class VideoProcessorViewModel: ObservableObject {
         importProgress = nil
         do {
             statusText = "Importing from Photos…"
-            guard let picked = try await item.loadTransferable(type: PickedVideo.self) else {
-                throw NSError(domain: "RIFE60GhostGuard", code: 1, userInfo: [NSLocalizedDescriptionKey: "The selected Photos video could not be loaded."])
+            let types = item.supportedContentTypes
+            let isVideo = types.contains { $0.conforms(to: .movie) || $0.conforms(to: .video) }
+            let isImage = !isVideo && types.contains { $0.conforms(to: .image) }
+            let importedURL: URL
+            if isImage {
+                guard let picked = try await item.loadTransferable(type: PickedImage.self) else {
+                    throw NSError(domain: "RIFE60GhostGuard", code: 2, userInfo: [NSLocalizedDescriptionKey: "The selected Photos image could not be loaded."])
+                }
+                importedURL = picked.url
+            } else {
+                guard let picked = try await item.loadTransferable(type: PickedVideo.self) else {
+                    throw NSError(domain: "RIFE60GhostGuard", code: 1, userInfo: [NSLocalizedDescriptionKey: "The selected Photos video could not be loaded."])
+                }
+                importedURL = picked.url
             }
             RecoveryStore.discardCurrent()
             recoveryAvailable = false
             recoveryStatusText = ""
-            inputURL = picked.url
+            inputKind = isImage ? .image : .video
+            inputURL = importedURL
             outputURL = nil
             errorText = nil
             saveStatusText = ""
             statusText = "Import complete"
-            DiagnosticsLogger.shared.log("Selected input from Photos: \(picked.url.lastPathComponent)")
+            DiagnosticsLogger.shared.log("Selected \(isImage ? "image" : "video") from Photos: \(importedURL.lastPathComponent)")
         } catch {
             errorText = error.localizedDescription
             statusText = ""
@@ -217,6 +265,12 @@ final class VideoProcessorViewModel: ObservableObject {
 
     func start() async {
         guard let source = inputURL, !isProcessing else { return }
+        if inputKind == .image {
+            await startImage(source: source)
+            return
+        }
+        let resumingExistingJob = recoveryAvailable
+        resumeBaseProgress = nil
         isProcessing = true
         processingScreenAwake = false
         if !recoveryAvailable {
@@ -252,6 +306,16 @@ final class VideoProcessorViewModel: ObservableObject {
                 let job = try RecoveryStore.prepare(source: source, configurationKey: configKey)
                 RecoveryStore.update(progress: job.manifest.progress, message: "Recovery source secured", force: true)
                 guard let self else { return }
+                if resumingExistingJob && !job.resumed {
+                    // Be honest: the saved checkpoints could not be matched to this run, so nothing is reused.
+                    DiagnosticsLogger.shared.log("Recovery data did not match this pipeline/configuration; starting from the beginning.")
+                    await MainActor.run {
+                        self.progress = 0
+                        self.restorationProgress = 0
+                        self.upscaleProgress = 0
+                        self.statusText = "Saved checkpoints came from a different configuration • starting fresh"
+                    }
+                }
 
                 let result: URL
                 if let deliveryReady = self.existingDeliveryCheckpoint(in: job.directory) {
@@ -310,12 +374,146 @@ final class VideoProcessorViewModel: ObservableObject {
         }
     }
 
+    private func applyRecoveredSettings(from key: String) {
+        for part in key.split(separator: "|") {
+            let pair = part.split(separator: "=", maxSplits: 1).map(String.init)
+            guard pair.count == 2 else { continue }
+            let enabled = pair[1] == "true"
+            switch pair[0] {
+            case "ghost": ghostProtection = enabled
+            case "cuts": sceneCutProtection = enabled
+            case "compression": compressionProtection = enabled
+            case "outline": outlineProtection = enabled
+            case "audio": preserveAudio = enabled
+            case "upscale": upscaleTo4K = enabled
+            case "sensitivity": if let value = Double(pair[1]) { ghostSensitivity = value }
+            default: break
+            }
+        }
+    }
+
+    // MARK: - Still images (RIFE is skipped entirely)
+
+    private func startImage(source: URL) async {
+        isProcessing = true
+        processingScreenAwake = false
+        progress = 0
+        restorationProgress = 0
+        upscaleProgress = 0
+        telemetry = PerformanceTelemetry()
+        outputURL = nil
+        errorText = nil
+        saveStatusText = ""
+        diagnosticsCopyStatus = ""
+        elapsedSeconds = 0
+        etaSeconds = nil
+        resumeBaseProgress = nil
+        renderStartedAt = Date()
+        statusText = "Preparing image…"
+        if renderPowerMode { applyRenderPowerMode() }
+
+        let compressionEnabled = compressionProtection
+        let outlineEnabled = outlineProtection
+        let upscale = upscaleTo4K
+        DiagnosticsLogger.shared.log("Image render requested • RIFE skipped • compression=\(compressionEnabled) • cugan2x=\(upscale) • outline=\(outlineEnabled)")
+
+        currentTask = Task.detached(priority: .userInitiated) { [weak self] in
+            do {
+                let secured = source.startAccessingSecurityScopedResource()
+                defer { if secured { source.stopAccessingSecurityScopedResource() } }
+                let processor = ImageStillProcessor(compressionProtection: compressionEnabled, outlineProtection: outlineEnabled, upscale2x: upscale)
+                let generated = try await processor.process(sourceURL: source, progress: { p, message in
+                    Task { @MainActor [weak self] in
+                        guard let self, self.isProcessing else { return }
+                        self.progress = p
+                        self.statusText = message
+                        self.updateClock(progress: p)
+                    }
+                })
+                try Task.checkCancellation()
+                guard let self else { return }
+                let saved = try await self.saveFinishedImage(generated.url, notes: generated.notes)
+                // Only delete the imported copy if WE created it (Photos import); never touch a Files original.
+                if source.lastPathComponent.hasPrefix("photos-image-") { try? FileManager.default.removeItem(at: source) }
+                await MainActor.run { [weak self] in
+                    guard let self else { return }
+                    self.outputURL = saved.url
+                    self.saveStatusText = saved.message
+                    self.progress = 1; self.restorationProgress = 1; self.upscaleProgress = upscale ? 1 : 0
+                    self.updateClock(progress: 1); self.etaSeconds = 0; self.statusText = "Finished"
+                    self.isProcessing = false; self.currentTask = nil
+                    self.blackScreenTask?.cancel(); self.processingScreenAwake = true; self.restoreDisplayState()
+                }
+            } catch is CancellationError {
+                DiagnosticsLogger.shared.log("Image render cancelled.")
+                await MainActor.run { [weak self] in guard let self else { return }; self.statusText = "Cancelled"; self.isProcessing = false; self.currentTask = nil; self.blackScreenTask?.cancel(); self.processingScreenAwake = true; self.restoreDisplayState() }
+            } catch {
+                DiagnosticsLogger.shared.log("Image render failed: \(error.localizedDescription)")
+                await MainActor.run { [weak self] in guard let self else { return }; self.errorText = error.localizedDescription; self.statusText = "Failed"; self.isProcessing = false; self.currentTask = nil; self.blackScreenTask?.cancel(); self.processingScreenAwake = true; self.restoreDisplayState() }
+            }
+        }
+    }
+
+    private func saveFinishedImage(_ source: URL, notes: [String]) async throws -> SavedResult {
+        statusText = "Saving image to Files…"
+        progress = max(progress, 0.97)
+        let formatter = DateFormatter(); formatter.dateFormat = "yyyyMMdd-HHmmss"
+        let ext = source.pathExtension.isEmpty ? "png" : source.pathExtension.lowercased()
+        let filename = "RIFE60-Image-\(formatter.string(from: Date())).\(ext)"
+        let noteText = notes.isEmpty ? "" : " • " + notes.joined(separator: " • ")
+
+        if let folder = resolveSelectedExportFolder() {
+            let secured = folder.startAccessingSecurityScopedResource()
+            if secured {
+                defer { folder.stopAccessingSecurityScopedResource() }
+                do {
+                    let destination = uniqueDestination(in: folder, filename: filename)
+                    let persisted = try coordinatedCopy(source, to: destination, inside: folder)
+                    try verifyPersistedFile(persisted)
+                    try validateFinishedImage(persisted)
+                    try? FileManager.default.removeItem(at: source)
+                    return SavedResult(url: persisted, message: "Files > \(folder.lastPathComponent) > \(persisted.lastPathComponent)\(noteText)")
+                } catch {
+                    DiagnosticsLogger.shared.log("Selected Files folder image write/validation failed: \(error.localizedDescription). Falling back to app Exports folder.")
+                }
+            } else {
+                DiagnosticsLogger.shared.log("Selected Files folder security scope could not be activated for image export. Falling back to app Exports folder.")
+            }
+        }
+
+        let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        let exports = documents.appendingPathComponent("Exports", isDirectory: true)
+        try FileManager.default.createDirectory(at: exports, withIntermediateDirectories: true)
+        let destination = uniqueDestination(in: exports, filename: filename)
+        try FileManager.default.copyItem(at: source, to: destination)
+        try verifyPersistedFile(destination)
+        try validateFinishedImage(destination)
+        try? FileManager.default.removeItem(at: source)
+        return SavedResult(url: destination, message: "On My iPhone > RIFE 60 Ghost Guard > Exports > \(destination.lastPathComponent)\(noteText)")
+    }
+
+    private func validateFinishedImage(_ url: URL) throws {
+        guard let imageSource = CGImageSourceCreateWithURL(url as CFURL, nil),
+              CGImageSourceGetCount(imageSource) > 0,
+              let properties = CGImageSourceCopyPropertiesAtIndex(imageSource, 0, nil) as? [CFString: Any],
+              let width = properties[kCGImagePropertyPixelWidth] as? Int,
+              let height = properties[kCGImagePropertyPixelHeight] as? Int,
+              width > 0, height > 0 else {
+            throw NSError(domain: "RIFE60GhostGuard", code: 34, userInfo: [NSLocalizedDescriptionKey: "The finished image could not be read back after saving."])
+        }
+        DiagnosticsLogger.shared.log("Finished image validation passed • \(width)x\(height)")
+    }
+
     private func updateClock(progress: Double) {
         guard let renderStartedAt else { return }
         let elapsed = Date().timeIntervalSince(renderStartedAt)
         elapsedSeconds = elapsed
-        if progress > 0.025 && progress < 0.97 {
-            let raw = elapsed * (1.0 - progress) / progress
+        // After a resume the first reported progress is the recovered stage, not zero, so the
+        // ETA must be based on progress made during THIS run or it would read near zero.
+        if resumeBaseProgress == nil { resumeBaseProgress = progress }
+        let done = progress - (resumeBaseProgress ?? 0)
+        if done > 0.025 && progress < 0.97 {
+            let raw = elapsed * (1.0 - progress) / done
             etaSeconds = etaSeconds.map { $0 > 0 ? $0 * 0.72 + raw * 0.28 : raw } ?? raw
         }
     }

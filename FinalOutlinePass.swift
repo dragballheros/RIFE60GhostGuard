@@ -179,6 +179,34 @@ final class FinalOutlinePass {
         return outURL
     }
 
+    /// Single-image version of the per-frame final polish in run():
+    /// Shadow Chroma -> Sharpie -> narrow toward original -> light final compression.
+    func polishStill(_ decoded: CVPixelBuffer) throws -> CVPixelBuffer {
+        let width = CVPixelBufferGetWidth(decoded)
+        let height = CVPixelBufferGetHeight(decoded)
+        let scale = min(1.0, Double(maxSharpieLongEdge) / Double(max(width, height)))
+        let workingWidth = max(2, Int((Double(width) * scale / 2.0).rounded() * 2.0))
+        let workingHeight = max(2, Int((Double(height) * scale / 2.0).rounded() * 2.0))
+        let needsResize = scale < 0.999
+
+        let enhancer = try autoreleasepool { try OutlineEnhancer() }
+        let compressionGuard = CompressionGuard()
+        try preparePools(fullWidth: width, fullHeight: height, workingWidth: workingWidth, workingHeight: workingHeight)
+
+        var preSharpie = decoded
+        if let cleaned = try? compressionGuard.cleanShadowChroma(decoded) { preSharpie = cleaned }
+
+        var working = preSharpie
+        if needsResize { working = try resize(preSharpie, width: workingWidth, height: workingHeight, pool: workingPool) }
+        let enhancedWorking = try autoreleasepool { try enhancer.enhance(working) }
+        var enhancedFull = enhancedWorking
+        if needsResize { enhancedFull = try resize(enhancedWorking, width: width, height: height, pool: fullOutlinePool) }
+        let narrowed = try narrowTowardOriginal(enhanced: enhancedFull, original: preSharpie)
+
+        if let polished = try? compressionGuard.cleanFinalCompression(narrowed) { return polished }
+        return narrowed
+    }
+
     private func makePool(width: Int, height: Int) throws -> CVPixelBufferPool {
         let attrs: [String: Any] = [
             kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,

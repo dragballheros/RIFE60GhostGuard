@@ -16,6 +16,8 @@ struct RecoveryJob: Sendable {
     let directory: URL
     let sourceURL: URL
     let manifest: RecoveryManifest
+    /// True when prepare() matched an existing job and kept its checkpoints; false when it started fresh.
+    var resumed: Bool = false
 }
 
 final class DiagnosticsLogger: @unchecked Sendable {
@@ -113,8 +115,14 @@ enum RecoveryStore {
                 resumed.updatedAt = Date()
                 try writeManifestLocked(resumed)
                 DiagnosticsLogger.shared.log("Resuming recovery job at \(Int(resumed.progress * 100))%: \(resumed.lastMessage)")
-                return RecoveryJob(directory: currentDirectory, sourceURL: existingSource, manifest: resumed)
+                return RecoveryJob(directory: currentDirectory, sourceURL: existingSource, manifest: resumed, resumed: true)
             }
+        }
+
+        if let data = try? Data(contentsOf: manifestURL),
+           let stale = try? JSONDecoder().decode(RecoveryManifest.self, from: data),
+           stale.configurationKey != configurationKey {
+            DiagnosticsLogger.shared.log("Recovery configuration mismatch • saved=\(stale.configurationKey) • requested=\(configurationKey) • discarding saved checkpoints.")
         }
 
         var copySource = source

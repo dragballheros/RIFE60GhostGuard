@@ -52,189 +52,234 @@ final class TwoPassVideoProcessor {
         let cuganCheckpoint = recoveryDirectory?.appendingPathComponent("checkpoint-cugan2x.mov")
         let outlineCheckpoint = recoveryDirectory?.appendingPathComponent("checkpoint-final-outline.mov")
 
+        // ------------------------------------------------------------------
+        // RESUME PLANNING
+        //
+        // Every finished stage deletes the checkpoint of the stage before it
+        // (restored -> rife -> cugan -> outline) to save storage. Therefore a
+        // resume must look for the FURTHEST valid checkpoint first and skip
+        // everything upstream of it. Checking stages front-to-back (the old
+        // behaviour) found the upstream checkpoints missing and silently
+        // re-ran Compression Guard and RIFE from scratch.
+        // ------------------------------------------------------------------
+        let cuganEnd = config.outlineProtection ? 0.84 : 0.97
+        let finalExpectedWidth = upscaleTo4K ? native2xWidth : sourceWidth
+        let finalExpectedHeight = upscaleTo4K ? native2xHeight : sourceHeight
+
+        var outlineCheckpointValid = false
+        var cuganCheckpointValid = false
+        var rifeCheckpointValid = false
+        var restoredCheckpointValid = false
+
+        if config.outlineProtection, let outlineCheckpoint {
+            outlineCheckpointValid = await validVideo(
+                outlineCheckpoint,
+                expectedDuration: sourceDuration,
+                expectedWidth: finalExpectedWidth,
+                expectedHeight: finalExpectedHeight
+            )
+        }
+        if !outlineCheckpointValid, upscaleTo4K, let cuganCheckpoint {
+            cuganCheckpointValid = await validVideo(
+                cuganCheckpoint,
+                expectedDuration: sourceDuration,
+                expectedWidth: native2xWidth,
+                expectedHeight: native2xHeight
+            )
+        }
+        // RIFE output is only needed if nothing downstream of it is already finished.
+        let rifeNeeded = !outlineCheckpointValid && !cuganCheckpointValid
+        if rifeNeeded, let rifeCheckpoint {
+            rifeCheckpointValid = await validVideo(rifeCheckpoint, expectedDuration: sourceDuration)
+        }
+        if rifeNeeded, !rifeCheckpointValid, config.compressionProtection, let restoredCheckpoint {
+            restoredCheckpointValid = await validVideo(restoredCheckpoint, expectedDuration: sourceDuration)
+        }
+
+        if outlineCheckpointValid || cuganCheckpointValid || rifeCheckpointValid || restoredCheckpointValid {
+            let resumePoint = outlineCheckpointValid ? "final Sharpie"
+                : cuganCheckpointValid ? "Real-CUGAN native 2×"
+                : rifeCheckpointValid ? "RIFE HQ"
+                : "Compression Guard"
+            DiagnosticsLogger.shared.log("Recovery plan: furthest valid checkpoint is \(resumePoint). Stages before it will NOT be re-run.")
+        } else if recoveryDirectory != nil {
+            DiagnosticsLogger.shared.log("Recovery plan: no valid checkpoints found. Starting from the first stage.")
+        }
+
         // IMPORTANT: Sharpie no longer runs here. Compression cleanup remains before
         // RIFE, while line art is now the LAST visual operation after Real-CUGAN.
-        let needsRestoration = config.compressionProtection
-        let rifeSourceURL: URL
+        var rifeSourceURL: URL?
 
-        if needsRestoration {
-            if let restoredCheckpoint,
-               await validVideo(restoredCheckpoint, expectedDuration: sourceDuration) {
-                rifeSourceURL = restoredCheckpoint
-                progress(0.10, "Recovered checkpoint • Compression Guard complete")
-                RecoveryStore.update(progress: 0.10, message: "Recovered completed compression checkpoint", force: true)
-                DiagnosticsLogger.shared.log("Recovery: reused completed Compression Guard checkpoint.")
+        if rifeNeeded && !rifeCheckpointValid {
+            if config.compressionProtection {
+                if restoredCheckpointValid, let restoredCheckpoint {
+                    rifeSourceURL = restoredCheckpoint
+                    progress(0.10, "Recovered checkpoint • Compression Guard complete")
+                    RecoveryStore.update(progress: 0.10, message: "Recovered completed compression checkpoint", force: true)
+                    DiagnosticsLogger.shared.log("Recovery: reused completed Compression Guard checkpoint.")
+                } else {
+                    if let restoredCheckpoint { try? fm.removeItem(at: restoredCheckpoint) }
+                    progress(0.001, "Pass 1/4 • Starting Compression Guard…")
+                    let restoration = RestorationPass(
+                        compressionEnabled: config.compressionProtection,
+                        outlineEnabled: false
+                    )
+                    let result = try await restoration.run(
+                        sourceURL: sourceURL,
+                        progress: { p, message in
+                            let local = min(max(p / 0.28, 0), 1)
+                            let renamed = message
+                                .replacingOccurrences(of: "Pass 1/2", with: "Pass 1/4")
+                                .replacingOccurrences(of: "restored", with: "cleaned")
+                            progress(local * 0.10, renamed)
+                        },
+                        telemetry: { t in
+                            restorationTelemetry = t
+                            telemetry(t)
+                        }
+                    )
+
+                    if let restoredCheckpoint {
+                        try persistCheckpoint(from: result.url, to: restoredCheckpoint)
+                        try? fm.removeItem(at: result.url)
+                        rifeSourceURL = restoredCheckpoint
+                        RecoveryStore.update(progress: 0.10, message: "Pass 1/4 checkpoint saved • Compression Guard complete", force: true)
+                        DiagnosticsLogger.shared.log("Checkpoint saved: Compression Guard.")
+                    } else {
+                        transientURLs.append(result.url)
+                        rifeSourceURL = result.url
+                    }
+                    autoreleasepool { }
+                    try await thermalHandoff(progress: progress, position: 0.10, next: "RIFE HQ")
+                }
             } else {
-                if let restoredCheckpoint { try? fm.removeItem(at: restoredCheckpoint) }
-                progress(0.001, "Pass 1/4 • Starting Compression Guard…")
-                let restoration = RestorationPass(
-                    compressionEnabled: config.compressionProtection,
-                    outlineEnabled: false
+                rifeSourceURL = sourceURL
+            }
+        }
+
+        var rifeResult: URL?
+        if rifeNeeded {
+            if rifeCheckpointValid, let rifeCheckpoint {
+                rifeResult = rifeCheckpoint
+                progress(0.40, "Recovered checkpoint • RIFE HQ complete")
+                RecoveryStore.update(progress: 0.40, message: "Recovered completed RIFE HQ checkpoint", force: true)
+                DiagnosticsLogger.shared.log("Recovery: reused completed RIFE HQ checkpoint.")
+            } else {
+                guard let rifeInput = rifeSourceURL else { throw ProcessorError.noOutput }
+                if let rifeCheckpoint { try? fm.removeItem(at: rifeCheckpoint) }
+                progress(0.11, "Pass 2/4 • Loading full-frame RIFE HQ…")
+                let pass2Config = ProcessorConfiguration(
+                    quality: config.quality,
+                    ghostProtection: config.ghostProtection,
+                    sceneCutProtection: config.sceneCutProtection,
+                    compressionProtection: false,
+                    outlineProtection: false,
+                    ghostSensitivity: config.ghostSensitivity,
+                    preserveAudio: false,
+                    targetFPS: config.targetFPS
                 )
-                let result = try await restoration.run(
-                    sourceURL: sourceURL,
+                let rife = RIFEVideoProcessor(configuration: pass2Config)
+                let generated = try await rife.process(
+                    sourceURL: rifeInput,
                     progress: { p, message in
-                        let local = min(max(p / 0.28, 0), 1)
-                        let renamed = message
-                            .replacingOccurrences(of: "Pass 1/2", with: "Pass 1/4")
-                            .replacingOccurrences(of: "restored", with: "cleaned")
-                        progress(local * 0.10, renamed)
+                        let local = min(max(p / 0.95, 0), 1)
+                        progress(0.11 + local * 0.29, "Pass 2/4 • \(message)")
                     },
-                    telemetry: { t in
-                        restorationTelemetry = t
-                        telemetry(t)
+                    telemetry: { pass2 in
+                        rifeTelemetry = pass2
+                        var combined = pass2
+                        combined.sourceFrames = max(pass2.sourceFrames, restorationTelemetry.sourceFrames)
+                        combined.compressionMsPerFrame = restorationTelemetry.compressionMsPerFrame
+                        combined.outlineMsPerFrame = 0
+                        telemetry(combined)
                     }
                 )
 
-                if let restoredCheckpoint {
-                    try persistCheckpoint(from: result.url, to: restoredCheckpoint)
-                    try? fm.removeItem(at: result.url)
-                    rifeSourceURL = restoredCheckpoint
-                    RecoveryStore.update(progress: 0.10, message: "Pass 1/4 checkpoint saved • Compression Guard complete", force: true)
-                    DiagnosticsLogger.shared.log("Checkpoint saved: Compression Guard.")
+                if let rifeCheckpoint {
+                    try persistCheckpoint(from: generated, to: rifeCheckpoint)
+                    try? fm.removeItem(at: generated)
+                    rifeResult = rifeCheckpoint
+                    RecoveryStore.update(progress: 0.40, message: "Pass 2/4 checkpoint saved • RIFE HQ complete", force: true)
+                    DiagnosticsLogger.shared.log("Checkpoint saved: RIFE HQ.")
+                    if let restoredCheckpoint { try? fm.removeItem(at: restoredCheckpoint) }
                 } else {
-                    transientURLs.append(result.url)
-                    rifeSourceURL = result.url
+                    transientURLs.append(generated)
+                    rifeResult = generated
                 }
-                autoreleasepool { }
-                try await thermalHandoff(progress: progress, position: 0.10, next: "RIFE HQ")
-            }
-        } else {
-            rifeSourceURL = sourceURL
-        }
-
-        let rifeResult: URL
-        if let rifeCheckpoint,
-           await validVideo(rifeCheckpoint, expectedDuration: sourceDuration) {
-            rifeResult = rifeCheckpoint
-            progress(0.40, "Recovered checkpoint • RIFE HQ complete")
-            RecoveryStore.update(progress: 0.40, message: "Recovered completed RIFE HQ checkpoint", force: true)
-            DiagnosticsLogger.shared.log("Recovery: reused completed RIFE HQ checkpoint.")
-        } else {
-            if let rifeCheckpoint { try? fm.removeItem(at: rifeCheckpoint) }
-            progress(0.11, "Pass 2/4 • Loading full-frame RIFE HQ…")
-            let pass2Config = ProcessorConfiguration(
-                quality: config.quality,
-                ghostProtection: config.ghostProtection,
-                sceneCutProtection: config.sceneCutProtection,
-                compressionProtection: false,
-                outlineProtection: false,
-                ghostSensitivity: config.ghostSensitivity,
-                preserveAudio: false,
-                targetFPS: config.targetFPS
-            )
-            let rife = RIFEVideoProcessor(configuration: pass2Config)
-            let generated = try await rife.process(
-                sourceURL: rifeSourceURL,
-                progress: { p, message in
-                    let local = min(max(p / 0.95, 0), 1)
-                    progress(0.11 + local * 0.29, "Pass 2/4 • \(message)")
-                },
-                telemetry: { pass2 in
-                    rifeTelemetry = pass2
-                    var combined = pass2
-                    combined.sourceFrames = max(pass2.sourceFrames, restorationTelemetry.sourceFrames)
-                    combined.compressionMsPerFrame = restorationTelemetry.compressionMsPerFrame
-                    combined.outlineMsPerFrame = 0
-                    telemetry(combined)
-                }
-            )
-
-            if let rifeCheckpoint {
-                try persistCheckpoint(from: generated, to: rifeCheckpoint)
-                try? fm.removeItem(at: generated)
-                rifeResult = rifeCheckpoint
-                RecoveryStore.update(progress: 0.40, message: "Pass 2/4 checkpoint saved • RIFE HQ complete", force: true)
-                DiagnosticsLogger.shared.log("Checkpoint saved: RIFE HQ.")
-                if let restoredCheckpoint { try? fm.removeItem(at: restoredCheckpoint) }
-            } else {
-                transientURLs.append(generated)
-                rifeResult = generated
             }
         }
 
         // Real-CUGAN sees the clean RIFE output, never the Sharpie output. This avoids
         // CUGAN softening/changing the user's final line width.
-        let postCUGANSource: URL
-        if upscaleTo4K {
-            let cuganEnd = config.outlineProtection ? 0.84 : 0.97
-            if let cuganCheckpoint,
-               await validVideo(
-                    cuganCheckpoint,
-                    expectedDuration: sourceDuration,
-                    expectedWidth: native2xWidth,
-                    expectedHeight: native2xHeight
-               ) {
-                postCUGANSource = cuganCheckpoint
-                progress(cuganEnd, "Recovered checkpoint • Real-CUGAN native 2× complete")
-                RecoveryStore.update(progress: cuganEnd, message: "Recovered completed Real-CUGAN native 2× checkpoint", force: true)
-                DiagnosticsLogger.shared.log("Recovery: reused completed Real-CUGAN native 2× checkpoint.")
-            } else {
-                if let cuganCheckpoint { try? fm.removeItem(at: cuganCheckpoint) }
-                autoreleasepool { }
-                try await thermalHandoff(progress: progress, position: 0.40, next: "Real-CUGAN native 2×")
-                progress(0.41, "Pass 3/4 • Loading Real-CUGAN Anime native 2×…")
-                let cugan = RealCUGANPass(intensity: 1.30)
-                let generated = try await cugan.run(
-                    sourceURL: rifeResult,
-                    finalAudioBitrate: audioBitrate,
-                    progress: { p, message in
-                        let local = min(max(p, 0), 1)
-                        progress(0.41 + local * (cuganEnd - 0.41), message.replacingOccurrences(of: "Pass 3/3", with: "Pass 3/4"))
-                    },
-                    telemetry: { sample in
-                        cuganTelemetry = sample
-                        var combined = rifeTelemetry
-                        combined.sourceFrames = max(rifeTelemetry.sourceFrames, restorationTelemetry.sourceFrames)
-                        combined.compressionMsPerFrame = restorationTelemetry.compressionMsPerFrame
-                        combined.outlineMsPerFrame = 0
-                        combined.upscaledFrames = sample.upscaledFrames
-                        combined.cuganMsPerFrame = sample.cuganMsPerFrame
-                        combined.upscaleFPS = sample.upscaleFPS
-                        combined.encodeMsPerOutputFrame = sample.encodeMsPerOutputFrame
-                        combined.thermalState = sample.thermalState
-                        combined.performanceMode = sample.performanceMode
-                        combined.availableMemoryMB = sample.availableMemoryMB
-                        combined.physicalMemoryMB = sample.physicalMemoryMB
-                        telemetry(combined)
-                    }
-                )
-
-                if let cuganCheckpoint {
-                    try persistCheckpoint(from: generated, to: cuganCheckpoint)
-                    try? fm.removeItem(at: generated)
+        var postCUGANSource: URL?
+        if !outlineCheckpointValid {
+            if upscaleTo4K {
+                if cuganCheckpointValid, let cuganCheckpoint {
                     postCUGANSource = cuganCheckpoint
-                    RecoveryStore.update(progress: cuganEnd, message: "Pass 3/4 checkpoint saved • Real-CUGAN native 2× complete", force: true)
-                    DiagnosticsLogger.shared.log("Checkpoint saved: Real-CUGAN native 2×.")
-                    if let rifeCheckpoint { try? fm.removeItem(at: rifeCheckpoint) }
+                    progress(cuganEnd, "Recovered checkpoint • Real-CUGAN native 2× complete")
+                    RecoveryStore.update(progress: cuganEnd, message: "Recovered completed Real-CUGAN native 2× checkpoint", force: true)
+                    DiagnosticsLogger.shared.log("Recovery: reused completed Real-CUGAN native 2× checkpoint.")
                 } else {
-                    transientURLs.append(generated)
-                    postCUGANSource = generated
+                    guard let cuganInput = rifeResult else { throw ProcessorError.noOutput }
+                    if let cuganCheckpoint { try? fm.removeItem(at: cuganCheckpoint) }
+                    autoreleasepool { }
+                    try await thermalHandoff(progress: progress, position: 0.40, next: "Real-CUGAN native 2×")
+                    progress(0.41, "Pass 3/4 • Loading Real-CUGAN Anime native 2×…")
+                    let cugan = RealCUGANPass(intensity: 1.30)
+                    let generated = try await cugan.run(
+                        sourceURL: cuganInput,
+                        finalAudioBitrate: audioBitrate,
+                        progress: { p, message in
+                            let local = min(max(p, 0), 1)
+                            progress(0.41 + local * (cuganEnd - 0.41), message.replacingOccurrences(of: "Pass 3/3", with: "Pass 3/4"))
+                        },
+                        telemetry: { sample in
+                            cuganTelemetry = sample
+                            var combined = rifeTelemetry
+                            combined.sourceFrames = max(rifeTelemetry.sourceFrames, restorationTelemetry.sourceFrames)
+                            combined.compressionMsPerFrame = restorationTelemetry.compressionMsPerFrame
+                            combined.outlineMsPerFrame = 0
+                            combined.upscaledFrames = sample.upscaledFrames
+                            combined.cuganMsPerFrame = sample.cuganMsPerFrame
+                            combined.upscaleFPS = sample.upscaleFPS
+                            combined.encodeMsPerOutputFrame = sample.encodeMsPerOutputFrame
+                            combined.thermalState = sample.thermalState
+                            combined.performanceMode = sample.performanceMode
+                            combined.availableMemoryMB = sample.availableMemoryMB
+                            combined.physicalMemoryMB = sample.physicalMemoryMB
+                            telemetry(combined)
+                        }
+                    )
+
+                    if let cuganCheckpoint {
+                        try persistCheckpoint(from: generated, to: cuganCheckpoint)
+                        try? fm.removeItem(at: generated)
+                        postCUGANSource = cuganCheckpoint
+                        RecoveryStore.update(progress: cuganEnd, message: "Pass 3/4 checkpoint saved • Real-CUGAN native 2× complete", force: true)
+                        DiagnosticsLogger.shared.log("Checkpoint saved: Real-CUGAN native 2×.")
+                        if let rifeCheckpoint { try? fm.removeItem(at: rifeCheckpoint) }
+                    } else {
+                        transientURLs.append(generated)
+                        postCUGANSource = generated
+                    }
                 }
+            } else {
+                postCUGANSource = rifeResult
+                if !config.outlineProtection { progress(0.97, "RIFE HQ complete") }
             }
-        } else {
-            postCUGANSource = rifeResult
-            if !config.outlineProtection { progress(0.97, "RIFE HQ complete") }
         }
 
         // FINAL VISUAL PASS: apply the slightly narrower Sharpie model only after
         // CUGAN. If CUGAN is disabled it still remains after RIFE.
         let videoForMux: URL
         if config.outlineProtection {
-            let expectedWidth = upscaleTo4K ? native2xWidth : sourceWidth
-            let expectedHeight = upscaleTo4K ? native2xHeight : sourceHeight
-            if let outlineCheckpoint,
-               await validVideo(
-                    outlineCheckpoint,
-                    expectedDuration: sourceDuration,
-                    expectedWidth: expectedWidth,
-                    expectedHeight: expectedHeight
-               ) {
+            if outlineCheckpointValid, let outlineCheckpoint {
                 videoForMux = outlineCheckpoint
                 progress(0.97, "Recovered checkpoint • Final Sharpie outline complete")
                 RecoveryStore.update(progress: 0.97, message: "Recovered completed final Sharpie checkpoint", force: true)
                 DiagnosticsLogger.shared.log("Recovery: reused completed post-CUGAN Sharpie checkpoint.")
             } else {
+                guard let outlineInput = postCUGANSource else { throw ProcessorError.noOutput }
                 if let outlineCheckpoint { try? fm.removeItem(at: outlineCheckpoint) }
                 autoreleasepool { }
                 try await thermalHandoff(progress: progress, position: upscaleTo4K ? 0.84 : 0.40, next: "final Sharpie outline")
@@ -242,7 +287,7 @@ final class TwoPassVideoProcessor {
                 progress(outlineStart, upscaleTo4K ? "Pass 4/4 • Applying final Sharpie after Real-CUGAN…" : "Pass 3/3 • Applying final Sharpie after RIFE…")
                 let finalOutline = FinalOutlinePass()
                 let generated = try await finalOutline.run(
-                    sourceURL: postCUGANSource,
+                    sourceURL: outlineInput,
                     finalAudioBitrate: audioBitrate,
                     progress: { p, message in
                         let local = min(max(p, 0), 1)
@@ -279,7 +324,8 @@ final class TwoPassVideoProcessor {
                 }
             }
         } else {
-            videoForMux = postCUGANSource
+            guard let finalInput = postCUGANSource else { throw ProcessorError.noOutput }
+            videoForMux = finalInput
         }
 
         let finalVideoInput: URL

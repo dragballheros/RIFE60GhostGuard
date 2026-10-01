@@ -1,5 +1,10 @@
 # RIFE 60 Ghost Guard for iOS
 
+> **Build 162 changes**
+> - **Crash recovery now really resumes.** Each pass deletes the previous pass's checkpoint, so a resume now looks for the *furthest* valid checkpoint and skips everything before it (previously Compression Guard and RIFE were silently re-run). Settings of the interrupted job are restored on relaunch so the saved checkpoints always match, and the UI says so honestly if they cannot be reused.
+> - **Final Sharpie is faster.** The ~120 tiles per 4K frame now run on up to 3 parallel workers (1–3 depending on the memory governor) instead of strictly one after another, and the per-pixel loops avoid per-pixel divides and branches. Output is unchanged.
+> - **Images are supported** (Photos and Files). Images skip RIFE and run Compression Guard -> Real-CUGAN 2x -> Final Sharpie, saved as a lossless PNG.
+
 A local iOS video frame-interpolation app built around **RifeMetal 0.1.6 / Practical-RIFE v4.26**.
 
 ## What this build does

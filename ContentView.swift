@@ -33,10 +33,13 @@ struct ContentView: View {
                         if vm.isImporting {
                             VStack(alignment: .leading, spacing: 6) {
                                 if let importProgress = vm.importProgress { ProgressView(value: importProgress) } else { ProgressView() }
-                                Text("Importing video…").font(.caption).foregroundStyle(.secondary)
+                                Text("Importing…").font(.caption).foregroundStyle(.secondary)
                             }
                         }
-                        if let input = vm.inputURL { Text(input.lastPathComponent).font(.caption).foregroundStyle(.secondary) }
+                        if let input = vm.inputURL {
+                            Text(input.lastPathComponent).font(.caption).foregroundStyle(.secondary)
+                            if vm.inputKind == .image { Text("Image • RIFE interpolation is skipped").font(.caption).foregroundStyle(.secondary) }
+                        }
                     }
 
                     if vm.recoveryAvailable {
@@ -52,11 +55,16 @@ struct ContentView: View {
                     }
 
                     Section("RIFE 4.26") {
-                        LabeledContent("Interpolation quality", value: "High Quality (HQ)")
-                        Toggle("Ghost protection", isOn: $vm.ghostProtection).disabled(vm.recoveryAvailable)
-                        Toggle("Scene-cut protection", isOn: $vm.sceneCutProtection).disabled(vm.recoveryAvailable)
-                        LabeledContent("Target", value: "60.00 fps")
-                        Text("1080p-class video uses one persistent full-frame HQ stream for maximum speed without dropping RIFE quality.").font(.caption).foregroundStyle(.secondary)
+                        if vm.inputKind == .image {
+                            Label("Skipped for images", systemImage: "photo")
+                            Text("A single image has no neighbouring frame to interpolate, so images go straight through Compression Guard → Real-CUGAN → Final Sharpie and are saved as a PNG.").font(.caption).foregroundStyle(.secondary)
+                        } else {
+                            LabeledContent("Interpolation quality", value: "High Quality (HQ)")
+                            Toggle("Ghost protection", isOn: $vm.ghostProtection).disabled(vm.recoveryAvailable)
+                            Toggle("Scene-cut protection", isOn: $vm.sceneCutProtection).disabled(vm.recoveryAvailable)
+                            LabeledContent("Target", value: "60.00 fps")
+                            Text("1080p-class video uses one persistent full-frame HQ stream for maximum speed without dropping RIFE quality.").font(.caption).foregroundStyle(.secondary)
+                        }
                     }
 
                     Section("Anime Processing") {
@@ -74,10 +82,12 @@ struct ContentView: View {
                         Text("Runs after RIFE and before the final Sharpie pass. Real-CUGAN processes overlapping tiles and stitches them back to exactly 2× the original source dimensions without converting the source to 1080p first.").font(.caption).foregroundStyle(.secondary)
                     }
 
-                    Section("Ghost Guard") {
-                        VStack(alignment: .leading, spacing: 5) {
-                            HStack { Text("Sensitivity"); Spacer(); Text(String(format: "%.2f", vm.ghostSensitivity)) }
-                            Slider(value: $vm.ghostSensitivity, in: 0.65...1.35, step: 0.05).disabled(vm.recoveryAvailable)
+                    if vm.inputKind == .video {
+                        Section("Ghost Guard") {
+                            VStack(alignment: .leading, spacing: 5) {
+                                HStack { Text("Sensitivity"); Spacer(); Text(String(format: "%.2f", vm.ghostSensitivity)) }
+                                Slider(value: $vm.ghostSensitivity, in: 0.65...1.35, step: 0.05).disabled(vm.recoveryAvailable)
+                            }
                         }
                     }
 
@@ -87,10 +97,14 @@ struct ContentView: View {
                     }
 
                     Section("Export to Files") {
-                        LabeledContent("Final codec", value: "HEVC Main10")
-                        LabeledContent("Pixel format", value: "10-bit P010")
-                        LabeledContent("File-size target", value: "< 1 GB")
-                        Toggle("Preserve original audio", isOn: $vm.preserveAudio).disabled(vm.recoveryAvailable)
+                        if vm.inputKind == .image {
+                            LabeledContent("Image format", value: "PNG (lossless)")
+                        } else {
+                            LabeledContent("Final codec", value: "HEVC Main10")
+                            LabeledContent("Pixel format", value: "10-bit P010")
+                            LabeledContent("File-size target", value: "< 1 GB")
+                            Toggle("Preserve original audio", isOn: $vm.preserveAudio).disabled(vm.recoveryAvailable)
+                        }
                         LabeledContent("Auto-save location", value: vm.exportFolderName)
                         Button { showingExportFolderPicker = true } label: { Label("Set On My iPhone Save Location", systemImage: "folder.badge.plus") }
                         if let last = lastCompletedVideoURL {
@@ -109,11 +123,12 @@ struct ContentView: View {
                             if let eta = vm.etaSeconds, eta > 0 { LabeledContent("Estimated finish", value: finishTime(after: eta)) }
                         }
                         Section("Processing") {
-                            Text("Compression Guard → RIFE HQ → Real-CUGAN → Final Sharpie").font(.caption).foregroundStyle(.secondary)
+                            Text(vm.inputKind == .image ? "Compression Guard → Real-CUGAN → Final Sharpie (RIFE skipped)" : "Compression Guard → RIFE HQ → Real-CUGAN → Final Sharpie").font(.caption).foregroundStyle(.secondary)
                             ProgressView(value: vm.progress)
                             Text(vm.statusText).font(.caption)
                             Button("Cancel", role: .destructive) { vm.cancel() }
                         }
+                        if vm.inputKind == .video {
                         Section("Live Performance") {
                             LabeledContent("Thermal / mode", value: vm.telemetry.thermalState)
                             LabeledContent("Memory headroom", value: String(format: "%.0f MB available", vm.telemetry.availableMemoryMB))
@@ -131,9 +146,10 @@ struct ContentView: View {
                             LabeledContent("Generated", value: "\(vm.telemetry.generatedFrames)")
                             LabeledContent("Rejected", value: "\(vm.telemetry.rejectedFrames)")
                         }
+                        }
                     } else if !vm.recoveryAvailable {
                         Section {
-                            Button { Task { await vm.start() } } label: { Label(vm.upscaleTo4K ? "Create 2× 60 FPS Video" : "Create 60 FPS Video", systemImage: "wand.and.stars") }.disabled(vm.inputURL == nil)
+                            Button { Task { await vm.start() } } label: { Label(createButtonTitle, systemImage: "wand.and.stars") }.disabled(vm.inputURL == nil)
                         }
                     }
 
@@ -153,8 +169,8 @@ struct ContentView: View {
                     if let err = vm.errorText { Section("Error") { Text(err).foregroundStyle(.red) } }
                 }
                 .navigationTitle("RIFE 60")
-                .photosPicker(isPresented: $showingPhotosPicker, selection: $photoItem, matching: .videos, photoLibrary: .shared())
-                .fileImporter(isPresented: $showingImporter, allowedContentTypes: [.movie, .mpeg4Movie, .quickTimeMovie, .video], allowsMultipleSelection: false) { result in vm.handleImport(result) }
+                .photosPicker(isPresented: $showingPhotosPicker, selection: $photoItem, matching: .any(of: [.videos, .images]), photoLibrary: .shared())
+                .fileImporter(isPresented: $showingImporter, allowedContentTypes: [.movie, .mpeg4Movie, .quickTimeMovie, .video, .image], allowsMultipleSelection: false) { result in vm.handleImport(result) }
                 .fileImporter(isPresented: $showingExportFolderPicker, allowedContentTypes: [.folder], allowsMultipleSelection: false) { result in
                     vm.handleExportFolderSelection(result)
                     lastCompletedVideoURL = LastCompletedVideoStore.latestCompletedVideo() ?? lastCompletedVideoURL
@@ -215,6 +231,11 @@ struct ContentView: View {
             pipController.disarmAndStop()
             cancelPostRenderSleep(restoreDisplay: true)
         }
+    }
+
+    private var createButtonTitle: String {
+        if vm.inputKind == .image { return vm.upscaleTo4K ? "Create 2× Image" : "Create Enhanced Image" }
+        return vm.upscaleTo4K ? "Create 2× 60 FPS Video" : "Create 60 FPS Video"
     }
 
     @MainActor

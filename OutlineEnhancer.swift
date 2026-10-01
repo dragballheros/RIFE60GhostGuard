@@ -27,7 +27,8 @@ final class OutlineEnhancer {
     private let sourceBlend: Float32 = 0.06
 
     private let model: MLModel
-    private let inputArray: MLMultiArray
+    private static let maxWorkers = 3
+    private let inputArrays: [MLMultiArray]
     private var outputPool: CVPixelBufferPool?
     private var outputPoolSize: (Int, Int) = (0, 0)
 
@@ -58,7 +59,11 @@ final class OutlineEnhancer {
         configuration.computeUnits = .all
         configuration.allowLowPrecisionAccumulationOnGPU = true
         self.model = try MLModel(contentsOf: modelURL, configuration: configuration)
-        self.inputArray = try MLMultiArray(shape: [1, 3, 256, 256], dataType: .float32)
+        var arrays: [MLMultiArray] = []
+        for _ in 0..<Self.maxWorkers {
+            arrays.append(try MLMultiArray(shape: [1, 3, 256, 256], dataType: .float32))
+        }
+        self.inputArrays = arrays
     }
 
     private func destinationBuffer(width: Int, height: Int) throws -> CVPixelBuffer {
@@ -98,63 +103,149 @@ final class OutlineEnhancer {
             CVPixelBufferUnlockBaseAddress(destination, [])
         }
         guard let sourceBase = CVPixelBufferGetBaseAddress(source), let destinationBase = CVPixelBufferGetBaseAddress(destination) else { throw OutlineError.allocationFailed }
-        guard inputArray.dataType == .float32 else { throw OutlineError.badModelInterface("expected Float32 input") }
+        guard inputArrays.allSatisfy({ $0.dataType == .float32 }) else { throw OutlineError.badModelInterface("expected Float32 input") }
 
         let src = sourceBase.assumingMemoryBound(to: UInt8.self)
         let dst = destinationBase.assumingMemoryBound(to: UInt8.self)
         let srcRow = CVPixelBufferGetBytesPerRow(source)
         let dstRow = CVPixelBufferGetBytesPerRow(destination)
+        let isBGRA = format == kCVPixelFormatType_32BGRA
         let core = tile - shrink * 2
-        let inPtr = inputArray.dataPointer.assumingMemoryBound(to: Float32.self)
-        let inS1 = inputArray.strides[1].intValue
-        let inS2 = inputArray.strides[2].intValue
-        let inS3 = inputArray.strides[3].intValue
-        @inline(__always) func inputIndex(_ c: Int, _ y: Int, _ x: Int) -> Int { c * inS1 + y * inS2 + x * inS3 }
+        let tilesAcross = (width + core - 1) / core
+        let tilesDown = (height + core - 1) / core
+        let tileCount = tilesAcross * tilesDown
 
-        for coreY in stride(from: 0, to: height, by: core) {
-            for coreX in stride(from: 0, to: width, by: core) {
-                autoreleasepool {
-                    for y in 0..<tile {
-                        let sy = min(max(coreY + y - shrink, 0), height - 1)
-                        let rowOffset = sy * srcRow
-                        for x in 0..<tile {
-                            let sx = min(max(coreX + x - shrink, 0), width - 1)
-                            let i = rowOffset + sx * 4
-                            let r: Float32, g: Float32, b: Float32
-                            if format == kCVPixelFormatType_32BGRA {
-                                b = Float32(src[i]) / 255; g = Float32(src[i+1]) / 255; r = Float32(src[i+2]) / 255
-                            } else {
-                                r = Float32(src[i]) / 255; g = Float32(src[i+1]) / 255; b = Float32(src[i+2]) / 255
-                            }
-                            inPtr[inputIndex(0,y,x)] = r; inPtr[inputIndex(1,y,x)] = g; inPtr[inputIndex(2,y,x)] = b
-                        }
-                    }
+        // Tiles write to disjoint core regions of the destination and only READ the source, so they
+        // can run in parallel. Previously ~120 tiles per 4K frame ran strictly one after another,
+        // alternating scalar CPU loops and a synchronous Core ML call, leaving the CPU idle while the
+        // model ran and the model idle while the CPU ran. Worker count follows the memory governor.
+        let tier = currentRenderPerformanceSnapshot().tier
+        let desiredWorkers: Int
+        switch tier {
+        case .performance: desiredWorkers = 3
+        case .balanced: desiredWorkers = 2
+        case .safe: desiredWorkers = 1
+        }
+        let cpuLimit = max(ProcessInfo.processInfo.activeProcessorCount - 1, 1)
+        let workers = max(1, min(desiredWorkers, inputArrays.count, tileCount, cpuLimit))
+        let failure = TileFailure()
+
+        DispatchQueue.concurrentPerform(iterations: workers) { worker in
+            let input = inputArrays[worker]
+            var tileIndex = worker
+            while tileIndex < tileCount {
+                if failure.hasError { return }
+                let coreX = (tileIndex % tilesAcross) * core
+                let coreY = (tileIndex / tilesAcross) * core
+                do {
+                    try processTile(
+                        coreX: coreX, coreY: coreY, width: width, height: height,
+                        src: src, dst: dst, srcRow: srcRow, dstRow: dstRow,
+                        isBGRA: isBGRA, input: input
+                    )
+                } catch {
+                    failure.record(error)
+                    return
                 }
-                let predicted: MLMultiArray = try autoreleasepool {
-                    let provider = try MLDictionaryFeatureProvider(dictionary: [inputName: MLFeatureValue(multiArray: inputArray)])
-                    let output = try model.prediction(from: provider)
-                    guard let array = output.featureValue(for: outputName)?.multiArrayValue else { throw OutlineError.badModelInterface("missing output \(outputName)") }
-                    return array
-                }
-                guard predicted.dataType == .float32, predicted.shape.count == 4 else { throw OutlineError.badModelInterface("expected Float32 NCHW output") }
-                let outPtr = predicted.dataPointer.assumingMemoryBound(to: Float32.self)
-                let oS1 = predicted.strides[1].intValue, oS2 = predicted.strides[2].intValue, oS3 = predicted.strides[3].intValue
-                @inline(__always) func outputIndex(_ c: Int, _ y: Int, _ x: Int) -> Int { c * oS1 + y * oS2 + x * oS3 }
-                let copyWidth = min(core, width-coreX), copyHeight = min(core, height-coreY)
-                for y in 0..<copyHeight {
-                    let dy=coreY+y, oy=y+shrink, srcRowOffset=dy*srcRow, dstRowOffset=dy*dstRow
-                    for x in 0..<copyWidth {
-                        let dx=coreX+x, ox=x+shrink, si=srcRowOffset+dx*4, di=dstRowOffset+dx*4
-                        let mr=min(max(outPtr[outputIndex(0,oy,ox)],0),1), mg=min(max(outPtr[outputIndex(1,oy,ox)],0),1), mb=min(max(outPtr[outputIndex(2,oy,ox)],0),1)
-                        let sr:Float32, sg:Float32, sb:Float32
-                        if format == kCVPixelFormatType_32BGRA { sb=Float32(src[si])/255; sg=Float32(src[si+1])/255; sr=Float32(src[si+2])/255 }
-                        else { sr=Float32(src[si])/255; sg=Float32(src[si+1])/255; sb=Float32(src[si+2])/255 }
-                        let r=mr*modelBlend+sr*sourceBlend, g=mg*modelBlend+sg*sourceBlend, b=mb*modelBlend+sb*sourceBlend
-                        dst[di]=UInt8((min(max(b,0),1)*255).rounded()); dst[di+1]=UInt8((min(max(g,0),1)*255).rounded()); dst[di+2]=UInt8((min(max(r,0),1)*255).rounded()); dst[di+3]=255
-                    }
-                }
+                tileIndex += workers
             }
         }
+        try failure.rethrowIfNeeded()
         return destination
+    }
+
+    private func processTile(
+        coreX: Int, coreY: Int, width: Int, height: Int,
+        src: UnsafeMutablePointer<UInt8>, dst: UnsafeMutablePointer<UInt8>,
+        srcRow: Int, dstRow: Int, isBGRA: Bool, input: MLMultiArray
+    ) throws {
+        let core = tile - shrink * 2
+        let rOff = isBGRA ? 2 : 0
+        let bOff = isBGRA ? 0 : 2
+        let inv255: Float32 = 1.0 / 255.0
+
+        let inPtr = input.dataPointer.assumingMemoryBound(to: Float32.self)
+        let inS1 = input.strides[1].intValue
+        let inS2 = input.strides[2].intValue
+        let inS3 = input.strides[3].intValue
+
+        for y in 0..<tile {
+            let sy = min(max(coreY + y - shrink, 0), height - 1)
+            let rowOffset = sy * srcRow
+            let planeY = y * inS2
+            for x in 0..<tile {
+                let sx = min(max(coreX + x - shrink, 0), width - 1)
+                let i = rowOffset + sx * 4
+                let idx = planeY + x * inS3
+                inPtr[idx] = Float32(src[i + rOff]) * inv255
+                inPtr[inS1 + idx] = Float32(src[i + 1]) * inv255
+                inPtr[2 * inS1 + idx] = Float32(src[i + bOff]) * inv255
+            }
+        }
+
+        let predicted: MLMultiArray = try autoreleasepool {
+            let provider = try MLDictionaryFeatureProvider(dictionary: [inputName: MLFeatureValue(multiArray: input)])
+            let output = try model.prediction(from: provider)
+            guard let array = output.featureValue(for: outputName)?.multiArrayValue else { throw OutlineError.badModelInterface("missing output \(outputName)") }
+            return array
+        }
+        guard predicted.dataType == .float32, predicted.shape.count == 4 else { throw OutlineError.badModelInterface("expected Float32 NCHW output") }
+
+        let outPtr = predicted.dataPointer.assumingMemoryBound(to: Float32.self)
+        let oS1 = predicted.strides[1].intValue
+        let oS2 = predicted.strides[2].intValue
+        let oS3 = predicted.strides[3].intValue
+        let copyWidth = min(core, width - coreX)
+        let copyHeight = min(core, height - coreY)
+        for y in 0..<copyHeight {
+            let dy = coreY + y
+            let oy = y + shrink
+            let srcRowOffset = dy * srcRow
+            let dstRowOffset = dy * dstRow
+            let outRow = oy * oS2
+            for x in 0..<copyWidth {
+                let dx = coreX + x
+                let ox = x + shrink
+                let si = srcRowOffset + dx * 4
+                let di = dstRowOffset + dx * 4
+                let oi = outRow + ox * oS3
+                let mr = min(max(outPtr[oi], 0), 1)
+                let mg = min(max(outPtr[oS1 + oi], 0), 1)
+                let mb = min(max(outPtr[2 * oS1 + oi], 0), 1)
+                let sr = Float32(src[si + rOff]) * inv255
+                let sg = Float32(src[si + 1]) * inv255
+                let sb = Float32(src[si + bOff]) * inv255
+                let r = mr * modelBlend + sr * sourceBlend
+                let g = mg * modelBlend + sg * sourceBlend
+                let b = mb * modelBlend + sb * sourceBlend
+                dst[di] = UInt8((min(max(b, 0), 1) * 255).rounded())
+                dst[di + 1] = UInt8((min(max(g, 0), 1) * 255).rounded())
+                dst[di + 2] = UInt8((min(max(r, 0), 1) * 255).rounded())
+                dst[di + 3] = 255
+            }
+        }
+    }
+}
+
+private final class TileFailure: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: Error?
+
+    var hasError: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return stored != nil
+    }
+
+    func record(_ error: Error) {
+        lock.lock()
+        if stored == nil { stored = error }
+        lock.unlock()
+    }
+
+    func rethrowIfNeeded() throws {
+        lock.lock()
+        let error = stored
+        lock.unlock()
+        if let error { throw error }
     }
 }

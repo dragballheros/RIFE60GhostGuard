@@ -194,6 +194,25 @@ final class RealCUGANPass {
         return outURL
     }
 
+    /// Single-image native 2x upscale. Uses the exact same model, noise level, intensity,
+    /// overlap and tiled stitching as the video path, so stills match video quality.
+    func upscaleStill(_ source: CVPixelBuffer) throws -> CVPixelBuffer {
+        let stillWidth = CVPixelBufferGetWidth(source)
+        let stillHeight = CVPixelBufferGetHeight(source)
+        let useWideTiles = (stillWidth >= 1600 || stillHeight >= 1600) && currentRenderPerformanceSnapshot().allowsWideCUGANTiles
+        let stillProfile = useWideTiles ? fast1080Profile : fallbackProfile
+        try preparePools(targetWidth: stillWidth * 2, targetHeight: stillHeight * 2, profile: stillProfile)
+        defer {
+            tileInputPool = nil
+            stitchedFramePool = nil
+        }
+        let stillModel = try loadModel(named: stillProfile.modelName)
+        let stillAlpha = try MLMultiArray(shape: [1], dataType: .float16)
+        stillAlpha[0] = NSNumber(value: Float(1.0 / max(intensity, 0.01)))
+        DiagnosticsLogger.shared.log("Real-CUGAN still image • \(stillWidth)x\(stillHeight) -> \(stillWidth * 2)x\(stillHeight * 2) • tile=\(stillProfile.width)x\(stillProfile.height)")
+        return try upscaleNative2x(source, model: stillModel, alpha: stillAlpha, frameNumber: 1, profile: stillProfile)
+    }
+
     private func loadModel(named name: String) throws -> MLModel {
         guard let url = Bundle.main.url(forResource: name, withExtension: "mlmodelc") else {
             throw ProcessorError.conversionFailed("Bundled tiled Real-CUGAN model is missing: \(name)")
