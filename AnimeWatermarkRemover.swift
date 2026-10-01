@@ -76,7 +76,7 @@ final class AnimeWatermarkRemover {
         // entire 4K frame. Border regions use replicated-edge padding.
         let side = Int(ceil(max(256, max(target.width, target.height) * 2)))
         let crop = CGRect(x: floor(target.midX - CGFloat(side) / 2),
-                          y: floor(target.midY - CGFloat(side) / 2), width: side, height: side)
+                          y: floor(target.midY - CGFloat(side) / 2), width: CGFloat(side), height: CGFloat(side))
         let scale = CGFloat(modelSize) / CGFloat(side)
         let imageInput = try Self.allocate(imagePool)
         let maskInput = try Self.allocate(maskPool)
