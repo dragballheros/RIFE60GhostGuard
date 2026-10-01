@@ -199,6 +199,14 @@ jobs:
           )
           PY
 
+      - name: Verify Color Pop bypass and color patches
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/color-pop-check
+          cp Scripts/check_color_pop.swift /tmp/color-pop-check/main.swift
+          swiftc -swift-version 5 ColorPopGrade.swift /tmp/color-pop-check/main.swift -o /tmp/color-pop-check/check
+          /tmp/color-pop-check/check
+
       - name: Generate Xcode project
         run: xcodegen generate
       - name: Resolve packages

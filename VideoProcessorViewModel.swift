@@ -65,6 +65,8 @@ final class VideoProcessorViewModel: ObservableObject {
     @Published var sceneCutProtection = true
     @Published var compressionProtection = true
     @Published var outlineProtection = true
+    @Published var colorPopEnabled = false
+    @Published var colorPopStrength = 0.5
     @Published var upscaleTo4K = true
     @Published var ghostSensitivity = 1.0
     @Published var preserveAudio = true
@@ -294,9 +296,11 @@ final class VideoProcessorViewModel: ObservableObject {
         let compressionEnabled = compressionProtection
         let outlineEnabled = outlineProtection
         let sensitivity = ghostSensitivity
+        let colorPop = colorPopEnabled
+        let gradeStrength = colorPopStrength
         let audio = preserveAudio
         let upscale = upscaleTo4K
-        let configKey = ["pipeline-v3-final-size", "hq", "ghost=\(guardEnabled)", "cuts=\(cuts)", "compression=\(compressionEnabled)", "outline=\(outlineEnabled)", String(format: "sensitivity=%.2f", sensitivity), "audio=\(audio)", "upscale=\(upscale)", "fps=60"].joined(separator: "|")
+        let configKey = ["pipeline-v3-final-size", "hq", "ghost=\(guardEnabled)", "cuts=\(cuts)", "compression=\(compressionEnabled)", "outline=\(outlineEnabled)", "colorpop=\(colorPop)", String(format: "colorpopStrength=%.2f", gradeStrength), String(format: "sensitivity=%.2f", sensitivity), "audio=\(audio)", "upscale=\(upscale)", "fps=60"].joined(separator: "|")
         DiagnosticsLogger.shared.log("Render requested • \(configKey)")
 
         currentTask = Task.detached(priority: .userInitiated) { [weak self] in
@@ -329,7 +333,7 @@ final class VideoProcessorViewModel: ObservableObject {
                     result = deliveryReady
                 } else {
                     let config = ProcessorConfiguration(quality: .hq, ghostProtection: guardEnabled, sceneCutProtection: cuts, compressionProtection: compressionEnabled, outlineProtection: outlineEnabled, ghostSensitivity: sensitivity, preserveAudio: audio, targetFPS: 60)
-                    let processor = TwoPassVideoProcessor(configuration: config, upscaleTo4K: upscale)
+                    let processor = TwoPassVideoProcessor(configuration: config, upscaleTo4K: upscale, colorPopEnabled: colorPop, colorPopStrength: gradeStrength)
                     let generated = try await processor.process(sourceURL: job.sourceURL, recoveryDirectory: job.directory, progress: { p, message in
                         RecoveryStore.update(progress: p, message: message)
                         Task { @MainActor [weak self] in
@@ -375,6 +379,9 @@ final class VideoProcessorViewModel: ObservableObject {
     }
 
     private func applyRecoveredSettings(from key: String) {
+        // Build 162 manifests predate Color Pop; missing fields mean the original look.
+        colorPopEnabled = false
+        colorPopStrength = 0.5
         for part in key.split(separator: "|") {
             let pair = part.split(separator: "=", maxSplits: 1).map(String.init)
             guard pair.count == 2 else { continue }
@@ -384,6 +391,9 @@ final class VideoProcessorViewModel: ObservableObject {
             case "cuts": sceneCutProtection = enabled
             case "compression": compressionProtection = enabled
             case "outline": outlineProtection = enabled
+            case "colorpop": colorPopEnabled = enabled
+            case "colorpopStrength":
+                if let value = Double(pair[1]), value.isFinite { colorPopStrength = min(max(value, 0), 1) }
             case "audio": preserveAudio = enabled
             case "upscale": upscaleTo4K = enabled
             case "sensitivity": if let value = Double(pair[1]) { ghostSensitivity = value }
@@ -415,13 +425,15 @@ final class VideoProcessorViewModel: ObservableObject {
         let compressionEnabled = compressionProtection
         let outlineEnabled = outlineProtection
         let upscale = upscaleTo4K
+        let colorPop = colorPopEnabled
+        let gradeStrength = colorPopStrength
         DiagnosticsLogger.shared.log("Image render requested • RIFE skipped • compression=\(compressionEnabled) • cugan2x=\(upscale) • outline=\(outlineEnabled)")
 
         currentTask = Task.detached(priority: .userInitiated) { [weak self] in
             do {
                 let secured = source.startAccessingSecurityScopedResource()
                 defer { if secured { source.stopAccessingSecurityScopedResource() } }
-                let processor = ImageStillProcessor(compressionProtection: compressionEnabled, outlineProtection: outlineEnabled, upscale2x: upscale)
+                let processor = ImageStillProcessor(compressionProtection: compressionEnabled, outlineProtection: outlineEnabled, upscale2x: upscale, colorPopEnabled: colorPop, colorPopStrength: gradeStrength)
                 let generated = try await processor.process(sourceURL: source, progress: { p, message in
                     Task { @MainActor [weak self] in
                         guard let self, self.isProcessing else { return }

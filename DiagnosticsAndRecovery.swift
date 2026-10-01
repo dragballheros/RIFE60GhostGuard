@@ -101,17 +101,27 @@ enum RecoveryStore {
         return RecoveryJob(directory: currentDirectory, sourceURL: source, manifest: manifest)
     }
 
+    // Canonicalize settings rather than invalidating build 162 checkpoints merely
+    // because its manifest omitted the new, disabled-by-default grade fields.
+    private static func comparableConfiguration(_ key: String) -> [String] {
+        var parts = key.split(separator: "|").map(String.init)
+        if !parts.contains(where: { $0.hasPrefix("colorpop=") }) { parts.append("colorpop=false") }
+        if !parts.contains(where: { $0.hasPrefix("colorpopStrength=") }) { parts.append("colorpopStrength=0.50") }
+        return parts.sorted()
+    }
+
     static func prepare(source: URL, configurationKey: String) throws -> RecoveryJob {
         lock.lock()
         defer { lock.unlock() }
 
         if let data = try? Data(contentsOf: manifestURL),
            let existing = try? JSONDecoder().decode(RecoveryManifest.self, from: data),
-           existing.configurationKey == configurationKey {
+           comparableConfiguration(existing.configurationKey) == comparableConfiguration(configurationKey) {
             let existingSource = currentDirectory.appendingPathComponent(existing.sourceFilename)
             if fm.fileExists(atPath: existingSource.path) && source.standardizedFileURL == existingSource.standardizedFileURL {
                 var resumed = existing
                 resumed.status = "running"
+                resumed.configurationKey = configurationKey
                 resumed.updatedAt = Date()
                 try writeManifestLocked(resumed)
                 DiagnosticsLogger.shared.log("Resuming recovery job at \(Int(resumed.progress * 100))%: \(resumed.lastMessage)")
@@ -121,7 +131,7 @@ enum RecoveryStore {
 
         if let data = try? Data(contentsOf: manifestURL),
            let stale = try? JSONDecoder().decode(RecoveryManifest.self, from: data),
-           stale.configurationKey != configurationKey {
+           comparableConfiguration(stale.configurationKey) != comparableConfiguration(configurationKey) {
             DiagnosticsLogger.shared.log("Recovery configuration mismatch • saved=\(stale.configurationKey) • requested=\(configurationKey) • discarding saved checkpoints.")
         }
 

@@ -22,10 +22,12 @@ final class ImageStillProcessor {
     private let compressionProtection: Bool
     private let outlineProtection: Bool
     private let upscale2x: Bool
+    private let colorPopStrength: Double
     private let ciContext = CIContext(options: [.cacheIntermediates: false])
     private let colorSpace: CGColorSpace = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
 
-    init(compressionProtection: Bool, outlineProtection: Bool, upscale2x: Bool) {
+    init(compressionProtection: Bool, outlineProtection: Bool, upscale2x: Bool, colorPopEnabled: Bool = false, colorPopStrength: Double = 0.5) {
+        self.colorPopStrength = colorPopEnabled && colorPopStrength.isFinite ? min(max(colorPopStrength, 0), 1) : 0
         self.compressionProtection = compressionProtection
         self.outlineProtection = outlineProtection
         self.upscale2x = upscale2x
@@ -68,6 +70,13 @@ final class ImageStillProcessor {
             progress(0.65, "Image • Final Sharpie…")
             let polish = FinalOutlinePass()
             buffer = try polish.polishStill(buffer)
+            try Task.checkCancellation()
+        }
+
+        if colorPopStrength > 0 {
+            DiagnosticsLogger.shared.log("Color Pop active • strength=\(String(format: "%.2f", colorPopStrength)) • image grade after upscale and final polish")
+            progress(0.88, "Image • Color Pop…")
+            buffer = try ColorPopGrade(strength: colorPopStrength).apply(buffer)
             try Task.checkCancellation()
         }
 

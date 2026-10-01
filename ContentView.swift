@@ -70,6 +70,12 @@ struct ContentView: View {
                     Section("Anime Processing") {
                         Toggle("Compression Guard", isOn: $vm.compressionProtection).disabled(vm.recoveryAvailable)
                         Toggle("Final Sharpie Outline", isOn: $vm.outlineProtection).disabled(vm.recoveryAvailable)
+                        Toggle("Color Pop", isOn: $vm.colorPopEnabled).disabled(vm.recoveryAvailable)
+                        if vm.colorPopEnabled {
+                            HStack { Text("Color Pop strength"); Spacer(); Text(String(format: "%.2f", vm.colorPopStrength)) }
+                            Slider(value: $vm.colorPopStrength, in: 0.1...1.0, step: 0.05).disabled(vm.recoveryAvailable)
+                            Text("Selective vibrance after upscale and sharpening. Protects grays and highlights; gently cleans orange skin tones.").font(.caption).foregroundStyle(.secondary)
+                        }
                         Text("Compression Guard runs before RIFE. Sharpie now runs as the final visual pass after Real-CUGAN, so CUGAN cannot soften or change the finished outlines. This revision is slightly narrower and closer to the original anime line width while remaining a little thicker/sharper than the original.").font(.caption).foregroundStyle(.secondary)
                     }
 

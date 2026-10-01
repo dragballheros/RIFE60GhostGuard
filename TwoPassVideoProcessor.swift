@@ -5,7 +5,10 @@ final class TwoPassVideoProcessor {
     private let config: ProcessorConfiguration
     private let upscaleTo4K: Bool
 
-    init(configuration: ProcessorConfiguration, upscaleTo4K: Bool = true) {
+    private let colorPopStrength: Double
+
+    init(configuration: ProcessorConfiguration, upscaleTo4K: Bool = true, colorPopEnabled: Bool = false, colorPopStrength: Double = 0.5) {
+        self.colorPopStrength = colorPopEnabled && colorPopStrength.isFinite ? min(max(colorPopStrength, 0), 1) : 0
         self.config = configuration
         self.upscaleTo4K = upscaleTo4K
     }
@@ -16,6 +19,9 @@ final class TwoPassVideoProcessor {
         progress: @escaping @Sendable (Double, String) -> Void,
         telemetry: @escaping @Sendable (PerformanceTelemetry) -> Void = { _ in }
     ) async throws -> URL {
+        if colorPopStrength > 0 {
+            DiagnosticsLogger.shared.log("Color Pop active • strength=\(String(format: "%.2f", colorPopStrength)) • applied once in the final active visual stage")
+        }
         var restorationTelemetry = PerformanceTelemetry()
         var rifeTelemetry = PerformanceTelemetry()
         var cuganTelemetry = PerformanceTelemetry()
@@ -107,7 +113,7 @@ final class TwoPassVideoProcessor {
         }
 
         // IMPORTANT: Sharpie no longer runs here. Compression cleanup remains before
-        // RIFE, while line art is now the LAST visual operation after Real-CUGAN.
+        // RIFE, while line art runs after Real-CUGAN, followed by optional Color Pop.
         var rifeSourceURL: URL?
 
         if rifeNeeded && !rifeCheckpointValid {
@@ -178,7 +184,7 @@ final class TwoPassVideoProcessor {
                     preserveAudio: false,
                     targetFPS: config.targetFPS
                 )
-                let rife = RIFEVideoProcessor(configuration: pass2Config)
+                let rife = RIFEVideoProcessor(configuration: pass2Config, colorPopStrength: (!upscaleTo4K && !config.outlineProtection) ? colorPopStrength : 0)
                 let generated = try await rife.process(
                     sourceURL: rifeInput,
                     progress: { p, message in
@@ -225,7 +231,7 @@ final class TwoPassVideoProcessor {
                     autoreleasepool { }
                     try await thermalHandoff(progress: progress, position: 0.40, next: "Real-CUGAN native 2×")
                     progress(0.41, "Pass 3/4 • Loading Real-CUGAN Anime native 2×…")
-                    let cugan = RealCUGANPass(intensity: 1.30)
+                    let cugan = RealCUGANPass(intensity: 1.30, colorPopStrength: config.outlineProtection ? 0 : colorPopStrength)
                     let generated = try await cugan.run(
                         sourceURL: cuganInput,
                         finalAudioBitrate: audioBitrate,
@@ -285,7 +291,7 @@ final class TwoPassVideoProcessor {
                 try await thermalHandoff(progress: progress, position: upscaleTo4K ? 0.84 : 0.40, next: "final Sharpie outline")
                 let outlineStart = upscaleTo4K ? 0.85 : 0.41
                 progress(outlineStart, upscaleTo4K ? "Pass 4/4 • Applying final Sharpie after Real-CUGAN…" : "Pass 3/3 • Applying final Sharpie after RIFE…")
-                let finalOutline = FinalOutlinePass()
+                let finalOutline = FinalOutlinePass(colorPopStrength: colorPopStrength)
                 let generated = try await finalOutline.run(
                     sourceURL: outlineInput,
                     finalAudioBitrate: audioBitrate,

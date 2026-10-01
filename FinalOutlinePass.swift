@@ -15,6 +15,12 @@ final class FinalOutlinePass {
     private var workingPool: CVPixelBufferPool?
     private var fullOutlinePool: CVPixelBufferPool?
 
+    private let colorPopGrade: ColorPopGrade?
+
+    init(colorPopStrength: Double = 0) {
+        self.colorPopGrade = colorPopStrength > 0 ? ColorPopGrade(strength: colorPopStrength) : nil
+    }
+
     // Use a slightly higher-resolution style map so the Sharpie line expands less
     // when returned to 4K. Keep the blend strength unchanged so the line stays bold.
     private let enhancedWeight: CGFloat = 0.82
@@ -260,7 +266,9 @@ final class FinalOutlinePass {
             guard VTPixelTransferSessionCreate(allocator: kCFAllocatorDefault, pixelTransferSessionOut: &session) == noErr, let session else { throw ProcessorError.conversionFailed("could not create final polish pixel transfer session") }
             transferSession = session
         }
-        guard let transferSession, VTPixelTransferSessionTransferImage(transferSession, from: source, to: destination) == noErr else { throw ProcessorError.conversionFailed("final polish BGRA→P010 conversion failed") }
+        let finalFrame: CVPixelBuffer
+        if let colorPopGrade { finalFrame = try colorPopGrade.apply(source) } else { finalFrame = source }
+        guard let transferSession, VTPixelTransferSessionTransferImage(transferSession, from: finalFrame, to: destination) == noErr else { throw ProcessorError.conversionFailed("final polish BGRA→P010 conversion failed") }
         guard adaptor.append(destination, withPresentationTime: time) else {
             let detail = writer.error?.localizedDescription ?? "writer status \(writer.status.rawValue)"
             let free = availableDiskSpaceBytes(at: writer.outputURL)

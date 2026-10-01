@@ -36,7 +36,10 @@ final class RIFEVideoProcessor {
     private let config: ProcessorConfiguration
     private var transferSession: VTPixelTransferSession?
 
-    init(configuration: ProcessorConfiguration) {
+    private let colorPopGrade: ColorPopGrade?
+
+    init(configuration: ProcessorConfiguration, colorPopStrength: Double = 0) {
+        self.colorPopGrade = colorPopStrength > 0 ? ColorPopGrade(strength: colorPopStrength) : nil
         self.config = configuration
     }
 
@@ -352,7 +355,9 @@ final class RIFEVideoProcessor {
             throw ProcessorError.conversionFailed("pixel transfer session unavailable")
         }
 
-        let transferStatus = VTPixelTransferSessionTransferImage(transferSession, from: source, to: destination)
+        let finalFrame: CVPixelBuffer
+        if let colorPopGrade { finalFrame = try colorPopGrade.apply(source) } else { finalFrame = source }
+        let transferStatus = VTPixelTransferSessionTransferImage(transferSession, from: finalFrame, to: destination)
         guard transferStatus == noErr else {
             throw ProcessorError.conversionFailed("BGRA→P010 conversion failed (\(transferStatus))")
         }

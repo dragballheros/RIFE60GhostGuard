@@ -28,7 +28,12 @@ final class RealCUGANPass {
     private let ciContext = CIContext(options: [.cacheIntermediates: false])
     private let colorSpace = CGColorSpaceCreateDeviceRGB()
 
-    init(intensity: Double = 1.30) { self.intensity = intensity }
+    private let colorPopGrade: ColorPopGrade?
+
+    init(intensity: Double = 1.30, colorPopStrength: Double = 0) {
+        self.intensity = intensity
+        self.colorPopGrade = colorPopStrength > 0 ? ColorPopGrade(strength: colorPopStrength) : nil
+    }
 
     func run(
         sourceURL: URL,
@@ -374,8 +379,10 @@ final class RealCUGANPass {
             }
             outputTransferSession = session
         }
+        let finalFrame: CVPixelBuffer
+        if let colorPopGrade { finalFrame = try colorPopGrade.apply(source) } else { finalFrame = source }
         guard let outputTransferSession,
-              VTPixelTransferSessionTransferImage(outputTransferSession, from: source, to: destination) == noErr else {
+              VTPixelTransferSessionTransferImage(outputTransferSession, from: finalFrame, to: destination) == noErr else {
             throw ProcessorError.conversionFailed("native 2x BGRA→P010 conversion failed")
         }
         guard adaptor.append(destination, withPresentationTime: time) else {
