@@ -44,7 +44,7 @@ struct WatermarkMaskEditor: View {
                             draft = nil
                         }
                     }
-                    .frame(maxWidth: .infinity).frame(height: 420)
+                    .frame(maxWidth: .infinity).frame(minHeight: 180, maxHeight: .infinity).layoutPriority(1)
                     Picker("Tool", selection: $erase) {
                         Text("Brush").tag(false)
                         Text("Eraser").tag(true)
@@ -144,7 +144,7 @@ private struct WatermarkBrushCanvas: UIViewRepresentable {
     }
     func updateUIView(_ view: BrushScrollView, context: Context) {
         view.canvas.image = image
-        view.canvas.mask = mask
+        view.canvas.brushMask = mask
         view.canvas.showMask = showMask
         view.canvas.changed = changed
         view.canvas.setNeedsDisplay()
@@ -174,7 +174,7 @@ private final class BrushScrollView: UIScrollView {
 
 private final class BrushDrawingView: UIView {
     var image: UIImage?
-    var mask = WatermarkBrushMask()
+    var brushMask = WatermarkBrushMask()
     var showMask = true
     var changed: ((WatermarkBrushPoint?, Bool) -> Void)?
     override init(frame: CGRect) {
@@ -197,7 +197,11 @@ private final class BrushDrawingView: UIView {
     }
     @objc private func paint(_ gesture: UIPanGestureRecognizer) {
         switch gesture.state {
-        case .began, .changed: changed?(point(gesture.location(in: self)), false)
+        case .began:
+            let location = gesture.location(in: self), translation = gesture.translation(in: self)
+            changed?(point(CGPoint(x: location.x - translation.x, y: location.y - translation.y)), false)
+            changed?(point(location), false)
+        case .changed: changed?(point(gesture.location(in: self)), false)
         case .ended: changed?(point(gesture.location(in: self)), true)
         case .cancelled, .failed: changed?(nil, true)
         default: break
@@ -211,10 +215,10 @@ private final class BrushDrawingView: UIView {
         context.setAlpha(0.45)
         context.beginTransparencyLayer(auxiliaryInfo: nil)
         context.setFillColor(UIColor.red.cgColor)
-        for box in mask.rectangles {
+        for box in brushMask.rectangles {
             context.fill(CGRect(x: box.x * bounds.width, y: box.y * bounds.height, width: box.width * bounds.width, height: box.height * bounds.height))
         }
-        for stroke in mask.strokes {
+        for stroke in brushMask.strokes {
             context.saveGState()
             context.setBlendMode(stroke.erase ? .clear : .normal)
             context.setFillColor(UIColor.red.cgColor)
