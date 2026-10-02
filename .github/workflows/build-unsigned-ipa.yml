@@ -257,6 +257,13 @@ jobs:
           swiftc -swift-version 5 -I /tmp/adaptive-rife-check -L /tmp/adaptive-rife-check -lRifeMetal TiledHQInterpolator.swift RIFEBandPlan.swift /tmp/adaptive-rife-check/main.swift -o /tmp/adaptive-rife-check/check
           DYLD_LIBRARY_PATH=/tmp/adaptive-rife-check /tmp/adaptive-rife-check/check
 
+      - name: Verify persistent mixed media queue and strict serial scheduling
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/batch-media-check
+          swiftc -swift-version 5 -parse-as-library WatermarkConfiguration.swift WatermarkBrushMask.swift BatchMediaQueue.swift Scripts/check_batch_media.swift -o /tmp/batch-media-check/check
+          /tmp/batch-media-check/check
+
       - name: Generate Xcode project
         run: xcodegen generate
       - name: Resolve packages

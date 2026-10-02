@@ -35,18 +35,6 @@ struct PickedImage: Transferable {
     }
 }
 
-enum InputMediaKind: Sendable {
-    case video
-    case image
-
-    static func detect(for url: URL) -> InputMediaKind {
-        if let type = UTType(filenameExtension: url.pathExtension.lowercased()), type.conforms(to: .image) {
-            return .image
-        }
-        return .video
-    }
-}
-
 @MainActor
 final class VideoProcessorViewModel: ObservableObject {
     @Published var inputURL: URL?
@@ -66,7 +54,7 @@ final class VideoProcessorViewModel: ObservableObject {
     @Published var compressionProtection = true
     @Published var outlineProtection = true
     @Published var watermarkRemovalEnabled = false
-    @Published var watermarkRegions: [WatermarkRegion] = []
+    @Published var watermarkRegions: [WatermarkRegion] = [] { didSet { saveSelectedMask() } }
     @Published var watermarkPaddingPixels = 1.0
     @Published var colorPopEnabled = true
     @Published var colorPopStrength = 1.0
@@ -90,6 +78,28 @@ final class VideoProcessorViewModel: ObservableObject {
     @Published var diagnosticsCopyStatus = ""
     @Published var exportFolderName = "On My iPhone > RIFE 60 Ghost Guard > Exports"
 
+    @Published var mediaQueue: BatchMediaManifest?
+    @Published var selectedMediaID: UUID?
+    @Published var isBatchProcessing = false
+    @Published var batchStatusText = ""
+    private var batchCancelRequested = false
+    private var loadingQueueSelection = false
+    private let batchStore = BatchMediaQueueStore()
+    var isBusy: Bool { isProcessing || isBatchProcessing }
+    var queueLocked: Bool {
+        isBusy || recoveryAvailable || (mediaQueue?.settingsKey != nil && mediaQueue?.nextItemID != nil)
+    }
+    var selectedQueueItem: BatchMediaItem? { mediaQueue?.items.first { $0.id == selectedMediaID } }
+    var queueHasRemaining: Bool { mediaQueue?.nextItemID != nil }
+    var batchProgress: Double {
+        guard let queue = mediaQueue, !queue.items.isEmpty else { return progress }
+        let complete = queue.items.filter { $0.state == .completed }.count
+        let active = isBatchProcessing && selectedQueueItem?.state == .processing ? min(max(progress, 0), 1) : 0
+        return min(1, (Double(complete) + active) / Double(queue.items.count))
+    }
+    private var effectiveWatermarkEnabled: Bool { watermarkRemovalEnabled && (selectedQueueItem?.removeWatermark ?? true) }
+
+    private var renderGeneration = UUID()
     private var currentTask: Task<Void, Never>?
     private var blackScreenTask: Task<Void, Never>?
     private var savedBrightness: CGFloat?
@@ -116,70 +126,53 @@ final class VideoProcessorViewModel: ObservableObject {
         } else {
             DiagnosticsLogger.shared.log("App launched.")
         }
+        restoreMediaQueue()
     }
 
-    func handleImport(_ result: Result<[URL], Error>) {
-        isImporting = true
-        importProgress = 0
+    func handleImport(_ result: Result<[URL], Error>) async {
+        guard !isBusy, !isImporting, !isBenchmarking else { return }
+        isImporting = true; importProgress = 0
         defer { isImporting = false; importProgress = nil }
         do {
-            guard let url = try result.get().first else { return }
-            importProgress = 0.5
-            RecoveryStore.discardCurrent()
-            recoveryAvailable = false
-            recoveryStatusText = ""
-            inputKind = InputMediaKind.detect(for: url)
-            inputURL = url
-            watermarkRegions = []
-            outputURL = nil
-            errorText = nil
-            saveStatusText = ""
-            importProgress = 1.0
-            DiagnosticsLogger.shared.log("Selected \(inputKind == .image ? "image" : "video") from Files: \(url.lastPathComponent)")
+            let urls = try result.get()
+            guard !urls.isEmpty else { return }
+            try await replaceMediaQueue(with: urls)
         } catch {
             errorText = error.localizedDescription
             DiagnosticsLogger.shared.log("Files import failed: \(error.localizedDescription)")
         }
     }
 
-    func handlePhotoSelection(_ item: PhotosPickerItem) async {
-        isImporting = true
-        importProgress = nil
+    func handlePhotoSelections(_ items: [PhotosPickerItem]) async {
+        guard !items.isEmpty, !isBusy, !isImporting, !isBenchmarking else { return }
+        isImporting = true; importProgress = 0
+        var imported: [URL] = []
+        defer {
+            for url in imported { try? FileManager.default.removeItem(at: url) }
+            isImporting = false; importProgress = nil
+        }
         do {
-            statusText = "Importing from Photos…"
-            let types = item.supportedContentTypes
-            let isVideo = types.contains { $0.conforms(to: .movie) || $0.conforms(to: .video) }
-            let isImage = !isVideo && types.contains { $0.conforms(to: .image) }
-            let importedURL: URL
-            if isImage {
-                guard let picked = try await item.loadTransferable(type: PickedImage.self) else {
-                    throw NSError(domain: "RIFE60GhostGuard", code: 2, userInfo: [NSLocalizedDescriptionKey: "The selected Photos image could not be loaded."])
+            for (index, item) in items.enumerated() {
+                statusText = "Importing Photos item \(index + 1) of \(items.count)…"
+                let isVideo = item.supportedContentTypes.contains { $0.conforms(to: .movie) || $0.conforms(to: .video) }
+                if !isVideo && item.supportedContentTypes.contains(where: { $0.conforms(to: .image) }) {
+                    guard let picked = try await item.loadTransferable(type: PickedImage.self) else {
+                        throw ProcessorError.conversionFailed("Photos image \(index + 1) could not be loaded")
+                    }
+                    imported.append(picked.url)
+                } else {
+                    guard let picked = try await item.loadTransferable(type: PickedVideo.self) else {
+                        throw ProcessorError.conversionFailed("Photos video \(index + 1) could not be loaded")
+                    }
+                    imported.append(picked.url)
                 }
-                importedURL = picked.url
-            } else {
-                guard let picked = try await item.loadTransferable(type: PickedVideo.self) else {
-                    throw NSError(domain: "RIFE60GhostGuard", code: 1, userInfo: [NSLocalizedDescriptionKey: "The selected Photos video could not be loaded."])
-                }
-                importedURL = picked.url
+                importProgress = Double(index + 1) / Double(items.count) * 0.5
             }
-            RecoveryStore.discardCurrent()
-            recoveryAvailable = false
-            recoveryStatusText = ""
-            inputKind = isImage ? .image : .video
-            inputURL = importedURL
-            watermarkRegions = []
-            outputURL = nil
-            errorText = nil
-            saveStatusText = ""
-            statusText = "Import complete"
-            DiagnosticsLogger.shared.log("Selected \(isImage ? "image" : "video") from Photos: \(importedURL.lastPathComponent)")
+            try await replaceMediaQueue(with: imported)
         } catch {
             errorText = error.localizedDescription
-            statusText = ""
             DiagnosticsLogger.shared.log("Photos import failed: \(error.localizedDescription)")
         }
-        isImporting = false
-        importProgress = nil
     }
 
     func handleExportFolderSelection(_ result: Result<[URL], Error>) {
@@ -205,7 +198,7 @@ final class VideoProcessorViewModel: ObservableObject {
     }
 
     func benchmarkModels() {
-        guard !isProcessing, !isBenchmarking, !isImporting else { return }
+        guard !isBusy, !isBenchmarking, !isImporting else { return }
         isBenchmarking = true
         benchmarkProgress = 0
         benchmarkStatus = "Preparing model benchmark… Keep the app open."
@@ -237,10 +230,12 @@ final class VideoProcessorViewModel: ObservableObject {
 
     func cancelBenchmark() { benchmarkTask?.cancel() }
 
-    func cancel() { currentTask?.cancel() }
+    func cancel() { batchCancelRequested = true; currentTask?.cancel() }
 
     func clearRecoveryData() {
-        guard !isProcessing else { return }
+        guard !isBusy else { return }
+        do { try batchStore.discard(); mediaQueue = nil; selectedMediaID = nil; batchStatusText = "" }
+        catch { errorText = error.localizedDescription; return }
         DiagnosticsLogger.shared.log("User chose Clear Recovery Data. Discarding recovery source and all checkpoints.")
         RecoveryStore.discardCurrent()
         recoveryAvailable = false
@@ -310,18 +305,16 @@ final class VideoProcessorViewModel: ObservableObject {
         }
     }
 
-    func start() async {
-        guard let source = inputURL, !isProcessing, !isBenchmarking else { return }
-        let watermark = WatermarkConfiguration(enabled: watermarkRemovalEnabled, regions: watermarkRegions, paddingPixels: Int(watermarkPaddingPixels))
+    private func startSingle() async -> Task<Void, Never>? {
+        guard let source = inputURL, !isProcessing, !isBenchmarking else { return nil }
+        let watermark = WatermarkConfiguration(enabled: effectiveWatermarkEnabled, regions: watermarkRegions, paddingPixels: Int(watermarkPaddingPixels))
         guard watermark.isValid else {
             errorText = "Mark at least one watermark region before starting removal."
-            return
+            return nil
         }
-        if inputKind == .image {
-            await startImage(source: source)
-            return
-        }
+        if inputKind == .image { return await startImage(source: source) }
         let resumingExistingJob = recoveryAvailable
+        let generation = UUID(); renderGeneration = generation
         resumeBaseProgress = nil
         isProcessing = true
         processingScreenAwake = false
@@ -389,7 +382,7 @@ final class VideoProcessorViewModel: ObservableObject {
                     let generated = try await processor.process(sourceURL: job.sourceURL, recoveryDirectory: job.directory, progress: { p, message in
                         RecoveryStore.update(progress: p, message: message)
                         Task { @MainActor [weak self] in
-                            guard let self else { return }
+                            guard let self, self.renderGeneration == generation, self.isProcessing else { return }
                             self.progress = p
                             self.recoveryAvailable = true
                             self.recoveryStatusText = "Crash-safe checkpoints active • \(String(format: "%.1f", p * 100))%"
@@ -398,7 +391,10 @@ final class VideoProcessorViewModel: ObservableObject {
                             self.statusText = message
                             self.updateClock(progress: p)
                         }
-                    }, telemetry: { sample in Task { @MainActor [weak self] in self?.telemetry = sample } })
+                    }, telemetry: { sample in Task { @MainActor [weak self] in
+                        guard let self, self.renderGeneration == generation, self.isProcessing else { return }
+                        self.telemetry = sample
+                    } })
                     try Task.checkCancellation()
                     result = try self.persistDeliveryCheckpoint(from: generated, in: job.directory)
                     RecoveryStore.update(progress: 0.97, message: "High-quality master checkpointed • ready for final size/export", force: true)
@@ -428,6 +424,7 @@ final class VideoProcessorViewModel: ObservableObject {
                 await MainActor.run { [weak self] in guard let self else { return }; self.errorText = error.localizedDescription; self.statusText = "Failed • recovery data kept"; self.recoveryAvailable = RecoveryStore.existingJob() != nil; self.recoveryStatusText = self.recoveryAvailable ? "Resume available from the last completed checkpoint" : ""; self.isProcessing = false; self.currentTask = nil; self.blackScreenTask?.cancel(); self.processingScreenAwake = true; self.restoreDisplayState() }
             }
         }
+        return currentTask
     }
 
     private func applyRecoveredSettings(from key: String) {
@@ -467,7 +464,8 @@ final class VideoProcessorViewModel: ObservableObject {
 
     // MARK: - Still images (RIFE is skipped entirely)
 
-    private func startImage(source: URL) async {
+    private func startImage(source: URL) async -> Task<Void, Never>? {
+        let generation = UUID(); renderGeneration = generation
         isProcessing = true
         processingScreenAwake = false
         progress = 0
@@ -490,7 +488,7 @@ final class VideoProcessorViewModel: ObservableObject {
         let upscale = upscaleTo4K
         let colorPop = colorPopEnabled
         let gradeStrength = colorPopStrength
-        let watermark = WatermarkConfiguration(enabled: watermarkRemovalEnabled, regions: watermarkRegions, paddingPixels: Int(watermarkPaddingPixels))
+        let watermark = WatermarkConfiguration(enabled: effectiveWatermarkEnabled, regions: watermarkRegions, paddingPixels: Int(watermarkPaddingPixels))
         DiagnosticsLogger.shared.log("Image render requested • RIFE skipped • compression=\(compressionEnabled) • cugan2x=\(upscale) • outline=\(outlineEnabled)")
 
         currentTask = Task.detached(priority: .userInitiated) { [weak self] in
@@ -500,7 +498,7 @@ final class VideoProcessorViewModel: ObservableObject {
                 let processor = ImageStillProcessor(compressionProtection: compressionEnabled, outlineProtection: outlineEnabled, upscale2x: upscale, colorPopEnabled: colorPop, colorPopStrength: gradeStrength, watermark: watermark)
                 let generated = try await processor.process(sourceURL: source, progress: { p, message in
                     Task { @MainActor [weak self] in
-                        guard let self, self.isProcessing else { return }
+                        guard let self, self.isProcessing, self.renderGeneration == generation else { return }
                         self.progress = p
                         self.statusText = message
                         self.updateClock(progress: p)
@@ -528,6 +526,7 @@ final class VideoProcessorViewModel: ObservableObject {
                 await MainActor.run { [weak self] in guard let self else { return }; self.errorText = error.localizedDescription; self.statusText = "Failed"; self.isProcessing = false; self.currentTask = nil; self.blackScreenTask?.cancel(); self.processingScreenAwake = true; self.restoreDisplayState() }
             }
         }
+        return currentTask
     }
 
     private func saveFinishedImage(_ source: URL, notes: [String]) async throws -> SavedResult {
@@ -789,4 +788,162 @@ final class VideoProcessorViewModel: ObservableObject {
     private func refreshExportFolderName() {
         if let url = resolveSelectedExportFolder() { exportFolderName = url.lastPathComponent }
     }
+    // MARK: - Persistent serial media queue
+
+    private func restoreMediaQueue() {
+        do {
+            guard let queue = try batchStore.load() else { return }
+            mediaQueue = queue
+            if let settings = queue.settingsKey { applyRecoveredSettings(from: settings) }
+            if let id = queue.nextItemID ?? queue.items.last?.id {
+                activateQueueItem(id)
+                if queue.nextItemID != nil {
+                    batchStatusText = "Queue restored • \(queue.items.filter { $0.state != .completed }.count) remaining"
+                } else { batchStatusText = "Batch complete" }
+            }
+        } catch {
+            errorText = "Could not restore media queue: " + error.localizedDescription
+            DiagnosticsLogger.shared.log(errorText ?? "Queue restore failed")
+        }
+    }
+
+    private func replaceMediaQueue(with urls: [URL]) async throws {
+        let store = batchStore
+        let staged = try await Task.detached(priority: .userInitiated) { [weak self] in
+            try store.stage(urls) { fraction in
+                Task { @MainActor [weak self] in self?.importProgress = 0.5 + fraction * 0.5 }
+            }
+        }.value
+        do { try store.save(staged) }
+        catch { store.removeInputs(staged); throw error }
+        if let old = mediaQueue { store.removeInputs(old) }
+        RecoveryStore.discardCurrent()
+        recoveryAvailable = false; recoveryStatusText = ""
+        mediaQueue = staged
+        errorText = nil; saveStatusText = ""; outputURL = nil
+        if let first = staged.items.first { activateQueueItem(first.id) }
+        statusText = "Import complete"
+        batchStatusText = "\(staged.items.count) media item(s) ready • sequential processing"
+        DiagnosticsLogger.shared.log("Media queue imported • count=\(staged.items.count) • ordered, one render at a time")
+    }
+
+    private func activateQueueItem(_ id: UUID) {
+        guard let queue = mediaQueue, let item = queue.items.first(where: { $0.id == id }) else { return }
+        loadingQueueSelection = true
+        selectedMediaID = id
+        inputKind = item.kind
+        inputURL = batchStore.sourceURL(for: item, in: queue)
+        watermarkRegions = item.masks
+        loadingQueueSelection = false
+        if recoveryAvailable, item.kind == .video, id == queue.nextItemID, let job = RecoveryStore.existingJob() {
+            inputURL = job.sourceURL
+            progress = job.manifest.progress
+        } else { progress = item.state == .completed ? 1 : 0 }
+        outputURL = item.outputURL
+    }
+
+    func selectQueueItem(_ id: UUID) {
+        guard !queueLocked, !isImporting else { return }
+        activateQueueItem(id)
+    }
+
+    private func saveSelectedMask() {
+        guard !loadingQueueSelection, !queueLocked, let id = selectedMediaID,
+              var queue = mediaQueue, let index = queue.items.firstIndex(where: { $0.id == id }) else { return }
+        queue.items[index].masks = watermarkRegions
+        do { try batchStore.save(queue); mediaQueue = queue }
+        catch { errorText = "Could not save mask: " + error.localizedDescription }
+    }
+
+    func setSelectedWatermarkRemoval(_ enabled: Bool) {
+        guard !queueLocked, var queue = mediaQueue, let index = queue.items.firstIndex(where: { $0.id == selectedMediaID }) else { return }
+        queue.items[index].removeWatermark = enabled
+        do { try batchStore.save(queue); mediaQueue = queue }
+        catch { errorText = error.localizedDescription }
+    }
+
+    func copyMaskToOtherMedia() {
+        guard !queueLocked, !watermarkRegions.isEmpty, var queue = mediaQueue else { return }
+        for index in queue.items.indices where queue.items[index].id != selectedMediaID && queue.items[index].state != .completed {
+            queue.items[index].masks = watermarkRegions
+        }
+        do { try batchStore.save(queue); mediaQueue = queue; batchStatusText = "Mask copied • review it on every other media item" }
+        catch { errorText = error.localizedDescription }
+    }
+
+    func moveQueueItem(_ id: UUID, by offset: Int) {
+        guard !queueLocked, var queue = mediaQueue, let index = queue.items.firstIndex(where: { $0.id == id }) else { return }
+        let next = index + offset
+        guard queue.items.indices.contains(next) else { return }
+        queue.items.swapAt(index, next)
+        do { try batchStore.save(queue); mediaQueue = queue }
+        catch { errorText = error.localizedDescription }
+    }
+
+    func clearMediaQueue() { clearRecoveryData() }
+
+    func start() async {
+        guard !isBusy, !isBenchmarking, !isImporting else { return }
+        guard var queue = mediaQueue else { _ = await startSingle(); return }
+        guard queue.nextItemID != nil else { return }
+        if watermarkRemovalEnabled {
+            if let index = queue.items.firstIndex(where: { $0.state != .completed && $0.removeWatermark &&
+                !WatermarkConfiguration(enabled: true, regions: $0.masks).isValid }) {
+                activateQueueItem(queue.items[index].id)
+                errorText = "Paint a watermark mask for item \(index + 1), or turn off removal for that item."
+                return
+            }
+        }
+        if queue.settingsKey == nil { queue.settingsKey = batchSettingsKey() }
+        do { try batchStore.save(queue); mediaQueue = queue }
+        catch { errorText = error.localizedDescription; return }
+        batchCancelRequested = false
+        isBatchProcessing = true
+        defer { isBatchProcessing = false }
+        let ids = queue.items.filter { $0.state != .completed }.map(\.id)
+        do {
+            try await BatchSerialRunner.run(ids: ids, shouldStop: { self.batchCancelRequested }) { id in
+                guard var current = self.mediaQueue, let index = current.items.firstIndex(where: { $0.id == id }) else { throw CancellationError() }
+                self.activateQueueItem(id)
+                current.items[index].state = .processing
+                try self.batchStore.save(current); self.mediaQueue = current
+                self.batchStatusText = "Processing item \(index + 1) of \(current.items.count) • \(current.items[index].kind.rawValue)"
+                DiagnosticsLogger.shared.log("Batch item begin • \(index + 1)/\(current.items.count) • \(current.items[index].displayName)")
+                let render = await self.startSingle()
+                if self.batchCancelRequested { render?.cancel() }
+                if let render { await render.value }
+                guard var updated = self.mediaQueue else { throw CancellationError() }
+                if self.progress == 1, let output = self.outputURL, self.errorText == nil {
+                    updated.items[index].state = .completed
+                    updated.items[index].outputURL = output
+                    try self.batchStore.save(updated); self.mediaQueue = updated
+                    DiagnosticsLogger.shared.log("Batch item saved • \(index + 1)/\(updated.items.count) • \(output.lastPathComponent)")
+                } else {
+                    updated.items[index].state = self.batchCancelRequested ? .pending : .failed
+                    try self.batchStore.save(updated); self.mediaQueue = updated
+                    if self.batchCancelRequested { throw CancellationError() }
+                    throw ProcessorError.conversionFailed(self.errorText ?? "The media item did not finish; the queue has been paused")
+                }
+            }
+            batchStatusText = "Batch complete • \(queue.items.count) saved"
+            statusText = "Finished"
+        } catch is CancellationError {
+            batchStatusText = "Queue paused • completed outputs saved; remaining items retained"
+        } catch {
+            batchStatusText = "Queue paused at this item • remaining items retained"
+            errorText = error.localizedDescription
+        }
+    }
+
+    private func batchSettingsKey() -> String {
+        let guardEnabled = ghostProtection, cuts = sceneCutProtection
+        let compressionEnabled = compressionProtection, outlineEnabled = outlineProtection
+        let colorPop = colorPopEnabled, gradeStrength = colorPopStrength
+        let sensitivity = ghostSensitivity, audio = preserveAudio, upscale = upscaleTo4K
+        let upscaleBeforeRIFE = upscaleFirst && upscale, modelCompute = computePreference.rawValue
+        let watermark = WatermarkConfiguration(enabled: watermarkRemovalEnabled, regions: watermarkRegions, paddingPixels: Int(watermarkPaddingPixels))
+        return ["pipeline-v3-final-size", "hq", "ghost=\(guardEnabled)", "cuts=\(cuts)", "compression=\(compressionEnabled)", "outline=\(outlineEnabled)", "colorpop=\(colorPop)", "colorpopStrength=\(gradeStrength)", "watermark=\(watermark.enabled)", "watermarkMasks=\(watermark.serializedRegions)", "watermarkPadding=\(watermark.paddingPixels)", "watermarkModel=\(WatermarkConfiguration.modelID)", String(format: "sensitivity=%.2f", sensitivity), "audio=\(audio)", "upscale=\(upscale)", "upscaleFirst=\(upscaleBeforeRIFE)", "computeUnits=\(modelCompute)", "fps=60"].joined(separator: "|")
+    }
+
 }
+
