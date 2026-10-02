@@ -29,6 +29,9 @@ final class RealCUGANPass {
     private let colorSpace = CGColorSpaceCreateDeviceRGB()
 
     private let colorPopGrade: ColorPopGrade?
+    private var renderInSeconds = 0.0
+    private var predictionSeconds = 0.0
+    private var stitchSeconds = 0.0
 
     init(intensity: Double = 1.30, colorPopStrength: Double = 0) {
         self.intensity = intensity
@@ -45,6 +48,8 @@ final class RealCUGANPass {
         guard let track = try await asset.loadTracks(withMediaType: .video).first else { throw ProcessorError.missingVideoTrack }
         let duration = try await asset.load(.duration)
         let seconds = max(CMTimeGetSeconds(duration), 0.001)
+        let sourceFPS = Double(try await track.load(.nominalFrameRate))
+        let estimatedFrameRate = sourceFPS.isFinite && sourceFPS > 0 ? sourceFPS : 60
         let naturalSize = try await track.load(.naturalSize)
         let transform = try await track.load(.preferredTransform)
         let width = Int(abs(naturalSize.width).rounded())
@@ -164,6 +169,7 @@ final class RealCUGANPass {
             frames += 1
 
             if frames == 1 || frames % 20 == 0 {
+                DiagnosticsLogger.shared.log(String(format: "Real-CUGAN breakdown (running averages) • frame=%d • render-in=%.1fms • prediction=%.1fms • stitch=%.1fms • convert+append/backpressure=%.1fms", frames, renderInSeconds * 1000 / Double(frames), predictionSeconds * 1000 / Double(frames), stitchSeconds * 1000 / Double(frames), encodeSeconds * 1000 / Double(frames)))
                 let memory = currentRenderPerformanceSnapshot()
                 DiagnosticsLogger.shared.log("Real-CUGAN frame \(frames) complete • \(tilesPerFrame) tiles/frame • inference=\(String(format: "%.1f", inferenceSeconds * 1000.0 / Double(frames)))ms/frame • headroom=\(Int(memory.availableMemoryMB.rounded())) MB • thermal=\(memory.thermalAndMode)")
             }
@@ -182,7 +188,7 @@ final class RealCUGANPass {
 
                 let frac = min(max(CMTimeGetSeconds(pts) / seconds, 0), 1)
                 let fps = Double(frames) / elapsed
-                let remaining = fps > 0 ? (seconds * 60.0 - Double(frames)) / fps : 0
+                let remaining = fps > 0 ? (seconds * estimatedFrameRate - Double(frames)) / fps : 0
                 progress(frac, "Pass 3/3 • Real-CUGAN native 2× • \(frames) frames • ETA \(formatDuration(remaining))")
                 await Task.yield()
             }
@@ -223,7 +229,7 @@ final class RealCUGANPass {
             throw ProcessorError.conversionFailed("Bundled tiled Real-CUGAN model is missing: \(name)")
         }
         let configuration = MLModelConfiguration()
-        configuration.computeUnits = .all
+        configuration.computeUnits = ModelComputePreference.current.units
         configuration.allowLowPrecisionAccumulationOnGPU = true
         return try MLModel(contentsOf: url, configuration: configuration)
     }
@@ -303,18 +309,24 @@ final class RealCUGANPass {
                 let tileImage = sourceImage
                     .cropped(to: inputRect)
                     .transformed(by: CGAffineTransform(translationX: -inputRect.origin.x, y: -inputRect.origin.y))
+                let renderStart = CFAbsoluteTimeGetCurrent()
                 ciContext.render(tileImage, to: tileBuffer, bounds: CGRect(x: 0, y: 0, width: profile.width, height: profile.height), colorSpace: colorSpace)
+
+                renderInSeconds += CFAbsoluteTimeGetCurrent() - renderStart
 
                 try autoreleasepool {
                     let provider = try MLDictionaryFeatureProvider(dictionary: [
                         "image": MLFeatureValue(pixelBuffer: tileBuffer),
                         "alpha": MLFeatureValue(multiArray: alpha)
                     ])
+                    let predictionStart = CFAbsoluteTimeGetCurrent()
                     let prediction = try model.prediction(from: provider)
+                    predictionSeconds += CFAbsoluteTimeGetCurrent() - predictionStart
                     guard let modelOutput = prediction.featureValue(for: "output")?.imageBufferValue else {
                         throw ProcessorError.conversionFailed("Real-CUGAN tile did not return an image buffer")
                     }
 
+                    let stitchStart = CFAbsoluteTimeGetCurrent()
                     let outputImage = CIImage(cvPixelBuffer: modelOutput)
                     let cropOrigin = profile.overlap * 2
                     let cropRect = CGRect(x: cropOrigin, y: cropOrigin, width: coreWidth * 2, height: coreHeight * 2)
@@ -326,6 +338,7 @@ final class RealCUGANPass {
                             y: destinationRect.origin.y - cropRect.origin.y
                         ))
                     ciContext.render(translated, to: stitched, bounds: destinationRect, colorSpace: colorSpace)
+                    stitchSeconds += CFAbsoluteTimeGetCurrent() - stitchStart
                 }
 
                 if frameNumber == 1 && (tileIndex == 1 || tileIndex == totalTiles) {
@@ -351,7 +364,7 @@ final class RealCUGANPass {
         } else {
             cleanupInterval = 8
         }
-        if frameNumber % cleanupInterval == 0 {
+        if memory.tier != .performance && frameNumber % cleanupInterval == 0 {
             CVPixelBufferPoolFlush(tileInputPool, .excessBuffers)
             CVPixelBufferPoolFlush(stitchedFramePool, .excessBuffers)
             ciContext.clearCaches()

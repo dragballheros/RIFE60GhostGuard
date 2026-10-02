@@ -237,6 +237,14 @@ jobs:
           swiftc -swift-version 5 WatermarkConfiguration.swift AnimeWatermarkRemover.swift /tmp/anime-inpaint-check/main.swift -o /tmp/anime-inpaint-check/check
           /tmp/anime-inpaint-check/check CompiledModels/AnimeWatermarkLaMa512.mlmodelc
 
+      - name: Verify speed options and checkpoint planning
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/speed-options-check
+          cp Scripts/check_speed_options.swift /tmp/speed-options-check/main.swift
+          swiftc -swift-version 5 ModelComputePreference.swift UpscaleFirstPlan.swift /tmp/speed-options-check/main.swift -o /tmp/speed-options-check/check
+          /tmp/speed-options-check/check
+
       - name: Generate Xcode project
         run: xcodegen generate
       - name: Resolve packages

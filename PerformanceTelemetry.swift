@@ -185,3 +185,13 @@ func adaptiveFrameBoundaryPacing(_ sampled: RenderPerformanceSnapshot? = nil) as
 func thermalFrameBoundaryPacing() async throws {
     try await adaptiveFrameBoundaryPacing()
 }
+
+/// Conservative admission budget, not a measured RIFE peak-memory prediction.
+/// Includes graph workspace plus a 700 MB safety reserve used by the governor.
+func requireUpscaleFirstMemory(width: Int, height: Int) throws {
+    let state = currentRenderPerformanceSnapshot()
+    let requiredMB = UpscaleFirstPlan.requiredMemoryMB(width: width, height: height)
+    guard UpscaleFirstPlan.admits(width: width, height: height, availableMB: state.availableMemoryMB, performance: state.tier == .performance) else {
+        throw ProcessorError.conversionFailed("Upscale before interpolation refused: \(width)×\(height) RIFE needs conservative headroom of \(Int(requiredMB.rounded(.up))) MB; available \(Int(state.availableMemoryMB)) MB (\(state.modeLabel)). Cool the device and close other apps, or clear recovery and turn off Upscale before interpolation. Completed checkpoints are retained.")
+    }
+}

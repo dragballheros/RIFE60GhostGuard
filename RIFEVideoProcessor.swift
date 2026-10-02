@@ -37,8 +37,10 @@ final class RIFEVideoProcessor {
     private var transferSession: VTPixelTransferSession?
 
     private let colorPopGrade: ColorPopGrade?
+    private let guardUpscaleFirstMemory: Bool
 
-    init(configuration: ProcessorConfiguration, colorPopStrength: Double = 0) {
+    init(configuration: ProcessorConfiguration, colorPopStrength: Double = 0, guardUpscaleFirstMemory: Bool = false) {
+        self.guardUpscaleFirstMemory = guardUpscaleFirstMemory
         self.colorPopGrade = colorPopStrength > 0 ? ColorPopGrade(strength: colorPopStrength) : nil
         self.config = configuration
     }
@@ -133,6 +135,7 @@ final class RIFEVideoProcessor {
         let interpolator = try autoreleasepool {
             try RifeInterpolator(configuration: .bundled(qualityTier: config.quality))
         }
+        if guardUpscaleFirstMemory { try requireUpscaleFirstMemory(width: width, height: height) }
         let tiledHQ = try TiledHQInterpolator(
             interpolator: interpolator,
             width: width,
@@ -188,6 +191,9 @@ final class RIFEVideoProcessor {
         }
 
         while let sample = output.copyNextSampleBuffer() {
+            if guardUpscaleFirstMemory && currentRenderPerformanceSnapshot().tier == .safe {
+                throw ProcessorError.conversionFailed("Upscale-first RIFE stopped by the memory/thermal governor. Completed checkpoints are retained; cool the device and resume, or clear recovery and use the normal order.")
+            }
             try Task.checkCancellation()
             guard let decodedPB = CMSampleBufferGetImageBuffer(sample) else { continue }
             sourceFrames += 1

@@ -71,6 +71,13 @@ final class VideoProcessorViewModel: ObservableObject {
     @Published var colorPopEnabled = false
     @Published var colorPopStrength = 0.5
     @Published var upscaleTo4K = true
+    @Published var upscaleFirst = false
+    @Published var computePreference = ModelComputePreference.current { didSet { computePreference.persist() } }
+    @Published var isBenchmarking = false
+    @Published var benchmarkProgress: Double = 0
+    @Published var benchmarkStatus = ""
+    @Published var benchmarkReport = ""
+    private var benchmarkTask: Task<Void, Never>?
     @Published var ghostSensitivity = 1.0
     @Published var preserveAudio = true
     @Published var renderPowerMode = true
@@ -197,6 +204,39 @@ final class VideoProcessorViewModel: ObservableObject {
         saveStatusText = "Using the app's default Files export folder"
     }
 
+    func benchmarkModels() {
+        guard !isProcessing, !isBenchmarking, !isImporting else { return }
+        isBenchmarking = true
+        benchmarkProgress = 0
+        benchmarkStatus = "Preparing model benchmark… Keep the app open."
+        benchmarkReport = ""
+        benchmarkTask = Task.detached(priority: .userInitiated) { [weak self] in
+            do {
+                let report = try ModelBenchmark.run(progress: { fraction, message in
+                    Task { @MainActor [weak self] in
+                        self?.benchmarkProgress = fraction
+                        self?.benchmarkStatus = message
+                    }
+                })
+                await MainActor.run { [weak self] in
+                    self?.benchmarkReport = report
+                    self?.benchmarkStatus = "Benchmark complete • Copy Error Logs to share the table"
+                    self?.isBenchmarking = false
+                    self?.benchmarkTask = nil
+                }
+            } catch {
+                DiagnosticsLogger.shared.log("Benchmark stopped • \(error.localizedDescription)")
+                await MainActor.run { [weak self] in
+                    self?.benchmarkStatus = error is CancellationError ? "Benchmark cancelled" : error.localizedDescription
+                    self?.isBenchmarking = false
+                    self?.benchmarkTask = nil
+                }
+            }
+        }
+    }
+
+    func cancelBenchmark() { benchmarkTask?.cancel() }
+
     func cancel() { currentTask?.cancel() }
 
     func clearRecoveryData() {
@@ -271,7 +311,7 @@ final class VideoProcessorViewModel: ObservableObject {
     }
 
     func start() async {
-        guard let source = inputURL, !isProcessing else { return }
+        guard let source = inputURL, !isProcessing, !isBenchmarking else { return }
         let watermark = WatermarkConfiguration(enabled: watermarkRemovalEnabled, regions: watermarkRegions, paddingPixels: Int(watermarkPaddingPixels))
         guard watermark.isValid else {
             errorText = "Mark at least one watermark region before starting removal."
@@ -310,7 +350,9 @@ final class VideoProcessorViewModel: ObservableObject {
         let gradeStrength = colorPopStrength
         let audio = preserveAudio
         let upscale = upscaleTo4K
-        let configKey = ["pipeline-v3-final-size", "hq", "ghost=\(guardEnabled)", "cuts=\(cuts)", "compression=\(compressionEnabled)", "outline=\(outlineEnabled)", "colorpop=\(colorPop)", String(format: "colorpopStrength=%.2f", gradeStrength), "watermark=\(watermark.enabled)", "watermarkMasks=\(watermark.serializedRegions)", "watermarkPadding=\(watermark.paddingPixels)", "watermarkModel=\(WatermarkConfiguration.modelID)", String(format: "sensitivity=%.2f", sensitivity), "audio=\(audio)", "upscale=\(upscale)", "fps=60"].joined(separator: "|")
+        let upscaleBeforeRIFE = upscaleFirst && upscale
+        let modelCompute = computePreference.rawValue
+        let configKey = ["pipeline-v3-final-size", "hq", "ghost=\(guardEnabled)", "cuts=\(cuts)", "compression=\(compressionEnabled)", "outline=\(outlineEnabled)", "colorpop=\(colorPop)", String(format: "colorpopStrength=%.2f", gradeStrength), "watermark=\(watermark.enabled)", "watermarkMasks=\(watermark.serializedRegions)", "watermarkPadding=\(watermark.paddingPixels)", "watermarkModel=\(WatermarkConfiguration.modelID)", String(format: "sensitivity=%.2f", sensitivity), "audio=\(audio)", "upscale=\(upscale)", "upscaleFirst=\(upscaleBeforeRIFE)", "computeUnits=\(modelCompute)", "fps=60"].joined(separator: "|")
         DiagnosticsLogger.shared.log("Render requested • \(configKey)")
 
         currentTask = Task.detached(priority: .userInitiated) { [weak self] in
@@ -343,7 +385,7 @@ final class VideoProcessorViewModel: ObservableObject {
                     result = deliveryReady
                 } else {
                     let config = ProcessorConfiguration(quality: .hq, ghostProtection: guardEnabled, sceneCutProtection: cuts, compressionProtection: compressionEnabled, outlineProtection: outlineEnabled, ghostSensitivity: sensitivity, preserveAudio: audio, targetFPS: 60)
-                    let processor = TwoPassVideoProcessor(configuration: config, upscaleTo4K: upscale, colorPopEnabled: colorPop, colorPopStrength: gradeStrength, watermark: watermark)
+                    let processor = TwoPassVideoProcessor(configuration: config, upscaleTo4K: upscale, colorPopEnabled: colorPop, colorPopStrength: gradeStrength, watermark: watermark, upscaleFirst: upscaleBeforeRIFE)
                     let generated = try await processor.process(sourceURL: job.sourceURL, recoveryDirectory: job.directory, progress: { p, message in
                         RecoveryStore.update(progress: p, message: message)
                         Task { @MainActor [weak self] in
@@ -390,6 +432,8 @@ final class VideoProcessorViewModel: ObservableObject {
 
     private func applyRecoveredSettings(from key: String) {
         // Build 162 manifests predate Color Pop; missing fields mean the original look.
+        upscaleFirst = false
+        computePreference = .auto
         colorPopEnabled = false
         colorPopStrength = 0.5
         watermarkRemovalEnabled = false
@@ -412,6 +456,8 @@ final class VideoProcessorViewModel: ObservableObject {
             case "colorpopStrength":
                 if let value = Double(pair[1]), value.isFinite { colorPopStrength = min(max(value, 0), 1) }
             case "audio": preserveAudio = enabled
+            case "upscaleFirst": upscaleFirst = enabled
+            case "computeUnits": computePreference = ModelComputePreference(rawValue: pair[1]) ?? .auto
             case "upscale": upscaleTo4K = enabled
             case "sensitivity": if let value = Double(pair[1]) { ghostSensitivity = value }
             default: break

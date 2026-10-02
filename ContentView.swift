@@ -94,6 +94,15 @@ struct ContentView: View {
 
                     Section("2× Anime Upscale") {
                         Toggle("Real-CUGAN Native 2×", isOn: $vm.upscaleTo4K).disabled(vm.recoveryAvailable)
+                        Picker("Model compute units", selection: $vm.computePreference) {
+                            ForEach(ModelComputePreference.allCases) { option in Text(option.title).tag(option) }
+                        }.disabled(vm.recoveryAvailable || vm.isProcessing || vm.isBenchmarking)
+                        Text("Auto preserves the current Core ML policy. GPU may use more memory. GPU and Neural Engine modes both allow CPU fallback; benchmark first.").font(.caption).foregroundStyle(.secondary)
+                        if vm.inputKind == .video {
+                            Toggle("Upscale before interpolation (faster)", isOn: $vm.upscaleFirst)
+                                .disabled(vm.recoveryAvailable || vm.isProcessing || vm.isBenchmarking || !vm.upscaleTo4K)
+                            Text("Upscales original frames, then runs RIFE at 2× resolution. The look changes slightly and 4K RIFE is heavier. The memory governor may refuse this order; total speedup is not guaranteed.").font(.caption).foregroundStyle(.secondary)
+                        }
                         LabeledContent("Model", value: "Real-CUGAN – Anime")
                         LabeledContent("Upscale", value: "2× source resolution")
                         LabeledContent("Noise", value: "Level 3")
@@ -168,11 +177,20 @@ struct ContentView: View {
                         }
                     } else if !vm.recoveryAvailable {
                         Section {
-                            Button { Task { await vm.start() } } label: { Label(createButtonTitle, systemImage: "wand.and.stars") }.disabled(vm.inputURL == nil)
+                            Button { Task { await vm.start() } } label: { Label(createButtonTitle, systemImage: "wand.and.stars") }.disabled(vm.inputURL == nil || vm.isBenchmarking)
                         }
                     }
 
                     Section("Diagnostics") {
+                        Button { vm.benchmarkModels() } label: { Label("Benchmark Models", systemImage: "speedometer") }
+                            .disabled(vm.isProcessing || vm.isBenchmarking || vm.isImporting)
+                        if vm.isBenchmarking {
+                            ProgressView(value: vm.benchmarkProgress)
+                            Button("Cancel Benchmark", role: .destructive) { vm.cancelBenchmark() }
+                        }
+                        if !vm.benchmarkStatus.isEmpty { Text(vm.benchmarkStatus).font(.caption) }
+                        if !vm.benchmarkReport.isEmpty { Text(vm.benchmarkReport).font(.system(.caption, design: .monospaced)).textSelection(.enabled) }
+                        Text("Keep the app open and cool. Tests 2 warm-ups and 5 timed predictions per model/policy. Results are device measurements; no preference is changed automatically.").font(.caption).foregroundStyle(.secondary)
                         Button { vm.copyErrorLogs() } label: { Label("Copy Error Logs", systemImage: "doc.on.doc") }
                         if !vm.diagnosticsCopyStatus.isEmpty { Text(vm.diagnosticsCopyStatus).font(.caption).foregroundStyle(.secondary) }
                         Text("Copies the persistent render log, last stage/progress, thermal state, frame counters, RIFE speed, Real-CUGAN speed, export folder, and the last error directly to the clipboard.").font(.caption).foregroundStyle(.secondary)

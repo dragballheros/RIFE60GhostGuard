@@ -111,6 +111,8 @@ enum RecoveryStore {
         if !parts.contains(where: { $0.hasPrefix("watermarkMasks=") }) { parts.append("watermarkMasks=W10=") }
         if !parts.contains(where: { $0.hasPrefix("watermarkPadding=") }) { parts.append("watermarkPadding=3") }
         if !parts.contains(where: { $0.hasPrefix("watermarkModel=") }) { parts.append("watermarkModel=\(WatermarkConfiguration.modelID)") }
+        if !parts.contains(where: { $0.hasPrefix("upscaleFirst=") }) { parts.append("upscaleFirst=false") }
+        if !parts.contains(where: { $0.hasPrefix("computeUnits=") }) { parts.append("computeUnits=auto") }
         return parts.sorted()
     }
 

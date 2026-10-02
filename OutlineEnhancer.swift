@@ -33,6 +33,21 @@ final class OutlineEnhancer {
     private var outputPoolSize: (Int, Int) = (0, 0)
 
     init() throws {
+        let modelURL = try Self.compiledModelURL()
+        let configuration = MLModelConfiguration()
+        // .all lets Core ML select ANE/GPU/CPU per operation instead of forbidding GPU.
+        // This does not alter weights or model math.
+        configuration.computeUnits = ModelComputePreference.current.units
+        configuration.allowLowPrecisionAccumulationOnGPU = true
+        self.model = try MLModel(contentsOf: modelURL, configuration: configuration)
+        var arrays: [MLMultiArray] = []
+        for _ in 0..<Self.maxWorkers {
+            arrays.append(try MLMultiArray(shape: [1, 3, 256, 256], dataType: .float32))
+        }
+        self.inputArrays = arrays
+    }
+
+    static func compiledModelURL() throws -> URL {
         guard let packageURL = Bundle.main.url(forResource: "AnimeSharpieOutlineSubtle", withExtension: "mlpackage") else {
             throw OutlineError.modelMissing
         }
@@ -53,17 +68,7 @@ final class OutlineEnhancer {
                 modelURL = temporaryCompiled
             }
         }
-        let configuration = MLModelConfiguration()
-        // .all lets Core ML select ANE/GPU/CPU per operation instead of forbidding GPU.
-        // This does not alter weights or model math.
-        configuration.computeUnits = .all
-        configuration.allowLowPrecisionAccumulationOnGPU = true
-        self.model = try MLModel(contentsOf: modelURL, configuration: configuration)
-        var arrays: [MLMultiArray] = []
-        for _ in 0..<Self.maxWorkers {
-            arrays.append(try MLMultiArray(shape: [1, 3, 256, 256], dataType: .float32))
-        }
-        self.inputArrays = arrays
+        return modelURL
     }
 
     private func destinationBuffer(width: Int, height: Int) throws -> CVPixelBuffer {
