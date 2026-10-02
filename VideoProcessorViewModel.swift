@@ -68,8 +68,8 @@ final class VideoProcessorViewModel: ObservableObject {
     @Published var watermarkRemovalEnabled = false
     @Published var watermarkRegions: [WatermarkRegion] = []
     @Published var watermarkPaddingPixels = 3.0
-    @Published var colorPopEnabled = false
-    @Published var colorPopStrength = 0.5
+    @Published var colorPopEnabled = true
+    @Published var colorPopStrength = 1.0
     @Published var upscaleTo4K = true
     @Published var upscaleFirst = false
     @Published var computePreference = ModelComputePreference.current { didSet { computePreference.persist() } }
@@ -352,7 +352,7 @@ final class VideoProcessorViewModel: ObservableObject {
         let upscale = upscaleTo4K
         let upscaleBeforeRIFE = upscaleFirst && upscale
         let modelCompute = computePreference.rawValue
-        let configKey = ["pipeline-v3-final-size", "hq", "ghost=\(guardEnabled)", "cuts=\(cuts)", "compression=\(compressionEnabled)", "outline=\(outlineEnabled)", "colorpop=\(colorPop)", String(format: "colorpopStrength=%.2f", gradeStrength), "watermark=\(watermark.enabled)", "watermarkMasks=\(watermark.serializedRegions)", "watermarkPadding=\(watermark.paddingPixels)", "watermarkModel=\(WatermarkConfiguration.modelID)", String(format: "sensitivity=%.2f", sensitivity), "audio=\(audio)", "upscale=\(upscale)", "upscaleFirst=\(upscaleBeforeRIFE)", "computeUnits=\(modelCompute)", "fps=60"].joined(separator: "|")
+        let configKey = ["pipeline-v3-final-size", "hq", "ghost=\(guardEnabled)", "cuts=\(cuts)", "compression=\(compressionEnabled)", "outline=\(outlineEnabled)", "colorpop=\(colorPop)", "colorpopStrength=\(gradeStrength)", "watermark=\(watermark.enabled)", "watermarkMasks=\(watermark.serializedRegions)", "watermarkPadding=\(watermark.paddingPixels)", "watermarkModel=\(WatermarkConfiguration.modelID)", String(format: "sensitivity=%.2f", sensitivity), "audio=\(audio)", "upscale=\(upscale)", "upscaleFirst=\(upscaleBeforeRIFE)", "computeUnits=\(modelCompute)", "fps=60"].joined(separator: "|")
         DiagnosticsLogger.shared.log("Render requested • \(configKey)")
 
         currentTask = Task.detached(priority: .userInitiated) { [weak self] in

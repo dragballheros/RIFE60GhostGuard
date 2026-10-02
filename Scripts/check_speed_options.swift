@@ -6,10 +6,12 @@ require(ModelComputePreference.gpu.units == .cpuAndGPU, "GPU policy")
 require(ModelComputePreference.neuralEngine.units == .cpuAndNeuralEngine, "ANE policy")
 require(UpscaleFirstPlan.stages(restoration: true, outline: true) == ["restored", "cugan", "rife", "outline"], "stage order")
 require(UpscaleFirstPlan.stages(restoration: false, outline: false) == ["cugan", "rife"], "optional stages")
-require(!UpscaleFirstPlan.admits(width: 3840, height: 2160, availableMB: 2000, performance: true), "4K low-memory refusal")
-require(UpscaleFirstPlan.admits(width: 3840, height: 2160, availableMB: 4000, performance: true), "4K healthy admission")
-require(!UpscaleFirstPlan.admits(width: 3840, height: 2160, availableMB: 4000, performance: false), "governor refusal")
-require(!UpscaleFirstPlan.admits(width: 7680, height: 4320, availableMB: 12000, performance: true), "above-4K refusal")
+require(UpscaleFirstPlan.admits(width: 3840, height: 2160), "4K allowed without fixed headroom cutoff")
+require(!UpscaleFirstPlan.admits(width: 7680, height: 4320), "above-4K geometry refusal")
+require(RIFEBandPlan.bands(width: 3840, height: 2160, availableMB: 2945, underPressure: false) == 4, "reported phone headroom uses four bands")
+require(RIFEBandPlan.bands(width: 3840, height: 2160, availableMB: 1800, underPressure: false) == 6, "lower headroom shrinks bands")
+require(RIFEBandPlan.bands(width: 3840, height: 2160, availableMB: 4000, underPressure: true) == 8, "memory warning shrinks bands")
+require(RIFEBandPlan.bands(width: 3840, height: 2160, availableMB: 4000, underPressure: false) == 2, "healthy headroom")
 for restoration in [false, true] {
     for outline in [false, true] {
         let stages = UpscaleFirstPlan.stages(restoration: restoration, outline: outline)
@@ -20,4 +22,4 @@ for restoration in [false, true] {
         }
     }
 }
-print("SPEED_OPTIONS_PASS: policies, memory admission, every checkpoint combination")
+print("SPEED_OPTIONS_PASS: policies, adaptive band selection, every checkpoint combination")

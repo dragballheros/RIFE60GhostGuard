@@ -86,7 +86,7 @@ struct ContentView: View {
                         Toggle("Color Pop", isOn: $vm.colorPopEnabled).disabled(vm.recoveryAvailable)
                         if vm.colorPopEnabled {
                             HStack { Text("Color Pop strength"); Spacer(); Text(String(format: "%.2f", vm.colorPopStrength)) }
-                            Slider(value: $vm.colorPopStrength, in: 0.1...1.0, step: 0.05).disabled(vm.recoveryAvailable)
+                            Slider(value: $vm.colorPopStrength, in: 0.1...1.0).disabled(vm.recoveryAvailable)
                             Text("Selective vibrance after upscale and sharpening. Protects grays and highlights; gently cleans orange skin tones.").font(.caption).foregroundStyle(.secondary)
                         }
                         Text("Compression Guard runs before RIFE. Sharpie now runs as the final visual pass after Real-CUGAN, so CUGAN cannot soften or change the finished outlines. This revision is slightly narrower and closer to the original anime line width while remaining a little thicker/sharper than the original.").font(.caption).foregroundStyle(.secondary)
@@ -101,7 +101,7 @@ struct ContentView: View {
                         if vm.inputKind == .video {
                             Toggle("Upscale before interpolation (faster)", isOn: $vm.upscaleFirst)
                                 .disabled(vm.recoveryAvailable || vm.isProcessing || vm.isBenchmarking || !vm.upscaleTo4K)
-                            Text("Upscales original frames, then runs RIFE at 2× resolution. The look changes slightly and 4K RIFE is heavier. The memory governor may refuse this order; total speedup is not guaranteed.").font(.caption).foregroundStyle(.secondary)
+                            Text("Upscales original frames, then runs RIFE at 2× resolution. The look changes slightly and 4K RIFE is heavier. RIFE reduces band size under memory pressure; total speedup is not guaranteed.").font(.caption).foregroundStyle(.secondary)
                         }
                         LabeledContent("Model", value: "Real-CUGAN – Anime")
                         LabeledContent("Upscale", value: "2× source resolution")

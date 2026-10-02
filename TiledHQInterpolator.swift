@@ -10,18 +10,25 @@ import RifeMetal
 final class TiledHQInterpolator {
     private let width: Int
     private let height: Int
-    private let bandCount: Int
+    private var bandCount: Int
     private let overlap: Int
-    private let coreHeight: Int
-    private let tileHeight: Int
+    private var coreHeight: Int
+    private var tileHeight: Int
     private let streams: [RifeStream]
     private var seeded = false
+    private let memoryAdaptive: Bool
+    private let sharedInterpolator: RifeInterpolator?
+    private var sharedStream: RifeStream?
+    private var previousFrame: CVPixelBuffer?
 
     init(interpolator: RifeInterpolator,
          width: Int,
          height: Int,
          bandCount: Int = 3,
-         overlap: Int = 32) throws {
+         overlap: Int = 32,
+         memoryAdaptive: Bool = false) throws {
+        self.memoryAdaptive = memoryAdaptive
+        self.sharedInterpolator = memoryAdaptive ? interpolator : nil
         self.width = width
         self.height = height
 
@@ -30,7 +37,10 @@ final class TiledHQInterpolator {
         // rebuild a stateful RIFE stream in the middle of an active frame.
         let performanceMode = automaticPerformanceModeEnabled()
         let adaptiveBands: Int
-        if height <= 1200 {
+        if memoryAdaptive {
+            let state = currentRenderPerformanceSnapshot()
+            adaptiveBands = RIFEBandPlan.bands(width: width, height: height, availableMB: state.availableMemoryMB, underPressure: state.tier == .safe)
+        } else if height <= 1200 {
             adaptiveBands = 1
         } else if performanceMode {
             adaptiveBands = 2
@@ -39,7 +49,7 @@ final class TiledHQInterpolator {
         }
 
         self.bandCount = adaptiveBands
-        self.overlap = adaptiveBands == 1 ? 0 : (performanceMode ? min(max(0, overlap), 48) : max(0, overlap))
+        self.overlap = adaptiveBands == 1 ? 0 : (memoryAdaptive ? max(0, overlap) : (performanceMode ? min(max(0, overlap), 48) : max(0, overlap)))
         self.coreHeight = Int(ceil(Double(height) / Double(adaptiveBands)))
         self.tileHeight = adaptiveBands == 1 ? height : self.coreHeight + self.overlap * 2
 
@@ -47,13 +57,18 @@ final class TiledHQInterpolator {
 
         var sessions: [RifeStream] = []
         sessions.reserveCapacity(adaptiveBands)
-        for _ in 0..<adaptiveBands {
+        for _ in 0..<(memoryAdaptive ? 0 : adaptiveBands) {
             sessions.append(try interpolator.makeStream(width: width, height: tileHeight))
         }
         self.streams = sessions
     }
 
     func seed(_ frame: CVPixelBuffer) throws {
+        if memoryAdaptive {
+            previousFrame = frame
+            seeded = true
+            return
+        }
         if bandCount == 1 {
             let outputs = try autoreleasepool {
                 try streams[0].push(frame, timesteps: [])
@@ -84,6 +99,8 @@ final class TiledHQInterpolator {
         guard seeded else {
             throw ProcessorError.conversionFailed("HQ streams were not seeded")
         }
+
+        if memoryAdaptive { return try interpolateShared(current: current, timesteps: timesteps) }
 
         // Fast path: no extraction, stitching, overlap, or second RIFE stream.
         if bandCount == 1 {
@@ -123,6 +140,57 @@ final class TiledHQInterpolator {
         }
 
         return fullOutputs
+    }
+
+    /// Every push waits for GPU completion. Rebase one stream to the previous
+    /// band before each current band, so states from different bands never mix.
+    private func interpolateShared(current: CVPixelBuffer, timesteps: [Float]) throws -> [CVPixelBuffer] {
+        guard let previousFrame, let sharedInterpolator else { throw ProcessorError.conversionFailed("adaptive RIFE has no previous frame") }
+        try adaptAtFrameBoundary()
+        if timesteps.isEmpty { self.previousFrame = current; return [] }
+        var outputs: [CVPixelBuffer] = []
+        for _ in timesteps { outputs.append(try makeBuffer(width: width, height: height)) }
+        if sharedStream == nil { sharedStream = try sharedInterpolator.makeStream(width: width, height: tileHeight) }
+        guard let stream = sharedStream else { throw ProcessorError.conversionFailed("adaptive RIFE stream unavailable") }
+        for band in 0..<bandCount {
+            try Task.checkCancellation()
+            let start = band * coreHeight
+            guard start < height else { break }
+            let count = min(coreHeight, height - start)
+            try autoreleasepool {
+                let previousTile = try extractBand(previousFrame, coreStart: start)
+                let seedOutputs = try stream.push(previousTile, timesteps: [])
+                guard seedOutputs.isEmpty else { throw ProcessorError.conversionFailed("adaptive RIFE rebase unexpectedly produced output") }
+                let currentTile = try extractBand(current, coreStart: start)
+                let generated = try stream.push(currentTile, timesteps: timesteps)
+                guard generated.count == outputs.count else { throw ProcessorError.conversionFailed("adaptive RIFE output count mismatch") }
+                for index in generated.indices { try copyCore(from: generated[index], to: outputs[index], coreStart: start, coreCount: count) }
+            }
+        }
+        self.previousFrame = current
+        return outputs
+    }
+
+    private func adaptAtFrameBoundary() throws {
+        guard let sharedInterpolator else { return }
+        let state = currentRenderPerformanceSnapshot()
+        let requested = RIFEBandPlan.bands(width: width, height: height, availableMB: state.availableMemoryMB, underPressure: state.tier == .safe)
+        // Shrink only. Growing again would churn graphs while memory fluctuates.
+        if requested > bandCount || state.availableMemoryMB < 700 {
+            sharedStream = nil
+            // No live streams remain and synchronous push has completed its GPU
+            // work. Release the old graph BEFORE allocating a smaller one.
+            sharedInterpolator.releaseIdleStreamGraph()
+            if requested > bandCount {
+                bandCount = requested
+                coreHeight = Int(ceil(Double(height) / Double(bandCount)))
+                tileHeight = coreHeight + overlap * 2
+            }
+            DiagnosticsLogger.shared.log("Adaptive RIFE reclaimed idle graph • bands=\(bandCount) • tile=\(width)x\(tileHeight) • headroom=\(Int(currentRenderPerformanceSnapshot().availableMemoryMB)) MB")
+        }
+        guard currentRenderPerformanceSnapshot().availableMemoryMB >= 700 else {
+            throw ProcessorError.conversionFailed("Adaptive RIFE stopped at the memory governor's 700 MB emergency floor after releasing idle graph resources. Completed checkpoints are retained.")
+        }
     }
 
     private func makeBuffer(width: Int, height: Int) throws -> CVPixelBuffer {

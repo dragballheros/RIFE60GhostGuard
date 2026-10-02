@@ -135,13 +135,13 @@ final class RIFEVideoProcessor {
         let interpolator = try autoreleasepool {
             try RifeInterpolator(configuration: .bundled(qualityTier: config.quality))
         }
-        if guardUpscaleFirstMemory { try requireUpscaleFirstMemory(width: width, height: height) }
         let tiledHQ = try TiledHQInterpolator(
             interpolator: interpolator,
             width: width,
             height: height,
             bandCount: 3,
-            overlap: 64
+            overlap: 64,
+            memoryAdaptive: guardUpscaleFirstMemory
         )
 
         guard reader.startReading() else {
@@ -191,9 +191,6 @@ final class RIFEVideoProcessor {
         }
 
         while let sample = output.copyNextSampleBuffer() {
-            if guardUpscaleFirstMemory && currentRenderPerformanceSnapshot().tier == .safe {
-                throw ProcessorError.conversionFailed("Upscale-first RIFE stopped by the memory/thermal governor. Completed checkpoints are retained; cool the device and resume, or clear recovery and use the normal order.")
-            }
             try Task.checkCancellation()
             guard let decodedPB = CMSampleBufferGetImageBuffer(sample) else { continue }
             sourceFrames += 1

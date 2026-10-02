@@ -113,6 +113,12 @@ enum RecoveryStore {
         if !parts.contains(where: { $0.hasPrefix("watermarkModel=") }) { parts.append("watermarkModel=\(WatermarkConfiguration.modelID)") }
         if !parts.contains(where: { $0.hasPrefix("upscaleFirst=") }) { parts.append("upscaleFirst=false") }
         if !parts.contains(where: { $0.hasPrefix("computeUnits=") }) { parts.append("computeUnits=auto") }
+        parts = parts.map { part in
+            if part.hasPrefix("colorpopStrength="), let value = Double(part.dropFirst("colorpopStrength=".count)), value.isFinite {
+                return "colorpopStrength=\(value)"
+            }
+            return part
+        }
         return parts.sorted()
     }
 

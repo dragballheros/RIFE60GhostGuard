@@ -13,11 +13,7 @@ enum UpscaleFirstPlan {
         }
         return nil
     }
-    static func requiredMemoryMB(width: Int, height: Int) -> Double {
-        max(1_700, 900 + Double(width) * Double(height) * 192 / 1_048_576 + 700)
-    }
-    static func admits(width: Int, height: Int, availableMB: Double, performance: Bool) -> Bool {
-        width > 0 && height > 0 && Double(width) * Double(height) <= 3840 * 2160 &&
-        performance && availableMB >= requiredMemoryMB(width: width, height: height)
+    static func admits(width: Int, height: Int) -> Bool {
+        width > 0 && height > 0 && Double(width) * Double(height) <= 3840 * 2160
     }
 }

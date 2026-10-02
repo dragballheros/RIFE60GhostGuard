@@ -133,6 +133,9 @@ jobs:
           pkg.write_text(text3)
           PY
 
+      - name: Enable safe idle RIFE graph reclamation
+        run: python3 Scripts/patch_rife_idle_graph.py
+
       - name: Stabilize Real-CUGAN while keeping overhead reductions
         run: |
           python3 - <<'PY'
@@ -242,8 +245,17 @@ jobs:
           set -euo pipefail
           mkdir -p /tmp/speed-options-check
           cp Scripts/check_speed_options.swift /tmp/speed-options-check/main.swift
-          swiftc -swift-version 5 ModelComputePreference.swift UpscaleFirstPlan.swift /tmp/speed-options-check/main.swift -o /tmp/speed-options-check/check
+          swiftc -swift-version 5 ModelComputePreference.swift UpscaleFirstPlan.swift RIFEBandPlan.swift /tmp/speed-options-check/main.swift -o /tmp/speed-options-check/check
           /tmp/speed-options-check/check
+
+      - name: Verify adaptive RIFE band mapping and resource lifecycle
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/adaptive-rife-check
+          swiftc -swift-version 5 -emit-module -emit-library -module-name RifeMetal Scripts/MockRifeMetal.swift -emit-module-path /tmp/adaptive-rife-check/RifeMetal.swiftmodule -o /tmp/adaptive-rife-check/libRifeMetal.dylib
+          cp Scripts/check_adaptive_rife.swift /tmp/adaptive-rife-check/main.swift
+          swiftc -swift-version 5 -I /tmp/adaptive-rife-check -L /tmp/adaptive-rife-check -lRifeMetal TiledHQInterpolator.swift RIFEBandPlan.swift /tmp/adaptive-rife-check/main.swift -o /tmp/adaptive-rife-check/check
+          DYLD_LIBRARY_PATH=/tmp/adaptive-rife-check /tmp/adaptive-rife-check/check
 
       - name: Generate Xcode project
         run: xcodegen generate
