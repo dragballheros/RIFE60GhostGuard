@@ -237,7 +237,7 @@ jobs:
           set -euo pipefail
           mkdir -p /tmp/anime-inpaint-check
           cp Scripts/check_anime_inpaint.swift /tmp/anime-inpaint-check/main.swift
-          swiftc -swift-version 5 WatermarkConfiguration.swift AnimeWatermarkRemover.swift /tmp/anime-inpaint-check/main.swift -o /tmp/anime-inpaint-check/check
+          swiftc -swift-version 5 WatermarkConfiguration.swift WatermarkBrushMask.swift AnimeWatermarkRemover.swift /tmp/anime-inpaint-check/main.swift -o /tmp/anime-inpaint-check/check
           /tmp/anime-inpaint-check/check CompiledModels/AnimeWatermarkLaMa512.mlmodelc
 
       - name: Verify speed options and checkpoint planning

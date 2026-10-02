@@ -20,6 +20,7 @@ final class AnimeWatermarkRemover {
     private var resultHeight = 0
     private var patchWidth = 0
     private var patchHeight = 0
+    private var brushRasters: [(region: WatermarkRegion, width: Int, height: Int, pixels: [UInt8])] = []
 
     init(configuration: WatermarkConfiguration, modelURL: URL? = nil) throws {
         guard configuration.enabled, configuration.isValid else {
@@ -85,7 +86,20 @@ final class AnimeWatermarkRemover {
             .transformed(by: CGAffineTransform(translationX: -crop.minX, y: -crop.minY))
             .transformed(by: CGAffineTransform(scaleX: scale, y: scale))
         context.render(inputImage, to: imageInput, bounds: CGRect(x: 0, y: 0, width: modelSize, height: modelSize), colorSpace: colorSpace)
-        try fillMask(maskInput, target: target, crop: crop, scale: scale)
+        let brushPixels: [UInt8]?
+        if let brush = region.brush {
+            if let cached = brushRasters.first(where: { $0.region == region && $0.width == width && $0.height == height }) {
+                brushPixels = cached.pixels
+            } else {
+                brushRasters.removeAll { $0.width != width || $0.height != height }
+                let pixels = brush.raster(width: width, height: height, padding: configuration.paddingPixels)
+                brushRasters.append((region: region, width: width, height: height, pixels: pixels))
+                brushPixels = pixels
+            }
+            if let brushPixels, !brushPixels.contains(255) { return source }
+        } else { brushPixels = nil }
+        try fillMask(maskInput, target: target, crop: crop, scale: scale,
+                     brushPixels: brushPixels, sourceWidth: width, sourceHeight: height)
         let features = try MLDictionaryFeatureProvider(dictionary: [
             "image": MLFeatureValue(pixelBuffer: imageInput),
             "mask": MLFeatureValue(pixelBuffer: maskInput)
@@ -105,12 +119,13 @@ final class AnimeWatermarkRemover {
         let translated = restored.transformed(by: CGAffineTransform(translationX: crop.minX - target.minX, y: crop.minY - target.minY))
         context.render(translated, to: patch, bounds: CGRect(x: 0, y: 0, width: patchWidth, height: patchHeight), colorSpace: colorSpace)
         let result = try Self.allocate(resultPool)
-        try composite(patch: patch, source: source, destination: result, target: target)
+        try composite(patch: patch, source: source, destination: result, target: target, brushPixels: brushPixels)
         CVBufferPropagateAttachments(source, result)
         return result
     }
 
-    private func fillMask(_ buffer: CVPixelBuffer, target: CGRect, crop: CGRect, scale: CGFloat) throws {
+    private func fillMask(_ buffer: CVPixelBuffer, target: CGRect, crop: CGRect, scale: CGFloat,
+                          brushPixels: [UInt8]?, sourceWidth: Int, sourceHeight: Int) throws {
         CVPixelBufferLockBaseAddress(buffer, [])
         defer { CVPixelBufferUnlockBaseAddress(buffer, []) }
         guard let address = CVPixelBufferGetBaseAddress(buffer) else { throw ProcessorError.conversionFailed("mask buffer address unavailable") }
@@ -122,12 +137,31 @@ final class AnimeWatermarkRemover {
         let top = max(0, Int(floor((crop.maxY - target.maxY) * scale)))
         let bottom = min(modelSize, Int(ceil((crop.maxY - target.minY) * scale)))
         guard right > left, bottom > top else { return }
-        for row in top..<bottom {
-            mask.advanced(by: row * stride + left).initialize(repeating: 255, count: right - left)
+        if let brushPixels {
+            // Conservative area sampling keeps fine painted lines in a 512px
+            // model input. The final composite still uses the exact source mask.
+            for row in top..<bottom {
+                let y0 = max(0, min(sourceHeight, Int(floor(CGFloat(sourceHeight) - crop.maxY + CGFloat(row) / scale))))
+                let y1 = max(0, min(sourceHeight, Int(ceil(CGFloat(sourceHeight) - crop.maxY + CGFloat(row + 1) / scale))))
+                for col in left..<right {
+                    let x0 = max(0, min(sourceWidth, Int(floor(crop.minX + CGFloat(col) / scale))))
+                    let x1 = max(0, min(sourceWidth, Int(ceil(crop.minX + CGFloat(col + 1) / scale))))
+                    var painted = false
+                    for y in y0..<y1 {
+                        for x in x0..<x1 where brushPixels[y * sourceWidth + x] != 0 { painted = true; break }
+                        if painted { break }
+                    }
+                    if painted { mask[row * stride + col] = 255 }
+                }
+            }
+        } else {
+            for row in top..<bottom {
+                mask.advanced(by: row * stride + left).initialize(repeating: 255, count: right - left)
+            }
         }
     }
 
-    private func composite(patch: CVPixelBuffer, source: CVPixelBuffer, destination: CVPixelBuffer, target: CGRect) throws {
+    private func composite(patch: CVPixelBuffer, source: CVPixelBuffer, destination: CVPixelBuffer, target: CGRect, brushPixels: [UInt8]?) throws {
         CVPixelBufferLockBaseAddress(source, .readOnly)
         CVPixelBufferLockBaseAddress(patch, .readOnly)
         CVPixelBufferLockBaseAddress(destination, [])
@@ -149,9 +183,12 @@ final class AnimeWatermarkRemover {
         let output = dst.assumingMemoryBound(to: UInt8.self)
         for row in top..<bottom {
             for col in left..<right {
+                if let brushPixels, brushPixels[row * width + col] == 0 { continue }
                 let edgeDistance = min(Double(col - left) + 0.5, Double(right - col) - 0.5,
                                        Double(row - top) + 0.5, Double(bottom - row) - 0.5)
-                let alpha = min(edgeDistance / 2, 1) // Two-pixel feather stays inside the padded mask.
+                // Brush masks replace only painted/padded pixels at full opacity.
+                // Keep the legacy rectangle feather unchanged for recovered jobs.
+                let alpha = brushPixels == nil ? min(edgeDistance / 2, 1) : 1
                 let sourceOffset = row * srcStride + col * 4
                 let targetOffset = row * dstStride + col * 4
                 let patchOffset = (row - top) * patchStride + (col - left) * 4

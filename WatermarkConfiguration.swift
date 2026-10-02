@@ -7,10 +7,11 @@ struct WatermarkRegion: Codable, Sendable, Equatable {
     var y: Double
     var width: Double
     var height: Double
+    var brush: WatermarkBrushMask? = nil
 
     var isValid: Bool {
         x.isFinite && y.isFinite && width.isFinite && height.isFinite &&
-        x >= 0 && y >= 0 && width > 0 && height > 0 && x + width <= 1.000001 && y + height <= 1.000001
+        x >= 0 && y >= 0 && width > 0 && height > 0 && x + width <= 1.000001 && y + height <= 1.000001 && (brush?.isValid ?? true)
     }
 }
 
@@ -50,8 +51,18 @@ struct WatermarkConfiguration: Sendable {
                                   width: region.width * upright.width, height: region.height * upright.height)
             let raw = selected.applying(inverse).standardized.intersection(rawBounds)
             guard !raw.isNull, raw.width > 0, raw.height > 0, size.width > 0, size.height > 0 else { return nil }
-            return WatermarkRegion(x: raw.minX / size.width, y: raw.minY / size.height,
-                                   width: raw.width / size.width, height: raw.height / size.height)
+            var mapped = WatermarkRegion(x: raw.minX / size.width, y: raw.minY / size.height,
+                                         width: raw.width / size.width, height: raw.height / size.height)
+            mapped.brush = region.brush?.mapped { point in
+                let uprightPoint = CGPoint(x: upright.minX + point.x * upright.width,
+                                           y: upright.minY + point.y * upright.height)
+                let p = uprightPoint.applying(inverse)
+                return WatermarkBrushPoint(x: min(max(p.x / size.width, 0), 1), y: min(max(p.y / size.height, 0), 1))
+            } radii: { rx, ry in
+                (abs(inverse.a) * rx * upright.width / size.width + abs(inverse.c) * ry * upright.height / size.width,
+                 abs(inverse.b) * rx * upright.width / size.height + abs(inverse.d) * ry * upright.height / size.height)
+            }
+            return mapped
         }
         return result
     }

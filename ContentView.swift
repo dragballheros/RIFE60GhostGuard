@@ -72,11 +72,11 @@ struct ContentView: View {
                         Toggle("Remove marked watermarks", isOn: $vm.watermarkRemovalEnabled).disabled(vm.recoveryAvailable)
                         if vm.watermarkRemovalEnabled {
                             Button { showingWatermarkEditor = true } label: {
-                                Label(vm.watermarkRegions.isEmpty ? "Mark watermark regions" : "Edit \(vm.watermarkRegions.count) marked regions", systemImage: "rectangle.dashed")
+                                Label(vm.watermarkRegions.isEmpty ? "Paint watermark mask" : "Edit watermark mask", systemImage: "paintbrush.pointed")
                             }.disabled(vm.inputURL == nil || vm.recoveryAvailable)
                             HStack { Text("Mask padding"); Spacer(); Text("\(Int(vm.watermarkPaddingPixels)) px") }
                             Slider(value: $vm.watermarkPaddingPixels, in: 0...16, step: 1).disabled(vm.recoveryAvailable)
-                            Text("Anime/Manga LaMa reconstructs marked areas before RIFE and upscaling. Fixed boxes apply throughout a video. Smaller, tighter masks preserve more artwork.").font(.caption).foregroundStyle(.secondary)
+                            Text("Anime/Manga LaMa reconstructs marked areas before RIFE and upscaling. Painted masks apply throughout a video. Use the brush and eraser to preserve the artwork between letters.").font(.caption).foregroundStyle(.secondary)
                         }
                     }
 

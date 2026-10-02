@@ -67,7 +67,7 @@ final class VideoProcessorViewModel: ObservableObject {
     @Published var outlineProtection = true
     @Published var watermarkRemovalEnabled = false
     @Published var watermarkRegions: [WatermarkRegion] = []
-    @Published var watermarkPaddingPixels = 3.0
+    @Published var watermarkPaddingPixels = 1.0
     @Published var colorPopEnabled = true
     @Published var colorPopStrength = 1.0
     @Published var upscaleTo4K = true

@@ -3,8 +3,7 @@ import UIKit
 import AVFoundation
 import CoreImage
 
-/// A precise rectangle selector for stationary watermarks in an image or clip.
-/// The preview is upright; WatermarkConfiguration maps video masks to raw frames.
+/// One finger paints; pinch zoom and two-finger pan allow accurate selections.
 struct WatermarkMaskEditor: View {
     let sourceURL: URL
     let isImage: Bool
@@ -12,90 +11,92 @@ struct WatermarkMaskEditor: View {
     @Environment(\.dismiss) private var dismiss
     @State private var preview: UIImage?
     @State private var errorText: String?
-    @State private var dragStart: CGPoint?
-    @State private var draft: WatermarkRegion?
+    @State private var mask = WatermarkBrushMask()
+    @State private var draft: WatermarkBrushStroke?
+    @State private var erase = false
+    @State private var brushPercent = 0.8
+    @State private var showMask = true
 
+    private var displayedMask: WatermarkBrushMask {
+        var result = mask
+        if let draft { result.strokes.append(draft) }
+        return result
+    }
     var body: some View {
         NavigationStack {
-            VStack(spacing: 16) {
-                Text("Drag a box tightly around the watermark. Add another box for a second watermark.")
+            VStack(spacing: 12) {
+                Text("Paint only the watermark lettering. Pinch to zoom; use two fingers to move the image.")
                     .font(.callout).padding(.horizontal)
                 if let preview {
-                    GeometryReader { geometry in
-                        let imageSize = preview.size
-                        let scale = min(geometry.size.width / max(imageSize.width, 1), geometry.size.height / max(imageSize.height, 1))
-                        let display = CGSize(width: imageSize.width * scale, height: imageSize.height * scale)
-                        let rect = CGRect(x: (geometry.size.width - display.width) / 2,
-                                          y: (geometry.size.height - display.height) / 2, width: display.width, height: display.height)
-                        ZStack(alignment: .topLeading) {
-                            Image(uiImage: preview).resizable().frame(width: display.width, height: display.height)
-                                .position(x: rect.midX, y: rect.midY)
-                            ForEach(regions.indices, id: \.self) { index in
-                                selection(regions[index], inside: rect, color: .red)
-                            }
-                            if let draft { selection(draft, inside: rect, color: .yellow) }
+                    WatermarkBrushCanvas(image: preview, mask: displayedMask, showMask: showMask) { point, ended in
+                        if draft == nil, mask.strokes.count < 256 {
+                            let radius = brushPercent / 200
+                            draft = WatermarkBrushStroke(points: [], radiusX: radius,
+                                radiusY: radius * Double(preview.size.width / max(preview.size.height, 1)), erase: erase)
                         }
-                        .contentShape(Rectangle())
-                        .gesture(DragGesture(minimumDistance: 0)
-                            .onChanged { value in
-                                guard regions.count < 8, rect.width > 0, rect.height > 0 else { return }
-                                if dragStart == nil {
-                                    guard rect.contains(value.startLocation) else { return }
-                                    dragStart = value.startLocation
-                                }
-                                guard let start = dragStart else { return }
-                                let end = CGPoint(x: min(max(value.location.x, rect.minX), rect.maxX),
-                                                  y: min(max(value.location.y, rect.minY), rect.maxY))
-                                draft = WatermarkRegion(x: Double((min(start.x, end.x) - rect.minX) / rect.width),
-                                                        y: Double((min(start.y, end.y) - rect.minY) / rect.height),
-                                                        width: Double(abs(end.x - start.x) / rect.width),
-                                                        height: Double(abs(end.y - start.y) / rect.height))
-                            }
-                            .onEnded { _ in dragStart = nil })
+                        if let point, var stroke = draft, stroke.points.count < 4096,
+                           mask.strokes.reduce(0, { $0 + $1.points.count }) + stroke.points.count < 32768 {
+                            if stroke.points.last != point { stroke.points.append(point) }
+                            draft = stroke
+                        }
+                        if ended {
+                            if let draft, draft.isValid { mask.strokes.append(draft) }
+                            draft = nil
+                        }
                     }
-                    .frame(height: 360)
-                    Button("Add Selected Box") {
-                        if let draft, draft.isValid, regions.count < 8 { regions.append(draft); self.draft = nil }
-                    }
-                    .disabled(draft == nil || regions.count >= 8)
+                    .frame(maxWidth: .infinity).frame(height: 420)
+                    Picker("Tool", selection: $erase) {
+                        Text("Brush").tag(false)
+                        Text("Eraser").tag(true)
+                    }.pickerStyle(.segmented).padding(.horizontal)
                     HStack {
-                        Text("\(regions.count) of 8 boxes").foregroundStyle(.secondary)
-                        Spacer()
-                        Button("Undo") { if !regions.isEmpty { regions.removeLast() }; draft = nil }.disabled(regions.isEmpty)
-                        Button("Clear") { regions.removeAll(); draft = nil }.disabled(regions.isEmpty && draft == nil)
+                        Text("Brush size")
+                        Slider(value: $brushPercent, in: 0.2...4)
+                        Text(String(format: "%.1f%%", brushPercent)).monospacedDigit()
                     }.padding(.horizontal)
+                    HStack {
+                        Toggle("Show mask", isOn: $showMask)
+                        Button("Undo") {
+                            if !mask.strokes.isEmpty { mask.strokes.removeLast() }
+                            else if !mask.rectangles.isEmpty { mask.rectangles.removeLast() }
+                        }.disabled(mask.strokes.isEmpty && mask.rectangles.isEmpty)
+                        Button("Clear") { mask = WatermarkBrushMask(); draft = nil }
+                    }.padding(.horizontal)
+                    Text("Red marks show the area to reconstruct before mask padding. Unpainted pixels are preserved by the remover. Set padding to 0 for the exact painted shape.")
+                        .font(.caption).foregroundStyle(.secondary).padding(.horizontal)
                 } else if let errorText {
                     Text(errorText).foregroundStyle(.red).padding()
-                } else {
-                    ProgressView("Loading preview…").frame(height: 360)
+                } else { ProgressView("Loading preview…").frame(height: 420) }
+                if !isImage {
+                    Text("The mask stays fixed throughout the clip. A moving watermark needs a mask covering its movement or a shorter clip.")
+                        .font(.caption).foregroundStyle(.secondary).padding(.horizontal)
                 }
-                Text(isImage ? "Only marked regions are reconstructed. The rest of the artwork is preserved." : "These boxes stay at the same position throughout the clip. Mark every position used by a moving watermark, or process shorter clips.")
-                    .font(.caption).foregroundStyle(.secondary).padding(.horizontal)
-                Spacer()
+                Spacer(minLength: 0)
             }
             .padding(.top)
-            .navigationTitle("Mark Watermark")
+            .navigationTitle("Paint Watermark")
             .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Done") {
-                        if let draft, draft.isValid, regions.count < 8 { regions.append(draft) }
+                        regions = displayedMask.region.map { [$0] } ?? []
                         dismiss()
-                    }
+                    }.disabled(preview == nil)
                 }
             }
             .task(id: sourceURL) {
+                // Editing old rectangle masks keeps their coverage until erased.
+                mask = WatermarkBrushMask()
+                for region in regions {
+                    if let brush = region.brush {
+                        mask.rectangles.append(contentsOf: brush.rectangles)
+                        mask.strokes.append(contentsOf: brush.strokes)
+                    } else { mask.rectangles.append(region) }
+                }
                 do { preview = try await Self.loadPreview(sourceURL: sourceURL, isImage: isImage) }
                 catch { errorText = error.localizedDescription }
             }
         }
-    }
-
-    private func selection(_ region: WatermarkRegion, inside rect: CGRect, color: Color) -> some View {
-        Rectangle().fill(color.opacity(0.22)).overlay(Rectangle().stroke(color, lineWidth: 2))
-            .frame(width: region.width * rect.width, height: region.height * rect.height)
-            .position(x: rect.minX + (region.x + region.width / 2) * rect.width,
-                      y: rect.minY + (region.y + region.height / 2) * rect.height)
-            .allowsHitTesting(false)
     }
 
     private static func loadPreview(sourceURL: URL, isImage: Bool) async throws -> UIImage {
@@ -120,5 +121,120 @@ struct WatermarkMaskEditor: View {
             let image = try generator.copyCGImage(at: .zero, actualTime: nil)
             return UIImage(cgImage: image)
         }.value
+    }
+}
+
+private struct WatermarkBrushCanvas: UIViewRepresentable {
+    let image: UIImage
+    let mask: WatermarkBrushMask
+    let showMask: Bool
+    let changed: (WatermarkBrushPoint?, Bool) -> Void
+
+    func makeUIView(context: Context) -> BrushScrollView {
+        let view = BrushScrollView()
+        view.minimumZoomScale = 1
+        view.maximumZoomScale = 8
+        view.delegate = context.coordinator
+        view.panGestureRecognizer.minimumNumberOfTouches = 2
+        view.canvas.image = image
+        view.canvas.changed = changed
+        view.addSubview(view.canvas)
+        view.backgroundColor = .black
+        return view
+    }
+    func updateUIView(_ view: BrushScrollView, context: Context) {
+        view.canvas.image = image
+        view.canvas.mask = mask
+        view.canvas.showMask = showMask
+        view.canvas.changed = changed
+        view.canvas.setNeedsDisplay()
+    }
+    func makeCoordinator() -> Coordinator { Coordinator() }
+    final class Coordinator: NSObject, UIScrollViewDelegate {
+        func viewForZooming(in scrollView: UIScrollView) -> UIView? { (scrollView as? BrushScrollView)?.canvas }
+    }
+}
+
+private final class BrushScrollView: UIScrollView {
+    let canvas = BrushDrawingView()
+    private var fittedSize = CGSize.zero
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        guard let image = canvas.image, bounds.width > 0, bounds.height > 0 else { return }
+        if fittedSize != bounds.size {
+            fittedSize = bounds.size
+            zoomScale = 1
+            let scale = min(bounds.width / image.size.width, bounds.height / image.size.height)
+            canvas.frame = CGRect(origin: .zero, size: CGSize(width: image.size.width * scale, height: image.size.height * scale))
+            contentSize = canvas.frame.size
+        }
+        contentInset = UIEdgeInsets(top: max(0, (bounds.height - contentSize.height) / 2), left: max(0, (bounds.width - contentSize.width) / 2), bottom: 0, right: 0)
+    }
+}
+
+private final class BrushDrawingView: UIView {
+    var image: UIImage?
+    var mask = WatermarkBrushMask()
+    var showMask = true
+    var changed: ((WatermarkBrushPoint?, Bool) -> Void)?
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        isOpaque = false
+        isMultipleTouchEnabled = true
+        let paint = UIPanGestureRecognizer(target: self, action: #selector(paint(_:)))
+        paint.minimumNumberOfTouches = 1
+        paint.maximumNumberOfTouches = 1
+        addGestureRecognizer(paint)
+        let tap = UITapGestureRecognizer(target: self, action: #selector(tap(_:)))
+        tap.require(toFail: paint)
+        addGestureRecognizer(tap)
+    }
+    required init?(coder: NSCoder) { super.init(coder: coder) }
+    private func point(_ location: CGPoint) -> WatermarkBrushPoint? {
+        guard bounds.width > 0, bounds.height > 0 else { return nil }
+        return WatermarkBrushPoint(x: Double(min(max(location.x / bounds.width, 0), 1)),
+                                   y: Double(min(max(location.y / bounds.height, 0), 1)))
+    }
+    @objc private func paint(_ gesture: UIPanGestureRecognizer) {
+        switch gesture.state {
+        case .began, .changed: changed?(point(gesture.location(in: self)), false)
+        case .ended: changed?(point(gesture.location(in: self)), true)
+        case .cancelled, .failed: changed?(nil, true)
+        default: break
+        }
+    }
+    @objc private func tap(_ gesture: UITapGestureRecognizer) { changed?(point(gesture.location(in: self)), true) }
+    override func draw(_ rect: CGRect) {
+        image?.draw(in: bounds)
+        guard showMask, let context = UIGraphicsGetCurrentContext() else { return }
+        context.saveGState()
+        context.setAlpha(0.45)
+        context.beginTransparencyLayer(auxiliaryInfo: nil)
+        context.setFillColor(UIColor.red.cgColor)
+        for box in mask.rectangles {
+            context.fill(CGRect(x: box.x * bounds.width, y: box.y * bounds.height, width: box.width * bounds.width, height: box.height * bounds.height))
+        }
+        for stroke in mask.strokes {
+            context.saveGState()
+            context.setBlendMode(stroke.erase ? .clear : .normal)
+            context.setFillColor(UIColor.red.cgColor)
+            context.setStrokeColor(UIColor.red.cgColor)
+            context.scaleBy(x: stroke.radiusX * bounds.width, y: stroke.radiusY * bounds.height)
+            context.setLineWidth(2)
+            context.setLineCap(.round)
+            context.setLineJoin(.round)
+            if let first = stroke.points.first {
+                let start = CGPoint(x: first.x / stroke.radiusX, y: first.y / stroke.radiusY)
+                if stroke.points.count == 1 { context.fillEllipse(in: CGRect(x: start.x - 1, y: start.y - 1, width: 2, height: 2)) }
+                else {
+                    context.beginPath(); context.move(to: start)
+                    for p in stroke.points.dropFirst() { context.addLine(to: CGPoint(x: p.x / stroke.radiusX, y: p.y / stroke.radiusY)) }
+                    context.strokePath()
+                }
+            }
+            context.restoreGState()
+        }
+        context.endTransparencyLayer()
+        context.restoreGState()
     }
 }

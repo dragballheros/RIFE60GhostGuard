@@ -65,3 +65,38 @@ CVPixelBufferUnlockBaseAddress(result, .readOnly)
 CVPixelBufferUnlockBaseAddress(source, .readOnly)
 try require(changedInside > 100, "model must restore the selected watermark")
 print("ANIME_INPAINT_PASS: recovery/orientation/real inference/outside-mask identity; changedChannels=\(changedInside); seconds=\(Date().timeIntervalSince(start))")
+
+let paintStroke = WatermarkBrushStroke(points: [WatermarkBrushPoint(x: 0.38, y: 0.33), WatermarkBrushPoint(x: 0.49, y: 0.39)], radiusX: 0.025, radiusY: 0.05, erase: false)
+let eraser = WatermarkBrushStroke(points: [WatermarkBrushPoint(x: 0.435, y: 0.36)], radiusX: 0.02, radiusY: 0.04, erase: true)
+let brush = WatermarkBrushMask(strokes: [paintStroke, eraser])
+guard let brushRegion = brush.region else { fatalError("missing brush bounds") }
+let brushConfiguration = WatermarkConfiguration(enabled: true, regions: [brushRegion], paddingPixels: 0)
+try require(WatermarkConfiguration.decodeRegions(brushConfiguration.serializedRegions) == [brushRegion], "brush/eraser recovery round trip")
+let brushMapped = brushConfiguration.inEncodedOrientation(size: CGSize(width: 640, height: 320), transform: transform)
+guard let mappedStroke = brushMapped.regions.first?.brush?.strokes.first else { fatalError("missing rotated stroke") }
+try require(abs(mappedStroke.points[0].x - paintStroke.points[0].y) < 0.000001 && abs(mappedStroke.points[0].y - (1 - paintStroke.points[0].x)) < 0.000001, "brush orientation mapping")
+let paintedPixels = brush.raster(width: width, height: height, padding: 0)
+try require(paintedPixels[115 * width + 278] == 0, "eraser hole remains unmasked")
+let brushRemover = try AnimeWatermarkRemover(configuration: brushConfiguration, modelURL: modelURL)
+let brushResult = try brushRemover.apply(source)
+CVPixelBufferLockBaseAddress(source, .readOnly)
+CVPixelBufferLockBaseAddress(brushResult, .readOnly)
+guard let brushBase = CVPixelBufferGetBaseAddress(brushResult) else { fatalError("missing brush output") }
+let brushOutput = brushBase.assumingMemoryBound(to: UInt8.self)
+let brushStride = CVPixelBufferGetBytesPerRow(brushResult)
+var brushChanges = 0
+for y in 0..<height {
+    for x in 0..<width {
+        for channel in 0..<4 {
+            let original = pixels[y * stride + x * 4 + channel]
+            let actual = brushOutput[y * brushStride + x * 4 + channel]
+            if paintedPixels[y * width + x] == 0 || channel == 3 {
+                try require(original == actual, "brush unpainted pixels / erased holes / alpha must be byte identical")
+            } else if original != actual { brushChanges += 1 }
+        }
+    }
+}
+CVPixelBufferUnlockBaseAddress(brushResult, .readOnly)
+CVPixelBufferUnlockBaseAddress(source, .readOnly)
+try require(brushChanges > 100, "brush real inference must modify painted pixels")
+print("BRUSH_MASK_PASS: stroke/eraser recovery, rotation, real inference, exact unpainted identity; changedChannels=\(brushChanges)")
