@@ -63,7 +63,7 @@ final class GenerativeVideoEngine {
         let seed = configuration.seed >= 0 ? configuration.seed : Int64.random(in: 0...Int64.max)
         let result = try await generate(packed, count: frames.count, width: width, height: height, fps: sourceFPS, configuration: configuration, seed: seed, progress: progress)
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("AnimeGenerativeEdit-(UUID().uuidString).mov")
-        try encode(result.frames, width: width, height: height, fps: result.fps, to: url)
+        try encode(result.0, width: width, height: height, fps: result.1, to: url)
         progress(1, "Generative Edit complete")
         return url
     }
@@ -73,8 +73,8 @@ final class GenerativeVideoEngine {
                           progress: @escaping @Sendable (Double, String) -> Void) async throws -> ([Data], Int) {
         try await Task.detached(priority: .userInitiated) {
             var output: UnsafeMutablePointer<UInt8>?
-            var outputCount = 0
-            var outputFPS = fps
+            var outputCount: Int32 = 0
+            var outputFPS: Int32 = Int32(fps)
             let ok = data.withUnsafeBytes { raw in
                 configuration.prompt.withCString { prompt in
                     configuration.negativePrompt.withCString { negative in
@@ -87,12 +87,13 @@ final class GenerativeVideoEngine {
             }
             guard ok != 0, let output else { throw GenerativeEditError.backendUnavailable(String(cString: ge_last_error())) }
             let bytes = width * height * 4
+            let generatedCount = Int(outputCount)
             var frames = [Data]()
-            frames.reserveCapacity(outputCount)
-            for i in 0..<outputCount { frames.append(Data(bytes: output.advanced(by: i * bytes), count: bytes)) }
+            frames.reserveCapacity(generatedCount)
+            for i in 0..<generatedCount { frames.append(Data(bytes: output.advanced(by: i * bytes), count: bytes)) }
             ge_free_frames(output)
             progress(0.9, "Generative Edit • reconstructed (outputCount) frames")
-            return (frames, outputFPS)
+            return (frames, Int(outputFPS))
 
         }.value
     }
