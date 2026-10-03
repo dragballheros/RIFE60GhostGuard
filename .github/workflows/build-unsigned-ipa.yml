@@ -1,4 +1,5 @@
 name: Build Unsigned IPA
+# Rebuild trigger after reverting mobile compression restoration
 
 on:
   workflow_dispatch:
