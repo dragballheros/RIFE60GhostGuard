@@ -30,29 +30,15 @@ final class SocialCompressionRestorer {
         let height = CVPixelBufferGetHeight(source)
         let output = try makePixelBuffer(width: width, height: height)
 
-        if width <= tileSize && height <= tileSize {
-            let tile = try makeTile(source, rect: CGRect(x: 0, y: 0, width: width, height: height))
-            let restored = try infer(tile)
-            try render(restored, into: output, rect: CGRect(x: 0, y: 0, width: width, height: height))
-            return output
-        }
-
         var accum = [Float](repeating: 0, count: width * height * 4)
         var weights = [Float](repeating: 0, count: width * height)
 
-        let xs = tileStarts(length: width)
-        let ys = tileStarts(length: height)
-
-        for y in ys {
-            for x in xs {
+        for y in tileStarts(length: height) {
+            for x in tileStarts(length: width) {
                 try autoreleasepool {
-                    let rect = CGRect(
-                        x: x,
-                        y: y,
-                        width: min(tileSize, width - x),
-                        height: min(tileSize, height - y)
-                    )
-                    let tile = try makeTile(source, rect: rect)
+                    let cropWidth = min(tileSize, width - x)
+                    let cropHeight = min(tileSize, height - y)
+                    let tile = try makeTile(source, originX: x, originY: y)
                     let restored = try infer(tile)
                     try blend(
                         restored,
@@ -62,8 +48,8 @@ final class SocialCompressionRestorer {
                         destinationHeight: height,
                         originX: x,
                         originY: y,
-                        cropWidth: Int(rect.width),
-                        cropHeight: Int(rect.height)
+                        cropWidth: cropWidth,
+                        cropHeight: cropHeight
                     )
                 }
             }
@@ -88,14 +74,23 @@ final class SocialCompressionRestorer {
         return values
     }
 
-    private func makeTile(_ source: CVPixelBuffer, rect: CGRect) throws -> CVPixelBuffer {
+    private func makeTile(_ source: CVPixelBuffer, originX: Int, originY: Int) throws -> CVPixelBuffer {
         let tile = try makePixelBuffer(width: tileSize, height: tileSize)
-        let image = CIImage(cvPixelBuffer: source).cropped(to: rect)
-        let sx = CGFloat(tileSize) / max(rect.width, 1)
-        let sy = CGFloat(tileSize) / max(rect.height, 1)
-        let scaled = image.transformed(by: CGAffineTransform(scaleX: sx, y: sy))
+        let sourceImage = CIImage(cvPixelBuffer: source)
+        let rect = CGRect(
+            x: originX,
+            y: originY,
+            width: min(tileSize, CVPixelBufferGetWidth(source) - originX),
+            height: min(tileSize, CVPixelBufferGetHeight(source) - originY)
+        )
+        let cropped = sourceImage
+            .cropped(to: rect)
+            .transformed(by: CGAffineTransform(translationX: -rect.minX, y: -rect.minY))
+            .clampedToExtent()
+            .cropped(to: CGRect(x: 0, y: 0, width: tileSize, height: tileSize))
+
         context.render(
-            scaled,
+            cropped,
             to: tile,
             bounds: CGRect(x: 0, y: 0, width: tileSize, height: tileSize),
             colorSpace: CGColorSpace(name: CGColorSpace.sRGB)
