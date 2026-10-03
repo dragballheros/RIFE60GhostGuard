@@ -29,7 +29,14 @@ final class RealCUGANPass {
     // Core Image can reuse the Metal texture bindings for IOSurface-backed pixel buffers.
     // Real-CUGAN renders one tile in and one tile out per prediction, so avoiding repeated
     // CVPixelBuffer -> Metal texture setup is particularly valuable on long 4K runs.
-    // Keep Core Image's intermediate cache disabled to reduce per-tile memory churn.\n    // The CVMetalTextureCache CIContextOption is unavailable in the Xcode 16.4 SDK used\n    // by the unsigned build, so retain the IOSurface/Metal-compatible pixel-buffer pools\n    // as the reusable pixel-buffer boundary without using a version-fragile option key.\n    private lazy var ciContext: CIContext = CIContext(options: [.cacheIntermediates: false])\n    private let colorSpace = CGColorSpaceCreateDeviceRGB()\n\n    private let colorPopGrade: ColorPopGrade?
+    // Keep Core Image's intermediate cache disabled to reduce per-tile memory churn.
+    // The CVMetalTextureCache CIContextOption is unavailable in the Xcode 16.4 SDK used
+    // by the unsigned build, so retain the IOSurface/Metal-compatible pixel-buffer pools
+    // as the reusable pixel-buffer boundary without using a version-fragile option key.
+    private lazy var ciContext: CIContext = CIContext(options: [.cacheIntermediates: false])
+    private let colorSpace = CGColorSpaceCreateDeviceRGB()
+
+    private let colorPopGrade: ColorPopGrade?
     private var renderInSeconds = 0.0
     private var predictionSeconds = 0.0
     private var stitchSeconds = 0.0
