@@ -22,34 +22,22 @@ enum GenerativeEditError: LocalizedError {
     }
 }
 
-#if canImport(GenerativeEditCPP)
-import GenerativeEditCPP
-#endif
-
 final class GenerativeVideoEngine {
     private var handle: OpaquePointer?
 
     func load() throws {
         guard GenerativeModelStore.installed else { throw GenerativeEditError.modelsMissing }
         guard ProcessInfo.processInfo.physicalMemory >= 6 * 1024 * 1024 * 1024 else { throw GenerativeEditError.memoryUnavailable }
-        #if canImport(GenerativeEditCPP)
         handle = ge_create(GenerativeModelStore.diffusion.path, GenerativeModelStore.vae.path, GenerativeModelStore.textEncoder.path)
         guard handle != nil else { throw GenerativeEditError.backendUnavailable(String(cString: ge_last_error())) }
-        #else
-        throw GenerativeEditError.backendUnavailable("The native Metal generative backend is not linked into this build.")
-        #endif
     }
 
     func cancel() {
-        #if canImport(GenerativeEditCPP)
         if let handle { ge_cancel(handle) }
-        #endif
     }
 
     func unload() {
-        #if canImport(GenerativeEditCPP)
         if let handle { ge_destroy(handle) }
-        #endif
         handle = nil
     }
 
@@ -84,7 +72,6 @@ final class GenerativeVideoEngine {
                           configuration: GenerativeEditConfiguration, seed: Int64,
                           progress: @escaping @Sendable (Double, String) -> Void) async throws -> ([Data], Int) {
         try await Task.detached(priority: .userInitiated) {
-            #if canImport(GenerativeEditCPP)
             var output: UnsafeMutablePointer<UInt8>?
             var outputCount = 0
             var outputFPS = fps
@@ -106,9 +93,7 @@ final class GenerativeVideoEngine {
             ge_free_frames(output)
             progress(0.9, "Generative Edit • reconstructed (outputCount) frames")
             return (frames, outputFPS)
-            #else
-            throw GenerativeEditError.backendUnavailable("Native Metal generative backend unavailable.")
-            #endif
+
         }.value
     }
 
