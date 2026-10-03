@@ -1,6 +1,7 @@
 import Foundation
 import AVFoundation
 import CoreVideo
+import Darwin
 
 struct GenerativeEditConfiguration: Equatable, Sendable {
     var prompt = ""
@@ -17,7 +18,7 @@ enum GenerativeEditError: LocalizedError {
         case .modelsMissing: return "Install the VACE diffusion GGUF, UMT5-XXL encoder, and Wan VAE first."
         case .invalidVideo: return "The selected video could not be decoded into a temporal edit window."
         case .backendUnavailable(let message): return message
-        case .memoryUnavailable: return "This iPhone does not currently have enough memory headroom for the VACE video model. The app blocked the edit instead of letting the model stall the phone."
+        case .memoryUnavailable: return "iOS has under 700 MB free. Close other apps and run the edit again. A 14 Pro Max can load Wan 2.1 VACE 1.3B."
         }
     }
 }
@@ -27,7 +28,9 @@ final class GenerativeVideoEngine {
 
     func load() throws {
         guard GenerativeModelStore.installed else { throw GenerativeEditError.modelsMissing }
-        guard ProcessInfo.processInfo.physicalMemory >= 6 * 1024 * 1024 * 1024 else { throw GenerativeEditError.memoryUnavailable }
+        // 14 Pro Max is 6 GB marketing RAM but reports about 5.5 GiB. Block only when iOS has almost nothing free.
+        let available = os_proc_available_memory()
+        guard available >= 700 * 1024 * 1024 else { throw GenerativeEditError.memoryUnavailable }
         handle = ge_create(GenerativeModelStore.diffusion.path, GenerativeModelStore.vae.path, GenerativeModelStore.textEncoder.path)
         guard handle != nil else { throw GenerativeEditError.backendUnavailable(String(cString: ge_last_error())) }
     }
