@@ -49,9 +49,10 @@ jobs:
           mkdir -p Models CompiledModels
           if [ ! -f Models/SocialCompressionGuard.mlmodel ]; then
             python -m pip install --upgrade pip
-            python -m pip install 'onnx2coreml==1.1.0'
+            python -m pip install 'onnx2coreml==1.1.0' 'onnxsim==0.4.36'
             curl -L --fail --retry 3 -o /tmp/social-compression.onnx https://huggingface.co/notaneimu/onnx-image-models/resolve/42bc0d52e3f9f015b3f0106912c5342462ef0569/1x-Kim2091-DeJpeg-v0.onnx
-            onnx2coreml convert /tmp/social-compression.onnx -o Models/SocialCompressionGuard.mlmodel --format mlmodel
+            python -m onnxsim /tmp/social-compression.onnx /tmp/social-compression-simplified.onnx
+            onnx2coreml convert /tmp/social-compression-simplified.onnx -o Models/SocialCompressionGuard.mlmodel --format mlmodel
           fi
           test -s Models/SocialCompressionGuard.mlmodel
 
