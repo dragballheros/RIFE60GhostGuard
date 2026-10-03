@@ -185,7 +185,8 @@ final class ColorPopGrade {
             }
         }
 
-        (rr, gg, bb) = rgb(color.h, color.s, color.v)
+        // Do not rebuild RGB from the pre-nudge HSV here; that would discard
+        // the temperature correction just applied to rr/gg/bb.
 
         // Fade the global grade, but let the skin-specific temperature/hue
         // correction remain active where skin is confidently detected.
