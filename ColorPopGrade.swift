@@ -166,10 +166,10 @@ final class ColorPopGrade {
             let targetHue = 19.0
             let hueDelta = shortestHueDelta(from: color.h, to: targetHue)
             color.h = normalizeHue(color.h + hueDelta * 0.90 * correction)
-            color.s = clamp(color.s * (1 - 0.12 * correction))
+            color.s = clamp(color.s * (1 - 0.22 * correction))
             // Whiten by correcting temperature/hue, not by lifting exposure.
             // The small value change keeps skin from looking washed out.
-            color.v = clamp(color.v * (1 + 0.008 * correction))
+            color.v = clamp(color.v * (1 + 0.018 * correction))
             (rr, gg, bb) = rgb(color.h, color.s, color.v)
 
             let skinLumaBefore = luma(rr, gg, bb)
