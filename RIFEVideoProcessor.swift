@@ -352,7 +352,7 @@ final class RIFEVideoProcessor {
                     if let fastMotionGuard,
                        let fastCheck,
                        fastCheck.fastMotion,
-                       (existingGuardRejected || fastCheck.reject),
+                       (existingGuardRejected || fastCheck.reject || fastCheck.recoveryRecommended),
                        let retry = try motionAwareRetry(t: t) {
                         let retryGuard = autoreleasepool {
                             guarder.inspect(previous: prevPB, generated: retry, current: currentPB)
@@ -376,6 +376,8 @@ final class RIFEVideoProcessor {
                             )
                         }
                     } else if existingGuardRejected || (fastCheck?.reject ?? false) {
+                        // Hard failures still preserve the timestamp. This is
+                        // the last-resort path after recovery was unavailable.
                         rejected += 1
                         chosen = t < 0.5 ? prevPB : currentPB
                     }
