@@ -1,1 +1,0 @@
-module VACECPP { header "stable-diffusion.h" export * }
