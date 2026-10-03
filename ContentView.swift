@@ -9,6 +9,7 @@ struct ContentView: View {
     @StateObject private var pipController = ProcessingPiPController()
     @State private var showingImporter = false
     @State private var showingGenerativeModelImporter = false
+    @State private var generativeEditExpanded = false
     @State private var showingWatermarkEditor = false
     @State private var showingPhotosPicker = false
     @State private var showingExportFolderPicker = false
@@ -90,22 +91,49 @@ struct ContentView: View {
                         }
                     }
 
-                    Section("Anime Generative Edit") {
-                        if vm.inputKind == .video {
-                            TextField("Edit prompt", text: $vm.generativeEdit.prompt, axis: .vertical).lineLimit(3...6).disabled(vm.isBusy || vm.isImporting)
-                            TextField("Negative prompt", text: $vm.generativeEdit.negativePrompt, axis: .vertical).lineLimit(2...5).disabled(vm.isBusy || vm.isImporting)
-                            HStack { Text("Edit strength"); Spacer(); Text(String(format: "%.2f", vm.generativeEdit.strength)) }
-                            Slider(value: $vm.generativeEdit.strength, in: 0.45...1.0, step: 0.01).disabled(vm.isBusy || vm.isImporting)
-                            Stepper("Steps: \(vm.generativeEdit.steps)", value: $vm.generativeEdit.steps, in: 4...20).disabled(vm.isBusy || vm.isImporting)
-                            HStack { Text("Seed"); Spacer(); TextField("Random", value: $vm.generativeEdit.seed, format: .number).multilineTextAlignment(.trailing).frame(width: 120) }
-                            Toggle("Preserve original audio", isOn: $vm.preserveAudio).disabled(vm.isBusy || vm.isImporting)
-                            Button { showingGenerativeModelImporter = true } label: { Label("Install VACE model files…", systemImage: "arrow.down.doc") }.disabled(vm.isBusy || vm.isImporting)
-                            Text(vm.generativeModelStatus).font(.caption).foregroundStyle(.secondary)
-                            Text("True temporal reconstruction: the model regenerates the video from a multi-frame source window instead of digitally placing a new object on top. The 1.3B profile uses up to 832×480 and 33-frame windows.").font(.caption).foregroundStyle(.secondary)
-                            Button { vm.startGenerativeEdit() } label: { Label("Run Anime Generative Edit", systemImage: "wand.and.stars") }.disabled(vm.isBusy || vm.isImporting || vm.isBenchmarking || vm.inputURL == nil || vm.generativeEdit.prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !GenerativeModelStore.installed)
-                            if !vm.generativeEditStatus.isEmpty { Text(vm.generativeEditStatus).font(.caption).foregroundStyle(.secondary) }
-                        } else {
-                            Text("Select a video to use generative video editing.").font(.caption).foregroundStyle(.secondary)
+                    Section {
+                        DisclosureGroup(isExpanded: $generativeEditExpanded) {
+                            if vm.inputKind == .video {
+                                TextField("Edit prompt", text: $vm.generativeEdit.prompt, axis: .vertical)
+                                    .lineLimit(3...6)
+                                    .disabled(vm.isBusy || vm.isImporting)
+                                TextField("Negative prompt", text: $vm.generativeEdit.negativePrompt, axis: .vertical)
+                                    .lineLimit(2...5)
+                                    .disabled(vm.isBusy || vm.isImporting)
+                                HStack { Text("Edit strength"); Spacer(); Text(String(format: "%.2f", vm.generativeEdit.strength)) }
+                                Slider(value: $vm.generativeEdit.strength, in: 0.45...1.0, step: 0.01)
+                                    .disabled(vm.isBusy || vm.isImporting)
+                                Stepper("Steps: \(vm.generativeEdit.steps)", value: $vm.generativeEdit.steps, in: 4...20)
+                                    .disabled(vm.isBusy || vm.isImporting)
+                                HStack {
+                                    Text("Seed")
+                                    Spacer()
+                                    TextField("Random", value: $vm.generativeEdit.seed, format: .number)
+                                        .keyboardType(.numbersAndPunctuation)
+                                        .multilineTextAlignment(.trailing)
+                                        .frame(width: 120)
+                                }
+                                Toggle("Preserve original audio", isOn: $vm.preserveAudio)
+                                    .disabled(vm.isBusy || vm.isImporting)
+                                Button { showingGenerativeModelImporter = true } label: {
+                                    Label("Install VACE model files…", systemImage: "arrow.down.doc")
+                                }
+                                .buttonStyle(.borderless)
+                                .disabled(vm.isBusy || vm.isImporting)
+                                Text(vm.generativeModelStatus).font(.caption).foregroundStyle(.secondary)
+                                Text("True temporal reconstruction: the model regenerates the video from a multi-frame source window instead of digitally placing a new object on top. The 1.3B profile uses up to 832×480 and 33-frame windows.")
+                                    .font(.caption).foregroundStyle(.secondary)
+                                Button { vm.startGenerativeEdit() } label: {
+                                    Label("Run Anime Generative Edit", systemImage: "wand.and.stars")
+                                }
+                                .buttonStyle(.borderless)
+                                .disabled(vm.isBusy || vm.isImporting || vm.isBenchmarking || vm.inputURL == nil)
+                                if !vm.generativeEditStatus.isEmpty { Text(vm.generativeEditStatus).font(.caption).foregroundStyle(.secondary) }
+                            } else {
+                                Text("Select a video to use generative video editing.").font(.caption).foregroundStyle(.secondary)
+                            }
+                        } label: {
+                            Label("Anime Generative Edit", systemImage: "wand.and.stars")
                         }
                     }
 
@@ -237,6 +265,14 @@ struct ContentView: View {
                 .navigationTitle("RIFE 60")
                 .photosPicker(isPresented: $showingPhotosPicker, selection: $photoItems, maxSelectionCount: 100, selectionBehavior: .ordered, matching: .any(of: [.videos, .images]), photoLibrary: .shared())
                 .fileImporter(isPresented: $showingImporter, allowedContentTypes: [.movie, .mpeg4Movie, .quickTimeMovie, .video, .image], allowsMultipleSelection: true) { result in Task { await vm.handleImport(result) } }
+                .fileImporter(isPresented: $showingGenerativeModelImporter, allowedContentTypes: [.data, .item], allowsMultipleSelection: true) { result in
+                    switch result {
+                    case .success(let urls):
+                        vm.installGenerativeModels(urls)
+                    case .failure(let error):
+                        vm.errorText = error.localizedDescription
+                    }
+                }
                 .fileImporter(isPresented: $showingExportFolderPicker, allowedContentTypes: [.folder], allowsMultipleSelection: false) { result in
                     vm.handleExportFolderSelection(result)
                     lastCompletedVideoURL = LastCompletedVideoStore.latestCompletedVideo() ?? lastCompletedVideoURL
