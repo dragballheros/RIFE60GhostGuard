@@ -349,7 +349,8 @@ final class RIFEVideoProcessor {
 
                     // A fast-motion failure gets a real interpolation retry,
                     // not an immediate duplicate/source-frame fallback.
-                    if let fastCheck,
+                    if let fastMotionGuard,
+                       let fastCheck,
                        fastCheck.fastMotion,
                        (existingGuardRejected || fastCheck.reject),
                        let retry = try motionAwareRetry(t: t) {
