@@ -67,6 +67,13 @@ for strength in [0.5, 1.0] {
     let skin = try readPatch(grade.apply(source))
     let before = metrics((240, 190, 160)), after = metrics(skin)
     precondition(after.luma > before.luma && after.hue < before.hue && after.saturation < before.saturation, "skin must brighten, desaturate and move away from orange: \(skin)")
+
+    // Shaded-arm regression: darker peach/orange skin must still receive the
+    // same temperature correction instead of falling through the luma gate.
+    let shadowSkinRGB = (120, 82, 66)
+    let shadowSkin = try readPatch(grade.apply(makePatch(shadowSkinRGB)))
+    let shadowBefore = metrics(shadowSkinRGB), shadowAfter = metrics(shadowSkin)
+    precondition(shadowAfter.luma > shadowBefore.luma && shadowAfter.hue < shadowBefore.hue && shadowAfter.saturation < shadowBefore.saturation, "shaded skin must brighten, desaturate and move away from orange: \(shadowSkin)")
     for color in [(80, 135, 230), (60, 190, 100)] {
         let result = try readPatch(grade.apply(makePatch(color)))
         precondition(metrics(result).saturation > metrics(color).saturation, "colored patch did not gain vibrance: \(color) -> \(result)")
