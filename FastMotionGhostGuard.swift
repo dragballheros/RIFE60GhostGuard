@@ -9,6 +9,7 @@ final class FastMotionGhostGuard {
     struct Result {
         let fastMotion: Bool
         let reject: Bool
+        let recoveryRecommended: Bool
         let motionScore: Double
         let artifactScore: Double
     }
@@ -27,13 +28,13 @@ final class FastMotionGhostGuard {
         guard CVPixelBufferGetPixelFormatType(previous) == kCVPixelFormatType_32BGRA,
               CVPixelBufferGetPixelFormatType(generated) == kCVPixelFormatType_32BGRA,
               CVPixelBufferGetPixelFormatType(current) == kCVPixelFormatType_32BGRA else {
-            return Result(fastMotion: false, reject: false, motionScore: 0, artifactScore: 0)
+            return Result(fastMotion: false, reject: false, recoveryRecommended: false, motionScore: 0, artifactScore: 0)
         }
 
         let width = min(CVPixelBufferGetWidth(previous), min(CVPixelBufferGetWidth(generated), CVPixelBufferGetWidth(current)))
         let height = min(CVPixelBufferGetHeight(previous), min(CVPixelBufferGetHeight(generated), CVPixelBufferGetHeight(current)))
         guard width >= 64, height >= 64 else {
-            return Result(fastMotion: false, reject: false, motionScore: 0, artifactScore: 0)
+            return Result(fastMotion: false, reject: false, recoveryRecommended: false, motionScore: 0, artifactScore: 0)
         }
 
         CVPixelBufferLockBaseAddress(previous, .readOnly)
@@ -137,12 +138,24 @@ final class FastMotionGhostGuard {
         let rangeSignal = min(rangeViolationFraction / 0.20, 1.0)
         let blurSignal = min(blurCollapseFraction / 0.28, 1.0)
         let artifactScore = 0.58 * rangeSignal + 0.42 * blurSignal
+        // "Recovery recommended" is intentionally less strict than "reject".
+        // A frame can be visibly difficult without crossing the hard rejection
+        // threshold. The processor uses this signal to spend extra RIFE work
+        // on suspicious fast-motion frames while still preserving every
+        // requested 60 FPS timestamp.
+        let recoveryRecommended =
+            artifactScore >= max(0.42, artifactGate - 0.18) ||
+            rangeViolationFraction >= 0.08 ||
+            blurCollapseFraction >= 0.12
+
         let reject = artifactScore >= artifactGate &&
             (rangeViolationFraction >= 0.14 || blurCollapseFraction >= 0.20)
 
         return Result(
             fastMotion: true,
             reject: reject,
+            recoveryRecommended: recoveryRecommended,
+            recoveryRecommended: recoveryRecommended,
             motionScore: motionScore,
             artifactScore: artifactScore
         )
