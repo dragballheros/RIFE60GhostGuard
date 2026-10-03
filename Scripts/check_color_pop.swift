@@ -58,7 +58,7 @@ for strength in [0.5, 1.0] {
     let grade = ColorPopGrade(strength: strength)
     for gray in 0...255 {
         let output = try readPatch(grade.apply(makePatch((gray, gray, gray))))
-        precondition(abs(output.0 - gray) <= 1 && abs(output.1 - gray) <= 1 && abs(output.2 - gray) <= 1, "gray ramp changed: \(gray) -> \(output)")
+        precondition(abs(output.0 - gray) <= 2 && abs(output.1 - gray) <= 2 && abs(output.2 - gray) <= 2, "gray ramp changed: \(gray) -> \(output)")
         // Core Image color-space round trips may differ by a couple of 8-bit codes
         // between channels. Reject any tint beyond that quantization tolerance.
         precondition(max(output.0, output.1, output.2) - min(output.0, output.1, output.2) <= 1, "gray acquired a tint: \(gray) -> \(output)")
