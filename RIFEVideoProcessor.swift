@@ -261,7 +261,66 @@ final class RIFEVideoProcessor {
                 throw ProcessorError.conversionFailed("Streaming tiled HQ RIFE returned an unexpected frame count")
             }
 
-            var fastMotionFallbackUsed = false
+            // Fast-motion recovery is deliberately per-timestamp. We keep a
+            // cached midpoint for this source span so multiple difficult 60 FPS
+            // timestamps do not repeat the first half of the recovery work.
+            var retryMidpoint: CVPixelBuffer?
+            var retryMidpointAttempted = false
+
+            func motionAwareRetry(t: Double) throws -> CVPixelBuffer? {
+                guard let fastMotionGuard else { return nil }
+
+                if !retryMidpointAttempted {
+                    retryMidpointAttempted = true
+                    let midpointStarted = CFAbsoluteTimeGetCurrent()
+                    let midpoint = try autoreleasepool {
+                        let frames = try interpolator.interpolate(
+                            previous: prevPB,
+                            current: currentPB,
+                            timesteps: [0.5]
+                        )
+                        return frames.first
+                    }
+                    rifeSeconds += CFAbsoluteTimeGetCurrent() - midpointStarted
+                    retryMidpoint = midpoint
+                }
+
+                guard let midpoint = retryMidpoint else { return nil }
+
+                // Replace one large A→B jump with two smaller temporal
+                // problems. This follows RIFE's recursive interpolation idea:
+                // difficult motion is easier when the target is reconstructed
+                // from a nearer temporal neighbor.
+                if abs(t - 0.5) <= 0.001 {
+                    return midpoint
+                }
+
+                let retryPrevious: CVPixelBuffer
+                let retryCurrent: CVPixelBuffer
+                let retryT: Float
+
+                if t < 0.5 {
+                    retryPrevious = prevPB
+                    retryCurrent = midpoint
+                    retryT = Float(min(max(t * 2.0, 0.001), 0.999))
+                } else {
+                    retryPrevious = midpoint
+                    retryCurrent = currentPB
+                    retryT = Float(min(max((t - 0.5) * 2.0, 0.001), 0.999))
+                }
+
+                let retryStarted = CFAbsoluteTimeGetCurrent()
+                let result = try autoreleasepool {
+                    let frames = try interpolator.interpolate(
+                        previous: retryPrevious,
+                        current: retryCurrent,
+                        timesteps: [retryT]
+                    )
+                    return frames.first
+                }
+                rifeSeconds += CFAbsoluteTimeGetCurrent() - retryStarted
+                return result
+            }
 
             for index in synthesized.indices {
                 try Task.checkCancellation()
@@ -269,6 +328,7 @@ final class RIFEVideoProcessor {
                 let t = Double(requestedTimesteps[index])
                 var chosen: CVPixelBuffer = synth
                 var existingGuardRejected = false
+                var fastCheck: FastMotionGhostGuard.Result?
 
                 if config.ghostProtection {
                     let started = CFAbsoluteTimeGetCurrent()
@@ -276,30 +336,47 @@ final class RIFEVideoProcessor {
                         guarder.inspect(previous: prevPB, generated: synth, current: currentPB)
                     }
                     ghostSeconds += CFAbsoluteTimeGetCurrent() - started
-                    if check.reject {
-                        rejected += 1
-                        existingGuardRejected = true
-                        chosen = t < 0.5 ? prevPB : currentPB
-                    }
+                    existingGuardRejected = check.reject
 
-                    // Narrow second pass: only inspect frames when the source
-                    // endpoints show significant motion, and never drop a
-                    // timestamp. At most one extra fallback is allowed per
-                    // source span so fast motion does not turn into a stream
-                    // of duplicated frames.
-                    if !existingGuardRejected && !fastMotionFallbackUsed,
-                       let fastMotionGuard {
-                        let fastCheck = autoreleasepool {
+                    if let fastMotionGuard {
+                        let fastStarted = CFAbsoluteTimeGetCurrent()
+                        let result = autoreleasepool {
                             fastMotionGuard.inspect(previous: prevPB, generated: synth, current: currentPB)
                         }
-                        if fastCheck.reject {
+                        ghostSeconds += CFAbsoluteTimeGetCurrent() - fastStarted
+                        fastCheck = result
+                    }
+
+                    // A fast-motion failure gets a real interpolation retry,
+                    // not an immediate duplicate/source-frame fallback.
+                    if let fastCheck,
+                       fastCheck.fastMotion,
+                       (existingGuardRejected || fastCheck.reject),
+                       let retry = try motionAwareRetry(t: t) {
+                        let retryGuard = autoreleasepool {
+                            guarder.inspect(previous: prevPB, generated: retry, current: currentPB)
+                        }
+                        let retryFastGuard = fastMotionGuard.inspect(
+                            previous: prevPB,
+                            generated: retry,
+                            current: currentPB
+                        )
+
+                        if !retryGuard.reject && !retryFastGuard.reject {
+                            chosen = retry
+                            DiagnosticsLogger.shared.log(
+                                "Fast-motion Ghost Guard recovered • motion=\(String(format: "%.3f", fastCheck.motionScore)) • originalArtifact=\(String(format: "%.3f", fastCheck.artifactScore)) • t=\(String(format: "%.3f", t))"
+                            )
+                        } else {
                             rejected += 1
-                            fastMotionFallbackUsed = true
                             chosen = t < 0.5 ? prevPB : currentPB
                             DiagnosticsLogger.shared.log(
-                                "Fast-motion Ghost Guard fallback • motion=\(String(format: "%.3f", fastCheck.motionScore)) • artifact=\(String(format: "%.3f", fastCheck.artifactScore)) • t=\(String(format: "%.3f", t))"
+                                "Fast-motion Ghost Guard final fallback • motion=\(String(format: "%.3f", fastCheck.motionScore)) • artifact=\(String(format: "%.3f", fastCheck.artifactScore)) • t=\(String(format: "%.3f", t))"
                             )
                         }
+                    } else if existingGuardRejected || (fastCheck?.reject ?? false) {
+                        rejected += 1
+                        chosen = t < 0.5 ? prevPB : currentPB
                     }
                 }
 
