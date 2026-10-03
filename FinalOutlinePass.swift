@@ -69,13 +69,13 @@ final class FinalOutlinePass {
         let writer = try AVAssetWriter(outputURL: outURL, fileType: .mov)
         writer.movieFragmentInterval = CMTime(seconds: 2, preferredTimescale: 600)
 
-        let targetTotalBytes = 950_000_000.0
+        let targetTotalBytes = 1_080_000_000.0
         let usableBits = max((targetTotalBytes - 16_000_000.0) * 8.0, 8_000_000.0)
         let audioBits = max(finalAudioBitrate, 0) * seconds
         let sizeBudgetBitrate = max((usableBits - audioBits) / seconds * 0.96, 500_000.0)
-        let qualityBitrate = Double(width * height) * 60.0 * 0.30
-        let videoBitrate = Int(max(500_000.0, min(qualityBitrate, sizeBudgetBitrate, 160_000_000.0)))
-        DiagnosticsLogger.shared.log("Final polish bitrate • selected=\(videoBitrate) • qualityTarget=\(Int(qualityBitrate)) • sizeCeiling=\(Int(sizeBudgetBitrate))")
+        let qualityBitrate = Double(width * height) * 60.0 * 1.80
+        let videoBitrate = Int(max(500_000.0, min(qualityBitrate, sizeBudgetBitrate)))
+        DiagnosticsLogger.shared.log("Final polish bitrate • selected=\(videoBitrate) • high-quality master target=\(Int(targetTotalBytes)) bytes • qualityTarget=\(Int(qualityBitrate)) • sizeCeiling=\(Int(sizeBudgetBitrate)) • delivery optimizer target=900000000 bytes")
 
         let compression: [String: Any] = [
             AVVideoAverageBitRateKey: videoBitrate,
