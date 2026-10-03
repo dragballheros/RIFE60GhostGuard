@@ -70,6 +70,7 @@ final class VideoProcessorViewModel: ObservableObject {
     @Published var preserveAudio = true
     @Published var generativeEdit = GenerativeEditConfiguration()
     @Published var generativeModelStatus = GenerativeModelStore.status
+    @Published var generativeDownloadProgress: Double?
     @Published var generativeEditStatus = ""
     private var generativeEngine: GenerativeVideoEngine?
     @Published var renderPowerMode = true
@@ -235,34 +236,31 @@ final class VideoProcessorViewModel: ObservableObject {
     func cancelBenchmark() { benchmarkTask?.cancel() }
 
     func cancel() { batchCancelRequested = true; currentTask?.cancel() }
-    func installGenerativeModels(_ urls: [URL]) {
-        ensureGenerativeModels()
-    }
-
+    private var generativeDownloadTask: Task<Void, Never>?
     func ensureGenerativeModels() {
-        guard !isImporting else { return }
-        isImporting = true
-        generativeModelStatus = "Downloading Wan 2.1 VACE 1.3B…"
-        Task { [weak self] in
+        guard !GenerativeModelStore.installed, generativeDownloadTask == nil else { return }
+        generativeModelStatus = "Downloading Wan edit model…"
+        generativeDownloadProgress = 0
+        generativeDownloadTask = Task { [weak self] in
             do {
                 try await GenerativeModelStore.ensureInstalled { fraction, message in
                     Task { @MainActor [weak self] in
-                        self?.importProgress = fraction
+                        self?.generativeDownloadProgress = fraction
                         self?.generativeModelStatus = message
                     }
                 }
                 await MainActor.run { [weak self] in
                     self?.generativeModelStatus = GenerativeModelStore.status
                     self?.generativeEditStatus = "Wan edit model ready"
-                    self?.isImporting = false
-                    self?.importProgress = nil
+                    self?.generativeDownloadProgress = nil
+                    self?.generativeDownloadTask = nil
                 }
             } catch {
                 await MainActor.run { [weak self] in
                     self?.errorText = error.localizedDescription
-                    self?.generativeModelStatus = GenerativeModelStore.status
-                    self?.isImporting = false
-                    self?.importProgress = nil
+                    self?.generativeModelStatus = "Wan model download failed. Leave the app open on Wi-Fi and reopen it to retry."
+                    self?.generativeDownloadProgress = nil
+                    self?.generativeDownloadTask = nil
                 }
             }
         }
@@ -275,7 +273,8 @@ final class VideoProcessorViewModel: ObservableObject {
             return
         }
         guard GenerativeModelStore.installed else {
-            errorText = "Install the three generative model files first."
+            ensureGenerativeModels()
+            errorText = "Wan edit model is still downloading. Keep the app open on Wi-Fi."
             return
         }
         let generation = UUID()
