@@ -7,26 +7,24 @@ struct GenerativeModelStore {
     static var vae: URL { root.appendingPathComponent("vae.safetensors") }
     static var installed: Bool { [diffusion, textEncoder, vae].allSatisfy { FileManager.default.fileExists(atPath: $0.path) } }
     static var status: String {
-        let count = [diffusion, textEncoder, vae].filter { FileManager.default.fileExists(atPath: $0.path) }.count
-        return count == 3 ? "Generative model bundle installed" : "Generative models installed: \(count)/3"
+        let n = [diffusion, textEncoder, vae].filter { FileManager.default.fileExists(atPath: $0.path) }.count
+        return n == 3 ? "Generative model bundle installed" : "Generative models installed: \(n)/3"
     }
     static func install(_ urls: [URL]) throws {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         for source in urls {
-            let name = source.lastPathComponent.lowercased()
+            let n = source.lastPathComponent.lowercased()
             let destination: URL?
-            if name.contains("vace") && name.hasSuffix(".gguf") { destination = diffusion }
-            else if name.contains("umt5") && name.hasSuffix(".gguf") { destination = textEncoder }
-            else if name.contains("vae") && (name.hasSuffix(".safetensors") || name.hasSuffix(".gguf")) { destination = vae }
+            if n.contains("vace") && n.hasSuffix(".gguf") { destination = diffusion }
+            else if n.contains("umt5") && n.hasSuffix(".gguf") { destination = textEncoder }
+            else if n.contains("vae") && n.hasSuffix(".safetensors") { destination = vae }
             else { destination = nil }
             guard let destination else { continue }
-            let secured = source.startAccessingSecurityScopedResource()
-            defer { if secured { source.stopAccessingSecurityScopedResource() } }
+            let access = source.startAccessingSecurityScopedResource()
+            defer { if access { source.stopAccessingSecurityScopedResource() } }
             try? FileManager.default.removeItem(at: destination)
             try FileManager.default.copyItem(at: source, to: destination)
         }
-        guard installed else {
-            throw NSError(domain: "RIFE60Generative", code: 1, userInfo: [NSLocalizedDescriptionKey: "Select the diffusion model, UMT5-XXL encoder, and video VAE."])
-        }
+        guard installed else { throw NSError(domain: "RIFE60Generative", code: 1, userInfo: [NSLocalizedDescriptionKey: "Select the VACE diffusion GGUF, UMT5-XXL GGUF, and Wan VAE files."]) }
     }
 }
