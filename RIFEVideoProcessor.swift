@@ -121,6 +121,9 @@ final class RIFEVideoProcessor {
             sensitivity: config.ghostSensitivity,
             enableSceneCuts: config.sceneCutProtection
         )
+        let fastMotionGuard = config.ghostProtection
+            ? FastMotionGhostGuard(sensitivity: config.ghostSensitivity)
+            : nil
         let compressionGuard = config.compressionProtection ? CompressionGuard() : nil
 
         let outlineEnhancer: OutlineEnhancer?
@@ -258,11 +261,14 @@ final class RIFEVideoProcessor {
                 throw ProcessorError.conversionFailed("Streaming tiled HQ RIFE returned an unexpected frame count")
             }
 
+            var fastMotionFallbackUsed = false
+
             for index in synthesized.indices {
                 try Task.checkCancellation()
                 let synth = synthesized[index]
                 let t = Double(requestedTimesteps[index])
                 var chosen: CVPixelBuffer = synth
+                var existingGuardRejected = false
 
                 if config.ghostProtection {
                     let started = CFAbsoluteTimeGetCurrent()
@@ -272,7 +278,28 @@ final class RIFEVideoProcessor {
                     ghostSeconds += CFAbsoluteTimeGetCurrent() - started
                     if check.reject {
                         rejected += 1
+                        existingGuardRejected = true
                         chosen = t < 0.5 ? prevPB : currentPB
+                    }
+
+                    // Narrow second pass: only inspect frames when the source
+                    // endpoints show significant motion, and never drop a
+                    // timestamp. At most one extra fallback is allowed per
+                    // source span so fast motion does not turn into a stream
+                    // of duplicated frames.
+                    if !existingGuardRejected && !fastMotionFallbackUsed,
+                       let fastMotionGuard {
+                        let fastCheck = autoreleasepool {
+                            fastMotionGuard.inspect(previous: prevPB, generated: synth, current: currentPB)
+                        }
+                        if fastCheck.reject {
+                            rejected += 1
+                            fastMotionFallbackUsed = true
+                            chosen = t < 0.5 ? prevPB : currentPB
+                            DiagnosticsLogger.shared.log(
+                                "Fast-motion Ghost Guard fallback • motion=\(String(format: "%.3f", fastCheck.motionScore)) • artifact=\(String(format: "%.3f", fastCheck.artifactScore)) • t=\(String(format: "%.3f", t))"
+                            )
+                        }
                     }
                 }
 
