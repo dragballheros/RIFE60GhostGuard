@@ -118,7 +118,7 @@ final class FastMotionGhostGuard {
         }
 
         guard sampleCount > 0 else {
-            return Result(fastMotion: false, reject: false, motionScore: 0, artifactScore: 0)
+            return Result(fastMotion: false, reject: false, recoveryRecommended: false, motionScore: 0, artifactScore: 0)
         }
 
         let motionScore = motionSum / Double(sampleCount)
@@ -128,7 +128,7 @@ final class FastMotionGhostGuard {
 
         let fastMotion = motionScore >= motionGate && highMotionFraction >= 0.10
         guard fastMotion else {
-            return Result(fastMotion: false, reject: false, motionScore: motionScore, artifactScore: 0)
+            return Result(fastMotion: false, reject: false, recoveryRecommended: false, motionScore: motionScore, artifactScore: 0)
         }
 
         // Broken RIFE frames in fast motion tend to either push pixels outside
