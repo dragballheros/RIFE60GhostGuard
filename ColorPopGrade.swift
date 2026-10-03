@@ -25,10 +25,9 @@ final class ColorPopGrade {
             .workingColorSpace: space,
             .outputColorSpace: space
         ])
-        if amount > 0, let cube = CIFilter(name: "CIColorCubeWithColorSpace") {
+        if amount > 0, let cube = CIFilter(name: "CIColorCube") {
             cube.setValue(Self.cubeDimension, forKey: "inputCubeDimension")
             cube.setValue(Self.makeCube(strength: amount), forKey: "inputCubeData")
-            cube.setValue(space, forKey: "inputColorSpace")
             self.filter = cube
         } else {
             self.filter = nil
