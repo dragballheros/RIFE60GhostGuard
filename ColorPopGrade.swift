@@ -99,31 +99,49 @@ final class ColorPopGrade {
         let original = hsv(r, g, b)
         let y = luma(r, g, b)
         let chroma = max(r, g, b) - min(r, g, b)
-        // The identity tube is at least one LUT cell wide. Every corner used
-        // to interpolate an exact gray is identity, not just diagonal nodes.
-        let neutralWeight = smoothstep(1.0 / 32.0, 3.0 / 32.0, chroma)
-            * smoothstep(0.04, 0.16, original.s)
-        let protection = neutralWeight * smoothstep(0.02, 0.10, y)
-            * (1 - smoothstep(0.85, 0.98, y))
-        guard s > 0, protection > 0, y > 0 else { return (r, g, b) }
+
+        // Keep neutral/very-low-chroma pixels stable. The previous version
+        // also used this gate for skin, which accidentally disabled most
+        // saturated anime skin and allowed the global warm grade to make it
+        // increasingly yellow.
+        let neutralWeight = 1 - smoothstep(0.0, 0.055, chroma)
+        let protection = (1 - neutralWeight) * smoothstep(0.015, 0.10, y)
+            * (1 - smoothstep(0.92, 1.0, y))
+        guard s > 0, y > 0 else { return (r, g, b) }
 
         // Endpoint-preserving luma S-curve. Mid-gray derivative is 1 + .08*s.
         let newY = clamp(y + 0.08 * s * (y - 0.5) * 4 * y * (1 - y))
-        let ratio = newY / y
+        let ratio = y > 0 ? newY / y : 1
         var rr = clamp(r * ratio)
         var gg = clamp(g * ratio)
         var bb = clamp(b * ratio)
         var color = hsv(rr, gg, bb)
-        let skinHue = smoothstep(8, 16, original.h) * (1 - smoothstep(42, 50, original.h))
 
-        // Suppress vibrance throughout the skin hue window. The corrections
-        // below additionally fade with saturation, preserving fire/sunsets.
-        let vibranceGain = 1 + 0.35 * s * pow(1 - original.s, 1.5) * (1 - skinHue)
+        // Anime skin is commonly a fairly saturated orange/peach. Detect it
+        // directly and correct its white balance independently of the global
+        // grade. The narrower hue window avoids most green foliage and strong
+        // yellow highlights.
+        let skinHue = smoothstep(10, 16, original.h)
+            * (1 - smoothstep(34, 40, original.h))
+        let skinSaturation = smoothstep(0.18, 0.34, original.s)
+            * (1 - smoothstep(0.78, 0.90, original.s))
+        let skinLuma = smoothstep(0.22, 0.42, y)
+            * (1 - smoothstep(0.94, 1.0, y))
+        let skinRedGreen = smoothstep(1.04, 1.10, r / max(g, 0.001))
+            * (1 - smoothstep(1.60, 1.90, r / max(g, 0.001)))
+        let skinGreenBlue = smoothstep(1.15, 1.30, g / max(b, 0.001))
+            * (1 - smoothstep(2.50, 3.10, g / max(b, 0.001)))
+        let skinWeight = skinHue * skinSaturation * skinLuma
+            * skinRedGreen * skinGreenBlue
+
+        // Keep the global pop from over-warming likely skin. Saturation boost
+        // remains available for scenery and clothing.
+        let vibranceGain = 1 + 0.35 * s * pow(1 - original.s, 1.5) * (1 - skinWeight)
         color.s = clamp(color.s * vibranceGain)
         (rr, gg, bb) = rgb(color.h, color.s, color.v)
 
-        // Subtle cool RGB approximation, not a literal temperature conversion.
-        // Normalize to existing luma so this does not act like extra exposure.
+        // Global white-balance nudge: slightly cool the whole grade without
+        // changing luma. Skin gets a stronger targeted correction below.
         let beforeCool = luma(rr, gg, bb)
         rr *= 1 - 0.003 * s
         bb *= 1 + 0.006 * s
@@ -136,16 +154,53 @@ final class ColorPopGrade {
         }
 
         color = hsv(rr, gg, bb)
-        let skinWeight = skinHue * (1 - original.s)
-        color.s = clamp(color.s * (1 - 0.06 * s * skinWeight))
-        color.v = clamp(color.v * (1 + 0.025 * s * skinWeight))
-        color.h -= 3 * s * skinWeight // toward red/pink, away from yellow
+
+        // Pull yellow-orange skin toward a neutral peach/cream, reduce yellow
+        // chroma, and add a small blue contribution. Preserve luminance so
+        // this changes temperature/hue rather than simply increasing exposure.
+        if skinWeight > 0 {
+            let correction = clamp(s * skinWeight)
+            let targetHue = 22.0
+            let hueDelta = shortestHueDelta(from: color.h, to: targetHue)
+            color.h = normalizeHue(color.h + hueDelta * 0.45 * correction)
+            color.s = clamp(color.s * (1 - 0.20 * correction))
+            color.v = clamp(color.v * (1 + 0.015 * correction))
+            (rr, gg, bb) = rgb(color.h, color.s, color.v)
+
+            let skinLumaBefore = luma(rr, gg, bb)
+            rr *= 1 - 0.012 * correction
+            gg *= 1 - 0.003 * correction
+            bb *= 1 + 0.025 * correction
+            let skinLumaAfter = luma(rr, gg, bb)
+            if skinLumaAfter > 0 {
+                let normalize = skinLumaBefore / skinLumaAfter
+                rr = clamp(rr * normalize)
+                gg = clamp(gg * normalize)
+                bb = clamp(bb * normalize)
+            }
+        }
+
         (rr, gg, bb) = rgb(color.h, color.s, color.v)
 
-        // Fade the entire grade, including white balance and skin correction.
-        return (clamp(r + (rr - r) * protection),
-                clamp(g + (gg - g) * protection),
-                clamp(b + (bb - b) * protection))
+        // Fade the global grade, but let the skin-specific temperature/hue
+        // correction remain active where skin is confidently detected.
+        let globalAmount = protection * s
+        let skinAmount = clamp(skinWeight * s)
+        let amount = max(globalAmount, skinAmount)
+        return (clamp(r + (rr - r) * amount),
+                clamp(g + (gg - g) * amount),
+                clamp(b + (bb - b) * amount))
+    }
+
+    private static func shortestHueDelta(from: Double, to: Double) -> Double {
+        var delta = (to - from).truncatingRemainder(dividingBy: 360)
+        if delta > 180 { delta -= 360 }
+        if delta < -180 { delta += 360 }
+        return delta
+    }
+
+    private static func normalizeHue(_ hue: Double) -> Double {
+        (hue.truncatingRemainder(dividingBy: 360) + 360).truncatingRemainder(dividingBy: 360)
     }
 
     private static func luma(_ r: Double, _ g: Double, _ b: Double) -> Double {
