@@ -159,20 +159,23 @@ final class ColorPopGrade {
         // chroma, and add a small blue contribution. Preserve luminance so
         // this changes temperature/hue rather than simply increasing exposure.
         if skinWeight > 0 {
-            let correction = clamp(s * skinWeight)
-            let targetHue = 21.0
+            // Use a stronger correction than the global grade. Anime skin can be
+            // visibly warm while still looking natural; a tiny hue nudge is not
+            // enough to counter that cast.
+            let correction = clamp(s * skinWeight * 2.2)
+            let targetHue = 19.0
             let hueDelta = shortestHueDelta(from: color.h, to: targetHue)
-            color.h = normalizeHue(color.h + hueDelta * 0.45 * correction)
-            color.s = clamp(color.s * (1 - 0.09 * correction))
+            color.h = normalizeHue(color.h + hueDelta * 0.90 * correction)
+            color.s = clamp(color.s * (1 - 0.12 * correction))
             // Whiten by correcting temperature/hue, not by lifting exposure.
             // The small value change keeps skin from looking washed out.
-            color.v = clamp(color.v * (1 + 0.006 * correction))
+            color.v = clamp(color.v * (1 + 0.008 * correction))
             (rr, gg, bb) = rgb(color.h, color.s, color.v)
 
             let skinLumaBefore = luma(rr, gg, bb)
-            rr *= 1 - 0.012 * correction
+            rr *= 1 - 0.014 * correction
             gg *= 1 - 0.003 * correction
-            bb *= 1 + 0.025 * correction
+            bb *= 1 + 0.035 * correction
             let skinLumaAfter = luma(rr, gg, bb)
             if skinLumaAfter > 0 {
                 let normalize = skinLumaBefore / skinLumaAfter
@@ -187,7 +190,7 @@ final class ColorPopGrade {
         // Fade the global grade, but let the skin-specific temperature/hue
         // correction remain active where skin is confidently detected.
         let globalAmount = protection * s
-        let skinAmount = clamp(skinWeight * s)
+        let skinAmount = clamp(skinWeight * s * 2.2)
         let amount = max(globalAmount, skinAmount)
         return (clamp(r + (rr - r) * amount),
                 clamp(g + (gg - g) * amount),
