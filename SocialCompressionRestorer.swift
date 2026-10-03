@@ -1,115 +1,211 @@
 import Foundation
 import CoreML
+import Vision
 import CoreVideo
+import CoreImage
 
-/// Neural preconditioning for downstream lossy transcodes.
-/// Runs at the source cadence, before RIFE, so the restoration cost is paid only
-/// for the original frames and the cleaned source becomes the temporal input to RIFE.
+/// Neural compression-restoration stage for downstream social transcoding.
+///
+/// This uses a 1x RealPLKSR Core ML restoration model. It preserves resolution
+/// while removing compression artifacts and blur. Frames are tiled at 512x512
+/// with overlap/feathering, matching the model's intended deployment pattern.
+/// It runs before RIFE, so only source-cadence frames pay the restoration cost.
 final class SocialCompressionRestorer {
-    private let model: MLModel
-    private let inputName: String
-    private let outputName: String
-    private let inputShape: [Int]
+    private let visionModel: VNCoreMLModel
+    private let context = CIContext(options: [.cacheIntermediates: false])
+    private let tileSize = 512
+    private let overlap = 64
 
     init(modelURL: URL) throws {
-        let configuration = MLModelConfiguration()
-        configuration.computeUnits = .all
-        model = try MLModel(contentsOf: modelURL, configuration: configuration)
-
-        guard let input = model.modelDescription.inputDescriptionsByName.values.first,
-              let output = model.modelDescription.outputDescriptionsByName.values.first,
-              let constraint = input.multiArrayConstraint else {
-            throw ProcessorError.conversionFailed("Social Compression Core ML model must expose a MultiArray input/output")
-        }
-
-        inputName = input.name
-        outputName = output.name
-        inputShape = constraint.shape.map { $0.intValue }
-
-        guard inputShape.count == 4, inputShape[0] == 1, inputShape[1] == 3 else {
-            throw ProcessorError.conversionFailed("Social Compression Core ML model must use NCHW RGB input")
-        }
-
-        guard output.type == .multiArray else {
-            throw ProcessorError.conversionFailed("Social Compression Core ML model must return a MultiArray")
-        }
+        let model = try MLModel(contentsOf: modelURL, configuration: {
+            let c = MLModelConfiguration()
+            c.computeUnits = .all
+            return c
+        }())
+        visionModel = try VNCoreMLModel(for: model)
     }
 
-    func apply(_ pixelBuffer: CVPixelBuffer) throws -> CVPixelBuffer {
-        let width = CVPixelBufferGetWidth(pixelBuffer)
-        let height = CVPixelBufferGetHeight(pixelBuffer)
+    func apply(_ source: CVPixelBuffer) throws -> CVPixelBuffer {
+        let width = CVPixelBufferGetWidth(source)
+        let height = CVPixelBufferGetHeight(source)
+        let output = try makePixelBuffer(width: width, height: height)
 
-        // Prefer full-frame inference. A dynamic 1x restoration model is the only
-        // configuration enabled here because arbitrary fixed-tile execution would
-        // require an additional seam-safe compositor and can alter anime line weight.
-        let requiredWidth = inputShape[3]
-        let requiredHeight = inputShape[2]
-        if requiredWidth > 0 && requiredHeight > 0 &&
-            (requiredWidth != width || requiredHeight != height) {
-            throw ProcessorError.conversionFailed(
-                "Social Compression model requires (requiredWidth)x(requiredHeight); source is (width)x(height)"
-            )
+        if width <= tileSize && height <= tileSize {
+            let tile = try makeTile(source, rect: CGRect(x: 0, y: 0, width: width, height: height))
+            let restored = try infer(tile)
+            try render(restored, into: output, rect: CGRect(x: 0, y: 0, width: width, height: height))
+            return output
         }
 
-        let input = try rgbArray(pixelBuffer, width: width, height: height)
-        let provider = try MLDictionaryFeatureProvider(dictionary: [
-            inputName: MLFeatureValue(multiArray: input)
-        ])
-        let prediction = try model.prediction(from: provider)
+        var accum = [Float](repeating: 0, count: width * height * 4)
+        var weights = [Float](repeating: 0, count: width * height)
 
-        guard let output = prediction.featureValue(for: outputName)?.multiArrayValue else {
-            throw ProcessorError.conversionFailed("Social Compression Core ML model returned no output")
-        }
+        let xs = tileStarts(length: width)
+        let ys = tileStarts(length: height)
 
-        let outputShape = output.shape.map { $0.intValue }
-        guard outputShape.count == 4, outputShape[0] == 1, outputShape[1] == 3 else {
-            throw ProcessorError.conversionFailed("Social Compression Core ML output is not NCHW RGB")
-        }
-
-        let outputHeight = outputShape[2]
-        let outputWidth = outputShape[3]
-        guard outputWidth == width && outputHeight == height else {
-            throw ProcessorError.conversionFailed(
-                "Social Compression model changed resolution to (outputWidth)x(outputHeight)"
-            )
-        }
-
-        return try pixelBuffer(from: output, width: width, height: height)
-    }
-
-    private func rgbArray(_ source: CVPixelBuffer, width: Int, height: Int) throws -> MLMultiArray {
-        let array = try MLMultiArray(
-            shape: [1, 3, NSNumber(value: height), NSNumber(value: width)],
-            dataType: .float32
-        )
-
-        CVPixelBufferLockBaseAddress(source, .readOnly)
-        defer { CVPixelBufferUnlockBaseAddress(source, .readOnly) }
-
-        guard let base = CVPixelBufferGetBaseAddress(source) else {
-            throw ProcessorError.conversionFailed("Social Compression source has no base address")
-        }
-
-        let src = base.assumingMemoryBound(to: UInt8.self)
-        let srcBPR = CVPixelBufferGetBytesPerRow(source)
-        let dst = array.dataPointer.assumingMemoryBound(to: Float32.self)
-        let plane = width * height
-
-        for y in 0..<height {
-            let row = src.advanced(by: y * srcBPR)
-            for x in 0..<width {
-                let p = row.advanced(by: x * 4)
-                let i = y * width + x
-                dst[i] = Float(p[2]) / 255.0
-                dst[plane + i] = Float(p[1]) / 255.0
-                dst[2 * plane + i] = Float(p[0]) / 255.0
+        for y in ys {
+            for x in xs {
+                try autoreleasepool {
+                    let rect = CGRect(
+                        x: x,
+                        y: y,
+                        width: min(tileSize, width - x),
+                        height: min(tileSize, height - y)
+                    )
+                    let tile = try makeTile(source, rect: rect)
+                    let restored = try infer(tile)
+                    try blend(
+                        restored,
+                        into: &accum,
+                        weights: &weights,
+                        destinationWidth: width,
+                        destinationHeight: height,
+                        originX: x,
+                        originY: y,
+                        cropWidth: Int(rect.width),
+                        cropHeight: Int(rect.height)
+                    )
+                }
             }
         }
 
-        return array
+        try write(accum, weights: weights, to: output, width: width, height: height)
+        return output
     }
 
-    private func pixelBuffer(from array: MLMultiArray, width: Int, height: Int) throws -> CVPixelBuffer {
+    private func tileStarts(length: Int) -> [Int] {
+        guard length > tileSize else { return [0] }
+        let step = max(1, tileSize - overlap)
+        var values: [Int] = []
+        var p = 0
+        while true {
+            let last = max(0, length - tileSize)
+            let start = min(p, last)
+            if values.last != start { values.append(start) }
+            if start >= last { break }
+            p += step
+        }
+        return values
+    }
+
+    private func makeTile(_ source: CVPixelBuffer, rect: CGRect) throws -> CVPixelBuffer {
+        let tile = try makePixelBuffer(width: tileSize, height: tileSize)
+        let image = CIImage(cvPixelBuffer: source).cropped(to: rect)
+        let sx = CGFloat(tileSize) / max(rect.width, 1)
+        let sy = CGFloat(tileSize) / max(rect.height, 1)
+        let scaled = image.transformed(by: CGAffineTransform(scaleX: sx, y: sy))
+        context.render(
+            scaled,
+            to: tile,
+            bounds: CGRect(x: 0, y: 0, width: tileSize, height: tileSize),
+            colorSpace: CGColorSpace(name: CGColorSpace.sRGB)
+        )
+        return tile
+    }
+
+    private func infer(_ tile: CVPixelBuffer) throws -> CVPixelBuffer {
+        let request = VNCoreMLRequest(model: visionModel)
+        request.imageCropAndScaleOption = .scaleFill
+        let handler = VNImageRequestHandler(cvPixelBuffer: tile, options: [:])
+        try handler.perform([request])
+
+        guard let observation = request.results?.compactMap({ $0 as? VNPixelBufferObservation }).first else {
+            throw ProcessorError.conversionFailed("Social Compression Core ML returned no pixel buffer")
+        }
+        return observation.pixelBuffer
+    }
+
+    private func blend(
+        _ tile: CVPixelBuffer,
+        into accum: inout [Float],
+        weights: inout [Float],
+        destinationWidth: Int,
+        destinationHeight: Int,
+        originX: Int,
+        originY: Int,
+        cropWidth: Int,
+        cropHeight: Int
+    ) throws {
+        CVPixelBufferLockBaseAddress(tile, .readOnly)
+        defer { CVPixelBufferUnlockBaseAddress(tile, .readOnly) }
+        guard let base = CVPixelBufferGetBaseAddress(tile) else {
+            throw ProcessorError.conversionFailed("Social Compression tile has no base address")
+        }
+
+        let src = base.assumingMemoryBound(to: UInt8.self)
+        let bpr = CVPixelBufferGetBytesPerRow(tile)
+        let width = CVPixelBufferGetWidth(tile)
+        let height = CVPixelBufferGetHeight(tile)
+
+        for y in 0..<cropHeight {
+            for x in 0..<cropWidth {
+                let dx = originX + x
+                let dy = originY + y
+                guard dx < destinationWidth && dy < destinationHeight else { continue }
+
+                var weight: Float = 1
+                if originX > 0 { weight *= min(1, Float(x + 1) / Float(overlap)) }
+                if originY > 0 { weight *= min(1, Float(y + 1) / Float(overlap)) }
+                if originX + cropWidth < destinationWidth {
+                    weight *= min(1, Float(cropWidth - x) / Float(overlap))
+                }
+                if originY + cropHeight < destinationHeight {
+                    weight *= min(1, Float(cropHeight - y) / Float(overlap))
+                }
+
+                let sx = min(width - 1, x)
+                let sy = min(height - 1, y)
+                let p = src.advanced(by: sy * bpr + sx * 4)
+                let i = dy * destinationWidth + dx
+                accum[i * 4] += Float(p[2]) / 255 * weight
+                accum[i * 4 + 1] += Float(p[1]) / 255 * weight
+                accum[i * 4 + 2] += Float(p[0]) / 255 * weight
+                accum[i * 4 + 3] += weight
+                weights[i] += weight
+            }
+        }
+    }
+
+    private func write(
+        _ accum: [Float],
+        weights: [Float],
+        to output: CVPixelBuffer,
+        width: Int,
+        height: Int
+    ) throws {
+        CVPixelBufferLockBaseAddress(output, [])
+        defer { CVPixelBufferUnlockBaseAddress(output, []) }
+        guard let base = CVPixelBufferGetBaseAddress(output) else {
+            throw ProcessorError.conversionFailed("Social Compression output has no base address")
+        }
+
+        let dst = base.assumingMemoryBound(to: UInt8.self)
+        let bpr = CVPixelBufferGetBytesPerRow(output)
+
+        for y in 0..<height {
+            for x in 0..<width {
+                let i = y * width + x
+                let w = max(weights[i], 0.0001)
+                let p = dst.advanced(by: y * bpr + x * 4)
+                p[0] = UInt8(max(0, min(255, Int((accum[i * 4 + 2] / w * 255).rounded()))))
+                p[1] = UInt8(max(0, min(255, Int((accum[i * 4 + 1] / w * 255).rounded()))))
+                p[2] = UInt8(max(0, min(255, Int((accum[i * 4] / w * 255).rounded()))))
+                p[3] = 255
+            }
+        }
+    }
+
+    private func render(_ source: CVPixelBuffer, into destination: CVPixelBuffer, rect: CGRect) throws {
+        let image = CIImage(cvPixelBuffer: source).cropped(to: CGRect(x: 0, y: 0, width: CVPixelBufferGetWidth(source), height: CVPixelBufferGetHeight(source)))
+        context.render(
+            image,
+            to: destination,
+            bounds: CGRect(x: 0, y: 0, width: CVPixelBufferGetWidth(destination), height: CVPixelBufferGetHeight(destination)),
+            colorSpace: CGColorSpace(name: CGColorSpace.sRGB)
+        )
+    }
+
+    private func makePixelBuffer(width: Int, height: Int) throws -> CVPixelBuffer {
         let attrs: [CFString: Any] = [
             kCVPixelBufferPixelFormatTypeKey: kCVPixelFormatType_32BGRA,
             kCVPixelBufferWidthKey: width,
@@ -117,48 +213,17 @@ final class SocialCompressionRestorer {
             kCVPixelBufferMetalCompatibilityKey: true,
             kCVPixelBufferIOSurfacePropertiesKey: [:]
         ]
-
-        var output: CVPixelBuffer?
+        var result: CVPixelBuffer?
         guard CVPixelBufferCreate(
-            kCFAllocatorDefault, width, height, kCVPixelFormatType_32BGRA,
-            attrs as CFDictionary, &output
-        ) == kCVReturnSuccess, let output else {
-            throw ProcessorError.conversionFailed("could not allocate Social Compression output")
+            kCFAllocatorDefault,
+            width,
+            height,
+            kCVPixelFormatType_32BGRA,
+            attrs as CFDictionary,
+            &result
+        ) == kCVReturnSuccess, let result else {
+            throw ProcessorError.conversionFailed("could not allocate Social Compression pixel buffer")
         }
-
-        CVPixelBufferLockBaseAddress(output, [])
-        defer { CVPixelBufferUnlockBaseAddress(output, []) }
-
-        guard let base = CVPixelBufferGetBaseAddress(output) else {
-            throw ProcessorError.conversionFailed("Social Compression output has no base address")
-        }
-
-        let dst = base.assumingMemoryBound(to: UInt8.self)
-        let src = array.dataPointer.assumingMemoryBound(to: Float32.self)
-        let strides = array.strides.map { $0.intValue }
-        guard strides.count >= 4 else {
-            throw ProcessorError.conversionFailed("Social Compression output has invalid strides")
-        }
-
-        let cStride = strides[1]
-        let yStride = strides[2]
-        let xStride = strides[3]
-        let bpr = CVPixelBufferGetBytesPerRow(output)
-
-        for y in 0..<height {
-            for x in 0..<width {
-                let r = src[y * yStride + x * xStride]
-                let g = src[cStride + y * yStride + x * xStride]
-                let b = src[2 * cStride + y * yStride + x * xStride]
-                let p = dst.advanced(by: y * bpr + x * 4)
-
-                p[0] = UInt8(max(0, min(255, Int((b * 255.0).rounded()))))
-                p[1] = UInt8(max(0, min(255, Int((g * 255.0).rounded()))))
-                p[2] = UInt8(max(0, min(255, Int((r * 255.0).rounded()))))
-                p[3] = 255
-            }
-        }
-
-        return output
+        return result
     }
 }
