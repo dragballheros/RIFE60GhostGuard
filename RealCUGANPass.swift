@@ -3,6 +3,8 @@ import AVFoundation
 import CoreML
 import CoreImage
 import VideoToolbox
+import CoreVideo
+import Metal
 
 final class RealCUGANPass {
     private let intensity: Double
@@ -25,8 +27,27 @@ final class RealCUGANPass {
 
     private var tileInputPool: CVPixelBufferPool?
     private var stitchedFramePool: CVPixelBufferPool?
-    private let ciContext = CIContext(options: [.cacheIntermediates: false])
+    // Core Image can reuse the Metal texture bindings for IOSurface-backed pixel buffers.
+    // Real-CUGAN renders one tile in and one tile out per prediction, so avoiding repeated
+    // CVPixelBuffer -> Metal texture setup is particularly valuable on long 4K runs.
+    private let metalTextureCache: CVMetalTextureCache? = RealCUGANPass.makeMetalTextureCache()
+    private lazy var ciContext: CIContext = {
+        var options: [CIContextOption: Any] = [.cacheIntermediates: false]
+        if let metalTextureCache {
+            options[.cvMetalTextureCache] = metalTextureCache
+        }
+        return CIContext(options: options)
+    }()
     private let colorSpace = CGColorSpaceCreateDeviceRGB()
+
+    private static func makeMetalTextureCache() -> CVMetalTextureCache? {
+        guard let device = MTLCreateSystemDefaultDevice() else { return nil }
+        var cache: CVMetalTextureCache?
+        guard CVMetalTextureCacheCreate(kCFAllocatorDefault, nil, device, nil, &cache) == kCVReturnSuccess else {
+            return nil
+        }
+        return cache
+    }
 
     private let colorPopGrade: ColorPopGrade?
     private var renderInSeconds = 0.0
