@@ -91,7 +91,8 @@ final class RealCUGANPass {
 
         progress(0.002, "Pass 3/3 • Loading Real-CUGAN Anime 2x Noise 3…")
         DiagnosticsLogger.shared.log("Real-CUGAN tiled model load begin • \(profile.modelName)")
-        let model = try loadModel(named: profile.modelName)
+        let preferNeuralEngine = profile.modelName == fast1080Profile.modelName && ModelComputePreference.current == .auto
+        let model = try loadModel(named: profile.modelName, preferNeuralEngine: preferNeuralEngine)
         DiagnosticsLogger.shared.log("Real-CUGAN tiled model load complete")
 
         let reader = try AVAssetReader(asset: asset)
@@ -238,20 +239,22 @@ final class RealCUGANPass {
             tileInputPool = nil
             stitchedFramePool = nil
         }
-        let stillModel = try loadModel(named: stillProfile.modelName)
+        let stillPreferNeuralEngine = stillProfile.modelName == fast1080Profile.modelName && ModelComputePreference.current == .auto
+        let stillModel = try loadModel(named: stillProfile.modelName, preferNeuralEngine: stillPreferNeuralEngine)
         let stillAlpha = try MLMultiArray(shape: [1], dataType: .float16)
         stillAlpha[0] = NSNumber(value: Float(1.0 / max(intensity, 0.01)))
         DiagnosticsLogger.shared.log("Real-CUGAN still image • \(stillWidth)x\(stillHeight) -> \(stillWidth * 2)x\(stillHeight * 2) • tile=\(stillProfile.width)x\(stillProfile.height)")
         return try upscaleNative2x(source, model: stillModel, alpha: stillAlpha, frameNumber: 1, profile: stillProfile)
     }
 
-    private func loadModel(named name: String) throws -> MLModel {
+    private func loadModel(named name: String, preferNeuralEngine: Bool = false) throws -> MLModel {
         guard let url = Bundle.main.url(forResource: name, withExtension: "mlmodelc") else {
             throw ProcessorError.conversionFailed("Bundled tiled Real-CUGAN model is missing: \(name)")
         }
         let configuration = MLModelConfiguration()
-        configuration.computeUnits = ModelComputePreference.current.units
+        configuration.computeUnits = preferNeuralEngine ? .cpuAndNeuralEngine : ModelComputePreference.current.units
         configuration.allowLowPrecisionAccumulationOnGPU = true
+        DiagnosticsLogger.shared.log("Real-CUGAN compute policy • model=\(name) • requested=\(configuration.computeUnits.rawValue) • autoWideTileANE=\(preferNeuralEngine)")
         return try MLModel(contentsOf: url, configuration: configuration)
     }
 
