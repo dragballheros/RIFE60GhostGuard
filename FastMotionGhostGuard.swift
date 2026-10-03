@@ -49,7 +49,7 @@ final class FastMotionGhostGuard {
         guard let previousBase = CVPixelBufferGetBaseAddress(previous),
               let generatedBase = CVPixelBufferGetBaseAddress(generated),
               let currentBase = CVPixelBufferGetBaseAddress(current) else {
-            return Result(fastMotion: false, reject: false, motionScore: 0, artifactScore: 0)
+            return Result(fastMotion: false, reject: false, recoveryRecommended: false, motionScore: 0, artifactScore: 0)
         }
 
         let previousRow = CVPixelBufferGetBytesPerRow(previous)
@@ -154,7 +154,6 @@ final class FastMotionGhostGuard {
         return Result(
             fastMotion: true,
             reject: reject,
-            recoveryRecommended: recoveryRecommended,
             recoveryRecommended: recoveryRecommended,
             motionScore: motionScore,
             artifactScore: artifactScore
