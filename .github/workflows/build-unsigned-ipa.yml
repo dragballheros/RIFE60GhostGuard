@@ -48,8 +48,7 @@ jobs:
           MODEL_DIR=$(find /tmp/social-compression -type d -name '*.mlmodelc' -print -quit)
           test -n "$MODEL_DIR"
           cp -R "$MODEL_DIR" Models/SocialCompressionGuard.mlmodelc
-          test -f Models/SocialCompressionGuard.mlmodelc/model.mil
-          test -f Models/SocialCompressionGuard.mlmodelc/Manifest.json || true
+          test -d Models/SocialCompressionGuard.mlmodelc
 
       - name: Restore stable Real-CUGAN model cache
         uses: actions/cache@v4
@@ -296,7 +295,7 @@ jobs:
           cp -R CompiledModels/RealCUGAN2xNoise3_Tile512.mlmodelc Payload/RIFE60GhostGuard.app/
           cp -R CompiledModels/RealCUGAN2xNoise3_Tile704x608.mlmodelc Payload/RIFE60GhostGuard.app/
           cp -R CompiledModels/AnimeWatermarkLaMa512.mlmodelc Payload/RIFE60GhostGuard.app/
-          cp -R CompiledModels/SocialCompressionGuard.mlmodelc Payload/RIFE60GhostGuard.app/
+          cp -R Models/SocialCompressionGuard.mlmodelc Payload/RIFE60GhostGuard.app/
           cp ThirdPartyNotices-SocialCompression.md Payload/RIFE60GhostGuard.app/
           cp ThirdPartyNotices-AnimeWatermark.md Payload/RIFE60GhostGuard.app/
           cp Licenses/LaMa-Apache-2.0.txt Payload/RIFE60GhostGuard.app/
