@@ -1,6 +1,7 @@
 import Foundation
 import AVFoundation
 import CoreVideo
+import CoreML
 
 struct RestorationPassResult: Sendable {
     let url: URL
@@ -89,6 +90,18 @@ final class RestorationPass {
             watermarkRemover = nil
         }
         let compressionGuard = compressionEnabled ? CompressionGuard() : nil
+        let socialCompressionRestorer: SocialCompressionRestorer?
+        if compressionEnabled {
+            let modelURL = Bundle.main.url(forResource: "SocialCompressionGuard", withExtension: "mlmodelc")
+            socialCompressionRestorer = modelURL.flatMap { try? SocialCompressionRestorer(modelURL: $0) }
+            if socialCompressionRestorer != nil {
+                DiagnosticsLogger.shared.log("Social Compression Guard Core ML model loaded • compute=all • source-cadence restoration enabled")
+            } else {
+                DiagnosticsLogger.shared.log("Social Compression Guard Core ML model unavailable • falling back to existing CompressionGuard")
+            }
+        } else {
+            socialCompressionRestorer = nil
+        }
         let outlineEnhancer: OutlineEnhancer?
         if outlineEnabled {
             progress(0.005, "Pass 1/2 • Loading outline restoration…")
@@ -128,7 +141,23 @@ final class RestorationPass {
                 }
             }
 
-            if let compressionGuard {
+            if let socialCompressionRestorer {
+                let started = CFAbsoluteTimeGetCurrent()
+                if let result = try? socialCompressionRestorer.apply(frame) {
+                    frame = result
+                    cleaned += 1
+                    compressionSeconds += CFAbsoluteTimeGetCurrent() - started
+                    if sourceFrames == 1 || sourceFrames % 6 == 0 {
+                        DiagnosticsLogger.shared.log("Social Compression Guard frame (sourceFrames) • neural restoration • (String(format: "%.1f", compressionSeconds * 1000 / Double(cleaned)))ms/frame")
+                    }
+                } else if let compressionGuard {
+                    if let result = try? compressionGuard.clean(frame) {
+                        frame = result
+                        cleaned += 1
+                        compressionSeconds += CFAbsoluteTimeGetCurrent() - started
+                    }
+                }
+            } else if let compressionGuard {
                 let started = CFAbsoluteTimeGetCurrent()
                 if let result = try? compressionGuard.clean(frame) {
                     frame = result
