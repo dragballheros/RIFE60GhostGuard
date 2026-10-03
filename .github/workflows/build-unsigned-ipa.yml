@@ -38,6 +38,27 @@ jobs:
           test -n "$SHARPIE_WEIGHT"
           test -s "$SHARPIE_WEIGHT"
 
+      - name: Prepare Social Compression Guard Core ML model
+        run: |
+          set -euo pipefail
+          mkdir -p Models CompiledModels
+          if [ ! -f Models/SocialCompressionGuard.mlmodel ]; then
+            python -m pip install --upgrade pip
+            python -m pip install 'onnx2coreml==1.1.0'
+            curl -L --fail --retry 3 -o /tmp/social-compression.onnx https://huggingface.co/notaneimu/onnx-image-models/resolve/42bc0d52e3f9f015b3f0106912c5342462ef0569/1x-Kim2091-DeJpeg-v0.onnx
+            onnx2coreml convert /tmp/social-compression.onnx -o Models/SocialCompressionGuard.mlmodel --format mlmodel
+          fi
+          test -s Models/SocialCompressionGuard.mlmodel
+
+      - name: Compile Social Compression Guard for iOS
+        run: |
+          set -euo pipefail
+          mkdir -p CompiledModels
+          if [ ! -d CompiledModels/SocialCompressionGuard.mlmodelc ]; then
+            xcrun coremlcompiler compile Models/SocialCompressionGuard.mlmodel CompiledModels
+          fi
+          test -d CompiledModels/SocialCompressionGuard.mlmodelc
+
       - name: Restore stable Real-CUGAN model cache
         uses: actions/cache@v4
         with:
@@ -283,9 +304,12 @@ jobs:
           cp -R CompiledModels/RealCUGAN2xNoise3_Tile512.mlmodelc Payload/RIFE60GhostGuard.app/
           cp -R CompiledModels/RealCUGAN2xNoise3_Tile704x608.mlmodelc Payload/RIFE60GhostGuard.app/
           cp -R CompiledModels/AnimeWatermarkLaMa512.mlmodelc Payload/RIFE60GhostGuard.app/
+          cp -R CompiledModels/SocialCompressionGuard.mlmodelc Payload/RIFE60GhostGuard.app/
+          cp ThirdPartyNotices-SocialCompression.md Payload/RIFE60GhostGuard.app/
           cp ThirdPartyNotices-AnimeWatermark.md Payload/RIFE60GhostGuard.app/
           cp Licenses/LaMa-Apache-2.0.txt Payload/RIFE60GhostGuard.app/
           test -d Payload/RIFE60GhostGuard.app/AnimeWatermarkLaMa512.mlmodelc
+          test -d Payload/RIFE60GhostGuard.app/SocialCompressionGuard.mlmodelc
           test -f Payload/RIFE60GhostGuard.app/AnimeSharpieOutlineSubtle.mlpackage/Manifest.json
           SHARPIE_WEIGHT=$(find Payload/RIFE60GhostGuard.app/AnimeSharpieOutlineSubtle.mlpackage -type f -name 'weight.bin' -print -quit)
           test -n "$SHARPIE_WEIGHT"
