@@ -38,18 +38,6 @@ jobs:
           test -n "$SHARPIE_WEIGHT"
           test -s "$SHARPIE_WEIGHT"
 
-      - name: Prepare Social Compression Guard Core ML model
-        run: |
-          set -euo pipefail
-          rm -rf /tmp/social-compression Models/SocialCompressionGuard.mlmodelc
-          mkdir -p /tmp/social-compression Models
-          curl -L --fail --retry 3 -o /tmp/social-compression/model.zip https://huggingface.co/333i/1xDeJPG_realplksr_otf-coreml-ios/resolve/main/1xDeJPG_realplksr_otf_512_coreml_compiled.zip
-          unzip -q /tmp/social-compression/model.zip -d /tmp/social-compression
-          MODEL_DIR=$(find /tmp/social-compression -type d -name '*.mlmodelc' -print -quit)
-          test -n "$MODEL_DIR"
-          cp -R "$MODEL_DIR" Models/SocialCompressionGuard.mlmodelc
-          test -d Models/SocialCompressionGuard.mlmodelc
-
       - name: Restore stable Real-CUGAN model cache
         uses: actions/cache@v4
         with:
@@ -295,12 +283,9 @@ jobs:
           cp -R CompiledModels/RealCUGAN2xNoise3_Tile512.mlmodelc Payload/RIFE60GhostGuard.app/
           cp -R CompiledModels/RealCUGAN2xNoise3_Tile704x608.mlmodelc Payload/RIFE60GhostGuard.app/
           cp -R CompiledModels/AnimeWatermarkLaMa512.mlmodelc Payload/RIFE60GhostGuard.app/
-          cp -R Models/SocialCompressionGuard.mlmodelc Payload/RIFE60GhostGuard.app/
-          cp ThirdPartyNotices-SocialCompression.md Payload/RIFE60GhostGuard.app/
           cp ThirdPartyNotices-AnimeWatermark.md Payload/RIFE60GhostGuard.app/
           cp Licenses/LaMa-Apache-2.0.txt Payload/RIFE60GhostGuard.app/
           test -d Payload/RIFE60GhostGuard.app/AnimeWatermarkLaMa512.mlmodelc
-          test -d Payload/RIFE60GhostGuard.app/SocialCompressionGuard.mlmodelc
           test -f Payload/RIFE60GhostGuard.app/AnimeSharpieOutlineSubtle.mlpackage/Manifest.json
           SHARPIE_WEIGHT=$(find Payload/RIFE60GhostGuard.app/AnimeSharpieOutlineSubtle.mlpackage -type f -name 'weight.bin' -print -quit)
           test -n "$SHARPIE_WEIGHT"
