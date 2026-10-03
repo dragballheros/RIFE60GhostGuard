@@ -14,7 +14,7 @@ enum AnimeGenerativeEditError: LocalizedError {
     case unsupportedDevice, modelsMissing, invalidVideo, backendUnavailable(String)
     var errorDescription: String? {
         switch self {
-        case .unsupportedDevice: return "Anime Generative Edit requires an 8 GB+ device. It is blocked on lower-memory devices to prevent OOM/thermal crashes."
+        case .unsupportedDevice: return "Anime Generative Edit requires a 12 GB+ device. It is blocked on lower-memory devices to prevent OOM/thermal crashes."
         case .modelsMissing: return "The VACE model bundle is not installed."
         case .invalidVideo: return "The selected video could not be decoded."
         case .backendUnavailable(let s): return s
@@ -30,7 +30,7 @@ final class AnimeVACEVideoEngine {
     private var handle: OpaquePointer?
 
     func load(diffusion: URL, vae: URL, t5: URL) throws {
-        guard ProcessInfo.processInfo.physicalMemory >= 8 * 1024 * 1024 * 1024 else {
+        guard ProcessInfo.processInfo.physicalMemory >= 12 * 1024 * 1024 * 1024 else {
             throw AnimeGenerativeEditError.unsupportedDevice
         }
         #if canImport(VACECPP)
