@@ -1,14 +1,14 @@
 # Social Compression Guard model notice
 
-The bundled Social Compression Guard model is **Kim2091 DeJPEG v0**, a 1× ESRGAN restoration model by Kim2091.
+The bundled Social Compression Guard uses **1xDeJPG_realplksr_otf**, a 1× RealPLKSR restoration model by Philip Hofmann.
 
-Purpose: compression removal / JPEG restoration.
+Purpose: compression-artifact and blur removal without changing image size.
 
-License: **CC BY-NC-SA 4.0**.
+License: **CC BY 4.0**. Attribution is required.
 
-Source/model provenance:
-- Model page: https://openmodeldb.info/models/1x-Kim2091-DeJpeg-v0
-- Converted ONNX artifact used by the build: notaneimu/onnx-image-models, file `1x-Kim2091-DeJpeg-v0.onnx`
-- Original author: Kim2091
+Core ML conversion provenance:
+- iOS Core ML export: 333i/1xDeJPG_realplksr_otf-coreml-ios
+- Original model: Phips/1xDeJPG_realplksr_otf
+- The Core ML package is distributed as a precompiled 512×512 iOS model and is used unchanged.
 
-This model is used as a neural preconditioning stage before RIFE. It does not claim to reproduce Topaz Video AI's proprietary model or implementation.
+The app applies the model before RIFE at source cadence, using overlapping 512×512 tiles with feathered blending. This is a compression-restoration stage inspired by the documented behavior of commercial restoration tools; it does not claim to reproduce Topaz Video AI's proprietary model or implementation.
