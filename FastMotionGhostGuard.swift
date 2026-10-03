@@ -30,8 +30,8 @@ final class FastMotionGhostGuard {
             return Result(fastMotion: false, reject: false, motionScore: 0, artifactScore: 0)
         }
 
-        let width = min(CVPixelBufferGetWidth(previous), CVPixelBufferGetWidth(generated), CVPixelBufferGetWidth(current))
-        let height = min(CVPixelBufferGetHeight(previous), CVPixelBufferGetHeight(generated), CVPixelBufferGetHeight(current))
+        let width = min(CVPixelBufferGetWidth(previous), min(CVPixelBufferGetWidth(generated), CVPixelBufferGetWidth(current)))
+        let height = min(CVPixelBufferGetHeight(previous), min(CVPixelBufferGetHeight(generated), CVPixelBufferGetHeight(current)))
         guard width >= 64, height >= 64 else {
             return Result(fastMotion: false, reject: false, motionScore: 0, artifactScore: 0)
         }
