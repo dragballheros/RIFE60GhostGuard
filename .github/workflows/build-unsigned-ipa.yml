@@ -38,38 +38,18 @@ jobs:
           test -n "$SHARPIE_WEIGHT"
           test -s "$SHARPIE_WEIGHT"
 
-      - name: Set up Python 3.11 for model conversion
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
       - name: Prepare Social Compression Guard Core ML model
         run: |
           set -euo pipefail
-          mkdir -p Models CompiledModels
-          if [ ! -f Models/SocialCompressionGuard.mlmodel ]; then
-            python -m pip install --upgrade pip
-            python -m pip install 'numpy==1.26.4' 'coremltools==6.3.0' 'onnx==1.13.1' 'onnx-coreml==1.3'
-            curl -L --fail --retry 3 -o /tmp/social-compression.onnx https://huggingface.co/notaneimu/onnx-image-models/resolve/42bc0d52e3f9f015b3f0106912c5342462ef0569/1x-Kim2091-DeJpeg-v0.onnx
-            python - <<'PY'
-          import onnx_coreml
-          model = onnx_coreml.convert(
-              model="/tmp/social-compression.onnx",
-              target_ios="16"
-          )
-          model.save("Models/SocialCompressionGuard.mlmodel")
-          PY
-          fi
-          test -s Models/SocialCompressionGuard.mlmodel
-
-      - name: Compile Social Compression Guard for iOS
-        run: |
-          set -euo pipefail
-          mkdir -p CompiledModels
-          if [ ! -d CompiledModels/SocialCompressionGuard.mlmodelc ]; then
-            xcrun coremlcompiler compile Models/SocialCompressionGuard.mlmodel CompiledModels
-          fi
-          test -d CompiledModels/SocialCompressionGuard.mlmodelc
+          rm -rf /tmp/social-compression Models/SocialCompressionGuard.mlmodelc
+          mkdir -p /tmp/social-compression Models
+          curl -L --fail --retry 3 -o /tmp/social-compression/model.zip https://huggingface.co/333i/1xDeJPG_realplksr_otf-coreml-ios/resolve/main/1xDeJPG_realplksr_otf_512_coreml_compiled.zip
+          unzip -q /tmp/social-compression/model.zip -d /tmp/social-compression
+          MODEL_DIR=$(find /tmp/social-compression -type d -name '*.mlmodelc' -print -quit)
+          test -n "$MODEL_DIR"
+          cp -R "$MODEL_DIR" Models/SocialCompressionGuard.mlmodelc
+          test -f Models/SocialCompressionGuard.mlmodelc/model.mil
+          test -f Models/SocialCompressionGuard.mlmodelc/Manifest.json || true
 
       - name: Restore stable Real-CUGAN model cache
         uses: actions/cache@v4
