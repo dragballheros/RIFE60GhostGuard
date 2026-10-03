@@ -95,7 +95,7 @@ final class RestorationPass {
             let modelURL = Bundle.main.url(forResource: "SocialCompressionGuard", withExtension: "mlmodelc")
             socialCompressionRestorer = modelURL.flatMap { try? SocialCompressionRestorer(modelURL: $0) }
             if socialCompressionRestorer != nil {
-                DiagnosticsLogger.shared.log("Social Compression Guard Core ML model loaded • compute=all • source-cadence restoration enabled")
+                DiagnosticsLogger.shared.log("Social Compression Guard Core ML model loaded • mobile profile • CPU+Neural Engine • capped 960×540 restoration")
             } else {
                 DiagnosticsLogger.shared.log("Social Compression Guard Core ML model unavailable • falling back to existing CompressionGuard")
             }
