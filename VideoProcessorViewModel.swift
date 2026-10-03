@@ -236,13 +236,35 @@ final class VideoProcessorViewModel: ObservableObject {
 
     func cancel() { batchCancelRequested = true; currentTask?.cancel() }
     func installGenerativeModels(_ urls: [URL]) {
-        do {
-            try GenerativeModelStore.install(urls)
-            generativeModelStatus = GenerativeModelStore.status
-            generativeEditStatus = "Generative model bundle installed"
-        } catch {
-            errorText = error.localizedDescription
-            generativeModelStatus = GenerativeModelStore.status
+        ensureGenerativeModels()
+    }
+
+    func ensureGenerativeModels() {
+        guard !isImporting else { return }
+        isImporting = true
+        generativeModelStatus = "Downloading Wan 2.1 VACE 1.3B…"
+        Task { [weak self] in
+            do {
+                try await GenerativeModelStore.ensureInstalled { fraction, message in
+                    Task { @MainActor [weak self] in
+                        self?.importProgress = fraction
+                        self?.generativeModelStatus = message
+                    }
+                }
+                await MainActor.run { [weak self] in
+                    self?.generativeModelStatus = GenerativeModelStore.status
+                    self?.generativeEditStatus = "Wan edit model ready"
+                    self?.isImporting = false
+                    self?.importProgress = nil
+                }
+            } catch {
+                await MainActor.run { [weak self] in
+                    self?.errorText = error.localizedDescription
+                    self?.generativeModelStatus = GenerativeModelStore.status
+                    self?.isImporting = false
+                    self?.importProgress = nil
+                }
+            }
         }
     }
 
