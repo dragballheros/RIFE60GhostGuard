@@ -265,6 +265,31 @@ jobs:
           swiftc -swift-version 5 -parse-as-library WatermarkConfiguration.swift WatermarkBrushMask.swift BatchMediaQueue.swift Scripts/check_batch_media.swift -o /tmp/batch-media-check/check
           /tmp/batch-media-check/check
 
+      - name: Build stable-diffusion.cpp Metal backend for iOS
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/sd-cpp Vendor/sd-cpp
+          git clone --depth 1 --recursive https://github.com/leejet/stable-diffusion.cpp /tmp/sd-cpp
+          cmake -S /tmp/sd-cpp -B /tmp/sd-cpp-build -G Xcode \
+            -DSD_METAL=ON \
+            -DSD_BUILD_SHARED_LIBS=OFF \
+            -DSD_BUILD_EXAMPLES=OFF \
+            -DSD_WEBP=OFF \
+            -DSD_WEBM=OFF \
+            -DCMAKE_SYSTEM_NAME=iOS \
+            -DCMAKE_OSX_SYSROOT=iphoneos \
+            -DCMAKE_OSX_ARCHITECTURES=arm64
+          cmake --build /tmp/sd-cpp-build --config Release --parallel 3
+          mkdir -p Vendor/sd-cpp/include Vendor/sd-cpp/lib Vendor/sd-cpp/ggml
+          cp /tmp/sd-cpp/include/stable-diffusion.h Vendor/sd-cpp/include/
+          cp -R /tmp/sd-cpp/ggml/include Vendor/sd-cpp/ggml/
+          for lib in libstable-diffusion.a libggml.a libggml-base.a libggml-metal.a libggml-cpu.a libonig.a libsd-utf8proc.a; do
+            found=$(find /tmp/sd-cpp-build -name "$lib" -type f -print -quit)
+            test -n "$found" || { echo "Missing $lib"; find /tmp/sd-cpp-build -name '*.a' -print; exit 1; }
+            cp "$found" "Vendor/sd-cpp/lib/$lib"
+          done
+          ls -lh Vendor/sd-cpp/lib
+
       - name: Generate Xcode project
         run: xcodegen generate
       - name: Resolve packages
