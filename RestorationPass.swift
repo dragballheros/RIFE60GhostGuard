@@ -148,7 +148,7 @@ final class RestorationPass {
                     cleaned += 1
                     compressionSeconds += CFAbsoluteTimeGetCurrent() - started
                     if sourceFrames == 1 || sourceFrames % 6 == 0 {
-                        DiagnosticsLogger.shared.log("Social Compression Guard neural restoration • (cleaned) frames • (String(format: "%.1f", compressionSeconds * 1000 / Double(max(cleaned, 1))))ms/frame")
+                        DiagnosticsLogger.shared.log("Social Compression Guard neural restoration • \\(cleaned) frames • \\(String(format: "%.1f", compressionSeconds * 1000 / Double(max(cleaned, 1))))ms/frame")
                     }
                 } else if let compressionGuard {
                     if let result = try? compressionGuard.clean(frame) {
