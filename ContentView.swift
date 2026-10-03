@@ -115,13 +115,14 @@ struct ContentView: View {
                                 }
                                 Toggle("Preserve original audio", isOn: $vm.preserveAudio)
                                     .disabled(vm.isBusy || vm.isImporting)
-                                Button { showingGenerativeModelImporter = true } label: {
-                                    Label("Install VACE model files…", systemImage: "arrow.down.doc")
+                                Button { vm.ensureGenerativeModels() } label: {
+                                    Label(GenerativeModelStore.installed ? "Wan edit model installed" : "Download Wan edit model", systemImage: "arrow.down.circle")
                                 }
                                 .buttonStyle(.borderless)
-                                .disabled(vm.isBusy || vm.isImporting)
+                                .disabled(vm.isBusy || vm.isImporting || GenerativeModelStore.installed)
+                                .onAppear { if !GenerativeModelStore.installed { vm.ensureGenerativeModels() } }
                                 Text(vm.generativeModelStatus).font(.caption).foregroundStyle(.secondary)
-                                Text("True temporal reconstruction: the model regenerates the video from a multi-frame source window instead of digitally placing a new object on top. The 1.3B profile uses up to 832×480 and 33-frame windows.")
+                                Text("True temporal reconstruction: the model regenerates the video from a multi-frame source window instead of digitally placing a new object on top. On a 6 GB iPhone this is Wan 2.1 VACE 1.3B Q4, not Wan 2.7 14B. Edits use a 480×320, 13-frame window so the model can stay resident.")
                                     .font(.caption).foregroundStyle(.secondary)
                                 Button { vm.startGenerativeEdit() } label: {
                                     Label("Run Anime Generative Edit", systemImage: "wand.and.stars")
