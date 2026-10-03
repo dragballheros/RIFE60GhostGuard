@@ -43,6 +43,8 @@ targets:
           - "-framework"
           - "Metal"
           - "-framework"
+          - "Vision"
+          - "-framework"
           - "Foundation"
           - "-framework"
           - "Accelerate"
