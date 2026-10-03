@@ -1,6 +1,7 @@
 import Foundation
 import CoreML
 import CoreVideo
+import Vision
 
 final class OutlineEnhancer {
     enum OutlineError: LocalizedError {
@@ -32,6 +33,12 @@ final class OutlineEnhancer {
     private var outputPool: CVPixelBufferPool?
     private var outputPoolSize: (Int, Int) = (0, 0)
 
+    // Content-aware outline gate. Vision's person matte is only one cue: strong
+    // structural edges are still allowed in the background (tables, chairs,
+    // architecture, etc.), while softer painterly texture is attenuated.
+    private let segmentationHandler = VNSequenceRequestHandler()
+    private let personSegmentationRequest: VNGeneratePersonSegmentationRequest
+
     init() throws {
         let modelURL = try Self.compiledModelURL()
         let configuration = MLModelConfiguration()
@@ -45,6 +52,10 @@ final class OutlineEnhancer {
             arrays.append(try MLMultiArray(shape: [1, 3, 256, 256], dataType: .float32))
         }
         self.inputArrays = arrays
+        let segmentation = VNGeneratePersonSegmentationRequest()
+        segmentation.qualityLevel = .fast
+        segmentation.outputPixelFormat = kCVPixelFormatType_OneComponent8
+        self.personSegmentationRequest = segmentation
     }
 
     static func compiledModelURL() throws -> URL {
@@ -156,7 +167,149 @@ final class OutlineEnhancer {
             }
         }
         try failure.rethrowIfNeeded()
+
+        // The Sharpie model is intentionally allowed to draw on both characters
+        // and hard-edged objects. This final gate only changes how much of those
+        // model-generated differences are retained. It uses a soft person matte
+        // when Vision can find one, plus a strong source-edge test for background
+        // structures. This avoids the old binary "character vs background" idea:
+        // a table corner can still receive an outline, while grass/paint texture
+        // needs substantially stronger source structure before it survives.
+        refineContentAwareOutlines(source: source, destination: destination)
         return destination
+    }
+
+    private func refineContentAwareOutlines(source: CVPixelBuffer, destination: CVPixelBuffer) {
+        let mask: CVPixelBuffer?
+        do {
+            try segmentationHandler.perform([personSegmentationRequest], on: source)
+            mask = personSegmentationRequest.results?.first?.pixelBuffer
+        } catch {
+            mask = nil
+        }
+
+        let width = CVPixelBufferGetWidth(source)
+        let height = CVPixelBufferGetHeight(source)
+        guard width > 2, height > 2 else { return }
+
+        CVPixelBufferLockBaseAddress(source, .readOnly)
+        CVPixelBufferLockBaseAddress(destination, [])
+        if let mask { CVPixelBufferLockBaseAddress(mask, .readOnly) }
+        defer {
+            if let mask { CVPixelBufferUnlockBaseAddress(mask, .readOnly) }
+            CVPixelBufferUnlockBaseAddress(destination, [])
+            CVPixelBufferUnlockBaseAddress(source, .readOnly)
+        }
+
+        guard let srcBase = CVPixelBufferGetBaseAddress(source),
+              let dstBase = CVPixelBufferGetBaseAddress(destination) else { return }
+        let src = srcBase.assumingMemoryBound(to: UInt8.self)
+        let dst = dstBase.assumingMemoryBound(to: UInt8.self)
+        let srcRow = CVPixelBufferGetBytesPerRow(source)
+        let dstRow = CVPixelBufferGetBytesPerRow(destination)
+        let srcFormat = CVPixelBufferGetPixelFormatType(source)
+        let dstFormat = CVPixelBufferGetPixelFormatType(destination)
+        let srcBGRA = srcFormat == kCVPixelFormatType_32BGRA
+        let dstBGRA = dstFormat == kCVPixelFormatType_32BGRA
+
+        let maskBase = mask.flatMap { CVPixelBufferGetBaseAddress($0) }
+        let maskPtr = maskBase?.assumingMemoryBound(to: UInt8.self)
+        let maskRow = mask.map(CVPixelBufferGetBytesPerRow) ?? 0
+        let maskWidth = mask.map(CVPixelBufferGetWidth) ?? 0
+        let maskHeight = mask.map(CVPixelBufferGetHeight) ?? 0
+
+        @inline(__always) func clamp01(_ v: Double) -> Double { min(max(v, 0), 1) }
+        @inline(__always) func smooth(_ a: Double, _ b: Double, _ x: Double) -> Double {
+            let t = clamp01((x - a) / max(b - a, 0.000001))
+            return t * t * (3 - 2 * t)
+        }
+        @inline(__always) func lumaAt(_ x: Int, _ y: Int) -> Double {
+            let xx = min(max(x, 0), width - 1)
+            let yy = min(max(y, 0), height - 1)
+            let i = yy * srcRow + xx * 4
+            let rOff = srcBGRA ? 2 : 0
+            let bOff = srcBGRA ? 0 : 2
+            let r = Double(src[i + rOff]) / 255.0
+            let g = Double(src[i + 1]) / 255.0
+            let b = Double(src[i + bOff]) / 255.0
+            return 0.2126 * r + 0.7152 * g + 0.0722 * b
+        }
+        @inline(__always) func personAt(_ x: Int, _ y: Int) -> Double {
+            guard let maskPtr, maskWidth > 0, maskHeight > 0 else { return 0 }
+            let mx = min(maskWidth - 1, max(0, Int((Double(x) + 0.5) * Double(maskWidth) / Double(width))))
+            let my = min(maskHeight - 1, max(0, Int((Double(y) + 0.5) * Double(maskHeight) / Double(height))))
+            return Double(maskPtr[my * maskRow + mx]) / 255.0
+        }
+
+        for y in 1..<(height - 1) {
+            for x in 1..<(width - 1) {
+                let i = y * srcRow + x * 4
+                let di = y * dstRow + x * 4
+                let rOff = srcBGRA ? 2 : 0
+                let bOff = srcBGRA ? 0 : 2
+                let drOff = dstBGRA ? 2 : 0
+                let dbOff = dstBGRA ? 0 : 2
+
+                let sr = Double(src[i + rOff]) / 255.0
+                let sg = Double(src[i + 1]) / 255.0
+                let sb = Double(src[i + bOff]) / 255.0
+                let er = Double(dst[di + drOff]) / 255.0
+                let eg = Double(dst[di + 1]) / 255.0
+                let eb = Double(dst[di + dbOff]) / 255.0
+
+                let sourceDelta = abs(er - sr) + abs(eg - sg) + abs(eb - sb)
+                let modelDelta = sourceDelta / 3.0
+                guard modelDelta > 0.012 else { continue }
+
+                let gx = abs(lumaAt(x + 1, y) - lumaAt(x - 1, y))
+                let gy = abs(lumaAt(x, y + 1) - lumaAt(x, y - 1))
+                let sourceEdge = max(gx, gy)
+                let structural = smooth(0.055, 0.18, sourceEdge)
+                let strongStructural = smooth(0.11, 0.24, sourceEdge)
+                let person = personAt(x, y)
+
+                // Characters get a lower edge threshold so internal clothing,
+                // hair and line-art survive even when their source contrast is
+                // modest. Background objects still qualify when their edge is
+                // genuinely sharp/structural.
+                var keep = max(
+                    person * (0.72 + 0.28 * structural),
+                    (1.0 - person) * strongStructural
+                )
+
+                // Painterly grass/brush texture is usually softer than a hard
+                // object boundary. Keep a little of it rather than deleting it
+                // completely, but make the model work much harder to add a line.
+                if person < 0.35 {
+                    keep *= 0.70 + 0.30 * strongStructural
+                }
+
+                // Sweat/water/fluids often appear as bright, low-chroma, thin
+                // contours. They are visually different from clothing/hair line
+                // art, so reduce their added outline without suppressing colorful
+                // character brush strokes.
+                let sourceLuma = 0.2126 * sr + 0.7152 * sg + 0.0722 * sb
+                let chroma = max(sr, max(sg, sb)) - min(sr, min(sg, sb))
+                let fluidLike = smooth(0.60, 0.86, sourceLuma)
+                    * (1.0 - smooth(0.10, 0.22, chroma))
+                    * (1.0 - smooth(0.18, 0.32, sourceEdge))
+                    * smooth(0.35, 0.65, person)
+                keep *= (1.0 - 0.55 * fluidLike)
+
+                // Don't let very subtle model deltas become a visible painted
+                // contour. Stronger generated outlines remain almost untouched.
+                let deltaGate = smooth(0.012, 0.055, modelDelta)
+                keep = clamp01(keep * deltaGate)
+
+                // The model's enhanced frame is blended back toward the source
+                // according to the content-aware confidence. This is intentionally
+                // soft, so there is no visible halo at the subject boundary.
+                let amount = Float32(clamp01(keep))
+                dst[di + drOff] = UInt8((sr + (er - sr) * Double(amount)) * 255.0)
+                dst[di + 1] = UInt8((sg + (eg - sg) * Double(amount)) * 255.0)
+                dst[di + dbOff] = UInt8((sb + (eb - sb) * Double(amount)) * 255.0)
+            }
+        }
     }
 
     private func processTile(
