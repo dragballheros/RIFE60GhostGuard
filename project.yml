@@ -17,6 +17,7 @@ targets:
       - path: .
         includes:
           - "*.swift"
+          - "*.mm"
       - path: Assets.xcassets
     dependencies:
       - package: RifeMetal
