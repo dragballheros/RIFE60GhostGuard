@@ -120,12 +120,15 @@ final class ColorPopGrade {
         // directly and correct its white balance independently of the global
         // grade. The narrower hue window avoids most green foliage and strong
         // yellow highlights.
-        let skinHue = smoothstep(10, 16, original.h)
-            * (1 - smoothstep(34, 40, original.h))
-        let skinSaturation = smoothstep(0.18, 0.34, original.s)
-            * (1 - smoothstep(0.78, 0.90, original.s))
-        let skinLuma = smoothstep(0.22, 0.42, y)
-            * (1 - smoothstep(0.94, 1.0, y))
+        let skinHue = smoothstep(5, 12, original.h)
+            * (1 - smoothstep(38, 46, original.h))
+        let skinSaturation = smoothstep(0.16, 0.30, original.s)
+            * (1 - smoothstep(0.84, 0.96, original.s))
+        // Include shaded limbs and arms. The old gate started at y=0.22,
+        // which made darker red/orange skin fall out of the correction while
+        // brighter peach skin continued to be corrected.
+        let skinLuma = smoothstep(0.12, 0.30, y)
+            * (1 - smoothstep(0.96, 1.0, y))
         let skinRedGreen = smoothstep(1.04, 1.10, r / max(g, 0.001))
             * (1 - smoothstep(1.60, 1.90, r / max(g, 0.001)))
         let skinGreenBlue = smoothstep(1.15, 1.30, g / max(b, 0.001))
@@ -161,8 +164,8 @@ final class ColorPopGrade {
             // Use a stronger correction than the global grade. Anime skin can be
             // visibly warm while still looking natural; a tiny hue nudge is not
             // enough to counter that cast.
-            let correction = clamp(s * skinWeight * 2.2)
-            let targetHue = 19.0
+            let correction = clamp(s * skinWeight * 2.45)
+            let targetHue = 18.0
             let hueDelta = shortestHueDelta(from: color.h, to: targetHue)
             color.h = normalizeHue(color.h + hueDelta * 0.90 * correction)
             color.s = clamp(color.s * (1 - 0.22 * correction))
@@ -190,7 +193,7 @@ final class ColorPopGrade {
         // Fade the global grade, but let the skin-specific temperature/hue
         // correction remain active where skin is confidently detected.
         let globalAmount = protection * s
-        let skinAmount = clamp(skinWeight * s * 2.2)
+        let skinAmount = clamp(skinWeight * s * 2.45)
         let amount = max(globalAmount, skinAmount)
         return (clamp(r + (rr - r) * amount),
                 clamp(g + (gg - g) * amount),
