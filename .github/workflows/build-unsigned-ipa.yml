@@ -272,6 +272,7 @@ jobs:
           git clone --depth 1 --recursive https://github.com/leejet/stable-diffusion.cpp /tmp/sd-cpp
           cmake -S /tmp/sd-cpp -B /tmp/sd-cpp-build -G Xcode \
             -DSD_METAL=ON \
+            -DGGML_BLAS=OFF \
             -DSD_BUILD_SHARED_LIBS=OFF \
             -DSD_BUILD_EXAMPLES=OFF \
             -DSD_WEBP=OFF \
