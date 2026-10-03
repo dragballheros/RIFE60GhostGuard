@@ -38,6 +38,11 @@ jobs:
           test -n "$SHARPIE_WEIGHT"
           test -s "$SHARPIE_WEIGHT"
 
+      - name: Set up Python 3.11 for model conversion
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
       - name: Prepare Social Compression Guard Core ML model
         run: |
           set -euo pipefail
