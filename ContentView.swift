@@ -8,7 +8,6 @@ struct ContentView: View {
     @StateObject private var vm = VideoProcessorViewModel()
     @StateObject private var pipController = ProcessingPiPController()
     @State private var showingImporter = false
-    @State private var showingGenerativeModelImporter = false
     @State private var generativeEditExpanded = false
     @State private var showingWatermarkEditor = false
     @State private var showingPhotosPicker = false
@@ -115,12 +114,7 @@ struct ContentView: View {
                                 }
                                 Toggle("Preserve original audio", isOn: $vm.preserveAudio)
                                     .disabled(vm.isBusy || vm.isImporting)
-                                Button { vm.ensureGenerativeModels() } label: {
-                                    Label(GenerativeModelStore.installed ? "Wan edit model installed" : "Download Wan edit model", systemImage: "arrow.down.circle")
-                                }
-                                .buttonStyle(.borderless)
-                                .disabled(vm.isBusy || vm.isImporting || GenerativeModelStore.installed)
-                                .onAppear { if !GenerativeModelStore.installed { vm.ensureGenerativeModels() } }
+                                if let p = vm.generativeDownloadProgress { ProgressView(value: p) }
                                 Text(vm.generativeModelStatus).font(.caption).foregroundStyle(.secondary)
                                 Text("True temporal reconstruction: the model regenerates the video from a multi-frame source window instead of digitally placing a new object on top. On a 6 GB iPhone this is Wan 2.1 VACE 1.3B Q4, not Wan 2.7 14B. Edits use a 480×320, 13-frame window so the model can stay resident.")
                                     .font(.caption).foregroundStyle(.secondary)
@@ -266,19 +260,12 @@ struct ContentView: View {
                 .navigationTitle("RIFE 60")
                 .photosPicker(isPresented: $showingPhotosPicker, selection: $photoItems, maxSelectionCount: 100, selectionBehavior: .ordered, matching: .any(of: [.videos, .images]), photoLibrary: .shared())
                 .fileImporter(isPresented: $showingImporter, allowedContentTypes: [.movie, .mpeg4Movie, .quickTimeMovie, .video, .image], allowsMultipleSelection: true) { result in Task { await vm.handleImport(result) } }
-                .fileImporter(isPresented: $showingGenerativeModelImporter, allowedContentTypes: [.data, .item], allowsMultipleSelection: true) { result in
-                    switch result {
-                    case .success(let urls):
-                        vm.installGenerativeModels(urls)
-                    case .failure(let error):
-                        vm.errorText = error.localizedDescription
-                    }
-                }
                 .fileImporter(isPresented: $showingExportFolderPicker, allowedContentTypes: [.folder], allowsMultipleSelection: false) { result in
                     vm.handleExportFolderSelection(result)
                     lastCompletedVideoURL = LastCompletedVideoStore.latestCompletedVideo() ?? lastCompletedVideoURL
                 }
                 .onAppear {
+                    vm.ensureGenerativeModels()
                     if lastCompletedVideoURL == nil { lastCompletedVideoURL = LastCompletedVideoStore.latestCompletedVideo() }
                     if vm.isBusy { pipController.arm() }
                     refreshPiPStatus(force: true)
