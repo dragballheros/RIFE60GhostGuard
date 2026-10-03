@@ -68,6 +68,10 @@ final class VideoProcessorViewModel: ObservableObject {
     private var benchmarkTask: Task<Void, Never>?
     @Published var ghostSensitivity = 1.0
     @Published var preserveAudio = true
+    @Published var generativeEdit = GenerativeEditConfiguration()
+    @Published var generativeModelStatus = GenerativeModelStore.status
+    @Published var generativeEditStatus = ""
+    private var generativeEngine: GenerativeVideoEngine?
     @Published var renderPowerMode = true
     @Published var telemetry = PerformanceTelemetry()
     @Published var processingScreenAwake = false
@@ -231,6 +235,107 @@ final class VideoProcessorViewModel: ObservableObject {
     func cancelBenchmark() { benchmarkTask?.cancel() }
 
     func cancel() { batchCancelRequested = true; currentTask?.cancel() }
+    func installGenerativeModels(_ urls: [URL]) {
+        do {
+            try GenerativeModelStore.install(urls)
+            generativeModelStatus = GenerativeModelStore.status
+            generativeEditStatus = "Generative model bundle installed"
+        } catch {
+            errorText = error.localizedDescription
+            generativeModelStatus = GenerativeModelStore.status
+        }
+    }
+
+    func startGenerativeEdit() {
+        guard let source = inputURL, inputKind == .video, !isBusy, !isImporting, !isBenchmarking else { return }
+        guard !generativeEdit.prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            errorText = "Enter an edit prompt first."
+            return
+        }
+        guard GenerativeModelStore.installed else {
+            errorText = "Install the three generative model files first."
+            return
+        }
+        let generation = UUID()
+        renderGeneration = generation
+        isProcessing = true
+        progress = 0
+        errorText = nil
+        outputURL = nil
+        statusText = "Starting Anime Generative Edit…"
+        generativeEditStatus = "Loading VACE Metal backend…"
+        generativeEngine = GenerativeVideoEngine()
+        let configuration = generativeEdit
+        currentTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                let generated = try await generativeEngine!.edit(sourceURL: source, configuration: configuration) { fraction, message in
+                    Task { @MainActor [weak self] in
+                        guard let self, self.renderGeneration == generation else { return }
+                        self.progress = fraction * 0.9
+                        self.statusText = message
+                        self.generativeEditStatus = message
+                    }
+                }
+                try Task.checkCancellation()
+                let finalURL = self.preserveAudio ? try await self.muxOriginalAudio(source: source, editedVideo: generated) : generated
+                let saved = try await self.saveFinishedVideo(finalURL)
+                await MainActor.run { [weak self] in
+                    guard let self else { return }
+                    self.outputURL = saved.url
+                    self.saveStatusText = saved.message
+                    self.progress = 1
+                    self.statusText = "Finished • Anime Generative Edit"
+                    self.generativeEditStatus = "Edit complete"
+                    self.isProcessing = false
+                    self.currentTask = nil
+                    self.generativeEngine?.unload()
+                    self.generativeEngine = nil
+                }
+            } catch is CancellationError {
+                await MainActor.run { [weak self] in
+                    self?.statusText = "Anime Generative Edit cancelled"
+                    self?.isProcessing = false
+                    self?.currentTask = nil
+                    self?.generativeEngine?.unload()
+                    self?.generativeEngine = nil
+                }
+            } catch {
+                await MainActor.run { [weak self] in
+                    self?.errorText = error.localizedDescription
+                    self?.statusText = "Anime Generative Edit failed"
+                    self?.isProcessing = false
+                    self?.currentTask = nil
+                    self?.generativeEngine?.unload()
+                    self?.generativeEngine = nil
+                }
+            }
+        }
+    }
+
+    private func muxOriginalAudio(source: URL, editedVideo: URL) async throws -> URL {
+        let sourceAsset = AVURLAsset(url: source)
+        let editedAsset = AVURLAsset(url: editedVideo)
+        let composition = AVMutableComposition()
+        guard let videoTrack = try await editedAsset.loadTracks(withMediaType: .video).first,
+              let compositionVideo = composition.addMutableTrack(withMediaType: .video, preferredTrackID: kCMPersistentTrackID_Invalid) else {
+            return editedVideo
+        }
+        try compositionVideo.insertTimeRange(CMTimeRange(start: .zero, duration: try await editedAsset.load(.duration)), of: videoTrack, at: .zero)
+        if let audioTrack = try await sourceAsset.loadTracks(withMediaType: .audio).first,
+           let compositionAudio = composition.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid) {
+            let duration = min(try await sourceAsset.load(.duration), try await editedAsset.load(.duration))
+            try compositionAudio.insertTimeRange(CMTimeRange(start: .zero, duration: duration), of: audioTrack, at: .zero)
+        }
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("AnimeGenerativeEdit-Mux-(UUID().uuidString).mov")
+        guard let exporter = AVAssetExportSession(asset: composition, presetName: AVAssetExportPresetPassthrough) else { return editedVideo }
+        exporter.outputURL = url
+        exporter.outputFileType = .mov
+        await exporter.export()
+        guard exporter.status == .completed else { throw exporter.error ?? GenerativeEditError.backendUnavailable("Audio mux failed.") }
+        return url
+    }
+
 
     func clearRecoveryData() {
         guard !isBusy else { return }
