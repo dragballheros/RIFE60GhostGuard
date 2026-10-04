@@ -26,10 +26,10 @@ final class RealCUGANPass {
 
     private var tileInputPool: CVPixelBufferPool?
     private var stitchedFramePool: CVPixelBufferPool?
-    // Core Image can reuse the Metal texture bindings for IOSurface-backed pixel buffers.
-    // Real-CUGAN renders one tile in and one tile out per prediction, so avoiding repeated
-    // CVPixelBuffer -> Metal texture setup is particularly valuable on long 4K runs.
-    // Keep Core Image's intermediate cache disabled to reduce per-tile memory churn.
+    // Keep the compiled 704x608 profile and reuse IOSurface-backed pixel-buffer pools.
+    // Do not flush Core Image or pixel-buffer caches during normal CUGAN processing:
+    // repeated cache teardown/rebuild adds latency and makes long runs climb from the
+    // initial ~800ms/frame toward ~1200ms/frame as the device heats up.
     // The CVMetalTextureCache CIContextOption is unavailable in the Xcode 16.4 SDK used
     // by the unsigned build, so retain the IOSurface/Metal-compatible pixel-buffer pools
     // as the reusable pixel-buffer boundary without using a version-fragile option key.
@@ -364,24 +364,6 @@ final class RealCUGANPass {
             throw ProcessorError.conversionFailed("Real-CUGAN stitched frame size mismatch")
         }
 
-        // Performance Mode still needs bounded IOSurface/Core Image caches during long 4K runs.
-        // This does not alter pixels or model execution; it only releases excess reusable resources.
-        let memory = currentRenderPerformanceSnapshot()
-        let cleanupInterval: Int
-        if memory.availableMemoryMB < 1_500 {
-            cleanupInterval = 1
-        } else if memory.availableMemoryMB < 2_000 {
-            cleanupInterval = 4
-        } else {
-            cleanupInterval = 8
-        }
-        if memory.availableMemoryMB < 1_200 && frameNumber % cleanupInterval == 0 {
-            CVPixelBufferPoolFlush(tileInputPool, .excessBuffers)
-            CVPixelBufferPoolFlush(stitchedFramePool, .excessBuffers)
-            if frameNumber % 20 == 0 || memory.availableMemoryMB < 1_500 {
-                DiagnosticsLogger.shared.log("Real-CUGAN memory cleanup • frame=\(frameNumber) • headroom=\(Int(memory.availableMemoryMB.rounded())) MB • interval=\(cleanupInterval)")
-            }
-        }
 
         return stitched
     }
