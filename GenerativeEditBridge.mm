@@ -4,6 +4,7 @@
 #include <cstring>
 #include <string>
 #include <vector>
+#include <exception>
 
 struct GEHandle { sd_ctx_t *ctx = nullptr; };
 static thread_local std::string ge_error;
@@ -27,16 +28,28 @@ GEHandle *ge_create(const char *diffusion, const char *vae, const char *t5) {
     p.vae_path = vae;
     p.t5xxl_path = t5;
     p.enable_mmap = true;
-    p.flash_attn = true;
-    p.diffusion_flash_attn = true;
-    p.diffusion_conv_direct = true;
-    p.vae_conv_direct = true;
-    p.n_threads = 4;
+    p.flash_attn = false;
+    p.diffusion_flash_attn = false;
+    p.diffusion_conv_direct = false;
+    p.vae_conv_direct = false;
+    p.eager_load = false;
+    p.max_vram = "1.2";
+    p.n_threads = 2;
     p.backend = "metal";
     p.params_backend = "cpu";
     sd_set_log_callback(ge_log, nullptr);
     auto *h = (GEHandle *)calloc(1, sizeof(GEHandle));
-    h->ctx = new_sd_ctx(&p);
+    try {
+        h->ctx = new_sd_ctx(&p);
+    } catch (const std::exception &ex) {
+        ge_error = ex.what();
+        free(h);
+        return nullptr;
+    } catch (...) {
+        ge_error = "Wan model load aborted. Close other apps and try again.";
+        free(h);
+        return nullptr;
+    }
     if (!h->ctx) { free(h); if (ge_error.empty()) ge_error = "Could not load generative model"; return nullptr; }
     return h;
 }
