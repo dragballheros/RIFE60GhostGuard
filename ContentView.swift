@@ -151,7 +151,7 @@ struct ContentView: View {
                         Text("For videos to appear directly in On My iPhone instead of the app's private-looking folder, tap Set On My iPhone Save Location, select the On My iPhone folder, and tap Open once. iOS requires this one-time folder permission. The app remembers it and future completed videos are written there directly. Export Last Completed Video remains available after relaunch so a finished render is not lost if the app is closed.").font(.caption).foregroundStyle(.secondary)
                     }
 
-                    if vm.isBusy {
+                    if vm.isBusy || vm.isPaused {
                         Section((vm.mediaQueue?.items.count ?? 0) > 1 ? "Current Item Clock" : "Overall Clock") {
                             ProgressView(value: vm.progress)
                             LabeledContent("Complete", value: String(format: "%.1f%%", vm.progress * 100))
@@ -167,12 +167,16 @@ struct ContentView: View {
                                 Button("Cancel", role: .destructive) { vm.cancel() }
                                 Spacer()
                                 Button {
-                                    vm.pause()
+                                    if vm.isPaused {
+                                        Task { await vm.start() }
+                                    } else {
+                                        vm.pause()
+                                    }
                                 } label: {
-                                    Label("Pause", systemImage: "pause.fill")
+                                    Label(vm.isPaused ? "Resume" : "Pause", systemImage: vm.isPaused ? "play.fill" : "pause.fill")
                                 }
                                 .buttonStyle(.bordered)
-                                .disabled(!vm.isBusy)
+                                .disabled(!vm.isBusy && !vm.isPaused)
                             }
                         }
                         if vm.inputKind == .video {
