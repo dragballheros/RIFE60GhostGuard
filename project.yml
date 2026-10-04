@@ -27,19 +27,8 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.za.rife60ghostguard
         SWIFT_OBJC_BRIDGING_HEADER: "$(SRCROOT)/RIFE60GhostGuard-Bridging-Header.h"
         HEADER_SEARCH_PATHS:
-          - "$(SRCROOT)/Vendor/sd-cpp/include"
-          - "$(SRCROOT)/Vendor/sd-cpp/ggml/include"
-          - "$(SRCROOT)/Vendor/sd-cpp/ggml/src"
         LIBRARY_SEARCH_PATHS:
-          - "$(SRCROOT)/Vendor/sd-cpp/lib"
         OTHER_LDFLAGS:
-          - "-Wl,-force_load,$(SRCROOT)/Vendor/sd-cpp/lib/libstable-diffusion.a"
-          - "$(SRCROOT)/Vendor/sd-cpp/lib/libggml.a"
-          - "$(SRCROOT)/Vendor/sd-cpp/lib/libggml-base.a"
-          - "$(SRCROOT)/Vendor/sd-cpp/lib/libggml-metal.a"
-          - "$(SRCROOT)/Vendor/sd-cpp/lib/libggml-cpu.a"
-          - "$(SRCROOT)/Vendor/sd-cpp/lib/libonig.a"
-          - "$(SRCROOT)/Vendor/sd-cpp/lib/libsd-utf8proc.a"
           - "-framework"
           - "Metal"
           - "-framework"
@@ -51,7 +40,7 @@ targets:
           - "-lc++"
         PRODUCT_NAME: RIFE60GhostGuard
         MARKETING_VERSION: 1.0
-        CURRENT_PROJECT_VERSION: 176
+        CURRENT_PROJECT_VERSION: 177
         INFOPLIST_KEY_CFBundleShortVersionString: "$(MARKETING_VERSION)"
         INFOPLIST_KEY_CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
         SWIFT_VERSION: 5.10
