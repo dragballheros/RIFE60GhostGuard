@@ -226,7 +226,8 @@ final class RestorationPass {
 
             if sourceFrames % 6 == 0 {
                 let frac = min(max(CMTimeGetSeconds(pts) / max(CMTimeGetSeconds(duration), 0.001), 0), 1)
-                progress(frac * 0.28, "Pass 1/2 • (watermark.enabled ? "Anime watermark removal • " : "")(sourceFrames) restored • (outlierCount) source outliers corrected • (currentThermalStateName())")
+                let watermarkText = watermark.enabled ? "Anime watermark removal • " : ""
+                progress(frac * 0.28, "Pass 1/2 • \(watermarkText)\(sourceFrames) restored • \(outlierCount) source outliers corrected • \(currentThermalStateName())")
                 if !automaticPerformanceModeEnabled() { await Task.yield() }
             }
         }
