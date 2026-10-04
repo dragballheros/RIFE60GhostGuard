@@ -47,6 +47,7 @@ final class VideoProcessorViewModel: ObservableObject {
     @Published var errorText: String?
     @Published var saveStatusText = ""
     @Published var isProcessing = false
+    @Published private(set) var isPaused = false
     @Published var isImporting = false
     @Published var importProgress: Double? = nil
     @Published var ghostProtection = true
@@ -230,7 +231,21 @@ final class VideoProcessorViewModel: ObservableObject {
 
     func cancelBenchmark() { benchmarkTask?.cancel() }
 
-    func cancel() { batchCancelRequested = true; currentTask?.cancel() }
+    /// Pauses the active render by stopping the worker at the next cancellation-safe point.
+    /// Recovery checkpoints remain intact, so Resume continues from the furthest valid checkpoint.
+    func pause() {
+        guard isBusy else { return }
+        batchCancelRequested = true
+        isPaused = true
+        DiagnosticsLogger.shared.log("User paused render • stopping active worker and keeping recovery checkpoints.")
+        currentTask?.cancel()
+    }
+
+    func cancel() {
+        batchCancelRequested = true
+        isPaused = false
+        currentTask?.cancel()
+    }
     func clearRecoveryData() {
         guard !isBusy else { return }
         do { try batchStore.discard(); mediaQueue = nil; selectedMediaID = nil; batchStatusText = "" }
@@ -316,6 +331,7 @@ final class VideoProcessorViewModel: ObservableObject {
         let generation = UUID(); renderGeneration = generation
         resumeBaseProgress = nil
         isProcessing = true
+        isPaused = false
         processingScreenAwake = false
         if !recoveryAvailable {
             progress = 0
@@ -417,7 +433,7 @@ final class VideoProcessorViewModel: ObservableObject {
                 }
             } catch is CancellationError {
                 RecoveryStore.markCancelled()
-                await MainActor.run { [weak self] in guard let self else { return }; self.statusText = "Cancelled • checkpoints kept"; self.recoveryAvailable = true; self.recoveryStatusText = "Resume available from the last completed checkpoint"; self.isProcessing = false; self.currentTask = nil; self.blackScreenTask?.cancel(); self.processingScreenAwake = true; self.restoreDisplayState() }
+                await MainActor.run { [weak self] in guard let self else { return }; self.statusText = self.isPaused ? "Paused • checkpoints kept" : "Cancelled • checkpoints kept"; self.recoveryAvailable = true; self.recoveryStatusText = self.isPaused ? "Resume available from the last completed checkpoint" : "Resume available from the last completed checkpoint"; self.isProcessing = false; self.currentTask = nil; self.blackScreenTask?.cancel(); self.processingScreenAwake = true; self.restoreDisplayState() }
             } catch {
                 RecoveryStore.markFailed(error)
                 await MainActor.run { [weak self] in guard let self else { return }; self.errorText = error.localizedDescription; self.statusText = "Failed • recovery data kept"; self.recoveryAvailable = RecoveryStore.existingJob() != nil; self.recoveryStatusText = self.recoveryAvailable ? "Resume available from the last completed checkpoint" : ""; self.isProcessing = false; self.currentTask = nil; self.blackScreenTask?.cancel(); self.processingScreenAwake = true; self.restoreDisplayState() }
@@ -466,6 +482,7 @@ final class VideoProcessorViewModel: ObservableObject {
     private func startImage(source: URL) async -> Task<Void, Never>? {
         let generation = UUID(); renderGeneration = generation
         isProcessing = true
+        isPaused = false
         processingScreenAwake = false
         progress = 0
         restorationProgress = 0
