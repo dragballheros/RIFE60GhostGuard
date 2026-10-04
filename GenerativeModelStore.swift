@@ -3,19 +3,25 @@ import Foundation
 struct GenerativeModelStore {
     static let root = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("AnimeGenerative", isDirectory: true)
     static var diffusion: URL { root.appendingPathComponent("diffusion.gguf") }
+    static let revision = "sdcpp-vace-1.3b-q4"
+    static var revisionFile: URL { root.appendingPathComponent("revision.txt") }
     static var textEncoder: URL { root.appendingPathComponent("text-encoder.gguf") }
     static var vae: URL { root.appendingPathComponent("vae.safetensors") }
     static var installed: Bool { [diffusion, textEncoder, vae].allSatisfy(valid) }
     static var status: String { installed ? "Wan 2.1 VACE 1.3B Q4 ready" : "Downloading Wan edit model…" }
 
     static let files: [(url: URL, destination: URL, label: String)] = [
-        (URL(string: "https://huggingface.co/samuelchristlie/Wan2.1-VACE-1.3B-GGUF/resolve/main/Wan2.1-VACE-1.3B-Q4_K_S.gguf?download=true")!, diffusion, "VACE 1.3B"),
+        (URL(string: "https://huggingface.co/calcuis/wan-1.3b-gguf/resolve/main/wan2.1-vace-1.3b-q4_0.gguf?download=true")!, diffusion, "VACE 1.3B"),
         (URL(string: "https://huggingface.co/city96/umt5-xxl-encoder-gguf/resolve/main/umt5-xxl-encoder-Q3_K_S.gguf?download=true")!, textEncoder, "UMT5 encoder"),
         (URL(string: "https://huggingface.co/Comfy-Org/Wan_2.1_ComfyUI_repackaged/resolve/main/split_files/vae/wan_2.1_vae.safetensors?download=true")!, vae, "Wan VAE")
     ]
 
     static func ensureInstalled(progress: @escaping (Double, String) -> Void) async throws {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let current = (try? String(contentsOf: revisionFile, encoding: .utf8)) ?? ""
+        if current != revision {
+            for file in files { try? FileManager.default.removeItem(at: file.destination) }
+        }
         let pending = files.filter { !valid($0.destination) }
         if pending.isEmpty { progress(1, "Wan 2.1 VACE 1.3B Q4 ready"); return }
         for (index, file) in pending.enumerated() {
@@ -30,6 +36,7 @@ struct GenerativeModelStore {
             try FileManager.default.moveItem(at: downloaded, to: file.destination)
         }
         guard installed else { throw NSError(domain: "RIFE60Generative", code: 2, userInfo: [NSLocalizedDescriptionKey: "Wan edit model download did not finish."]) }
+        try revision.write(to: revisionFile, atomically: true, encoding: .utf8)
         progress(1, "Wan 2.1 VACE 1.3B Q4 ready")
     }
 
