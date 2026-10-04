@@ -22,7 +22,7 @@ final class RealCUGANPass {
     // overlap.  The 1080p profile simply uses a wider inference surface so a
     // 1920x1080 frame needs 2x2 = 4 predictions instead of 3x2 = 6.
     private let fallbackProfile = TileProfile(width: 512, height: 512, overlap: 32, modelName: "RealCUGAN2xNoise3_Tile512")
-    private let fast1080Profile = TileProfile(width: 1024, height: 608, overlap: 32, modelName: "RealCUGAN2xNoise3_Tile1024x608")
+    private let fast1080Profile = TileProfile(width: 704, height: 608, overlap: 32, modelName: "RealCUGAN2xNoise3_Tile704x608")
 
     private var tileInputPool: CVPixelBufferPool?
     private var stitchedFramePool: CVPixelBufferPool?
@@ -78,7 +78,7 @@ final class RealCUGANPass {
 
         progress(0.002, "Pass 3/3 • Loading Real-CUGAN Anime 2x Noise 3…")
         DiagnosticsLogger.shared.log("Real-CUGAN tiled model load begin • \(profile.modelName)")
-        let preferNeuralEngine = profile.modelName == fast1080Profile.modelName && ModelComputePreference.current == .auto
+        let preferNeuralEngine = false
         let model = try loadModel(named: profile.modelName, preferNeuralEngine: preferNeuralEngine)
         DiagnosticsLogger.shared.log("Real-CUGAN tiled model load complete")
 
@@ -375,10 +375,9 @@ final class RealCUGANPass {
         } else {
             cleanupInterval = 8
         }
-        if memory.tier != .performance && frameNumber % cleanupInterval == 0 {
+        if memory.availableMemoryMB < 1_200 && frameNumber % cleanupInterval == 0 {
             CVPixelBufferPoolFlush(tileInputPool, .excessBuffers)
             CVPixelBufferPoolFlush(stitchedFramePool, .excessBuffers)
-            ciContext.clearCaches()
             if frameNumber % 20 == 0 || memory.availableMemoryMB < 1_500 {
                 DiagnosticsLogger.shared.log("Real-CUGAN memory cleanup • frame=\(frameNumber) • headroom=\(Int(memory.availableMemoryMB.rounded())) MB • interval=\(cleanupInterval)")
             }
