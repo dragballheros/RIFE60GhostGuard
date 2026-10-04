@@ -116,7 +116,7 @@ final class GenerativeVideoEngine {
         while let sample = output.copyNextSampleBuffer(), frames.count < count {
             if Double(index) >= Double(frames.count) * stride, let pb = CMSampleBufferGetImageBuffer(sample) {
                 CVPixelBufferLockBaseAddress(pb, .readOnly)
-                let base = guard let baseAddress = CVPixelBufferGetBaseAddress(pb) else { CVPixelBufferUnlockBaseAddress(pb, .readOnly); continue }
+                guard let baseAddress = CVPixelBufferGetBaseAddress(pb) else { CVPixelBufferUnlockBaseAddress(pb, .readOnly); continue }
                 let base = baseAddress.assumingMemoryBound(to: UInt8.self)
                 let row = CVPixelBufferGetBytesPerRow(pb)
                 var data = Data(count: width * height * 4)
