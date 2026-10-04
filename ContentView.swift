@@ -8,7 +8,6 @@ struct ContentView: View {
     @StateObject private var vm = VideoProcessorViewModel()
     @StateObject private var pipController = ProcessingPiPController()
     @State private var showingImporter = false
-    @State private var generativeEditExpanded = false
     @State private var showingWatermarkEditor = false
     @State private var showingPhotosPicker = false
     @State private var showingExportFolderPicker = false
@@ -87,48 +86,6 @@ struct ContentView: View {
                             HStack { Text("Mask padding"); Spacer(); Text("\(Int(vm.watermarkPaddingPixels)) px") }
                             Slider(value: $vm.watermarkPaddingPixels, in: 0...16, step: 1).disabled(vm.queueLocked || vm.isImporting)
                             Text("Anime/Manga LaMa reconstructs marked areas before RIFE and upscaling. Painted masks apply throughout a video. Use the brush and eraser to preserve the artwork between letters.").font(.caption).foregroundStyle(.secondary)
-                        }
-                    }
-
-                    Section {
-                        DisclosureGroup(isExpanded: $generativeEditExpanded) {
-                            if vm.inputKind == .video {
-                                TextField("Edit prompt", text: $vm.generativeEdit.prompt, axis: .vertical)
-                                    .lineLimit(3...6)
-                                    .disabled(vm.isBusy || vm.isImporting)
-                                TextField("Negative prompt", text: $vm.generativeEdit.negativePrompt, axis: .vertical)
-                                    .lineLimit(2...5)
-                                    .disabled(vm.isBusy || vm.isImporting)
-                                HStack { Text("Edit strength"); Spacer(); Text(String(format: "%.2f", vm.generativeEdit.strength)) }
-                                Slider(value: $vm.generativeEdit.strength, in: 0.45...1.0, step: 0.01)
-                                    .disabled(vm.isBusy || vm.isImporting)
-                                Stepper("Steps: \(vm.generativeEdit.steps)", value: $vm.generativeEdit.steps, in: 4...20)
-                                    .disabled(vm.isBusy || vm.isImporting)
-                                HStack {
-                                    Text("Seed")
-                                    Spacer()
-                                    TextField("Random", value: $vm.generativeEdit.seed, format: .number)
-                                        .keyboardType(.numbersAndPunctuation)
-                                        .multilineTextAlignment(.trailing)
-                                        .frame(width: 120)
-                                }
-                                Toggle("Preserve original audio", isOn: $vm.preserveAudio)
-                                    .disabled(vm.isBusy || vm.isImporting)
-                                if let p = vm.generativeDownloadProgress { ProgressView(value: p) }
-                                Text(vm.generativeModelStatus).font(.caption).foregroundStyle(.secondary)
-                                Text("True temporal reconstruction: the model regenerates the video from a multi-frame source window instead of digitally placing a new object on top. On a 6 GB iPhone this is Wan 2.1 VACE 1.3B Q4, not Wan 2.7 14B. Edits use a 480×320, 13-frame window so the model can stay resident.")
-                                    .font(.caption).foregroundStyle(.secondary)
-                                Button { vm.startGenerativeEdit() } label: {
-                                    Label("Run Anime Generative Edit", systemImage: "wand.and.stars")
-                                }
-                                .buttonStyle(.borderless)
-                                .disabled(vm.isBusy || vm.isImporting || vm.isBenchmarking || vm.inputURL == nil)
-                                if !vm.generativeEditStatus.isEmpty { Text(vm.generativeEditStatus).font(.caption).foregroundStyle(.secondary) }
-                            } else {
-                                Text("Select a video to use generative video editing.").font(.caption).foregroundStyle(.secondary)
-                            }
-                        } label: {
-                            Label("Anime Generative Edit", systemImage: "wand.and.stars")
                         }
                     }
 
@@ -265,7 +222,6 @@ struct ContentView: View {
                     lastCompletedVideoURL = LastCompletedVideoStore.latestCompletedVideo() ?? lastCompletedVideoURL
                 }
                 .onAppear {
-                    vm.ensureGenerativeModels()
                     if lastCompletedVideoURL == nil { lastCompletedVideoURL = LastCompletedVideoStore.latestCompletedVideo() }
                     if vm.isBusy { pipController.arm() }
                     refreshPiPStatus(force: true)
