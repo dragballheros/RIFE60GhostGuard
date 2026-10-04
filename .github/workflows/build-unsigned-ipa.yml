@@ -138,21 +138,6 @@ jobs:
       - name: Enable safe idle RIFE graph reclamation
         run: python3 Scripts/patch_rife_idle_graph.py
 
-      - name: Stabilize Real-CUGAN while keeping overhead reductions
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-          p = Path('RealCUGANPass.swift')
-          s = p.read_text()
-          old = 'private let fast1080Profile = TileProfile(width: 1024, height: 608, overlap: 32, modelName: "RealCUGAN2xNoise3_Tile1024x608")'
-          new = 'private let fast1080Profile = TileProfile(width: 704, height: 608, overlap: 32, modelName: "RealCUGAN2xNoise3_Tile704x608")'
-          if old not in s:
-              raise SystemExit('Expected 1024x608 CUGAN profile not found')
-          s = s.replace(old, new, 1)
-          s = s.replace('// 1920x1080 frame needs 2x2 = 4 predictions instead of 3x2 = 6.', '// 1920x1080 uses the proven 3x2 = 6 prediction profile to avoid peak-memory crashes.')
-          p.write_text(s)
-          PY
-
       - name: Apply automatic cooled Performance Mode
         run: |
           python3 - <<'PY'
@@ -191,39 +176,6 @@ jobs:
               1
           )
 
-          # CUGAN keeps Core ML .all so iOS may use the Neural Engine instead of
-          # forcing a growing GPU allocation. Wide tiles require 1.7 GB of live
-          # process headroom; otherwise the identical 512 model is selected.
-          replace_required(
-              'RealCUGANPass.swift',
-              'let profile = (width >= 1600 || height >= 1600) ? fast1080Profile : fallbackProfile',
-              'let memoryAtStart = currentRenderPerformanceSnapshot()\n        let profile = ((width >= 1600 || height >= 1600) && memoryAtStart.allowsWideCUGANTiles) ? fast1080Profile : fallbackProfile',
-              1
-          )
-          replace_required(
-              'RealCUGANPass.swift',
-              'try await Task.sleep(nanoseconds: 1_000_000)',
-              'try await Task.sleep(nanoseconds: automaticPerformanceModeEnabled() ? 250_000 : 1_000_000)',
-              1
-          )
-          replace_required(
-              'RealCUGANPass.swift',
-              '            frames += 1\n\n            if frames == 1 || frames % 20 == 0 {',
-              '            frames += 1\n            let memory = currentRenderPerformanceSnapshot()\n            if memory.tier != .performance {\n                if let tileInputPool { CVPixelBufferPoolFlush(tileInputPool, .excessBuffers) }\n                if let stitchedFramePool { CVPixelBufferPoolFlush(stitchedFramePool, .excessBuffers) }\n                ciContext.clearCaches()\n            }\n            try await adaptiveFrameBoundaryPacing(memory)\n\n            if frames == 1 || frames % 20 == 0 {',
-              1
-          )
-          replace_required(
-              'RealCUGANPass.swift',
-              '                await Task.yield()',
-              '                if !automaticPerformanceModeEnabled() { await Task.yield() }',
-              1
-          )
-          replace_required(
-              'RealCUGANPass.swift',
-              'if frames % 12 == 0 {',
-              'if frames % 4 == 0 {',
-              1
-          )
           PY
 
       - name: Verify Color Pop bypass and color patches
