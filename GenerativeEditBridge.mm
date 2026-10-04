@@ -8,8 +8,14 @@
 struct GEHandle { sd_ctx_t *ctx = nullptr; };
 static thread_local std::string ge_error;
 
-static void ge_log(enum sd_log_level_t, const char *message, void *) {
-    if (message) ge_error = message;
+static bool ge_is_noise(const char *message) {
+    if (!message) return true;
+    return strstr(message, "deallocating") || strstr(message, "ggml_metal_free") || strstr(message, "ggml_metal_init");
+}
+
+static void ge_log(enum sd_log_level_t level, const char *message, void *) {
+    if (!message || ge_is_noise(message)) return;
+    if (level == SD_LOG_ERROR || level == SD_LOG_WARN) ge_error = message;
 }
 
 GEHandle *ge_create(const char *diffusion, const char *vae, const char *t5) {
@@ -72,7 +78,7 @@ int ge_generate(GEHandle *h, const uint8_t *rgba, int frame_count, int width, in
     sd_image_t *generated = nullptr;
     int count = 0, effectiveFPS = 0;
     if (!generate_video(h->ctx, &p, &generated, &count, nullptr, &effectiveFPS) || !generated || count <= 0) {
-        if (ge_error.empty()) ge_error = "Generative video edit failed";
+        if (ge_error.empty() || ge_is_noise(ge_error.c_str())) ge_error = "Generative video edit failed. Close other apps and try a shorter clip.";
         if (generated) free_sd_images(generated, count);
         return 0;
     }
