@@ -55,10 +55,10 @@ final class GenerativeVideoEngine {
         let duration = try await asset.load(.duration)
         let sourceFPS = max(1, Int((try? await track.load(.nominalFrameRate)) ?? 24))
         let requested = max(5, Int((duration.seconds * Double(sourceFPS)).rounded()))
-        let count = min(13, requested)
+        let count = min(5, requested)
         let longSide = max(abs(natural.width), abs(natural.height))
-        let width = max(256, min(480, Int(abs(natural.width) * 480 / longSide / 16) * 16))
-        let height = max(256, min(320, Int(abs(natural.height) * 320 / longSide / 16) * 16))
+        let width = max(192, min(320, Int(abs(natural.width) * 320 / longSide / 16) * 16))
+        let height = max(192, min(192, Int(abs(natural.height) * 192 / longSide / 16) * 16))
         let frames = try decode(asset, count: count, width: width, height: height)
         var packed = Data(capacity: frames.count * width * height * 4)
         frames.forEach { packed.append($0) }
@@ -116,7 +116,8 @@ final class GenerativeVideoEngine {
         while let sample = output.copyNextSampleBuffer(), frames.count < count {
             if Double(index) >= Double(frames.count) * stride, let pb = CMSampleBufferGetImageBuffer(sample) {
                 CVPixelBufferLockBaseAddress(pb, .readOnly)
-                let base = CVPixelBufferGetBaseAddress(pb)!.assumingMemoryBound(to: UInt8.self)
+                let base = guard let baseAddress = CVPixelBufferGetBaseAddress(pb) else { CVPixelBufferUnlockBaseAddress(pb, .readOnly); continue }
+                let base = baseAddress.assumingMemoryBound(to: UInt8.self)
                 let row = CVPixelBufferGetBytesPerRow(pb)
                 var data = Data(count: width * height * 4)
                 data.withUnsafeMutableBytes { dst in
