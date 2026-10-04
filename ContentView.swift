@@ -163,7 +163,17 @@ struct ContentView: View {
                             Text(vm.inputKind == .image ? "Compression Guard → Real-CUGAN → Final Sharpie (RIFE skipped)" : "Compression Guard → RIFE HQ → Real-CUGAN → Final Sharpie").font(.caption).foregroundStyle(.secondary)
                             ProgressView(value: vm.progress)
                             Text(vm.statusText).font(.caption)
-                            Button("Cancel", role: .destructive) { vm.cancel() }
+                            HStack(spacing: 12) {
+                                Button("Cancel", role: .destructive) { vm.cancel() }
+                                Spacer()
+                                Button {
+                                    vm.pause()
+                                } label: {
+                                    Label("Pause", systemImage: "pause.fill")
+                                }
+                                .buttonStyle(.bordered)
+                                .disabled(!vm.isBusy)
+                            }
                         }
                         if vm.inputKind == .video {
                         Section("Live Performance") {
