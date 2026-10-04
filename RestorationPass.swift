@@ -112,20 +112,20 @@ final class RestorationPass {
         var outlineSeconds = 0.0
         var watermarkSeconds = 0.0
 
-        while let sample = output.copyNextSampleBuffer() {
-            try Task.checkCancellation()
-            guard let decoded = CMSampleBufferGetImageBuffer(sample) else { continue }
-            let pts = CMSampleBufferGetPresentationTimeStamp(sample)
-            var frame = decoded
-            sourceFrames += 1
+        let sourceOutlierGuard = SourceFrameOutlierGuard()
+        var pendingFrame: CVPixelBuffer?
+        var pendingPTS: CMTime?
+        var previousFrame: CVPixelBuffer?
+        var previousPTS: CMTime?
+        var outlierCount = 0
+
+        func processFrame(_ inputFrame: CVPixelBuffer) throws -> CVPixelBuffer {
+            var frame = inputFrame
 
             if let watermarkRemover {
                 let started = CFAbsoluteTimeGetCurrent()
                 frame = try watermarkRemover.apply(frame)
                 watermarkSeconds += CFAbsoluteTimeGetCurrent() - started
-                if sourceFrames == 1 || sourceFrames % 6 == 0 {
-                    DiagnosticsLogger.shared.log("Anime watermark frame \(sourceFrames) • \(String(format: "%.1f", watermarkSeconds * 1000 / Double(sourceFrames)))ms/frame")
-                }
             }
 
             if let compressionGuard {
@@ -143,17 +143,76 @@ final class RestorationPass {
                 outlineSeconds += CFAbsoluteTimeGetCurrent() - started
                 outlined += 1
             }
+            return frame
+        }
 
+        func appendRestored(_ frame: CVPixelBuffer, at pts: CMTime) async throws {
             while !input.isReadyForMoreMediaData {
                 try Task.checkCancellation()
                 try await Task.sleep(nanoseconds: automaticPerformanceModeEnabled() ? 250_000 : 1_000_000)
             }
-
             guard adaptor.append(frame, withPresentationTime: pts) else {
                 throw ProcessorError.writer("failed writing restored source frame")
             }
+        }
 
-            // Thermal mode is sampled only after the current frame is complete.
+        while let sample = output.copyNextSampleBuffer() {
+            try Task.checkCancellation()
+            guard let decoded = CMSampleBufferGetImageBuffer(sample) else { continue }
+            let pts = CMSampleBufferGetPresentationTimeStamp(sample)
+            let frame = try autoreleasepool { try processFrame(decoded) }
+            sourceFrames += 1
+
+            if pendingFrame == nil {
+                pendingFrame = frame
+                pendingPTS = pts
+                continue
+            }
+
+            if previousFrame == nil {
+                previousFrame = pendingFrame
+                previousPTS = pendingPTS
+                pendingFrame = frame
+                pendingPTS = pts
+                continue
+            }
+
+            guard let a = previousFrame,
+                  let aPTS = previousPTS,
+                  let b = pendingFrame,
+                  let bPTS = pendingPTS else {
+                previousFrame = pendingFrame
+                previousPTS = pendingPTS
+                pendingFrame = frame
+                pendingPTS = pts
+                continue
+            }
+
+            var correctedB = b
+            let check = autoreleasepool {
+                sourceOutlierGuard.inspect(previous: a, candidate: b, next: frame)
+            }
+            if check.isOutlier {
+                let total = max(CMTimeGetSeconds(CMTimeSubtract(pts, aPTS)), 0.0001)
+                let position = min(max(CMTimeGetSeconds(CMTimeSubtract(bPTS, aPTS)) / total, 0), 1)
+                if let bridge = sourceOutlierGuard.bridge(previous: a, next: frame, progress: position) {
+                    correctedB = bridge
+                    outlierCount += 1
+                    DiagnosticsLogger.shared.log(
+                        "Layer 1 source outlier corrected • frame=\(sourceFrames - 1) • score=\(String(format: "%.3f", check.score)) • reason=\(check.reason)"
+                    )
+                }
+            }
+
+            // A is now safe to emit. B is replaced before it becomes an input
+            // to RIFE, so the downstream interpolation stage never sees the
+            // isolated source ghost.
+            try await appendRestored(a, at: aPTS)
+            previousFrame = correctedB
+            previousPTS = bPTS
+            pendingFrame = frame
+            pendingPTS = pts
+
             try await thermalFrameBoundaryPacing()
 
             if sourceFrames % 3 == 0 {
@@ -167,11 +226,20 @@ final class RestorationPass {
 
             if sourceFrames % 6 == 0 {
                 let frac = min(max(CMTimeGetSeconds(pts) / max(CMTimeGetSeconds(duration), 0.001), 0), 1)
-                progress(frac * 0.28, "Pass 1/2 • \(watermark.enabled ? "Anime watermark removal • " : "")\(sourceFrames) restored • \(currentThermalStateName())")
+                progress(frac * 0.28, "Pass 1/2 • (watermark.enabled ? "Anime watermark removal • " : "")(sourceFrames) restored • (outlierCount) source outliers corrected • (currentThermalStateName())")
                 if !automaticPerformanceModeEnabled() { await Task.yield() }
             }
         }
 
+        // Flush the final two buffered source frames in timestamp order.
+        if let a = previousFrame, let aPTS = previousPTS {
+            try await appendRestored(a, at: aPTS)
+        }
+        if let b = pendingFrame, let bPTS = pendingPTS {
+            try await appendRestored(b, at: bPTS)
+        }
+
+        DiagnosticsLogger.shared.log("Layer 1 source-frame guard complete • scanned=\(sourceFrames) • corrected=\(outlierCount)")
         if reader.status == .failed {
             throw ProcessorError.reader(reader.error?.localizedDescription ?? "restoration decode failed")
         }
