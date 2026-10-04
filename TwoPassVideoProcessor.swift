@@ -42,8 +42,13 @@ final class TwoPassVideoProcessor {
             try fm.createDirectory(at: recoveryDirectory, withIntermediateDirectories: true)
         }
 
-        let needsRestoration = config.compressionProtection || watermark.enabled
-        let restorationName = watermark.enabled ? "Anime watermark removal / Compression Guard" : "Compression Guard"
+        let needsRestoration = config.compressionProtection || watermark.enabled || config.ghostProtection
+        let restorationName: String = {
+            if watermark.enabled && config.compressionProtection { return "Anime watermark removal / Compression Guard / Source Frame Guard" }
+            if watermark.enabled { return "Anime watermark removal / Source Frame Guard" }
+            if config.compressionProtection { return "Compression Guard / Source Frame Guard" }
+            return "Source Frame Guard"
+        }()
         let sourceAsset = AVURLAsset(url: sourceURL)
         let sourceDuration = try await sourceAsset.load(.duration)
         guard let sourceVideoTrack = try await sourceAsset.loadTracks(withMediaType: .video).first else {
