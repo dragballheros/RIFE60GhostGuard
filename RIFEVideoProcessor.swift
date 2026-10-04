@@ -60,6 +60,14 @@ final class RIFEVideoProcessor {
         let transform = try await track.load(.preferredTransform)
         let width = Int(abs(naturalSize.width).rounded())
         let height = Int(abs(naturalSize.height).rounded())
+        let detectedSourceFPS = Double(track.nominalFrameRate)
+        let sourceFPSLabel: String = {
+            guard detectedSourceFPS.isFinite, detectedSourceFPS > 0.5 else { return "source FPS unknown" }
+            return String(format: "%.2f FPS", detectedSourceFPS)
+        }()
+        DiagnosticsLogger.shared.log(
+            "RIFE cadence • source=\(sourceFPSLabel) • target=\(String(format: "%.2f", config.targetFPS)) FPS • timestamp-driven interpolation"
+        )
 
         let silentURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("rife60-\(UUID().uuidString).mov")
@@ -134,7 +142,7 @@ final class RIFEVideoProcessor {
             outlineEnhancer = nil
         }
 
-        progress(0.002, "Loading streaming tiled RIFE 4.26 HQ…")
+        progress(0.002, "Loading streaming tiled RIFE 4.26 HQ • \(sourceFPSLabel) → \(String(format: "%.0f", config.targetFPS)) FPS…")
         let interpolator = try autoreleasepool {
             try RifeInterpolator(configuration: .bundled(qualityTier: config.quality))
         }
@@ -403,7 +411,7 @@ final class RIFEVideoProcessor {
                 if config.compressionProtection { stages.append("\(cleaned) cleaned") }
                 if config.outlineProtection { stages.append("\(outlined) outlined") }
                 let stageText = stages.isEmpty ? "" : " • " + stages.joined(separator: " • ")
-                progress(frac * 0.92, "Streaming tiled HQ • \(generated) generated • \(rejected) rejected\(stageText)")
+                progress(frac * 0.92, "Streaming tiled HQ • \(sourceFPSLabel) → \(String(format: "%.0f", config.targetFPS)) FPS • \(generated) generated • \(rejected) rejected\(stageText)")
                 await Task.yield()
             }
 
