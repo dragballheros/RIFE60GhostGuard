@@ -1,1 +1,1 @@
-#include "GenerativeEditBridge.h"
+// Bridging header retained for the Xcode project.
