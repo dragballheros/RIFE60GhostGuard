@@ -48,7 +48,8 @@ final class RIFEVideoProcessor {
     func process(
         sourceURL: URL,
         progress: @escaping @Sendable (Double, String) -> Void,
-        telemetry: @escaping @Sendable (PerformanceTelemetry) -> Void = { _ in }
+        telemetry: @escaping @Sendable (PerformanceTelemetry) -> Void = { _ in },
+        recoveryDirectory: URL? = nil
     ) async throws -> URL {
         let asset = AVURLAsset(url: sourceURL)
         guard let track = try await asset.loadTracks(withMediaType: .video).first else {
@@ -69,6 +70,18 @@ final class RIFEVideoProcessor {
             "RIFE cadence • source=\(sourceFPSLabel) • target=\(String(format: "%.2f", config.targetFPS)) FPS • timestamp-driven interpolation"
         )
 
+        let sourceFrameStep = CMTime(seconds: 1.0 / max(detectedSourceFPS, 1.0), preferredTimescale: 600)
+        let resumeTimeHint: CMTime = {
+            if let recoveryDirectory,
+               let data = try? Data(contentsOf: recoveryDirectory.appendingPathComponent("incremental-rife/manifest.json")),
+               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let seconds = object["lastPTSSeconds"] as? Double,
+               seconds >= 0 {
+                return CMTime(seconds: seconds, preferredTimescale: 600)
+            }
+            return .zero
+        }()
+
         let silentURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("rife60-\(UUID().uuidString).mov")
         try? FileManager.default.removeItem(at: silentURL)
@@ -83,10 +96,8 @@ final class RIFEVideoProcessor {
         }
         reader.add(output)
 
-        let writer = try AVAssetWriter(outputURL: silentURL, fileType: .mov)
         let calculatedBitrate = width * height * Int(config.targetFPS) / 2
         let bitrate = min(max(60_000_000, calculatedBitrate), 800_000_000)
-
         let compression: [String: Any] = [
             AVVideoAverageBitRateKey: bitrate,
             AVVideoQualityKey: 1.0,
@@ -95,8 +106,7 @@ final class RIFEVideoProcessor {
             AVVideoAllowFrameReorderingKey: true,
             AVVideoProfileLevelKey: kVTProfileLevel_HEVC_Main10_AutoLevel as String
         ]
-
-        let input = AVAssetWriterInput(mediaType: .video, outputSettings: [
+        let outputSettings: [String: Any] = [
             AVVideoCodecKey: AVVideoCodecType.hevc,
             AVVideoWidthKey: width,
             AVVideoHeightKey: height,
@@ -106,25 +116,26 @@ final class RIFEVideoProcessor {
                 AVVideoTransferFunctionKey: AVVideoTransferFunction_ITU_R_709_2,
                 AVVideoYCbCrMatrixKey: AVVideoYCbCrMatrix_ITU_R_709_2
             ]
-        ])
-        input.expectsMediaDataInRealTime = false
-        input.transform = transform
-
-        let adaptor = AVAssetWriterInputPixelBufferAdaptor(
-            assetWriterInput: input,
+        ]
+        let checkpoint = try IncrementalVideoCheckpointWriter(
+            recoveryDirectory: recoveryDirectory,
+            stageID: "rife",
+            outputSettings: outputSettings,
             sourcePixelBufferAttributes: [
                 kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange,
                 kCVPixelBufferWidthKey as String: width,
                 kCVPixelBufferHeightKey as String: height,
                 kCVPixelBufferIOSurfacePropertiesKey as String: [:]
-            ]
+            ],
+            transform: transform,
+            segmentDuration: 5.0
         )
-
-        guard writer.canAdd(input) else {
-            throw ProcessorError.writer("cannot attach HEVC Main10 video input")
+        let resumeTime = checkpoint.resumeTime > .zero ? checkpoint.resumeTime : resumeTimeHint
+        if resumeTime > .zero {
+            let start = CMTimeMaximum(.zero, CMTimeSubtract(resumeTime, sourceFrameStep))
+            reader.timeRange = CMTimeRange(start: start, duration: CMTimeMaximum(.zero, CMTimeSubtract(duration, start)))
+            DiagnosticsLogger.shared.log("RIFE incremental resume • from output \(String(format: "%.3f", CMTimeGetSeconds(resumeTime)))s • reader overlap \(String(format: "%.3f", CMTimeGetSeconds(start)))s")
         }
-        writer.add(input)
-
         let guarder = GhostGuard(
             sensitivity: config.ghostSensitivity,
             enableSceneCuts: config.sceneCutProtection
@@ -158,17 +169,9 @@ final class RIFEVideoProcessor {
         guard reader.startReading() else {
             throw ProcessorError.reader(reader.error?.localizedDescription ?? "unknown error")
         }
-        guard writer.startWriting() else {
-            throw ProcessorError.writer(writer.error?.localizedDescription ?? "unknown error")
-        }
-        writer.startSession(atSourceTime: .zero)
-
-        guard let pool = adaptor.pixelBufferPool else {
-            throw ProcessorError.writer("10-bit pixel buffer pool unavailable")
-        }
 
         let frameStep = CMTime(value: 1, timescale: CMTimeScale(config.targetFPS.rounded()))
-        var nextOutputTime = CMTime.zero
+        var nextOutputTime = resumeTime > .zero ? CMTimeAdd(resumeTime, frameStep) : CMTime.zero
         var previousPB: CVPixelBuffer?
         var previousTime = CMTime.zero
         var rejected = 0
@@ -202,7 +205,7 @@ final class RIFEVideoProcessor {
         }
 
         while let sample = output.copyNextSampleBuffer() {
-            try Task.checkCancellation()
+            try await checkpoint.checkCancellation()
             guard let decodedPB = CMSampleBufferGetImageBuffer(sample) else { continue }
             sourceFrames += 1
 
@@ -226,8 +229,19 @@ final class RIFEVideoProcessor {
             }
 
             if previousPB == nil {
+                if resumeTime > .zero {
+                    // Decode one overlap source frame so the first post-checkpoint
+                    // interpolation still has a temporal predecessor. Its output
+                    // was already saved in the previous segment, so it is not
+                    // emitted again.
+                    previousPB = currentPB
+                    previousTime = currentTime
+                    try autoreleasepool { try tiledHQ.seed(currentPB) }
+                    continue
+                }
+
                 let started = CFAbsoluteTimeGetCurrent()
-                try await append10Bit(currentPB, at: .zero, input: input, adaptor: adaptor, pool: pool)
+                try await checkpoint.append10Bit(currentPB, at: .zero)
                 encodeSeconds += CFAbsoluteTimeGetCurrent() - started
                 outputFrames += 1
                 try autoreleasepool { try tiledHQ.seed(currentPB) }
@@ -245,11 +259,11 @@ final class RIFEVideoProcessor {
             var requestedTimesteps: [Float] = []
 
             while CMTimeCompare(nextOutputTime, currentTime) < 0 {
-                try Task.checkCancellation()
+                try await checkpoint.checkCancellation()
                 let rel = CMTimeGetSeconds(CMTimeSubtract(nextOutputTime, previousTime)) / spanSeconds
                 if rel <= 0.001 {
                     let started = CFAbsoluteTimeGetCurrent()
-                    try await append10Bit(prevPB, at: nextOutputTime, input: input, adaptor: adaptor, pool: pool)
+                    try await checkpoint.append10Bit(prevPB, at: nextOutputTime)
                     encodeSeconds += CFAbsoluteTimeGetCurrent() - started
                     outputFrames += 1
                 } else {
@@ -331,7 +345,7 @@ final class RIFEVideoProcessor {
             }
 
             for index in synthesized.indices {
-                try Task.checkCancellation()
+                try await checkpoint.checkCancellation()
                 let synth = synthesized[index]
                 let t = Double(requestedTimesteps[index])
                 var chosen: CVPixelBuffer = synth
@@ -392,7 +406,7 @@ final class RIFEVideoProcessor {
                 }
 
                 let encodeStarted = CFAbsoluteTimeGetCurrent()
-                try await append10Bit(chosen, at: requestedTimes[index], input: input, adaptor: adaptor, pool: pool)
+                try await checkpoint.append10Bit(chosen, at: requestedTimes[index])
                 encodeSeconds += CFAbsoluteTimeGetCurrent() - encodeStarted
                 outputFrames += 1
                 generated += 1
@@ -426,63 +440,15 @@ final class RIFEVideoProcessor {
             throw ProcessorError.reader(reader.error?.localizedDescription ?? "decode failed")
         }
 
-        input.markAsFinished()
-        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-            writer.finishWriting { continuation.resume() }
-        }
-
-        guard writer.status == .completed else {
-            throw ProcessorError.writer(writer.error?.localizedDescription ?? "finish failed")
-        }
+        let completedURL = try await checkpoint.finish()
 
         if config.preserveAudio {
             progress(0.95, "Restoring original audio…")
-            return try await addOriginalAudio(videoURL: silentURL, sourceAsset: asset)
+            return try await addOriginalAudio(videoURL: completedURL, sourceAsset: asset)
         }
 
         progress(1.0, "Finished • Streaming Tiled HQ • HEVC Main10")
-        return silentURL
-    }
-
-    private func append10Bit(_ source: CVPixelBuffer,
-                             at time: CMTime,
-                             input: AVAssetWriterInput,
-                             adaptor: AVAssetWriterInputPixelBufferAdaptor,
-                             pool: CVPixelBufferPool) async throws {
-        while !input.isReadyForMoreMediaData {
-            try Task.checkCancellation()
-            try await Task.sleep(nanoseconds: 2_000_000)
-        }
-
-        var destination: CVPixelBuffer?
-        let poolStatus = CVPixelBufferPoolCreatePixelBuffer(nil, pool, &destination)
-        guard poolStatus == kCVReturnSuccess, let destination else {
-            throw ProcessorError.conversionFailed("could not allocate 10-bit P010 output frame")
-        }
-
-        if transferSession == nil {
-            var session: VTPixelTransferSession?
-            let status = VTPixelTransferSessionCreate(allocator: kCFAllocatorDefault, pixelTransferSessionOut: &session)
-            guard status == noErr, let session else {
-                throw ProcessorError.conversionFailed("could not create VideoToolbox pixel transfer session")
-            }
-            transferSession = session
-        }
-
-        guard let transferSession else {
-            throw ProcessorError.conversionFailed("pixel transfer session unavailable")
-        }
-
-        let finalFrame: CVPixelBuffer
-        if let colorPopGrade { finalFrame = try colorPopGrade.apply(source) } else { finalFrame = source }
-        let transferStatus = VTPixelTransferSessionTransferImage(transferSession, from: finalFrame, to: destination)
-        guard transferStatus == noErr else {
-            throw ProcessorError.conversionFailed("BGRA→P010 conversion failed (\(transferStatus))")
-        }
-
-        guard adaptor.append(destination, withPresentationTime: time) else {
-            throw ProcessorError.writer("failed appending 10-bit frame at \(CMTimeGetSeconds(time)) s")
-        }
+        return completedURL
     }
 
     private func addOriginalAudio(videoURL: URL, sourceAsset: AVAsset) async throws -> URL {
