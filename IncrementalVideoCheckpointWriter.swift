@@ -105,7 +105,7 @@ final class IncrementalVideoCheckpointWriter {
             try Task.checkCancellation()
         } catch {
             if PauseCheckpointCoordinator.shared.isRequested {
-                try await finishCurrentSegment(writeManifest: true)
+                try await finishCurrentSegment(persistManifest: true)
             }
             throw error
         }
@@ -178,7 +178,7 @@ final class IncrementalVideoCheckpointWriter {
     /// return that file directly so the fast path does not add a composition/export.
     /// If a pause/resume produced multiple segments, concatenate them once at the end.
     func finish() async throws -> URL {
-        try await finishCurrentSegment(writeManifest: false)
+        try await finishCurrentSegment(persistManifest: false)
         guard !manifest.segments.isEmpty else { throw ProcessorError.noOutput }
 
         if manifest.segments.count == 1,
