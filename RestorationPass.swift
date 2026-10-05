@@ -23,7 +23,8 @@ final class RestorationPass {
     func run(
         sourceURL: URL,
         progress: @escaping @Sendable (Double, String) -> Void,
-        telemetry: @escaping @Sendable (PerformanceTelemetry) -> Void
+        telemetry: @escaping @Sendable (PerformanceTelemetry) -> Void,
+        recoveryDirectory: URL? = nil
     ) async throws -> RestorationPassResult {
         let asset = AVURLAsset(url: sourceURL)
         guard let track = try await asset.loadTracks(withMediaType: .video).first else {
@@ -36,10 +37,6 @@ final class RestorationPass {
         let width = Int(abs(naturalSize.width).rounded())
         let height = Int(abs(naturalSize.height).rounded())
 
-        let intermediateURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("restored-source-\(UUID().uuidString).mov")
-        try? FileManager.default.removeItem(at: intermediateURL)
-
         let reader = try AVAssetReader(asset: asset)
         let output = AVAssetReaderTrackOutput(track: track, outputSettings: [
             kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA
@@ -50,8 +47,7 @@ final class RestorationPass {
         }
         reader.add(output)
 
-        let writer = try AVAssetWriter(outputURL: intermediateURL, fileType: .mov)
-        let input = AVAssetWriterInput(mediaType: .video, outputSettings: [
+        let outputSettings: [String: Any] = [
             AVVideoCodecKey: AVVideoCodecType.proRes422HQ,
             AVVideoWidthKey: width,
             AVVideoHeightKey: height,
@@ -60,24 +56,25 @@ final class RestorationPass {
                 AVVideoTransferFunctionKey: AVVideoTransferFunction_ITU_R_709_2,
                 AVVideoYCbCrMatrixKey: AVVideoYCbCrMatrix_ITU_R_709_2
             ]
-        ])
-        input.expectsMediaDataInRealTime = false
-        input.transform = transform
-
-        let adaptor = AVAssetWriterInputPixelBufferAdaptor(
-            assetWriterInput: input,
+        ]
+        let checkpoint = try IncrementalVideoCheckpointWriter(
+            recoveryDirectory: recoveryDirectory,
+            stageID: "restoration",
+            outputSettings: outputSettings,
             sourcePixelBufferAttributes: [
                 kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
                 kCVPixelBufferWidthKey as String: width,
                 kCVPixelBufferHeightKey as String: height,
                 kCVPixelBufferIOSurfacePropertiesKey as String: [:]
-            ]
+            ],
+            transform: transform,
+            segmentDuration: 5.0
         )
-
-        guard writer.canAdd(input) else {
-            throw ProcessorError.writer("cannot attach ProRes restoration writer")
+        if checkpoint.resumeTime > .zero {
+            let start = checkpoint.resumeTime
+            reader.timeRange = CMTimeRange(start: start, duration: CMTimeMaximum(.zero, CMTimeSubtract(duration, start)))
+            DiagnosticsLogger.shared.log("Restoration incremental resume • from \(String(format: "%.3f", CMTimeGetSeconds(start)))s")
         }
-        writer.add(input)
 
         // Keep these resources scoped strictly to pass 1. They are destroyed when
         // this function returns, before the RIFE Metal graphs are created.
@@ -100,10 +97,6 @@ final class RestorationPass {
         guard reader.startReading() else {
             throw ProcessorError.reader(reader.error?.localizedDescription ?? "restoration reader failed")
         }
-        guard writer.startWriting() else {
-            throw ProcessorError.writer(writer.error?.localizedDescription ?? "restoration writer failed")
-        }
-        writer.startSession(atSourceTime: .zero)
 
         var sourceFrames = 0
         var cleaned = 0
@@ -147,19 +140,14 @@ final class RestorationPass {
         }
 
         func appendRestored(_ frame: CVPixelBuffer, at pts: CMTime) async throws {
-            while !input.isReadyForMoreMediaData {
-                try Task.checkCancellation()
-                try await Task.sleep(nanoseconds: automaticPerformanceModeEnabled() ? 250_000 : 1_000_000)
-            }
-            guard adaptor.append(frame, withPresentationTime: pts) else {
-                throw ProcessorError.writer("failed writing restored source frame")
-            }
+            try await checkpoint.append(frame, at: pts)
         }
 
         while let sample = output.copyNextSampleBuffer() {
-            try Task.checkCancellation()
+            try await checkpoint.checkCancellation()
             guard let decoded = CMSampleBufferGetImageBuffer(sample) else { continue }
             let pts = CMSampleBufferGetPresentationTimeStamp(sample)
+            if CMTimeCompare(pts, checkpoint.resumeTime) <= 0 { continue }
             let frame = try autoreleasepool { try processFrame(decoded) }
             sourceFrames += 1
 
@@ -245,14 +233,7 @@ final class RestorationPass {
             throw ProcessorError.reader(reader.error?.localizedDescription ?? "restoration decode failed")
         }
 
-        input.markAsFinished()
-        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-            writer.finishWriting { continuation.resume() }
-        }
-
-        guard writer.status == .completed else {
-            throw ProcessorError.writer(writer.error?.localizedDescription ?? "restoration finish failed")
-        }
+        let completedURL = try await checkpoint.finish()
 
         var finalTelemetry = PerformanceTelemetry()
         finalTelemetry.sourceFrames = sourceFrames
@@ -262,7 +243,7 @@ final class RestorationPass {
         telemetry(finalTelemetry)
 
         return RestorationPassResult(
-            url: intermediateURL,
+            url: completedURL,
             sourceFrames: sourceFrames,
             compressionMsPerFrame: finalTelemetry.compressionMsPerFrame,
             outlineMsPerFrame: finalTelemetry.outlineMsPerFrame
