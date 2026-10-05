@@ -157,8 +157,7 @@ final class TwoPassVideoProcessor {
                         telemetry: { t in
                             restorationTelemetry = t
                             telemetry(t)
-                        },
-                        recoveryDirectory: recoveryDirectory
+                        }
                     )
 
                     if let restoredCheckpoint {
@@ -214,8 +213,7 @@ final class TwoPassVideoProcessor {
                         combined.compressionMsPerFrame = restorationTelemetry.compressionMsPerFrame
                         combined.outlineMsPerFrame = 0
                         telemetry(combined)
-                    },
-                    recoveryDirectory: recoveryDirectory
+                    }
                 )
 
                 if let rifeCheckpoint {
@@ -430,14 +428,14 @@ final class TwoPassVideoProcessor {
                 let generated: URL
                 switch stage {
                 case "restored":
-                    let result = try await RestorationPass(compressionEnabled: config.compressionProtection, outlineEnabled: false, watermark: watermark).run(sourceURL: inputURL, progress: { p, message in publish(p / 0.28, message) }, telemetry: { sample in combined = sample; telemetry(sample) })
+                    let result = try await RestorationPass(compressionEnabled: config.compressionProtection, outlineEnabled: false, watermark: watermark).run(sourceURL: inputURL, progress: { p, message in publish(p / 0.28, message) }, telemetry: { sample in combined = sample; telemetry(sample) }, recoveryDirectory: recoveryDirectory)
                     generated = result.url
                 case "cugan":
                     try requireUpscaleFirstMemory(width: outputWidth, height: outputHeight)
                     generated = try await RealCUGANPass(intensity: 1.30).run(sourceURL: inputURL, finalAudioBitrate: audioBitrate, progress: publish, telemetry: { sample in
                         combined.upscaledFrames = sample.upscaledFrames; combined.cuganMsPerFrame = sample.cuganMsPerFrame; combined.upscaleFPS = sample.upscaleFPS
                         telemetry(combined)
-                    })
+                    }, recoveryDirectory: recoveryDirectory)
                 case "rife":
                     // Recheck after the CUGAN model has been released. Never silently
                     // change order on recovery: reject and retain completed checkpoints.
@@ -447,9 +445,9 @@ final class TwoPassVideoProcessor {
                         let saved = combined
                         combined = sample; combined.compressionMsPerFrame = saved.compressionMsPerFrame; combined.upscaledFrames = saved.upscaledFrames; combined.cuganMsPerFrame = saved.cuganMsPerFrame; combined.upscaleFPS = saved.upscaleFPS
                         telemetry(combined)
-                    })
+                    }, recoveryDirectory: recoveryDirectory)
                 default:
-                    generated = try await FinalOutlinePass(colorPopStrength: colorPopStrength).run(sourceURL: inputURL, finalAudioBitrate: audioBitrate, progress: publish, telemetry: { sample in combined.outlineMsPerFrame = sample.outlineMsPerFrame; telemetry(combined) })
+                    generated = try await FinalOutlinePass(colorPopStrength: colorPopStrength).run(sourceURL: inputURL, finalAudioBitrate: audioBitrate, progress: publish, telemetry: { sample in combined.outlineMsPerFrame = sample.outlineMsPerFrame; telemetry(combined) }, recoveryDirectory: recoveryDirectory)
                 }
                 if let checkpoint = checkpoints[index] {
                     try persistCheckpoint(from: generated, to: checkpoint)
