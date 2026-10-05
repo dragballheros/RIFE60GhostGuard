@@ -429,9 +429,6 @@ final class RIFEVideoProcessor {
                 await Task.yield()
             }
 
-            if sourceFrames % 12 == 0 {
-                CVPixelBufferPoolFlush(pool, .excessBuffers)
-            }
         }
 
         emitTelemetry()
