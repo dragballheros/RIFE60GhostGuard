@@ -86,7 +86,9 @@ final class IncrementalVideoCheckpointWriter {
         } else {
             let initial = Manifest(version: 1, stageID: stageID, segments: [], lastPTSSeconds: -1)
             self.manifest = initial
-            try? writeManifest(initial)
+            if let data = try? JSONEncoder().encode(initial) {
+                try? data.write(to: manifestURL, options: .atomic)
+            }
         }
 
         self.resumeTime = self.manifest.lastPTSSeconds >= 0
