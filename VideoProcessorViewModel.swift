@@ -231,19 +231,23 @@ final class VideoProcessorViewModel: ObservableObject {
 
     func cancelBenchmark() { benchmarkTask?.cancel() }
 
-    /// Pauses the active render by stopping the worker at the next cancellation-safe point.
-    /// Recovery checkpoints remain intact, so Resume continues from the furthest valid checkpoint.
+    /// Pause is the only action that requests an incremental checkpoint.
+    /// The worker is cancelled immediately, but the active stage writer intercepts
+    /// that cancellation and finalizes its current encoded progress before returning.
     func pause() {
         guard isBusy else { return }
         batchCancelRequested = true
         isPaused = true
-        DiagnosticsLogger.shared.log("User paused render • stopping active worker and keeping recovery checkpoints.")
+        PauseCheckpointCoordinator.shared.request()
+        DiagnosticsLogger.shared.log("User paused render • requesting pause-only incremental stage checkpoint.")
         currentTask?.cancel()
     }
 
     func cancel() {
         batchCancelRequested = true
         isPaused = false
+        PauseCheckpointCoordinator.shared.clear()
+        DiagnosticsLogger.shared.log("User cancelled render • no incremental checkpoint requested.")
         currentTask?.cancel()
     }
     func clearRecoveryData() {
@@ -329,6 +333,7 @@ final class VideoProcessorViewModel: ObservableObject {
         if inputKind == .image { return await startImage(source: source) }
         let resumingExistingJob = recoveryAvailable
         let generation = UUID(); renderGeneration = generation
+        PauseCheckpointCoordinator.shared.clear()
         resumeBaseProgress = nil
         isProcessing = true
         isPaused = false
@@ -433,7 +438,7 @@ final class VideoProcessorViewModel: ObservableObject {
                 }
             } catch is CancellationError {
                 RecoveryStore.markCancelled()
-                await MainActor.run { [weak self] in guard let self else { return }; self.statusText = self.isPaused ? "Paused • checkpoints kept" : "Cancelled • checkpoints kept"; self.recoveryAvailable = true; self.recoveryStatusText = self.isPaused ? "Resume available from the last completed checkpoint" : "Resume available from the last completed checkpoint"; self.isProcessing = false; self.currentTask = nil; self.blackScreenTask?.cancel(); self.processingScreenAwake = true; self.restoreDisplayState() }
+                await MainActor.run { [weak self] in guard let self else { return }; self.statusText = self.isPaused ? "Paused • stage progress checkpoint saved" : "Cancelled • checkpoints kept"; self.recoveryAvailable = true; self.recoveryStatusText = self.isPaused ? "Resume available from the saved point in the interrupted stage" : "Resume available from the last completed checkpoint"; self.isProcessing = false; self.currentTask = nil; self.blackScreenTask?.cancel(); self.processingScreenAwake = true; self.restoreDisplayState() }
             } catch {
                 RecoveryStore.markFailed(error)
                 await MainActor.run { [weak self] in guard let self else { return }; self.errorText = error.localizedDescription; self.statusText = "Failed • recovery data kept"; self.recoveryAvailable = RecoveryStore.existingJob() != nil; self.recoveryStatusText = self.recoveryAvailable ? "Resume available from the last completed checkpoint" : ""; self.isProcessing = false; self.currentTask = nil; self.blackScreenTask?.cancel(); self.processingScreenAwake = true; self.restoreDisplayState() }
