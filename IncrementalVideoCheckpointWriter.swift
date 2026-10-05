@@ -74,7 +74,7 @@ final class IncrementalVideoCheckpointWriter {
         self.fileType = fileType
 
         let root = recoveryDirectory ?? fm.temporaryDirectory
-        self.directory = root.appendingPathComponent("incremental-(stageID)", isDirectory: true)
+        self.directory = root.appendingPathComponent("incremental-\(stageID)", isDirectory: true)
         try fm.createDirectory(at: directory, withIntermediateDirectories: true)
 
         let manifestURL = directory.appendingPathComponent("manifest.json")
@@ -243,9 +243,9 @@ final class IncrementalVideoCheckpointWriter {
         return CMTimeSubtract(global, start)
     }
 
-    private func finishCurrentSegment(writeManifest: Bool) async throws {
+    private func finishCurrentSegment(persistManifest: Bool) async throws {
         guard let writer, let input, let url = segmentURL else {
-            if writeManifest, let lastWrittenPTS {
+            if persistManifest, let lastWrittenPTS {
                 manifest.lastPTSSeconds = CMTimeGetSeconds(lastWrittenPTS)
                 try writeManifest()
             }
@@ -270,10 +270,10 @@ final class IncrementalVideoCheckpointWriter {
             manifest.lastPTSSeconds = CMTimeGetSeconds(lastWrittenPTS)
         }
 
-        if writeManifest {
+        if persistManifest {
             try writeManifest()
             DiagnosticsLogger.shared.log(
-                "Pause checkpoint saved • stage=(stageID) • pts=(String(format: "%.3f", manifest.lastPTSSeconds))s • segments=(manifest.segments.count)"
+                "Pause checkpoint saved • stage=\(stageID) • pts=\(String(format: "%.3f", manifest.lastPTSSeconds))s • segments=\(manifest.segments.count)"
             )
         }
 
@@ -316,7 +316,7 @@ final class IncrementalVideoCheckpointWriter {
         }
 
         let finalURL = fm.temporaryDirectory
-            .appendingPathComponent("pause-checkpoint-complete-(stageID)-(UUID().uuidString).mov")
+            .appendingPathComponent("pause-checkpoint-complete-\(stageID)-\(UUID().uuidString).mov")
         try? fm.removeItem(at: finalURL)
 
         guard let exporter = AVAssetExportSession(
