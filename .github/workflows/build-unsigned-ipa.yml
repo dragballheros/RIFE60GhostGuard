@@ -172,12 +172,7 @@ jobs:
               'if !automaticPerformanceModeEnabled() { await Task.yield() }',
               1
           )
-          replace_required(
-              'RIFEVideoProcessor.swift',
-              'if sourceFrames % 12 == 0 {\n                CVPixelBufferPoolFlush(pool, .excessBuffers)\n            }',
-              'if sourceFrames % (automaticPerformanceModeEnabled() ? 48 : 12) == 0 {\n                CVPixelBufferPoolFlush(pool, .excessBuffers)\n            }',
-              1
-          )
+          # Pause-checkpoint RIFE owns its writer pixel-buffer pool; no external flush patch is applied here.
 
           PY
 
