@@ -451,6 +451,44 @@ final class RIFEVideoProcessor {
         return completedURL
     }
 
+    // Compatibility helper retained for the existing CI performance patch. It is
+    // intentionally unused by the active pause-checkpoint writer path.
+    private func append10Bit(_ source: CVPixelBuffer,
+                             at time: CMTime,
+                             input: AVAssetWriterInput,
+                             adaptor: AVAssetWriterInputPixelBufferAdaptor,
+                             pool: CVPixelBufferPool) async throws {
+        while !input.isReadyForMoreMediaData {
+            try Task.checkCancellation()
+            try await Task.sleep(nanoseconds: 2_000_000)
+        }
+        var destination: CVPixelBuffer?
+        let poolStatus = CVPixelBufferPoolCreatePixelBuffer(nil, pool, &destination)
+        guard poolStatus == kCVReturnSuccess, let destination else {
+            throw ProcessorError.conversionFailed("could not allocate 10-bit P010 output frame")
+        }
+        if transferSession == nil {
+            var session: VTPixelTransferSession?
+            let status = VTPixelTransferSessionCreate(allocator: kCFAllocatorDefault, pixelTransferSessionOut: &session)
+            guard status == noErr, let session else {
+                throw ProcessorError.conversionFailed("could not create VideoToolbox pixel transfer session")
+            }
+            transferSession = session
+        }
+        guard let transferSession else {
+            throw ProcessorError.conversionFailed("pixel transfer session unavailable")
+        }
+        let finalFrame: CVPixelBuffer
+        if let colorPopGrade { finalFrame = try colorPopGrade.apply(source) } else { finalFrame = source }
+        let transferStatus = VTPixelTransferSessionTransferImage(transferSession, from: finalFrame, to: destination)
+        guard transferStatus == noErr else {
+            throw ProcessorError.conversionFailed("BGRA→P010 conversion failed (\\(transferStatus))")
+        }
+        guard adaptor.append(destination, withPresentationTime: time) else {
+            throw ProcessorError.writer("failed appending 10-bit frame at \\(CMTimeGetSeconds(time)) s")
+        }
+    }
+
     private func addOriginalAudio(videoURL: URL, sourceAsset: AVAsset) async throws -> URL {
         let outputURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("RIFE60-Main10-\(UUID().uuidString).mp4")
