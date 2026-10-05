@@ -30,7 +30,8 @@ final class FinalOutlinePass {
         sourceURL: URL,
         finalAudioBitrate: Double,
         progress: @escaping @Sendable (Double, String) -> Void,
-        telemetry: @escaping @Sendable (PerformanceTelemetry) -> Void
+        telemetry: @escaping @Sendable (PerformanceTelemetry) -> Void,
+        recoveryDirectory: URL? = nil
     ) async throws -> URL {
         let asset = AVURLAsset(url: sourceURL)
         guard let track = try await asset.loadTracks(withMediaType: .video).first else { throw ProcessorError.missingVideoTrack }
@@ -57,18 +58,12 @@ final class FinalOutlinePass {
         guard reader.canAdd(output) else { throw ProcessorError.reader("cannot attach final polish reader") }
         reader.add(output)
 
-        let outURL = FileManager.default.temporaryDirectory.appendingPathComponent("RIFE60-FAST-FINAL-SHARPIE-\(UUID().uuidString).mov")
-        try? FileManager.default.removeItem(at: outURL)
-        var keepOutput = false
-        defer { if !keepOutput { try? FileManager.default.removeItem(at: outURL) } }
-        let freeAtStart = availableDiskSpaceBytes(at: outURL)
+        let checkpointRoot = recoveryDirectory ?? FileManager.default.temporaryDirectory
+        let freeAtStart = availableDiskSpaceBytes(at: checkpointRoot)
         if let freeAtStart, freeAtStart < 1_200_000_000 {
             throw ProcessorError.writer("Not enough free storage for the final 4K Sharpie pass • \(formatStorageMB(freeAtStart)) MB available • at least 1200 MB required")
         }
         DiagnosticsLogger.shared.log("Final Sharpie storage preflight • free=\(freeAtStart.map(formatStorageMB) ?? "unknown") MB")
-        let writer = try AVAssetWriter(outputURL: outURL, fileType: .mov)
-        writer.movieFragmentInterval = CMTime(seconds: 2, preferredTimescale: 600)
-
         let targetTotalBytes = 1_080_000_000.0
         let usableBits = max((targetTotalBytes - 16_000_000.0) * 8.0, 8_000_000.0)
         let audioBits = max(finalAudioBitrate, 0) * seconds
@@ -84,7 +79,7 @@ final class FinalOutlinePass {
             AVVideoAllowFrameReorderingKey: true,
             AVVideoProfileLevelKey: kVTProfileLevel_HEVC_Main10_AutoLevel as String
         ]
-        let input = AVAssetWriterInput(mediaType: .video, outputSettings: [
+        let outputSettings: [String: Any] = [
             AVVideoCodecKey: AVVideoCodecType.hevc,
             AVVideoWidthKey: width,
             AVVideoHeightKey: height,
@@ -94,30 +89,36 @@ final class FinalOutlinePass {
                 AVVideoTransferFunctionKey: AVVideoTransferFunction_ITU_R_709_2,
                 AVVideoYCbCrMatrixKey: AVVideoYCbCrMatrix_ITU_R_709_2
             ]
-        ])
-        input.expectsMediaDataInRealTime = false
-        input.transform = transform
-        let adaptor = AVAssetWriterInputPixelBufferAdaptor(assetWriterInput: input, sourcePixelBufferAttributes: [
-            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange,
-            kCVPixelBufferWidthKey as String: width,
-            kCVPixelBufferHeightKey as String: height,
-            kCVPixelBufferIOSurfacePropertiesKey as String: [:]
-        ])
-        guard writer.canAdd(input) else { throw ProcessorError.writer("cannot attach final polish HEVC Main10 writer") }
-        writer.add(input)
+        ]
+        let checkpoint = try IncrementalVideoCheckpointWriter(
+            recoveryDirectory: recoveryDirectory,
+            stageID: "final-outline",
+            outputSettings: outputSettings,
+            sourcePixelBufferAttributes: [
+                kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange,
+                kCVPixelBufferWidthKey as String: width,
+                kCVPixelBufferHeightKey as String: height,
+                kCVPixelBufferIOSurfacePropertiesKey as String: [:]
+            ],
+            transform: transform,
+            segmentDuration: 5.0
+        )
+        if checkpoint.resumeTime > .zero {
+            let start = checkpoint.resumeTime
+            reader.timeRange = CMTimeRange(start: start, duration: CMTimeMaximum(.zero, CMTimeSubtract(duration, start)))
+            DiagnosticsLogger.shared.log("Final Sharpie incremental resume • from \(String(format: "%.3f", CMTimeGetSeconds(start)))s")
+        }
         guard reader.startReading() else { throw ProcessorError.reader(reader.error?.localizedDescription ?? "final polish reader failed") }
-        guard writer.startWriting() else { throw ProcessorError.writer(writer.error?.localizedDescription ?? "final polish writer failed") }
-        writer.startSession(atSourceTime: .zero)
-        guard let writerPool = adaptor.pixelBufferPool else { throw ProcessorError.writer("final polish P010 pool unavailable") }
 
         var frames = 0, shadowCleanedFrames = 0, finalCleanedFrames = 0
         var outlineSeconds = 0.0, shadowSeconds = 0.0, finalCompressionSeconds = 0.0, encodeSeconds = 0.0
         let passStart = CFAbsoluteTimeGetCurrent()
 
         while let sample = output.copyNextSampleBuffer() {
-            try Task.checkCancellation()
+            try await checkpoint.checkCancellation()
             guard let decoded = CMSampleBufferGetImageBuffer(sample) else { continue }
             let pts = CMSampleBufferGetPresentationTimeStamp(sample)
+            if CMTimeCompare(pts, checkpoint.resumeTime) <= 0 { continue }
 
             // IMPORTANT: dark chroma cleanup happens before Sharpie. It preserves
             // source luminance/edges, and the cleaned frame is also used as the blend
@@ -152,7 +153,7 @@ final class FinalOutlinePass {
             finalCompressionSeconds += CFAbsoluteTimeGetCurrent() - compressionStart
 
             let encodeStart = CFAbsoluteTimeGetCurrent()
-            try await append10Bit(polished, at: pts, input: input, adaptor: adaptor, pool: writerPool, writer: writer)
+            try await checkpoint.append10Bit(polished, at: pts)
             encodeSeconds += CFAbsoluteTimeGetCurrent() - encodeStart
             frames += 1
 
@@ -176,13 +177,10 @@ final class FinalOutlinePass {
 
         if reader.status == .failed { throw ProcessorError.reader(reader.error?.localizedDescription ?? "final polish decode failed") }
         guard frames > 0 else { throw ProcessorError.conversionFailed("Final polish pass received zero frames") }
-        input.markAsFinished()
-        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in writer.finishWriting { continuation.resume() } }
-        guard writer.status == .completed else { throw ProcessorError.writer(writer.error?.localizedDescription ?? "final polish finish failed") }
-        let completedBytes = (try? FileManager.default.attributesOfItem(atPath: outURL.path)[.size] as? NSNumber)?.int64Value ?? 0
+        let completedURL = try await checkpoint.finish()
+        let completedBytes = (try? FileManager.default.attributesOfItem(atPath: completedURL.path)[.size] as? NSNumber)?.int64Value ?? 0
         DiagnosticsLogger.shared.log("Final visual pass complete • frames=\(frames) • order=ShadowChroma→Sharpie→FinalCompression • Sharpie style map=\(workingWidth)x\(workingHeight) • Sharpie=\(String(format: "%.1f", outlineSeconds*1000/Double(frames)))ms/frame • HEVC Main10 • file=\(formatStorageMB(completedBytes)) MB")
-        keepOutput = true
-        return outURL
+        return completedURL
     }
 
     /// Single-image version of the per-frame final polish in run():
