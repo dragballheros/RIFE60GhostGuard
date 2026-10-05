@@ -50,7 +50,8 @@ final class RealCUGANPass {
         sourceURL: URL,
         finalAudioBitrate: Double,
         progress: @escaping @Sendable (Double, String) -> Void,
-        telemetry: @escaping @Sendable (PerformanceTelemetry) -> Void
+        telemetry: @escaping @Sendable (PerformanceTelemetry) -> Void,
+        recoveryDirectory: URL? = nil
     ) async throws -> URL {
         let asset = AVURLAsset(url: sourceURL)
         guard let track = try await asset.loadTracks(withMediaType: .video).first else { throw ProcessorError.missingVideoTrack }
@@ -92,18 +93,12 @@ final class RealCUGANPass {
         guard reader.canAdd(output) else { throw ProcessorError.reader("cannot attach Real-CUGAN reader") }
         reader.add(output)
 
-        let outURL = FileManager.default.temporaryDirectory.appendingPathComponent("RIFE60-CUGAN-2X-\(UUID().uuidString).mov")
-        try? FileManager.default.removeItem(at: outURL)
-        var keepOutput = false
-        defer { if !keepOutput { try? FileManager.default.removeItem(at: outURL) } }
-        let freeAtStart = availableDiskSpaceBytes(at: outURL)
+        let checkpointRoot = recoveryDirectory ?? FileManager.default.temporaryDirectory
+        let freeAtStart = availableDiskSpaceBytes(at: checkpointRoot)
         if let freeAtStart, freeAtStart < 1_500_000_000 {
             throw ProcessorError.writer("Not enough free storage for the 4K Real-CUGAN pass • \(formatStorageMB(freeAtStart)) MB available • at least 1500 MB required")
         }
         DiagnosticsLogger.shared.log("Real-CUGAN storage preflight • free=\(freeAtStart.map(formatStorageMB) ?? "unknown") MB")
-        let writer = try AVAssetWriter(outputURL: outURL, fileType: .mov)
-        writer.movieFragmentInterval = CMTime(seconds: 2, preferredTimescale: 600)
-
         let targetTotalBytes = 950_000_000.0
         let containerReserveBytes = 16_000_000.0
         let usableBits = max((targetTotalBytes - containerReserveBytes) * 8.0, 8_000_000.0)
@@ -122,7 +117,7 @@ final class RealCUGANPass {
             AVVideoAllowFrameReorderingKey: true,
             AVVideoProfileLevelKey: kVTProfileLevel_HEVC_Main10_AutoLevel as String
         ]
-        let input = AVAssetWriterInput(mediaType: .video, outputSettings: [
+        let outputSettings: [String: Any] = [
             AVVideoCodecKey: AVVideoCodecType.hevc,
             AVVideoWidthKey: targetWidth,
             AVVideoHeightKey: targetHeight,
@@ -132,22 +127,27 @@ final class RealCUGANPass {
                 AVVideoTransferFunctionKey: AVVideoTransferFunction_ITU_R_709_2,
                 AVVideoYCbCrMatrixKey: AVVideoYCbCrMatrix_ITU_R_709_2
             ]
-        ])
-        input.expectsMediaDataInRealTime = false
-        input.transform = transform
-        let adaptor = AVAssetWriterInputPixelBufferAdaptor(assetWriterInput: input, sourcePixelBufferAttributes: [
-            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange,
-            kCVPixelBufferWidthKey as String: targetWidth,
-            kCVPixelBufferHeightKey as String: targetHeight,
-            kCVPixelBufferMetalCompatibilityKey as String: true,
-            kCVPixelBufferIOSurfacePropertiesKey as String: [:]
-        ])
-        guard writer.canAdd(input) else { throw ProcessorError.writer("cannot attach native 2x HEVC Main10 writer") }
-        writer.add(input)
+        ]
+        let checkpoint = try IncrementalVideoCheckpointWriter(
+            recoveryDirectory: recoveryDirectory,
+            stageID: "cugan",
+            outputSettings: outputSettings,
+            sourcePixelBufferAttributes: [
+                kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange,
+                kCVPixelBufferWidthKey as String: targetWidth,
+                kCVPixelBufferHeightKey as String: targetHeight,
+                kCVPixelBufferMetalCompatibilityKey as String: true,
+                kCVPixelBufferIOSurfacePropertiesKey as String: [:]
+            ],
+            transform: transform,
+            segmentDuration: 5.0
+        )
+        if checkpoint.resumeTime > .zero {
+            let start = checkpoint.resumeTime
+            reader.timeRange = CMTimeRange(start: start, duration: CMTimeMaximum(.zero, CMTimeSubtract(duration, start)))
+            DiagnosticsLogger.shared.log("Real-CUGAN incremental resume • from \(String(format: "%.3f", CMTimeGetSeconds(start)))s")
+        }
         guard reader.startReading() else { throw ProcessorError.reader(reader.error?.localizedDescription ?? "Real-CUGAN reader failed") }
-        guard writer.startWriting() else { throw ProcessorError.writer(writer.error?.localizedDescription ?? "native 2x writer failed") }
-        writer.startSession(atSourceTime: .zero)
-        guard let writerPool = adaptor.pixelBufferPool else { throw ProcessorError.writer("native 2x P010 pixel buffer pool unavailable") }
         DiagnosticsLogger.shared.log("Real-CUGAN reader/writer started • target=\(targetWidth)x\(targetHeight) HEVC Main10 • bitrate=\(videoBitrate)")
 
         let alphaValue = Float(1.0 / max(intensity, 0.01))
@@ -159,9 +159,10 @@ final class RealCUGANPass {
         let passStart = CFAbsoluteTimeGetCurrent()
 
         while let sample = output.copyNextSampleBuffer() {
-            try Task.checkCancellation()
+            try await checkpoint.checkCancellation()
             guard let decodedFrame = CMSampleBufferGetImageBuffer(sample) else { continue }
             let pts = CMSampleBufferGetPresentationTimeStamp(sample)
+            if CMTimeCompare(pts, checkpoint.resumeTime) <= 0 { continue }
             let frameNumber = frames + 1
 
             if frameNumber == 1 {
@@ -173,7 +174,7 @@ final class RealCUGANPass {
             inferenceSeconds += CFAbsoluteTimeGetCurrent() - inferenceStart
 
             let encodeStart = CFAbsoluteTimeGetCurrent()
-            try await append10Bit(upscaled, at: pts, input: input, adaptor: adaptor, pool: writerPool, writer: writer)
+            try await checkpoint.append10Bit(upscaled, at: pts)
             encodeSeconds += CFAbsoluteTimeGetCurrent() - encodeStart
             frames += 1
 
@@ -205,13 +206,10 @@ final class RealCUGANPass {
 
         if reader.status == .failed { throw ProcessorError.reader(reader.error?.localizedDescription ?? "Real-CUGAN decode failed") }
         guard frames > 0 else { throw ProcessorError.conversionFailed("Real-CUGAN received zero decoded frames") }
-        input.markAsFinished()
-        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in writer.finishWriting { continuation.resume() } }
-        guard writer.status == .completed else { throw ProcessorError.writer(writer.error?.localizedDescription ?? "native 2x finish failed") }
-        let completedBytes = (try? FileManager.default.attributesOfItem(atPath: outURL.path)[.size] as? NSNumber)?.int64Value ?? 0
+        let completedURL = try await checkpoint.finish()
+        let completedBytes = (try? FileManager.default.attributesOfItem(atPath: completedURL.path)[.size] as? NSNumber)?.int64Value ?? 0
         DiagnosticsLogger.shared.log("Real-CUGAN writer completed • native 2x=\(targetWidth)x\(targetHeight) • frames=\(frames) • file=\(formatStorageMB(completedBytes)) MB")
-        keepOutput = true
-        return outURL
+        return completedURL
     }
 
     /// Single-image native 2x upscale. Uses the exact same model, noise level, intensity,
@@ -312,7 +310,6 @@ final class RealCUGANPass {
             let coreHeight = min(profile.stepY, sourceHeight - y)
             var x = 0
             while x < sourceWidth {
-                try Task.checkCancellation()
                 let coreWidth = min(profile.stepX, sourceWidth - x)
                 tileIndex += 1
 
