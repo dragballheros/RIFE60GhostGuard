@@ -1,6 +1,7 @@
 name: Build Unsigned IPA
 # Rebuild trigger after reverting mobile compression restoration
 # Color Pop skin-state preservation fix build trigger
+# Pause-only checkpoint baseline build
 
 on:
   workflow_dispatch:
