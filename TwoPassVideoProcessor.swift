@@ -157,7 +157,8 @@ final class TwoPassVideoProcessor {
                         telemetry: { t in
                             restorationTelemetry = t
                             telemetry(t)
-                        }
+                        },
+                        recoveryDirectory: recoveryDirectory
                     )
 
                     if let restoredCheckpoint {
@@ -213,7 +214,8 @@ final class TwoPassVideoProcessor {
                         combined.compressionMsPerFrame = restorationTelemetry.compressionMsPerFrame
                         combined.outlineMsPerFrame = 0
                         telemetry(combined)
-                    }
+                    },
+                    recoveryDirectory: recoveryDirectory
                 )
 
                 if let rifeCheckpoint {
@@ -222,6 +224,7 @@ final class TwoPassVideoProcessor {
                     rifeResult = rifeCheckpoint
                     RecoveryStore.update(progress: 0.40, message: "Pass 2/4 checkpoint saved • RIFE HQ complete", force: true)
                     DiagnosticsLogger.shared.log("Checkpoint saved: RIFE HQ.")
+                    IncrementalVideoCheckpointWriter.cleanup(recoveryDirectory: recoveryDirectory, stageID: "rife")
                     if let restoredCheckpoint { try? fm.removeItem(at: restoredCheckpoint) }
                 } else {
                     transientURLs.append(generated)
@@ -269,7 +272,8 @@ final class TwoPassVideoProcessor {
                             combined.availableMemoryMB = sample.availableMemoryMB
                             combined.physicalMemoryMB = sample.physicalMemoryMB
                             telemetry(combined)
-                        }
+                        },
+                        recoveryDirectory: recoveryDirectory
                     )
 
                     if let cuganCheckpoint {
@@ -278,6 +282,7 @@ final class TwoPassVideoProcessor {
                         postCUGANSource = cuganCheckpoint
                         RecoveryStore.update(progress: cuganEnd, message: "Pass 3/4 checkpoint saved • Real-CUGAN native 2× complete", force: true)
                         DiagnosticsLogger.shared.log("Checkpoint saved: Real-CUGAN native 2×.")
+                        IncrementalVideoCheckpointWriter.cleanup(recoveryDirectory: recoveryDirectory, stageID: "cugan")
                         if let rifeCheckpoint { try? fm.removeItem(at: rifeCheckpoint) }
                     } else {
                         transientURLs.append(generated)
@@ -328,7 +333,8 @@ final class TwoPassVideoProcessor {
                         combined.availableMemoryMB = outlineSample.availableMemoryMB
                         combined.physicalMemoryMB = outlineSample.physicalMemoryMB
                         telemetry(combined)
-                    }
+                    },
+                    recoveryDirectory: recoveryDirectory
                 )
 
                 if let outlineCheckpoint {
@@ -337,6 +343,7 @@ final class TwoPassVideoProcessor {
                     videoForMux = outlineCheckpoint
                     RecoveryStore.update(progress: 0.97, message: "Final Sharpie checkpoint saved • post-CUGAN outline complete", force: true)
                     DiagnosticsLogger.shared.log("Checkpoint saved: final post-CUGAN Sharpie outline.")
+                    IncrementalVideoCheckpointWriter.cleanup(recoveryDirectory: recoveryDirectory, stageID: "final-outline")
                     if let cuganCheckpoint { try? fm.removeItem(at: cuganCheckpoint) }
                     if !upscaleTo4K, let rifeCheckpoint { try? fm.removeItem(at: rifeCheckpoint) }
                 } else {
