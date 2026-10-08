@@ -4,7 +4,6 @@ import CoreGraphics
 import ImageIO
 import UniformTypeIdentifiers
 import UIKit
-import avif
 
 struct RedditMediaResult: Sendable {
     enum Kind: String, Sendable {
@@ -567,11 +566,23 @@ struct RedditMediaOptimizer: Sendable {
         quality: Int,
         outputURL: URL
     ) throws -> (url: URL, bytes: Int64, width: Int, height: Int) {
-        let uiImage = UIImage(cgImage: image)
-        let data = try AVIFEncoder.encode(image: uiImage, quality: Double(quality))
+        let data = try AVIFEncoderGate.shared.encode(image, quality: Double(quality))
         try data.write(to: outputURL, options: .atomic)
+
         let bytes = fileSize(outputURL)
         guard bytes > 0 else { throw RedditMediaOptimizerError.couldNotFitImage }
+
+        // Re-open the generated container through ImageIO when the platform decoder
+        // is available. The encoder gate already verifies the AVIF ISO-BMFF signature,
+        // so a decoder-unavailable result does not invalidate an otherwise valid file.
+        if let source = CGImageSourceCreateWithURL(outputURL as CFURL, nil) {
+            guard CGImageSourceGetCount(source) > 0,
+                  CGImageSourceCreateImageAtIndex(source, 0, nil) != nil else {
+                try? FileManager.default.removeItem(at: outputURL)
+                throw RedditMediaOptimizerError.couldNotFitImage
+            }
+        }
+
         return (outputURL, bytes, image.width, image.height)
     }
 
