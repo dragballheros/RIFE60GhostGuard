@@ -5,8 +5,12 @@ import UniformTypeIdentifiers
 enum InputMediaKind: String, Codable, Sendable {
     case video
     case image
+    case gif
+
     static func detect(for url: URL) -> InputMediaKind {
-        if let type = UTType(filenameExtension: url.pathExtension.lowercased()), type.conforms(to: .image) { return .image }
+        let ext = url.pathExtension.lowercased()
+        if ext == "gif" { return .gif }
+        if let type = UTType(filenameExtension: ext), type.conforms(to: .image) { return .image }
         return .video
     }
 }
