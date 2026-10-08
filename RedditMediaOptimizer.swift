@@ -219,20 +219,20 @@ struct RedditMediaOptimizer: Sendable {
                         let image = max(raw.width, raw.height) > dimension
                             ? try resize(raw, maxDimension: dimension)
                             : raw
-                        return (image, 1.0 / fps)
+                        return (image, outputFrameDelay(index: outputIndex, fps: fps))
                     }
                 )
 
                 if candidate.bytes <= targetBytes {
                     progress(
                         1,
-                        "Reddit GIF • \(formatMB(candidate.bytes)) • \(dimension)p • \(String(format: "%.0f", fps)) fps"
+                        "Reddit GIF • \(formatMB(candidate.bytes)) • \(qualityLabel(forLongEdge: dimension)) • \(String(format: "%.0f", fps)) fps"
                     )
                     return RedditMediaResult(
                         url: candidate.url,
                         bytes: candidate.bytes,
                         kind: .gif,
-                        summary: "Reddit GIF • \(formatMB(candidate.bytes)) • \(dimension)p • \(String(format: "%.0f", fps)) fps"
+                        summary: "Reddit GIF • \(formatMB(candidate.bytes)) • \(qualityLabel(forLongEdge: dimension)) • \(String(format: "%.0f", fps)) fps"
                     )
                 }
 
@@ -310,13 +310,13 @@ struct RedditMediaOptimizer: Sendable {
                     if candidate.bytes <= targetBytes {
                         progress(
                             1,
-                            "Reddit GIF • \(formatMB(candidate.bytes)) • \(dimension)p • \(String(format: "%.0f", fps)) fps"
+                            "Reddit GIF • \(formatMB(candidate.bytes)) • \(qualityLabel(forLongEdge: dimension)) • \(String(format: "%.0f", fps)) fps"
                         )
                         return RedditMediaResult(
                             url: candidate.url,
                             bytes: candidate.bytes,
                             kind: .gif,
-                            summary: "Reddit GIF • \(formatMB(candidate.bytes)) • \(dimension)p • \(String(format: "%.0f", fps)) fps"
+                            summary: "Reddit GIF • \(formatMB(candidate.bytes)) • \(qualityLabel(forLongEdge: dimension)) • \(String(format: "%.0f", fps)) fps"
                         )
                     }
 
@@ -368,17 +368,15 @@ struct RedditMediaOptimizer: Sendable {
         }
     }
 
-    /// GIF stores frame delays in 1/100-second units, so 60 FPS is approximated
-    /// with a repeating 20 ms, 20 ms, 10 ms cadence. Some viewers clamp 10 ms
-    /// frames to 20 ms, so actual playback rate remains viewer-dependent.
+    /// GIF stores frame delays in 1/100-second units. Quantize cumulative target
+    /// times, rather than each interval independently, to preserve average speed.
+    /// Viewers may still clamp short delays, so true 60 FPS is not guaranteed.
     private static func outputFrameDelay(index: Int, fps: Double) -> Double {
-        if fps >= 59.5 {
-            switch index % 3 {
-            case 0, 1: return 0.02
-            default: return 0.01
-            }
-        }
-        return max(0.02, 1.0 / max(1, fps))
+        let safeFPS = max(1, fps)
+        let previousCentiseconds = (Double(index) * 100.0 / safeFPS).rounded()
+        let nextCentiseconds = (Double(index + 1) * 100.0 / safeFPS).rounded()
+        let intervalCentiseconds = max(1, nextCentiseconds - previousCentiseconds)
+        return intervalCentiseconds / 100.0
     }
 
     private static func sampledGIFFrameIndices(
