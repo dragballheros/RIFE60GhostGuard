@@ -536,6 +536,7 @@ final class VideoProcessorViewModel: ObservableObject {
                     result,
                     filenamePrefix: "RIFE60-Reddit-GIF"
                 )
+                if result.url != saved.url { try? FileManager.default.removeItem(at: result.url) }
 
                 await MainActor.run { [weak self] in
                     guard let self else { return }
@@ -565,7 +566,7 @@ final class VideoProcessorViewModel: ObservableObject {
                     self.restoreDisplayState()
                 }
             } catch {
-                DiagnosticsLogger.shared.log("Reddit GIF optimization failed: (error.localizedDescription)")
+                DiagnosticsLogger.shared.log("Reddit GIF optimization failed: \(error.localizedDescription)")
                 await MainActor.run { [weak self] in
                     guard let self else { return }
                     self.errorText = error.localizedDescription
