@@ -2,6 +2,7 @@ import Foundation
 import CoreImage
 import CoreVideo
 import UIKit
+import Metal
 import avif
 
 struct ImageStillResult: Sendable {
@@ -26,10 +27,15 @@ final class ImageStillProcessor {
     private let upscale2x: Bool
     private let colorPopStrength: Double
     private let watermark: WatermarkConfiguration
-    private let ciContext = CIContext(options: [.cacheIntermediates: false])
+    private let ciContext: CIContext
     private let colorSpace: CGColorSpace = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
 
     init(compressionProtection: Bool, outlineProtection: Bool, upscale2x: Bool, colorPopEnabled: Bool = false, colorPopStrength: Double = 0.5, watermark: WatermarkConfiguration = WatermarkConfiguration()) {
+        if let device = MTLCreateSystemDefaultDevice() {
+            self.ciContext = CIContext(mtlDevice: device, options: [.cacheIntermediates: false])
+        } else {
+            self.ciContext = CIContext(options: [.cacheIntermediates: false])
+        }
         self.watermark = watermark
         self.colorPopStrength = colorPopEnabled && colorPopStrength.isFinite ? min(max(colorPopStrength, 0), 1) : 0
         self.compressionProtection = compressionProtection
