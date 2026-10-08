@@ -176,14 +176,16 @@ struct RedditMediaOptimizer: Sendable {
             duration = max(0.1, Double(frameCount) * 0.1)
         }
 
-        let sourceImage = CGImageSourceCreateImageAtIndex(source, 0, nil)
-        let baseDimension = sourceImage.map { max($0.width, $0.height) } ?? 720
+        guard let sourceImage = CGImageSourceCreateImageAtIndex(source, 0, nil) else {
+            throw RedditMediaOptimizerError.unsupportedImage
+        }
+        let baseDimension = max(sourceImage.width, sourceImage.height)
         let sourceFPS = Double(frameCount) / duration
 
         // Preserve already-compliant GIFs byte-for-byte. Only re-encode when size,
         // resolution, or frame rate exceeds the Reddit delivery target.
-        let width = sourceImage?.width ?? 0
-        let height = sourceImage?.height ?? 0
+        let width = sourceImage.width
+        let height = sourceImage.height
         let fitsSize = originalBytes > 0 && originalBytes <= hardLimitBytes
         let fitsResolution = baseDimension <= 2560
         let fitsFrameRate = sourceFPS <= 60
@@ -442,7 +444,9 @@ struct RedditMediaOptimizer: Sendable {
         let unclamped = gif[kCGImagePropertyGIFUnclampedDelayTime] as? Double
         let clamped = gif[kCGImagePropertyGIFDelayTime] as? Double
         let delay = unclamped ?? clamped ?? 0.1
-        return delay.isFinite && delay > 0.001 ? min(delay, 1.0) : 0.1
+        // GIF delays are stored in centiseconds; preserve long intentional holds
+        // instead of clamping them to one second, which can falsely inflate FPS.
+        return delay.isFinite && delay > 0.001 ? min(delay, 655.35) : 0.1
     }
 
     private static func encodeGIF(
