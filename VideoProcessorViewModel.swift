@@ -474,6 +474,7 @@ final class VideoProcessorViewModel: ObservableObject {
             case "colorpopStrength":
                 if let value = Double(pair[1]), value.isFinite { colorPopStrength = min(max(value, 0), 1) }
             case "audio": preserveAudio = enabled
+            case "reddit": redditMode = enabled
             case "upscaleFirst": upscaleFirst = enabled
             case "computeUnits": computePreference = ModelComputePreference(rawValue: pair[1]) ?? .auto
             case "upscale": upscaleTo4K = enabled
