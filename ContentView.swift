@@ -40,7 +40,13 @@ struct ContentView: View {
                         }
                         if let input = vm.inputURL {
                             Text(input.lastPathComponent).font(.caption).foregroundStyle(.secondary)
-                            if vm.inputKind == .image { Text("Image • RIFE interpolation is skipped").font(.caption).foregroundStyle(.secondary) }
+                            if vm.inputKind == .image {
+                                Text("Image • RIFE interpolation is skipped").font(.caption).foregroundStyle(.secondary)
+                            } else if vm.inputKind == .gif {
+                                Text(vm.redditMode ? "GIF • preserved and optimized for Reddit mode" : "GIF • handled as a still image when Reddit mode is off")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
                         }
                     }
 
@@ -59,9 +65,13 @@ struct ContentView: View {
                     }
 
                     Section("RIFE 4.26") {
-                        if vm.inputKind == .image {
-                            Label("Skipped for images", systemImage: "photo")
-                            Text("A single image has no neighbouring frame to interpolate, so images go straight through Compression Guard → Real-CUGAN → Final Sharpie and are saved as a PNG.").font(.caption).foregroundStyle(.secondary)
+                        if vm.inputKind == .image || vm.inputKind == .gif {
+                            Label(vm.inputKind == .gif ? "Skipped for GIF" : "Skipped for images", systemImage: vm.inputKind == .gif ? "photo.on.rectangle.angled" : "photo")
+                            Text(vm.inputKind == .gif
+                                ? "GIF animation does not enter RIFE. Reddit mode preserves the animation and optimizes it to the Reddit media limit."
+                                : "A single image has no neighbouring frame to interpolate, so images go straight through Compression Guard → Real-CUGAN → Final Sharpie.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
                         } else {
                             LabeledContent("Interpolation quality", value: "High Quality (HQ)")
                             Toggle("Ghost protection", isOn: $vm.ghostProtection).disabled(vm.queueLocked || vm.isImporting)
@@ -134,8 +144,19 @@ struct ContentView: View {
                     }
 
                     Section("Export to Files") {
+                        Toggle("Reddit Mode (≤20 MB)", isOn: $vm.redditMode)
+                            .disabled(vm.queueLocked || vm.isImporting)
+                        Text("When enabled, every finished media item is prepared specifically for Reddit's 20 MB media limit. Videos are automatically converted to GIF, images keep PNG when they fit and otherwise use the highest-quality JPEG that fits, and existing GIFs are optimized without flattening them.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+
                         if vm.inputKind == .image {
-                            LabeledContent("Image format", value: "PNG (lossless)")
+                            LabeledContent("Delivery format", value: vm.redditMode ? "PNG or high-quality JPEG ≤20 MB" : "PNG (lossless)")
+                        } else if vm.inputKind == .gif {
+                            LabeledContent("Delivery format", value: vm.redditMode ? "Animated GIF ≤20 MB" : "PNG first frame")
+                        } else if vm.redditMode {
+                            LabeledContent("Delivery format", value: "Animated GIF ≤20 MB")
+                            Text("Reddit mode intentionally removes audio because GIF has no audio track.").font(.caption).foregroundStyle(.secondary)
                         } else {
                             LabeledContent("Final codec", value: "HEVC Main10")
                             LabeledContent("Pixel format", value: "10-bit P010")
