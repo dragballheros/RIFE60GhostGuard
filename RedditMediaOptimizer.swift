@@ -84,7 +84,7 @@ struct RedditMediaOptimizer: Sendable {
     ) throws -> RedditMediaResult {
         let originalBytes = fileSize(sourceURL)
 
-        guard let source = CGImageSourceCreateWithURL(sourceURL as CFURL),
+        guard let source = CGImageSourceCreateWithURL(sourceURL as CFURL, nil),
               let sourceImage = CGImageSourceCreateImageAtIndex(source, 0, nil) else {
             throw RedditMediaOptimizerError.unsupportedImage
         }
@@ -122,7 +122,7 @@ struct RedditMediaOptimizer: Sendable {
                 let candidate = try encodeAVIF(
                     image: workingImage,
                     quality: quality,
-                    outputURL: temporaryImageURL(extension: "avif")
+                    outputURL: FileManager.default.temporaryDirectory.appendingPathComponent("RIFE60-Reddit-AVIF-\(UUID().uuidString).avif")
                 )
 
                 if candidate.bytes <= targetBytes {
@@ -568,7 +568,7 @@ struct RedditMediaOptimizer: Sendable {
         outputURL: URL
     ) throws -> (url: URL, bytes: Int64, width: Int, height: Int) {
         let uiImage = UIImage(cgImage: image)
-        let data = try AVIFEncoder.encode(image: uiImage, quality: quality)
+        let data = try AVIFEncoder.encode(image: uiImage, quality: Double(quality))
         try data.write(to: outputURL, options: .atomic)
         let bytes = fileSize(outputURL)
         guard bytes > 0 else { throw RedditMediaOptimizerError.couldNotFitImage }
