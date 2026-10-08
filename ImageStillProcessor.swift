@@ -61,18 +61,35 @@ final class ImageStillProcessor {
             try Task.checkCancellation()
         }
 
-        if upscale2x {
-            let targetPixels = (sourceWidth * 2) * (sourceHeight * 2)
-            if targetPixels > Self.maxUpscaledPixels {
-                let note = "Real-CUGAN 2× skipped • output would exceed 40 megapixels"
-                notes.append(note)
-                DiagnosticsLogger.shared.log("Image pipeline: \(note) (\(sourceWidth)x\(sourceHeight))")
-            } else {
-                progress(0.25, "Image • Real-CUGAN native 2×…")
+        // Automatic quality-first scaling:
+        //   <1080p long edge + 4x fits memory budget -> two native 2x passes.
+        //   otherwise, if 2x fits -> one native 2x pass.
+        //   otherwise preserve the decoded source rather than forcing an unsafe allocation.
+        let automaticPasses: Int = {
+            let fourX = (sourceWidth * 4) * (sourceHeight * 4)
+            let twoX = (sourceWidth * 2) * (sourceHeight * 2)
+            if max(sourceWidth, sourceHeight) < 1080 && fourX <= Self.maxUpscaledPixels { return 2 }
+            if twoX <= Self.maxUpscaledPixels { return 1 }
+            return 0
+        }()
+        let requestedPasses = upscale2x ? automaticPasses : 0
+
+        if requestedPasses > 0 {
+            for pass in 1...requestedPasses {
+                try Task.checkCancellation()
+                let fraction = 0.18 + (Double(pass) / Double(requestedPasses)) * 0.48
+                progress(fraction, "Image • Real-CUGAN native 2× pass \(pass)/\(requestedPasses)…")
                 let cugan = RealCUGANPass(intensity: 1.30)
                 buffer = try cugan.upscaleStill(buffer)
                 try Task.checkCancellation()
             }
+            let finalWidth = CVPixelBufferGetWidth(buffer)
+            let finalHeight = CVPixelBufferGetHeight(buffer)
+            DiagnosticsLogger.shared.log("Image automatic upscale complete • passes=\(requestedPasses) • output=\(finalWidth)x\(finalHeight)")
+        } else if upscale2x {
+            let note = "Real-CUGAN automatic upscale skipped • 2× output would exceed 40 megapixels"
+            notes.append(note)
+            DiagnosticsLogger.shared.log("Image pipeline: \(note) (\(sourceWidth)x\(sourceHeight))")
         }
 
         if outlineProtection {
