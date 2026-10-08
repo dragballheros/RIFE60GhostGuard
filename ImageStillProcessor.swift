@@ -123,9 +123,14 @@ final class ImageStillProcessor {
             guard let cgImage = ciContext.createCGImage(image, from: image.extent) else {
                 throw ProcessorError.writer("could not create the AVIF source image")
             }
-            let uiImage = UIImage(cgImage: cgImage)
-            let data = try AVIFEncoder.encode(image: uiImage, quality: 95.0)
+            let data = try AVIFEncoderGate.shared.encode(cgImage, quality: 95.0)
             try data.write(to: outputURL, options: .atomic)
+
+            let writtenBytes = try FileManager.default.attributesOfItem(atPath: outputURL.path)[.size] as? NSNumber
+            guard let writtenBytes, writtenBytes.int64Value > 0 else {
+                throw ProcessorError.writer("AVIF output was empty after writing")
+            }
+            DiagnosticsLogger.shared.log("AVIF validation passed • bytes=\(writtenBytes.int64Value) • output=\(outputWidth)x\(outputHeight)")
         } catch {
             throw ProcessorError.writer("could not encode the AVIF • \(error.localizedDescription)")
         }
