@@ -3,6 +3,8 @@ import AVFoundation
 import CoreGraphics
 import ImageIO
 import UniformTypeIdentifiers
+import UIKit
+import avif
 
 struct RedditMediaResult: Sendable {
     enum Kind: String, Sendable {
@@ -82,69 +84,61 @@ struct RedditMediaOptimizer: Sendable {
     ) throws -> RedditMediaResult {
         let originalBytes = fileSize(sourceURL)
 
-        if originalBytes > 0, originalBytes <= targetBytes {
-            progress(1, "Reddit image • already under 20 MB")
-            let copy = try copyForDelivery(sourceURL)
-            return RedditMediaResult(
-                url: copy,
-                bytes: originalBytes,
-                originalBytes: originalBytes,
-                kind: .image,
-                processing: .unchangedPassThrough,
-                summary: "UNCHANGED PASS-THROUGH • Reddit image • \(formatMB(originalBytes)) • original file copied byte-for-byte"
-            )
-        }
-
-        guard let source = CGImageSourceCreateWithURL(sourceURL as CFURL, nil),
-              let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else {
+        guard let source = CGImageSourceCreateWithURL(sourceURL as CFURL),
+              let sourceImage = CGImageSourceCreateImageAtIndex(source, 0, nil) else {
             throw RedditMediaOptimizerError.unsupportedImage
         }
 
-        if let png = try? encodeImage(image, type: .png, quality: nil) {
-            if png.bytes <= targetBytes {
-                progress(1, "Reddit image • lossless PNG under 20 MB")
-                return RedditMediaResult(
-                    url: png.url,
-                    bytes: png.bytes,
-                    originalBytes: originalBytes,
-                    kind: .image,
-                    processing: .reencoded,
-                    summary: "RE-ENCODED LOSSLESS PNG • Reddit image • \(formatMB(png.bytes))"
-                )
-            }
-            try? FileManager.default.removeItem(at: png.url)
-        }
+        let originalWidth = sourceImage.width
+        let originalHeight = sourceImage.height
+        let originalMaxDimension = max(originalWidth, originalHeight)
 
-        let originalMaxDimension = max(image.width, image.height)
-        var dimension = originalMaxDimension
+        // Reddit mode is quality-first. Never preserve PNG/JPEG merely because it
+        // already fits. Encode the enhanced master as AVIF and keep the largest
+        // dimensions and highest encoder quality that fit below the hard ceiling.
+        let dimensions = qualityImageDimensions(width: originalWidth, height: originalHeight)
+        let qualities = [100, 95, 90, 85, 80, 75, 70, 65, 60, 55, 50, 45, 40]
 
-        while dimension >= 640 {
+        var attempt = 0
+        let totalAttempts = max(1, dimensions.count * qualities.count)
+
+        for dimension in dimensions {
             try Task.checkCancellation()
-
-            let workingImage = dimension >= originalMaxDimension
-                ? image
-                : try resize(image, maxDimension: dimension)
-
-            if let best = try bestJPEG(
-                image: workingImage,
-                targetBytes: targetBytes,
-                minimumQuality: 0.35
-            ) {
-                progress(1, "Reddit image • highest-quality JPEG under 20 MB")
-                return RedditMediaResult(
-                    url: best.url,
-                    bytes: best.bytes,
-                    originalBytes: originalBytes,
-                    kind: .image,
-                    processing: .reencoded,
-                    summary: "RE-ENCODED JPEG • Reddit image • \(formatMB(best.bytes)) • quality \(Int(best.quality * 100))% • \(best.width)x\(best.height)"
-                )
+            let workingImage: CGImage
+            if dimension >= originalMaxDimension {
+                workingImage = sourceImage
+            } else {
+                workingImage = try resize(sourceImage, maxDimension: dimension)
             }
 
-            dimension = Int(Double(dimension) * 0.90)
-            let denominator = max(1, originalMaxDimension - 640)
-            let fraction = 1.0 - min(1.0, Double(max(0, dimension - 640)) / Double(denominator))
-            progress(min(0.95, fraction), "Reddit image • reducing dimensions for 20 MB target…")
+            for quality in qualities {
+                try Task.checkCancellation()
+                attempt += 1
+                progress(
+                    min(0.96, Double(attempt - 1) / Double(totalAttempts)),
+                    "Reddit image • AVIF \(dimension)px • quality \(quality)% • optimizing…"
+                )
+
+                let candidate = try encodeAVIF(
+                    image: workingImage,
+                    quality: quality,
+                    outputURL: temporaryImageURL(extension: "avif")
+                )
+
+                if candidate.bytes <= targetBytes {
+                    progress(1, "Reddit image • AVIF • \(formatMB(candidate.bytes)) • \(candidate.width)x\(candidate.height) • quality \(quality)%")
+                    return RedditMediaResult(
+                        url: candidate.url,
+                        bytes: candidate.bytes,
+                        originalBytes: originalBytes,
+                        kind: .image,
+                        processing: .reencoded,
+                        summary: "RE-ENCODED AVIF • Reddit image • \(formatMB(candidate.bytes)) • \(candidate.width)x\(candidate.height) • quality \(quality)% • source \(formatMB(originalBytes))"
+                    )
+                }
+
+                try? FileManager.default.removeItem(at: candidate.url)
+            }
         }
 
         throw RedditMediaOptimizerError.couldNotFitImage
@@ -554,6 +548,31 @@ struct RedditMediaOptimizer: Sendable {
     private enum ImageType {
         case png
         case jpeg
+    }
+
+    private static func qualityImageDimensions(width: Int, height: Int) -> [Int] {
+        let longEdge = max(width, height)
+        let capped = min(max(640, longEdge), 8192)
+        let preferred = [capped, longEdge, 6144, 5120, 4096, 3840, 3072, 2560, 2160, 1920, 1600, 1280, 1080, 900, 720, 640]
+        var result: [Int] = []
+        for value in preferred where value >= 640 && value <= capped && !result.contains(value) {
+            result.append(value)
+        }
+        if result.isEmpty { result.append(max(640, min(longEdge, 640))) }
+        return result
+    }
+
+    private static func encodeAVIF(
+        image: CGImage,
+        quality: Int,
+        outputURL: URL
+    ) throws -> (url: URL, bytes: Int64, width: Int, height: Int) {
+        let uiImage = UIImage(cgImage: image)
+        let data = try AVIFEncoder.encode(image: uiImage, quality: quality)
+        try data.write(to: outputURL, options: .atomic)
+        let bytes = fileSize(outputURL)
+        guard bytes > 0 else { throw RedditMediaOptimizerError.couldNotFitImage }
+        return (outputURL, bytes, image.width, image.height)
     }
 
     private static func encodeImage(
