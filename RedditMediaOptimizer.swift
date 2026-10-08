@@ -143,17 +143,6 @@ struct RedditMediaOptimizer: Sendable {
     ) throws -> RedditMediaResult {
         let originalBytes = fileSize(sourceURL)
 
-        if originalBytes > 0, originalBytes <= targetBytes {
-            progress(1, "Reddit GIF • already under 20 MB")
-            let copy = try copyForDelivery(sourceURL)
-            return RedditMediaResult(
-                url: copy,
-                bytes: originalBytes,
-                kind: .gif,
-                summary: "Reddit GIF • \(formatMB(originalBytes)) • no recompression needed"
-            )
-        }
-
         guard let source = CGImageSourceCreateWithURL(sourceURL as CFURL, nil) else {
             throw RedditMediaOptimizerError.unsupportedImage
         }
@@ -176,14 +165,34 @@ struct RedditMediaOptimizer: Sendable {
 
         let sourceImage = CGImageSourceCreateImageAtIndex(source, 0, nil)
         let baseDimension = sourceImage.map { max($0.width, $0.height) } ?? 720
+        let sourceFPS = Double(frameCount) / duration
+
+        // Preserve already-compliant GIFs byte-for-byte. Only re-encode when size,
+        // resolution, or frame rate exceeds the Reddit delivery target.
+        if originalBytes > 0,
+           originalBytes <= targetBytes,
+           baseDimension <= 2560,
+           sourceFPS <= 60 {
+            progress(1, "Reddit GIF • already within 1440p / 60 FPS / 20 MB limits")
+            let copy = try copyForDelivery(sourceURL)
+            return RedditMediaResult(
+                url: copy,
+                bytes: originalBytes,
+                kind: .gif,
+                summary: "Reddit GIF • \(formatMB(originalBytes)) • preserved original quality"
+            )
+        }
+
         let dimensions = qualityDimensions(for: baseDimension)
-        let fpsLevels = qualityFPS(for: duration)
+        let fpsLevels = qualityFPS(sourceFPS: min(60, sourceFPS))
 
         var attempt = 0
         let totalAttempts = max(1, dimensions.count * fpsLevels.count)
 
-        for dimension in dimensions {
-            for fps in fpsLevels {
+        // Keep temporal smoothness first: try each available resolution at 60 FPS
+        // before lowering frame rate. The first candidate remains 1440p / 60 FPS.
+        for fps in fpsLevels {
+            for dimension in dimensions {
                 try Task.checkCancellation()
                 attempt += 1
 
@@ -196,7 +205,7 @@ struct RedditMediaOptimizer: Sendable {
 
                 progress(
                     min(0.96, Double(attempt - 1) / Double(totalAttempts)),
-                    "Reddit GIF • \(dimension)p • \(String(format: "%.0f", fps)) fps • optimizing…"
+                    "Reddit GIF • \(qualityLabel(forLongEdge: dimension)) • \(String(format: "%.0f", fps)) fps • optimizing…"
                 )
 
                 let candidate = try encodeGIF(
@@ -262,13 +271,14 @@ struct RedditMediaOptimizer: Sendable {
         imageGenerator.requestedTimeToleranceAfter = .zero
 
         let dimensions = qualityDimensions(for: baseDimension)
-        let fpsLevels = qualityFPS(for: duration)
+        let fpsLevels = qualityFPS(sourceFPS: 60)
 
         var attempt = 0
         let totalAttempts = max(1, dimensions.count * fpsLevels.count)
 
-        for dimension in dimensions {
-            for fps in fpsLevels {
+        // Prioritize keeping motion smooth while reducing dimensions as needed.
+        for fps in fpsLevels {
+            for dimension in dimensions {
                 try Task.checkCancellation()
                 attempt += 1
 
@@ -278,7 +288,7 @@ struct RedditMediaOptimizer: Sendable {
                 let fraction = min(0.96, Double(attempt - 1) / Double(totalAttempts))
                 progress(
                     fraction,
-                    "Reddit GIF • \(dimension)p • \(String(format: "%.0f", fps)) fps • converting…"
+                    "Reddit GIF • \(qualityLabel(forLongEdge: dimension)) • \(String(format: "%.0f", fps)) fps • converting…"
                 )
 
                 let candidateURL = temporaryGIFURL()
@@ -293,7 +303,7 @@ struct RedditMediaOptimizer: Sendable {
                             )
                             let requested = CMTimeMakeWithSeconds(time, preferredTimescale: 600)
                             let image = try imageGenerator.copyCGImage(at: requested, actualTime: nil)
-                            return (image, 1.0 / fps)
+                            return (image, outputFrameDelay(index: index, fps: fps))
                         }
                     )
 
@@ -321,8 +331,10 @@ struct RedditMediaOptimizer: Sendable {
         throw RedditMediaOptimizerError.couldNotFitGIF
     }
 
+    /// Long-edge sizes correspond to landscape 1440p, 1080p, 900p, 720p, etc.
+    /// Portrait media uses the same limits rotated, e.g. 1440 x 2560 for 1440p.
     private static func qualityDimensions(for baseDimension: Int) -> [Int] {
-        let preferred = [1440, 1200, 1080, 960, 840, 720, 600, 480, 360]
+        let preferred = [2560, 1920, 1600, 1280, 1080, 900, 720, 540, 360]
         let filtered = preferred.filter { $0 <= baseDimension }
         if filtered.isEmpty {
             return [max(240, min(baseDimension, 360))]
@@ -330,17 +342,43 @@ struct RedditMediaOptimizer: Sendable {
         return filtered
     }
 
-    private static func qualityFPS(for duration: Double) -> [Double] {
-        switch duration {
-        case ..<8:
-            return [30, 24, 20, 15, 12, 10, 8]
-        case ..<16:
-            return [24, 20, 15, 12, 10, 8, 6]
-        case ..<30:
-            return [20, 15, 12, 10, 8, 6]
-        default:
-            return [15, 12, 10, 8, 6, 5]
+    /// GIFs are capped at 60 FPS. If the source is slower, do not manufacture
+    /// extra frames; use its native average frame rate as the first quality tier.
+    private static func qualityFPS(sourceFPS: Double) -> [Double] {
+        let cap = min(60, max(1, sourceFPS.isFinite ? sourceFPS : 30))
+        let candidates = [cap, 50.0, 40.0, 30.0, 24.0, 20.0, 15.0, 12.0, 10.0, 8.0, 6.0, 5.0]
+        var result: [Double] = []
+        for value in candidates where value <= cap && !result.contains(where: { abs($0 - value) < 0.01 }) {
+            result.append(value)
         }
+        return result
+    }
+
+    private static func qualityLabel(forLongEdge dimension: Int) -> String {
+        switch dimension {
+        case 2560...: return "1440p"
+        case 1920...: return "1080p"
+        case 1600...: return "900p"
+        case 1280...: return "720p"
+        case 1080...: return "608p"
+        case 900...: return "506p"
+        case 720...: return "405p"
+        case 540...: return "304p"
+        default: return "low-resolution"
+        }
+    }
+
+    /// GIF stores frame delays in 1/100-second units, so 60 FPS is approximated
+    /// with a repeating 20 ms, 20 ms, 10 ms cadence. Some viewers clamp 10 ms
+    /// frames to 20 ms, so actual playback rate remains viewer-dependent.
+    private static func outputFrameDelay(index: Int, fps: Double) -> Double {
+        if fps >= 59.5 {
+            switch index % 3 {
+            case 0, 1: return 0.02
+            default: return 0.01
+            }
+        }
+        return max(0.02, 1.0 / max(1, fps))
     }
 
     private static func sampledGIFFrameIndices(
@@ -361,9 +399,9 @@ struct RedditMediaOptimizer: Sendable {
             while cursor + 1 < frameTimes.count && frameTimes[cursor + 1] <= target {
                 cursor += 1
             }
-            if result.last != cursor {
-                result.append(cursor)
-            }
+            // Repeating a source frame is intentional when converting to a higher
+            // constant output cadence. Dropping repeats would shorten the animation.
+            result.append(cursor)
             target += step
         }
 
@@ -410,8 +448,8 @@ struct RedditMediaOptimizer: Sendable {
             let (image, delay) = try frameProvider(index)
             let delayProperties: [CFString: Any] = [
                 kCGImagePropertyGIFDictionary: [
-                    kCGImagePropertyGIFDelayTime: max(0.02, delay),
-                    kCGImagePropertyGIFUnclampedDelayTime: max(0.02, delay)
+                    kCGImagePropertyGIFDelayTime: max(0.01, delay),
+                    kCGImagePropertyGIFUnclampedDelayTime: max(0.01, delay)
                 ]
             ]
             CGImageDestinationAddImage(destination, image, delayProperties as CFDictionary)
