@@ -152,6 +152,13 @@ struct ContentView: View {
                             .font(.caption)
                             .foregroundStyle(.secondary)
 
+                        if vm.redditMode && vm.inputKind != .image {
+                            LabeledContent("GIF resolution / frame-rate cap", value: "Up to 1440p / 60 FPS")
+                            Text("Reddit GIF export starts at 1440p and 60 FPS when the source supports it. If the animation exceeds the size target, the optimizer tries smaller resolutions before lowering FPS. GIF timing is viewer-dependent, so true 60 FPS playback cannot be guaranteed in every Reddit client.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+
                         if vm.inputKind == .image {
                             LabeledContent("Delivery format", value: vm.redditMode ? "PNG or high-quality JPEG ≤20 MB" : "PNG (lossless)")
                         } else if vm.inputKind == .gif {
