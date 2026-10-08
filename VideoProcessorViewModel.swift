@@ -1041,9 +1041,13 @@ final class VideoProcessorViewModel: ObservableObject {
         inputURL = batchStore.sourceURL(for: item, in: queue)
         watermarkRegions = item.masks
         loadingQueueSelection = false
-        if recoveryAvailable, item.kind == .video, id == queue.nextItemID, let job = RecoveryStore.existingJob() {
+        if recoveryAvailable, id == queue.nextItemID, let job = RecoveryStore.existingJob() {
             inputURL = job.sourceURL
             progress = job.manifest.progress
+            if item.kind == .gif {
+                inputKind = .video
+                videoToGIFEnabled = true
+            }
         } else { progress = item.state == .completed ? 1 : 0 }
         outputURL = item.outputURL
     }
