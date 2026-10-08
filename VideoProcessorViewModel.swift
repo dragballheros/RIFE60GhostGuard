@@ -891,7 +891,7 @@ final class VideoProcessorViewModel: ObservableObject {
 
         let count = CGImageSourceGetCount(source)
         DiagnosticsLogger.shared.log(
-            "Finished GIF validation passed • (count) frame(count == 1 ? "" : "s")"
+            "Finished GIF validation passed • \(count) frame\(count == 1 ? "" : "s")"
         )
     }
 
