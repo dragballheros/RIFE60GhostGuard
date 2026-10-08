@@ -10,9 +10,16 @@ struct RedditMediaResult: Sendable {
         case gif
     }
 
+    enum Processing: String, Sendable {
+        case unchangedPassThrough
+        case reencoded
+    }
+
     let url: URL
     let bytes: Int64
+    let originalBytes: Int64
     let kind: Kind
+    let processing: Processing
     let summary: String
 }
 
@@ -81,8 +88,10 @@ struct RedditMediaOptimizer: Sendable {
             return RedditMediaResult(
                 url: copy,
                 bytes: originalBytes,
+                originalBytes: originalBytes,
                 kind: .image,
-                summary: "Reddit image • \(formatMB(originalBytes)) • no recompression needed"
+                processing: .unchangedPassThrough,
+                summary: "UNCHANGED PASS-THROUGH • Reddit image • \(formatMB(originalBytes)) • original file copied byte-for-byte"
             )
         }
 
@@ -97,8 +106,10 @@ struct RedditMediaOptimizer: Sendable {
                 return RedditMediaResult(
                     url: png.url,
                     bytes: png.bytes,
+                    originalBytes: originalBytes,
                     kind: .image,
-                    summary: "Reddit image • \(formatMB(png.bytes)) • lossless PNG"
+                    processing: .reencoded,
+                    summary: "RE-ENCODED LOSSLESS PNG • Reddit image • \(formatMB(png.bytes))"
                 )
             }
             try? FileManager.default.removeItem(at: png.url)
@@ -123,8 +134,10 @@ struct RedditMediaOptimizer: Sendable {
                 return RedditMediaResult(
                     url: best.url,
                     bytes: best.bytes,
+                    originalBytes: originalBytes,
                     kind: .image,
-                    summary: "Reddit image • \(formatMB(best.bytes)) • JPEG quality \(Int(best.quality * 100))% • \(best.width)x\(best.height)"
+                    processing: .reencoded,
+                    summary: "RE-ENCODED JPEG • Reddit image • \(formatMB(best.bytes)) • quality \(Int(best.quality * 100))% • \(best.width)x\(best.height)"
                 )
             }
 
@@ -169,19 +182,37 @@ struct RedditMediaOptimizer: Sendable {
 
         // Preserve already-compliant GIFs byte-for-byte. Only re-encode when size,
         // resolution, or frame rate exceeds the Reddit delivery target.
-        if originalBytes > 0,
-           originalBytes <= targetBytes,
-           baseDimension <= 2560,
-           sourceFPS <= 60 {
-            progress(1, "Reddit GIF • already within 1440p / 60 FPS / 20 MB limits")
+        let width = sourceImage?.width ?? 0
+        let height = sourceImage?.height ?? 0
+        let fitsSize = originalBytes > 0 && originalBytes <= hardLimitBytes
+        let fitsResolution = baseDimension <= 2560
+        let fitsFrameRate = sourceFPS <= 60
+
+        // Reddit's hard limit is 20,000,000 bytes. The 19.8 MB target is only
+        // for newly encoded output; never re-encode a compliant source just to
+        // create extra headroom that it does not need.
+        if fitsSize && fitsResolution && fitsFrameRate {
+            progress(1, "Reddit GIF • unchanged pass-through • no re-encoding")
             let copy = try copyForDelivery(sourceURL)
+            let sizeText = formatMB(originalBytes)
+            let fpsText = String(format: "%.1f", sourceFPS)
+            let summary = "UNCHANGED PASS-THROUGH • original GIF preserved byte-for-byte • \(sizeText) • \(width)x\(height) • ~\(fpsText) FPS"
             return RedditMediaResult(
                 url: copy,
                 bytes: originalBytes,
+                originalBytes: originalBytes,
                 kind: .gif,
-                summary: "Reddit GIF • \(formatMB(originalBytes)) • preserved original quality"
+                processing: .unchangedPassThrough,
+                summary: summary
             )
         }
+
+        var reencodeReasons: [String] = []
+        if !fitsSize { reencodeReasons.append("over 20 MB") }
+        if !fitsResolution { reencodeReasons.append("long edge over 2560 px") }
+        if !fitsFrameRate { reencodeReasons.append("source cadence over 60 FPS") }
+        let reasonSummary = reencodeReasons.joined(separator: ", ")
+        DiagnosticsLogger.shared.log("Reddit GIF requires re-encoding • reason=\(reasonSummary) • source=\(formatMB(originalBytes)) • dimensions=\(width)x\(height) • estimated FPS=\(String(format: "%.1f", sourceFPS))")
 
         let dimensions = qualityDimensions(for: baseDimension)
         let fpsLevels = qualityFPS(sourceFPS: min(60, sourceFPS))
@@ -231,8 +262,10 @@ struct RedditMediaOptimizer: Sendable {
                     return RedditMediaResult(
                         url: candidate.url,
                         bytes: candidate.bytes,
+                        originalBytes: originalBytes,
                         kind: .gif,
-                        summary: "Reddit GIF • \(formatMB(candidate.bytes)) • \(qualityLabel(forLongEdge: dimension)) • \(String(format: "%.0f", fps)) fps"
+                        processing: .reencoded,
+                        summary: "RE-ENCODED GIF • \(formatMB(candidate.bytes)) • \(qualityLabel(forLongEdge: dimension)) • \(String(format: "%.0f", fps)) FPS • source \(formatMB(originalBytes)) • reason: \(reasonSummary)"
                     )
                 }
 
@@ -315,8 +348,10 @@ struct RedditMediaOptimizer: Sendable {
                         return RedditMediaResult(
                             url: candidate.url,
                             bytes: candidate.bytes,
+                            originalBytes: fileSize(sourceURL),
                             kind: .gif,
-                            summary: "Reddit GIF • \(formatMB(candidate.bytes)) • \(qualityLabel(forLongEdge: dimension)) • \(String(format: "%.0f", fps)) fps"
+                            processing: .reencoded,
+                            summary: "RE-ENCODED GIF • \(formatMB(candidate.bytes)) • \(qualityLabel(forLongEdge: dimension)) • \(String(format: "%.0f", fps)) FPS • source \(formatMB(fileSize(sourceURL)))"
                         )
                     }
 
