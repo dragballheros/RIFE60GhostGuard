@@ -1,6 +1,8 @@
 import Foundation
 import CoreImage
 import CoreVideo
+import UIKit
+import avif
 
 struct ImageStillResult: Sendable {
     let url: URL
@@ -106,24 +108,29 @@ final class ImageStillProcessor {
             try Task.checkCancellation()
         }
 
-        progress(0.92, "Image • Encoding PNG…")
+        // Regular image mode uses AVIF directly. Unlike Reddit delivery mode,
+        // this is a single loss-controlled encode at the enhanced dimensions.
+        // There is no 20 MB search, no Reddit-specific resizing, and no delivery
+        // optimizer involved. The enhancement result itself is what gets exported.
+        progress(0.92, "Image • Encoding AVIF…")
         let outputWidth = CVPixelBufferGetWidth(buffer)
         let outputHeight = CVPixelBufferGetHeight(buffer)
         let outputURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("RIFE60-IMAGE-\(UUID().uuidString).png")
+            .appendingPathComponent("RIFE60-IMAGE-\(UUID().uuidString).avif")
         try? FileManager.default.removeItem(at: outputURL)
         do {
-            try ciContext.writePNGRepresentation(
-                of: CIImage(cvPixelBuffer: buffer),
-                to: outputURL,
-                format: .RGBA8,
-                colorSpace: colorSpace
-            )
+            let image = CIImage(cvPixelBuffer: buffer)
+            guard let cgImage = ciContext.createCGImage(image, from: image.extent) else {
+                throw ProcessorError.writer("could not create the AVIF source image")
+            }
+            let uiImage = UIImage(cgImage: cgImage)
+            let data = try AVIFEncoder.encode(image: uiImage, quality: 95.0)
+            try data.write(to: outputURL, options: .atomic)
         } catch {
-            throw ProcessorError.writer("could not encode the PNG • \(error.localizedDescription)")
+            throw ProcessorError.writer("could not encode the AVIF • \(error.localizedDescription)")
         }
         ciContext.clearCaches()
-        DiagnosticsLogger.shared.log("Image pipeline complete • output=\(outputWidth)x\(outputHeight) PNG")
+        DiagnosticsLogger.shared.log("Image pipeline complete • output=\(outputWidth)x\(outputHeight) AVIF • quality=95")
         return ImageStillResult(url: outputURL, width: outputWidth, height: outputHeight, notes: notes)
     }
 
