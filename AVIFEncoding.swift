@@ -56,12 +56,14 @@ final class AVIFEncoderGate: @unchecked Sendable {
             "AVIF encode begin • \(image.width)x\(image.height) • pixels=\(pixelCount) • quality=\(quality) • speed=\(speed)"
         )
 
+        let normalizedQuality = quality > 1.0 ? quality / 100.0 : quality
+
         do {
             let data = try autoreleasepool {
                 try AVIFEncoder.encode(
                     image: UIImage(cgImage: image),
                     with: EncodingOptions(
-                        quality: quality / 100.0,
+                        quality: min(max(normalizedQuality, 0), 1),
                         yuv: .yuv444,
                         rangeFull: true,
                         speed: speed,
