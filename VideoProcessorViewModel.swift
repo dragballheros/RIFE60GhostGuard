@@ -826,7 +826,7 @@ final class VideoProcessorViewModel: ObservableObject {
         let ext = result.url.pathExtension.isEmpty
             ? (result.kind == .gif ? "gif" : "jpg")
             : result.url.pathExtension.lowercased()
-        let filename = "(filenamePrefix)-(formatter.string(from: Date())).(ext)"
+        let filename = "\(filenamePrefix)-\(formatter.string(from: Date())).\(ext)"
 
         func persist(to folder: URL, messagePrefix: String) async throws -> (url: URL, message: String, bytes: Int64) {
             let destination = uniqueDestination(in: folder, filename: filename)
@@ -849,7 +849,7 @@ final class VideoProcessorViewModel: ObservableObject {
                 )
             }
 
-            return (persisted, "(messagePrefix) > (persisted.lastPathComponent)", bytes)
+            return (persisted, "\(messagePrefix) > \(persisted.lastPathComponent)", bytes)
         }
 
         if let folder = resolveSelectedExportFolder() {
