@@ -14,11 +14,21 @@ import avifc
 /// the AVIF encoder exposed by the current package. If VideoToolbox ever exposes a
 /// usable hardware AV1 encoder for the target device, that is a separate codec path
 /// and cannot be substituted into AVIFAnimatedEncoder without an AVIF muxing layer.
-final class AnimatedAVIFEncoder {
+final class AnimatedAVIFEncoder: @unchecked Sendable {
     private let ciContext: CIContext
     private let colorSpace: CGColorSpace
+    private let compressionProtection: Bool
+    private let outlineProtection: Bool
+    private let upscale2x: Bool
+    private let colorPopStrength: Double
+    private let watermark: WatermarkConfiguration
 
-    init() {
+    init(compressionProtection: Bool = false, outlineProtection: Bool = false, upscale2x: Bool = true, colorPopStrength: Double = 0, watermark: WatermarkConfiguration = WatermarkConfiguration()) {
+        self.compressionProtection = compressionProtection
+        self.outlineProtection = outlineProtection
+        self.upscale2x = upscale2x
+        self.colorPopStrength = colorPopStrength.isFinite ? min(max(colorPopStrength, 0), 1) : 0
+        self.watermark = watermark
         self.colorSpace = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
         if let device = MTLCreateSystemDefaultDevice() {
             self.ciContext = CIContext(
@@ -89,7 +99,39 @@ final class AnimatedAVIFEncoder {
                     throw AVIFEncodingError.encoderFailed("APNG frame \(index + 1) could not be decoded")
                 }
 
-                let image = normalizedImage(cgImage)
+                var buffer = try makeBGRABuffer(from: cgImage)
+                if watermark.enabled {
+                    buffer = try AnimeWatermarkRemover(configuration: watermark).apply(buffer)
+                }
+                if compressionProtection, let cleaned = try? CompressionGuard().clean(buffer) {
+                    buffer = cleaned
+                }
+
+                let sourceWidth = CVPixelBufferGetWidth(buffer)
+                let sourceHeight = CVPixelBufferGetHeight(buffer)
+                let fourX = (sourceWidth * 4) * (sourceHeight * 4)
+                let twoX = (sourceWidth * 2) * (sourceHeight * 2)
+                let passes: Int = {
+                    guard upscale2x else { return 0 }
+                    if max(sourceWidth, sourceHeight) < 1080 && fourX <= 40_000_000 { return 2 }
+                    if twoX <= 40_000_000 { return 1 }
+                    return 0
+                }()
+                if passes > 0 {
+                    for _ in 0..<passes {
+                        buffer = try RealCUGANPass(intensity: 1.30).upscaleStill(buffer)
+                        try Task.checkCancellation()
+                    }
+                }
+                if outlineProtection {
+                    buffer = try FinalOutlinePass().polishStill(buffer)
+                }
+                if colorPopStrength > 0 {
+                    buffer = try ColorPopGrade(strength: colorPopStrength).apply(buffer)
+                }
+                guard let image = cgImage(from: buffer) else {
+                    throw AVIFEncodingError.encoderFailed("could not render processed APNG frame")
+                }
                 outputWidth = image.width
                 outputHeight = image.height
 
@@ -133,6 +175,43 @@ final class AnimatedAVIFEncoder {
             try? FileManager.default.removeItem(at: outputURL)
             throw error
         }
+    }
+
+    private func makeBGRABuffer(from cgImage: CGImage) throws -> CVPixelBuffer {
+        let width = cgImage.width
+        let height = cgImage.height
+        let attrs: [CFString: Any] = [
+            kCVPixelBufferPixelFormatTypeKey: kCVPixelFormatType_32BGRA,
+            kCVPixelBufferWidthKey: width,
+            kCVPixelBufferHeightKey: height,
+            kCVPixelBufferMetalCompatibilityKey: true,
+            kCVPixelBufferIOSurfacePropertiesKey: [:]
+        ]
+        var output: CVPixelBuffer?
+        guard CVPixelBufferCreate(kCFAllocatorDefault, width, height, kCVPixelFormatType_32BGRA, attrs as CFDictionary, &output) == kCVReturnSuccess, let output else {
+            throw AVIFEncodingError.encoderFailed("could not allocate APNG frame buffer")
+        }
+        CVPixelBufferLockBaseAddress(output, [])
+        defer { CVPixelBufferUnlockBaseAddress(output, []) }
+        guard let base = CVPixelBufferGetBaseAddress(output), let context = CGContext(
+            data: base,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: CVPixelBufferGetBytesPerRow(output),
+            space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue
+        ) else {
+            throw AVIFEncodingError.encoderFailed("could not create APNG frame graphics context")
+        }
+        context.interpolationQuality = .high
+        context.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
+        return output
+    }
+
+    private func cgImage(from buffer: CVPixelBuffer) -> CGImage? {
+        let image = CIImage(cvPixelBuffer: buffer)
+        return ciContext.createCGImage(image, from: image.extent, format: .RGBA8, colorSpace: colorSpace)
     }
 
     private func normalizedImage(_ cgImage: CGImage) -> CGImage {
