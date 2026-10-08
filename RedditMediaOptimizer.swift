@@ -334,12 +334,13 @@ struct RedditMediaOptimizer: Sendable {
     /// Long-edge sizes correspond to landscape 1440p, 1080p, 900p, 720p, etc.
     /// Portrait media uses the same limits rotated, e.g. 1440 x 2560 for 1440p.
     private static func qualityDimensions(for baseDimension: Int) -> [Int] {
-        let preferred = [2560, 1920, 1600, 1280, 1080, 900, 720, 540, 360]
-        let filtered = preferred.filter { $0 <= baseDimension }
-        if filtered.isEmpty {
-            return [max(240, min(baseDimension, 360))]
+        let cappedSourceDimension = min(baseDimension, 2560)
+        let preferred = [cappedSourceDimension, 1920, 1600, 1280, 1080, 900, 720, 540, 360]
+        var result: [Int] = []
+        for dimension in preferred where dimension >= 240 && dimension <= cappedSourceDimension && !result.contains(dimension) {
+            result.append(dimension)
         }
-        return filtered
+        return result.isEmpty ? [max(240, min(baseDimension, 360))] : result
     }
 
     /// GIFs are capped at 60 FPS. If the source is slower, do not manufacture
