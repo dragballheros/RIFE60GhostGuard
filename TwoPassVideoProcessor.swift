@@ -59,6 +59,15 @@ final class TwoPassVideoProcessor {
         let sourceHeight = Int(abs(sourceSize.height).rounded())
         let native2xWidth = sourceWidth * 2
         let native2xHeight = sourceHeight * 2
+        let automaticCuganPasses: Int = {
+            let twoPixels = native2xWidth * native2xHeight
+            let fourPixels = (sourceWidth * 4) * (sourceHeight * 4)
+            if max(sourceWidth, sourceHeight) < 1080 && fourPixels <= 40_000_000 { return 2 }
+            if twoPixels <= 40_000_000 { return 1 }
+            return 0
+        }
+        let automaticFinalWidth = sourceWidth * (automaticCuganPasses == 2 ? 4 : automaticCuganPasses == 1 ? 2 : 1)
+        let automaticFinalHeight = sourceHeight * (automaticCuganPasses == 2 ? 4 : automaticCuganPasses == 1 ? 2 : 1)
 
         let audioBitrate: Double
         if let audio = try await sourceAsset.loadTracks(withMediaType: .audio).first {
@@ -70,6 +79,7 @@ final class TwoPassVideoProcessor {
         let restoredCheckpoint = recoveryDirectory?.appendingPathComponent("checkpoint-restored.mov")
         let rifeCheckpoint = recoveryDirectory?.appendingPathComponent("checkpoint-rife60.mov")
         let cuganCheckpoint = recoveryDirectory?.appendingPathComponent("checkpoint-cugan2x.mov")
+        let cugan4xCheckpoint = recoveryDirectory?.appendingPathComponent("checkpoint-cugan4x.mov")
         let outlineCheckpoint = recoveryDirectory?.appendingPathComponent("checkpoint-final-outline.mov")
 
         // ------------------------------------------------------------------
@@ -83,10 +93,11 @@ final class TwoPassVideoProcessor {
         // re-ran Compression Guard and RIFE from scratch.
         // ------------------------------------------------------------------
         let cuganEnd = config.outlineProtection ? 0.84 : 0.97
-        let finalExpectedWidth = upscaleTo4K ? native2xWidth : sourceWidth
-        let finalExpectedHeight = upscaleTo4K ? native2xHeight : sourceHeight
+        let finalExpectedWidth = upscaleTo4K ? automaticFinalWidth : sourceWidth
+        let finalExpectedHeight = upscaleTo4K ? automaticFinalHeight : sourceHeight
 
         var outlineCheckpointValid = false
+        var cugan4xCheckpointValid = false
         var cuganCheckpointValid = false
         var rifeCheckpointValid = false
         var restoredCheckpointValid = false
@@ -99,7 +110,15 @@ final class TwoPassVideoProcessor {
                 expectedHeight: finalExpectedHeight
             )
         }
-        if !outlineCheckpointValid, upscaleTo4K, let cuganCheckpoint {
+        if !outlineCheckpointValid, upscaleTo4K, automaticCuganPasses == 2, let cugan4xCheckpoint {
+            cugan4xCheckpointValid = await validVideo(
+                cugan4xCheckpoint,
+                expectedDuration: sourceDuration,
+                expectedWidth: automaticFinalWidth,
+                expectedHeight: automaticFinalHeight
+            )
+        }
+        if !outlineCheckpointValid, !cugan4xCheckpointValid, upscaleTo4K, let cuganCheckpoint {
             cuganCheckpointValid = await validVideo(
                 cuganCheckpoint,
                 expectedDuration: sourceDuration,
@@ -108,7 +127,7 @@ final class TwoPassVideoProcessor {
             )
         }
         // RIFE output is only needed if nothing downstream of it is already finished.
-        let rifeNeeded = !outlineCheckpointValid && !cuganCheckpointValid
+        let rifeNeeded = !outlineCheckpointValid && !cugan4xCheckpointValid && !cuganCheckpointValid
         if rifeNeeded, let rifeCheckpoint {
             rifeCheckpointValid = await validVideo(rifeCheckpoint, expectedDuration: sourceDuration)
         }
@@ -116,8 +135,9 @@ final class TwoPassVideoProcessor {
             restoredCheckpointValid = await validVideo(restoredCheckpoint, expectedDuration: sourceDuration)
         }
 
-        if outlineCheckpointValid || cuganCheckpointValid || rifeCheckpointValid || restoredCheckpointValid {
+        if outlineCheckpointValid || cugan4xCheckpointValid || cuganCheckpointValid || rifeCheckpointValid || restoredCheckpointValid {
             let resumePoint = outlineCheckpointValid ? "final Sharpie"
+                : cugan4xCheckpointValid ? "Real-CUGAN automatic 4×"
                 : cuganCheckpointValid ? "Real-CUGAN native 2×"
                 : rifeCheckpointValid ? "RIFE HQ"
                 : restorationName
@@ -231,60 +251,114 @@ final class TwoPassVideoProcessor {
             }
         }
 
-        // Real-CUGAN sees the clean RIFE output, never the Sharpie output. This avoids
-        // CUGAN softening/changing the user's final line width.
+        // Real-CUGAN sees the clean RIFE output, never the Sharpie output.
+        // For low-resolution sources below 1080p, automatically run two native
+        // 2× passes when the 4× result fits the 40 MP working budget.
         var postCUGANSource: URL?
         if !outlineCheckpointValid {
             if upscaleTo4K {
-                if cuganCheckpointValid, let cuganCheckpoint {
-                    postCUGANSource = cuganCheckpoint
-                    progress(cuganEnd, "Recovered checkpoint • Real-CUGAN native 2× complete")
-                    RecoveryStore.update(progress: cuganEnd, message: "Recovered completed Real-CUGAN native 2× checkpoint", force: true)
-                    DiagnosticsLogger.shared.log("Recovery: reused completed Real-CUGAN native 2× checkpoint.")
+                if cugan4xCheckpointValid, let cugan4xCheckpoint {
+                    postCUGANSource = cugan4xCheckpoint
+                    progress(cuganEnd, "Recovered checkpoint • Real-CUGAN automatic 4× complete")
+                    RecoveryStore.update(progress: cuganEnd, message: "Recovered completed automatic 4× CUGAN checkpoint", force: true)
+                    DiagnosticsLogger.shared.log("Recovery: reused completed Real-CUGAN automatic 4× checkpoint.")
                 } else {
-                    guard let cuganInput = rifeResult else { throw ProcessorError.noOutput }
-                    if let cuganCheckpoint { try? fm.removeItem(at: cuganCheckpoint) }
-                    autoreleasepool { }
-                    try await thermalHandoff(progress: progress, position: 0.40, next: "Real-CUGAN native 2×")
-                    progress(0.41, "Pass 3/4 • Loading Real-CUGAN Anime native 2×…")
-                    let cugan = RealCUGANPass(intensity: 1.30, colorPopStrength: config.outlineProtection ? 0 : colorPopStrength)
-                    let generated = try await cugan.run(
-                        sourceURL: cuganInput,
-                        finalAudioBitrate: audioBitrate,
-                        progress: { p, message in
-                            let local = min(max(p, 0), 1)
-                            progress(0.41 + local * (cuganEnd - 0.41), message.replacingOccurrences(of: "Pass 3/3", with: "Pass 3/4"))
-                        },
-                        telemetry: { sample in
-                            cuganTelemetry = sample
-                            var combined = rifeTelemetry
-                            combined.sourceFrames = max(rifeTelemetry.sourceFrames, restorationTelemetry.sourceFrames)
-                            combined.compressionMsPerFrame = restorationTelemetry.compressionMsPerFrame
-                            combined.outlineMsPerFrame = 0
-                            combined.upscaledFrames = sample.upscaledFrames
-                            combined.cuganMsPerFrame = sample.cuganMsPerFrame
-                            combined.upscaleFPS = sample.upscaleFPS
-                            combined.encodeMsPerOutputFrame = sample.encodeMsPerOutputFrame
-                            combined.thermalState = sample.thermalState
-                            combined.performanceMode = sample.performanceMode
-                            combined.availableMemoryMB = sample.availableMemoryMB
-                            combined.physicalMemoryMB = sample.physicalMemoryMB
-                            telemetry(combined)
-                        },
-                        recoveryDirectory: recoveryDirectory
-                    )
+                    guard let cuganInput = rifeResult ?? (cuganCheckpointValid ? cuganCheckpoint : nil) else { throw ProcessorError.noOutput }
 
-                    if let cuganCheckpoint {
-                        try persistCheckpoint(from: generated, to: cuganCheckpoint)
-                        try? fm.removeItem(at: generated)
-                        postCUGANSource = cuganCheckpoint
-                        RecoveryStore.update(progress: cuganEnd, message: "Pass 3/4 checkpoint saved • Real-CUGAN native 2× complete", force: true)
-                        DiagnosticsLogger.shared.log("Checkpoint saved: Real-CUGAN native 2×.")
-                        IncrementalVideoCheckpointWriter.cleanup(recoveryDirectory: recoveryDirectory, stageID: "cugan")
-                        if let rifeCheckpoint { try? fm.removeItem(at: rifeCheckpoint) }
+                    let firstPassInput = cuganCheckpointValid ? cuganInput : cuganInput
+                    var firstPassOutput: URL
+
+                    if cuganCheckpointValid, let cuganCheckpoint {
+                        firstPassOutput = cuganCheckpoint
                     } else {
-                        transientURLs.append(generated)
-                        postCUGANSource = generated
+                        if let cuganCheckpoint { try? fm.removeItem(at: cuganCheckpoint) }
+                        autoreleasepool { }
+                        try await thermalHandoff(progress: progress, position: 0.40, next: "Real-CUGAN native 2×")
+                        progress(0.41, "Pass 3/4 • Loading Real-CUGAN Anime native 2×…")
+                        let cugan = RealCUGANPass(intensity: 1.30, colorPopStrength: config.outlineProtection ? 0 : colorPopStrength)
+                        let generated = try await cugan.run(
+                            sourceURL: firstPassInput,
+                            finalAudioBitrate: audioBitrate,
+                            progress: { p, message in
+                                let local = min(max(p, 0), 1)
+                                progress(0.41 + local * (cuganEnd - 0.41), message.replacingOccurrences(of: "Pass 3/3", with: "Pass 3/4"))
+                            },
+                            telemetry: { sample in
+                                cuganTelemetry = sample
+                                var combined = rifeTelemetry
+                                combined.sourceFrames = max(rifeTelemetry.sourceFrames, restorationTelemetry.sourceFrames)
+                                combined.compressionMsPerFrame = restorationTelemetry.compressionMsPerFrame
+                                combined.outlineMsPerFrame = 0
+                                combined.upscaledFrames = sample.upscaledFrames
+                                combined.cuganMsPerFrame = sample.cuganMsPerFrame
+                                combined.upscaleFPS = sample.upscaleFPS
+                                combined.encodeMsPerOutputFrame = sample.encodeMsPerOutputFrame
+                                combined.thermalState = sample.thermalState
+                                combined.performanceMode = sample.performanceMode
+                                combined.availableMemoryMB = sample.availableMemoryMB
+                                combined.physicalMemoryMB = sample.physicalMemoryMB
+                                telemetry(combined)
+                            },
+                            recoveryDirectory: recoveryDirectory
+                        )
+                        if let cuganCheckpoint {
+                            try persistCheckpoint(from: generated, to: cuganCheckpoint)
+                            try? fm.removeItem(at: generated)
+                            firstPassOutput = cuganCheckpoint
+                            RecoveryStore.update(progress: 0.62, message: "Pass 3/4 checkpoint saved • Real-CUGAN native 2× complete", force: true)
+                            DiagnosticsLogger.shared.log("Checkpoint saved: Real-CUGAN native 2×.")
+                            IncrementalVideoCheckpointWriter.cleanup(recoveryDirectory: recoveryDirectory, stageID: "cugan")
+                            if let rifeCheckpoint { try? fm.removeItem(at: rifeCheckpoint) }
+                        } else {
+                            transientURLs.append(generated)
+                            firstPassOutput = generated
+                        }
+                    }
+
+                    if automaticCuganPasses == 2 {
+                        if let cugan4xCheckpoint {
+                            try? fm.removeItem(at: cugan4xCheckpoint)
+                        }
+                        try await thermalHandoff(progress: progress, position: 0.62, next: "Real-CUGAN automatic 4×")
+                        progress(0.63, "Pass 4/4 • Real-CUGAN automatic second 2× pass…")
+                        let cuganSecond = RealCUGANPass(intensity: 1.30, colorPopStrength: config.outlineProtection ? 0 : colorPopStrength)
+                        let generated4x = try await cuganSecond.run(
+                            sourceURL: firstPassOutput,
+                            finalAudioBitrate: audioBitrate,
+                            progress: { p, message in
+                                let local = min(max(p, 0), 1)
+                                progress(0.63 + local * (cuganEnd - 0.63), message.replacingOccurrences(of: "Pass 3/3", with: "Pass 4/4"))
+                            },
+                            telemetry: { sample in
+                                cuganTelemetry = sample
+                                var combined = rifeTelemetry
+                                combined.sourceFrames = max(rifeTelemetry.sourceFrames, restorationTelemetry.sourceFrames)
+                                combined.outlineMsPerFrame = 0
+                                combined.upscaledFrames = sample.upscaledFrames
+                                combined.cuganMsPerFrame = sample.cuganMsPerFrame
+                                combined.upscaleFPS = sample.upscaleFPS
+                                combined.encodeMsPerOutputFrame = sample.encodeMsPerOutputFrame
+                                combined.thermalState = sample.thermalState
+                                combined.performanceMode = sample.performanceMode
+                                combined.availableMemoryMB = sample.availableMemoryMB
+                                combined.physicalMemoryMB = sample.physicalMemoryMB
+                                telemetry(combined)
+                            },
+                            recoveryDirectory: recoveryDirectory
+                        )
+                        if let cugan4xCheckpoint {
+                            try persistCheckpoint(from: generated4x, to: cugan4xCheckpoint)
+                            try? fm.removeItem(at: generated4x)
+                            postCUGANSource = cugan4xCheckpoint
+                            RecoveryStore.update(progress: cuganEnd, message: "Pass 4/4 checkpoint saved • Real-CUGAN automatic 4× complete", force: true)
+                            DiagnosticsLogger.shared.log("Checkpoint saved: Real-CUGAN automatic 4×.")
+                            if let cuganCheckpoint { try? fm.removeItem(at: cuganCheckpoint) }
+                        } else {
+                            transientURLs.append(generated4x)
+                            postCUGANSource = generated4x
+                        }
+                    } else {
+                        postCUGANSource = firstPassOutput
                     }
                 }
             } else {
@@ -371,7 +445,7 @@ final class TwoPassVideoProcessor {
             progress(0.98, "Finalizing • Restoring original audio…")
             let final = try await FinalAudioMuxer().addOriginalAudio(videoURL: finalVideoInput, sourceURL: sourceURL)
             let description = upscaleTo4K
-                ? (config.outlineProtection ? "Finished • Native 2× 60fps • Real-CUGAN → Final Sharpie" : "Finished • Native 2× 60fps • Real-CUGAN")
+                ? (config.outlineProtection ? "Finished • Automatic 2×/4× 60fps • Real-CUGAN → Final Sharpie" : "Finished • Automatic 2×/4× 60fps • Real-CUGAN")
                 : (config.outlineProtection ? "Finished • 60fps • Final Sharpie" : "Finished • 60fps")
             progress(1.0, description)
             return final
@@ -379,7 +453,7 @@ final class TwoPassVideoProcessor {
 
         transientURLs.removeAll { $0 == finalVideoInput }
         let description = upscaleTo4K
-            ? (config.outlineProtection ? "Finished • Native 2× 60fps • Real-CUGAN → Final Sharpie" : "Finished • Native 2× 60fps • Real-CUGAN")
+            ? (config.outlineProtection ? "Finished • Automatic 2×/4× 60fps • Real-CUGAN → Final Sharpie" : "Finished • Automatic 2×/4× 60fps • Real-CUGAN")
             : (config.outlineProtection ? "Finished • 60fps • Final Sharpie" : "Finished • 60fps")
         progress(1.0, description)
         return finalVideoInput
