@@ -33,35 +33,52 @@ final class AVIFEncoderGate: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
 
-        var lastError: Error?
-        let qualities = [quality, max(0, quality - 5), max(0, quality - 10)]
-
-        for candidateQuality in qualities {
-            do {
-                let data = try autoreleasepool {
-                    try AVIFEncoder.encode(
-                        image: UIImage(cgImage: image),
-                        quality: candidateQuality
-                    )
-                }
-
-                guard !data.isEmpty else {
-                    lastError = AVIFEncodingError.emptyOutput
-                    continue
-                }
-
-                guard Self.hasAVIFSignature(data) else {
-                    lastError = AVIFEncodingError.invalidContainer
-                    continue
-                }
-
-                return data
-            } catch {
-                lastError = error
-            }
+        let pixelCount = image.width * image.height
+        // avif.swift exposes libaom's speed control. Omitting it selects the codec
+        // default, which can make high-quality 4K-class stills appear to hang on-device.
+        // Speed 6 is substantially more practical on iPhone while retaining the
+        // requested quality setting.
+        let speed: Int
+        if pixelCount >= 24_000_000 {
+            speed = 7
+        } else if pixelCount >= 8_000_000 {
+            speed = 6
+        } else {
+            speed = 5
         }
 
-        throw AVIFEncodingError.encoderFailed(lastError?.localizedDescription ?? "unknown encoder error")
+        DiagnosticsLogger.shared.log(
+            "AVIF encode begin • \(image.width)x\(image.height) • pixels=\(pixelCount) • quality=\(quality) • speed=\(speed)"
+        )
+
+        do {
+            let data = try autoreleasepool {
+                try AVIFEncoder.encode(
+                    image: UIImage(cgImage: image),
+                    quality: quality,
+                    speed: speed,
+                    preferredCodec: .AOM
+                )
+            }
+
+            guard !data.isEmpty else {
+                throw AVIFEncodingError.emptyOutput
+            }
+
+            guard Self.hasAVIFSignature(data) else {
+                throw AVIFEncodingError.invalidContainer
+            }
+
+            DiagnosticsLogger.shared.log(
+                "AVIF encode complete • \(image.width)x\(image.height) • bytes=\(data.count) • quality=\(quality) • speed=\(speed)"
+            )
+            return data
+        } catch {
+            DiagnosticsLogger.shared.log(
+                "AVIF encode failed • \(image.width)x\(image.height) • quality=\(quality) • speed=\(speed) • error=\(error.localizedDescription)"
+            )
+            throw AVIFEncodingError.encoderFailed(error.localizedDescription)
+        }
     }
 
     private static func hasAVIFSignature(_ data: Data) -> Bool {
