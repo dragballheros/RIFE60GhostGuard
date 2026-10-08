@@ -436,7 +436,7 @@ final class VideoProcessorViewModel: ObservableObject {
                 await MainActor.run { [weak self] in
                     guard let self else { return }
                     self.outputURL = saved.url
-                    self.saveStatusText = "\(result.summary) • \(saved.message)"
+                    self.saveStatusText = saved.message
                     self.progress = 1; self.restorationProgress = 1; self.upscaleProgress = upscale ? 1 : 0
                     self.updateClock(progress: 1); self.etaSeconds = 0; self.statusText = "Finished"
                     self.recoveryAvailable = false; self.recoveryStatusText = ""; self.isProcessing = false; self.currentTask = nil
@@ -540,7 +540,7 @@ final class VideoProcessorViewModel: ObservableObject {
                 await MainActor.run { [weak self] in
                     guard let self else { return }
                     self.outputURL = saved.url
-                    self.saveStatusText = saved.message
+                    self.saveStatusText = "\(result.summary) • \(saved.message)"
                     self.progress = 1
                     self.restorationProgress = 1
                     self.upscaleProgress = 0
