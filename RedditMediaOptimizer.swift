@@ -91,15 +91,17 @@ struct RedditMediaOptimizer: Sendable {
             throw RedditMediaOptimizerError.unsupportedImage
         }
 
-        if let png = try? encodeImage(image, type: .png, quality: nil),
-           png.bytes <= targetBytes {
-            progress(1, "Reddit image • lossless PNG under 20 MB")
-            return RedditMediaResult(
-                url: png.url,
-                bytes: png.bytes,
-                kind: .image,
-                summary: "Reddit image • (formatMB(png.bytes)) • lossless PNG"
-            )
+        if let png = try? encodeImage(image, type: .png, quality: nil) {
+            if png.bytes <= targetBytes {
+                progress(1, "Reddit image • lossless PNG under 20 MB")
+                return RedditMediaResult(
+                    url: png.url,
+                    bytes: png.bytes,
+                    kind: .image,
+                    summary: "Reddit image • (formatMB(png.bytes)) • lossless PNG"
+                )
+            }
+            try? FileManager.default.removeItem(at: png.url)
         }
 
         let originalMaxDimension = max(image.width, image.height)
