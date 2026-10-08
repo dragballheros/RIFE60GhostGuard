@@ -489,6 +489,96 @@ final class VideoProcessorViewModel: ObservableObject {
         }
     }
 
+    // MARK: - Reddit GIF input
+
+    private func startGIFForReddit(source: URL) async -> Task<Void, Never>? {
+        let generation = UUID()
+        renderGeneration = generation
+        isProcessing = true
+        isPaused = false
+        processingScreenAwake = false
+        progress = 0
+        restorationProgress = 0
+        upscaleProgress = 0
+        telemetry = PerformanceTelemetry()
+        outputURL = nil
+        errorText = nil
+        saveStatusText = ""
+        diagnosticsCopyStatus = ""
+        elapsedSeconds = 0
+        etaSeconds = nil
+        resumeBaseProgress = nil
+        renderStartedAt = Date()
+        statusText = "Preparing Reddit GIF…"
+        if renderPowerMode { applyRenderPowerMode() }
+
+        currentTask = Task.detached(priority: .userInitiated) { [weak self] in
+            do {
+                let secured = source.startAccessingSecurityScopedResource()
+                defer { if secured { source.stopAccessingSecurityScopedResource() } }
+
+                let optimizer = RedditMediaOptimizer()
+                let result = try await optimizer.optimizeGIF(sourceURL: source) { p, message in
+                    Task { @MainActor [weak self] in
+                        guard let self, self.isProcessing, self.renderGeneration == generation else { return }
+                        self.progress = min(max(p, 0), 1) * 0.96
+                        self.statusText = message
+                        self.updateClock(progress: self.progress)
+                    }
+                }
+
+                try Task.checkCancellation()
+                guard let self else { return }
+
+                let saved = try await self.saveRedditAsset(
+                    result,
+                    filenamePrefix: "RIFE60-Reddit-GIF"
+                )
+
+                await MainActor.run { [weak self] in
+                    guard let self else { return }
+                    self.outputURL = saved.url
+                    self.saveStatusText = saved.message
+                    self.progress = 1
+                    self.restorationProgress = 1
+                    self.upscaleProgress = 0
+                    self.updateClock(progress: 1)
+                    self.etaSeconds = 0
+                    self.statusText = "Finished"
+                    self.isProcessing = false
+                    self.currentTask = nil
+                    self.blackScreenTask?.cancel()
+                    self.processingScreenAwake = true
+                    self.restoreDisplayState()
+                }
+            } catch is CancellationError {
+                DiagnosticsLogger.shared.log("Reddit GIF optimization cancelled.")
+                await MainActor.run { [weak self] in
+                    guard let self else { return }
+                    self.statusText = "Cancelled"
+                    self.isProcessing = false
+                    self.currentTask = nil
+                    self.blackScreenTask?.cancel()
+                    self.processingScreenAwake = true
+                    self.restoreDisplayState()
+                }
+            } catch {
+                DiagnosticsLogger.shared.log("Reddit GIF optimization failed: (error.localizedDescription)")
+                await MainActor.run { [weak self] in
+                    guard let self else { return }
+                    self.errorText = error.localizedDescription
+                    self.statusText = "Failed"
+                    self.isProcessing = false
+                    self.currentTask = nil
+                    self.blackScreenTask?.cancel()
+                    self.processingScreenAwake = true
+                    self.restoreDisplayState()
+                }
+            }
+        }
+        return currentTask
+    }
+
     // MARK: - Still images (RIFE is skipped entirely)
 
     private func startImage(source: URL) async -> Task<Void, Never>? {
