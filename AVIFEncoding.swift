@@ -1,6 +1,8 @@
 import Foundation
 import CoreGraphics
 import UIKit
+import VideoToolbox
+import CoreMedia
 import avif
 
 enum AVIFEncodingError: LocalizedError {
@@ -33,6 +35,9 @@ final class AVIFEncoderGate: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
 
+        let hardware = AVIFHardwareCapabilities.current
+        DiagnosticsLogger.shared.log("AVIF hardware probe • AV1 hardware encoder available=\(hardware.hardwareAV1EncoderAvailable) • AVIF still-container encode remains AOM")
+
         let pixelCount = image.width * image.height
         // avif.swift exposes libaom's speed control. Omitting it selects the codec
         // default, which can make high-quality 4K-class stills appear to hang on-device.
@@ -40,11 +45,11 @@ final class AVIFEncoderGate: @unchecked Sendable {
         // requested quality setting.
         let speed: Int
         if pixelCount >= 24_000_000 {
-            speed = 7
+            speed = 6
         } else if pixelCount >= 8_000_000 {
             speed = 6
         } else {
-            speed = 5
+            speed = 6
         }
 
         DiagnosticsLogger.shared.log(
@@ -55,9 +60,13 @@ final class AVIFEncoderGate: @unchecked Sendable {
             let data = try autoreleasepool {
                 try AVIFEncoder.encode(
                     image: UIImage(cgImage: image),
-                    quality: quality,
-                    speed: speed,
-                    preferredCodec: .AOM
+                    with: EncodingOptions(
+                        quality: quality / 100.0,
+                        yuv: .yuv444,
+                        rangeFull: true,
+                        speed: speed,
+                        preferredCodec: .AOM
+                    )
                 )
             }
 
@@ -103,4 +112,26 @@ final class AVIFEncoderGate: @unchecked Sendable {
         }
         return false
     }
+}
+
+    
+private struct AVIFHardwareCapabilities {
+    let hardwareAV1EncoderAvailable: Bool
+
+    static let current: AVIFHardwareCapabilities = {
+        var array: CFArray?
+        let status = VTCopyVideoEncoderList(nil, &array)
+        guard status == noErr, let array else {
+            return AVIFHardwareCapabilities(hardwareAV1EncoderAvailable: false)
+        }
+
+        let values = array as NSArray
+        let found = values.contains { object in
+            guard let entry = object as? NSDictionary else { return false }
+            let codec = entry[kVTVideoEncoderList_CodecType] as? NSNumber
+            let hardware = entry[kVTVideoEncoderList_IsHardwareAccelerated] as? NSNumber
+            return codec?.uint32Value == kCMVideoCodecType_AV1 && hardware?.boolValue == true
+        }
+        return AVIFHardwareCapabilities(hardwareAV1EncoderAvailable: found)
+    }()
 }
