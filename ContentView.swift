@@ -43,7 +43,7 @@ struct ContentView: View {
                             if vm.inputKind == .image {
                                 Text("Image • RIFE interpolation is skipped").font(.caption).foregroundStyle(.secondary)
                             } else if vm.inputKind == .gif {
-                                Text(vm.redditMode ? "GIF • compliant files pass through unchanged; re-encoding only when needed" : "GIF • handled as a still image when Reddit mode is off")
+                                Text("GIF • converted to video → full RIFE/CUGAN pipeline → optimized GIF")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                             }
@@ -65,13 +65,14 @@ struct ContentView: View {
                     }
 
                     Section("RIFE 4.26") {
-                        if vm.inputKind == .image || vm.inputKind == .gif {
-                            Label(vm.inputKind == .gif ? "Skipped for GIF" : "Skipped for images", systemImage: vm.inputKind == .gif ? "photo.on.rectangle.angled" : "photo")
-                            Text(vm.inputKind == .gif
-                                ? (vm.redditMode
-                                    ? "GIF animation does not enter RIFE. Reddit mode passes through GIFs unchanged when they fit the 20 MB, 1440p, and 60 FPS targets; otherwise it re-encodes only when required."
-                                    : "Reddit mode is off, so the GIF follows the app's previous still-image behavior.")
-                                : "A single image has no neighbouring frame to interpolate, so images go straight through Compression Guard → Real-CUGAN → Final Sharpie.")
+                        if vm.inputKind == .image {
+                            Label("Skipped for images", systemImage: "photo")
+                            Text("A single image has no neighbouring frame to interpolate, so images go straight through Compression Guard → Real-CUGAN → Final Sharpie.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        } else if vm.inputKind == .gif {
+                            Label("Full video pipeline", systemImage: "film.stack")
+                            Text("The GIF is converted to a temporary video, then runs Compression Guard → RIFE HQ → Real-CUGAN → Final Sharpie. The processed video is converted back to an optimized GIF at the end.")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         } else {
@@ -146,26 +147,38 @@ struct ContentView: View {
                     }
 
                     Section("Export to Files") {
-                        Toggle("Reddit Mode (≤20 MB)", isOn: $vm.redditMode)
-                            .disabled(vm.queueLocked || vm.isImporting)
-                        Text("When enabled, videos are converted to GIF and images/GIFs are prepared for Reddit's 20 MB limit. Compliant existing GIFs are copied byte-for-byte without re-encoding. Only GIFs over 20 MB, above the 1440p long-edge cap, or above the 60 FPS target are re-encoded. The finished status tells you whether the GIF was passed through unchanged or re-encoded.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                        if vm.inputKind == .video {
+                            Toggle("Convert video to GIF (≤20 MB)", isOn: $vm.videoToGIFEnabled)
+                                .disabled(vm.queueLocked || vm.isImporting)
+                            Text("When enabled, the normal full-quality video pipeline finishes first, then the completed master is converted to an animated GIF optimized to fit the 20 MB delivery limit. Audio is omitted because GIF has no audio track.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            if vm.videoToGIFEnabled {
+                                LabeledContent("GIF resolution / frame-rate cap", value: "Up to 2560 px long edge / 60 FPS")
+                            }
+                        } else if vm.inputKind == .image {
+                            Toggle("Reddit Mode (≤20 MB)", isOn: $vm.redditMode)
+                                .disabled(vm.queueLocked || vm.isImporting)
+                            Text("When enabled, still images are prepared for Reddit's 20 MB limit with the highest-quality PNG/JPEG option that fits.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        } else {
+                            LabeledContent("Delivery format", value: "Animated GIF ≤20 MB • full video pipeline")
+                            Text("GIF input is always converted to video, fully processed, then encoded back to GIF. The original GIF is never passed through unchanged.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
 
-                        if vm.redditMode && vm.inputKind != .image {
-                            LabeledContent("GIF resolution / frame-rate cap", value: "Up to 1440p / 60 FPS")
-                            Text("Reddit GIF export starts at 1440p and 60 FPS when the source supports it. If the animation exceeds the size target, the optimizer tries smaller resolutions before lowering FPS. GIF timing is viewer-dependent, so true 60 FPS playback cannot be guaranteed in every Reddit client.")
+                        if vm.videoToGIFEnabled || vm.inputKind == .gif {
+                            Text("GIF export tries the largest processed frame size first and only reduces resolution or FPS when needed to meet the 20 MB target.")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
 
                         if vm.inputKind == .image {
                             LabeledContent("Delivery format", value: vm.redditMode ? "PNG or high-quality JPEG ≤20 MB" : "PNG (lossless)")
-                        } else if vm.inputKind == .gif {
-                            LabeledContent("Delivery format", value: vm.redditMode ? "Animated GIF ≤20 MB (pass-through when compliant)" : "PNG first frame")
-                        } else if vm.redditMode {
+                        } else if vm.inputKind == .gif || vm.videoToGIFEnabled {
                             LabeledContent("Delivery format", value: "Animated GIF ≤20 MB")
-                            Text("Reddit mode intentionally removes audio because GIF has no audio track.").font(.caption).foregroundStyle(.secondary)
                         } else {
                             LabeledContent("Final codec", value: "HEVC Main10")
                             LabeledContent("Pixel format", value: "10-bit P010")
@@ -191,10 +204,12 @@ struct ContentView: View {
                         }
                         Section("Processing") {
                             Text(vm.inputKind == .gif
-                                ? (vm.redditMode ? "Reddit GIF optimization • RIFE skipped" : "GIF follows the previous image export path • RIFE skipped")
+                                ? "GIF → temporary video → Compression Guard → RIFE HQ → Real-CUGAN → Final Sharpie → GIF"
                                 : vm.inputKind == .image
                                     ? "Compression Guard → Real-CUGAN → Final Sharpie (RIFE skipped)"
-                                    : "Compression Guard → RIFE HQ → Real-CUGAN → Final Sharpie")
+                                    : vm.videoToGIFEnabled
+                                        ? "Compression Guard → RIFE HQ → Real-CUGAN → Final Sharpie → GIF"
+                                        : "Compression Guard → RIFE HQ → Real-CUGAN → Final Sharpie")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                             ProgressView(value: vm.progress)
@@ -212,7 +227,7 @@ struct ContentView: View {
                                     Label(vm.isPaused ? "Resume" : "Pause", systemImage: vm.isPaused ? "play.fill" : "pause.fill")
                                 }
                                 .buttonStyle(.bordered)
-                                .disabled((!vm.isBusy && !vm.isPaused) || vm.inputKind == .gif)
+                                .disabled((!vm.isBusy && !vm.isPaused) || vm.inputKind == .image)
                             }
                         }
                         if vm.inputKind == .video {

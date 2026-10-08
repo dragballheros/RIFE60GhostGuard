@@ -343,9 +343,11 @@ struct RedditMediaOptimizer: Sendable {
                     )
 
                     if candidate.bytes <= targetBytes {
+                        let outputDimensions = gifDimensions(candidate.url)
+                        let dimensionSummary = outputDimensions.map { "\($0.width)x\($0.height)" } ?? "unknown dimensions"
                         progress(
                             1,
-                            "Reddit GIF • \(formatMB(candidate.bytes)) • \(qualityLabel(forLongEdge: dimension)) • \(String(format: "%.0f", fps)) fps"
+                            "Reddit GIF • \(formatMB(candidate.bytes)) • \(qualityLabel(forLongEdge: dimension)) • \(String(format: "%.0f", fps)) fps • \(dimensionSummary)"
                         )
                         return RedditMediaResult(
                             url: candidate.url,
@@ -353,7 +355,7 @@ struct RedditMediaOptimizer: Sendable {
                             originalBytes: fileSize(sourceURL),
                             kind: .gif,
                             processing: .reencoded,
-                            summary: "RE-ENCODED GIF • \(formatMB(candidate.bytes)) • \(qualityLabel(forLongEdge: dimension)) • \(String(format: "%.0f", fps)) FPS • source \(formatMB(fileSize(sourceURL)))"
+                            summary: "RE-ENCODED GIF • \(formatMB(candidate.bytes)) • \(dimensionSummary) • \(qualityLabel(forLongEdge: dimension)) • \(String(format: "%.0f", fps)) FPS • source \(formatMB(fileSize(sourceURL)))"
                         )
                     }
 
@@ -368,16 +370,18 @@ struct RedditMediaOptimizer: Sendable {
         throw RedditMediaOptimizerError.couldNotFitGIF
     }
 
-    /// Long-edge sizes correspond to landscape 1440p, 1080p, 900p, 720p, etc.
-    /// Portrait media uses the same limits rotated, e.g. 1440 x 2560 for 1440p.
+    /// The first tier always preserves the processed video's actual long edge, capped at
+    /// 2560 px for GIF delivery. This is important for low-resolution inputs: the GIF
+    /// exporter must not clamp a fully upscaled 480p → 960p master back to 480p.
+    /// Portrait media uses the same long-edge rule, for example 1440 x 2560.
     private static func qualityDimensions(for baseDimension: Int) -> [Int] {
-        let cappedSourceDimension = min(baseDimension, 2560)
-        let preferred = [cappedSourceDimension, 1920, 1600, 1280, 1080, 900, 720, 540, 360]
+        let cappedSourceDimension = min(max(1, baseDimension), 2560)
+        let preferred = [cappedSourceDimension, 1920, 1600, 1280, 1080, 900, 720, 540, 480, 360]
         var result: [Int] = []
         for dimension in preferred where dimension >= 240 && dimension <= cappedSourceDimension && !result.contains(dimension) {
             result.append(dimension)
         }
-        return result.isEmpty ? [max(240, min(baseDimension, 360))] : result
+        return result.isEmpty ? [max(240, min(cappedSourceDimension, 360))] : result
     }
 
     /// GIFs are capped at 60 FPS. If the source is slower, do not manufacture
@@ -393,8 +397,7 @@ struct RedditMediaOptimizer: Sendable {
     }
 
     private static func qualityLabel(forLongEdge dimension: Int) -> String {
-        let landscapeEquivalentHeight = Int((Double(dimension) * 9.0 / 16.0).rounded())
-        return "\(landscapeEquivalentHeight)p"
+        return "\(dimension)px long edge"
     }
 
     /// GIF stores frame delays in 1/100-second units. Quantize cumulative target
@@ -630,6 +633,15 @@ struct RedditMediaOptimizer: Sendable {
     private static func temporaryGIFURL() -> URL {
         FileManager.default.temporaryDirectory
             .appendingPathComponent("RIFE60-Reddit-GIF-\(UUID().uuidString).gif")
+    }
+
+    private static func gifDimensions(_ url: URL) -> (width: Int, height: Int)? {
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+              CGImageSourceGetCount(source) > 0,
+              let frame = CGImageSourceCreateImageAtIndex(source, 0, nil) else {
+            return nil
+        }
+        return (frame.width, frame.height)
     }
 
     private static func fileSize(_ url: URL) -> Int64 {

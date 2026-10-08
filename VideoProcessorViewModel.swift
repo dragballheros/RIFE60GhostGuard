@@ -70,6 +70,7 @@ final class VideoProcessorViewModel: ObservableObject {
     @Published var ghostSensitivity = 1.0
     @Published var preserveAudio = true
     @Published var redditMode = false
+    @Published var videoToGIFEnabled = false
     @Published var renderPowerMode = true
     @Published var telemetry = PerformanceTelemetry()
     @Published var processingScreenAwake = false
@@ -103,6 +104,7 @@ final class VideoProcessorViewModel: ObservableObject {
 
     private var renderGeneration = UUID()
     private var currentTask: Task<Void, Never>?
+    private var currentJobForcesGIF = false
     private var blackScreenTask: Task<Void, Never>?
     private var savedBrightness: CGFloat?
     private var savedIdleTimerDisabled: Bool?
@@ -325,18 +327,24 @@ final class VideoProcessorViewModel: ObservableObject {
     }
 
     private func startSingle() async -> Task<Void, Never>? {
-        guard let source = inputURL, !isProcessing, !isBenchmarking else { return nil }
+        guard let selectedSource = inputURL, !isProcessing, !isBenchmarking else { return nil }
         let watermark = WatermarkConfiguration(enabled: effectiveWatermarkEnabled, regions: watermarkRegions, paddingPixels: Int(watermarkPaddingPixels))
         guard watermark.isValid else {
             errorText = "Mark at least one watermark region before starting removal."
             return nil
         }
         if inputKind == .image {
-            return await startImage(source: source)
+            return await startImage(source: selectedSource)
         }
-        if inputKind == .gif {
-            return redditMode ? await startGIFForReddit(source: source) : await startImage(source: source)
+
+        let inputWasGIF = inputKind == .gif
+        currentJobForcesGIF = inputWasGIF || videoToGIFEnabled
+        if inputWasGIF {
+            // GIFs now enter the exact same video pipeline as normal video. The only
+            // format-specific step is the temporary GIF -> MP4 bridge before rendering.
+            videoToGIFEnabled = true
         }
+
         let resumingExistingJob = recoveryAvailable
         let generation = UUID(); renderGeneration = generation
         PauseCheckpointCoordinator.shared.clear()
@@ -371,14 +379,41 @@ final class VideoProcessorViewModel: ObservableObject {
         let upscale = upscaleTo4K
         let upscaleBeforeRIFE = upscaleFirst && upscale
         let modelCompute = computePreference.rawValue
-        let configKey = ["pipeline-v3-final-size", "hq", "ghost=\(guardEnabled)", "cuts=\(cuts)", "compression=\(compressionEnabled)", "outline=\(outlineEnabled)", "colorpop=\(colorPop)", "colorpopStrength=\(gradeStrength)", "watermark=\(watermark.enabled)", "watermarkMasks=\(watermark.serializedRegions)", "watermarkPadding=\(watermark.paddingPixels)", "watermarkModel=\(WatermarkConfiguration.modelID)", String(format: "sensitivity=%.2f", sensitivity), "audio=\(audio)", "reddit=\(redditMode)", "upscale=\(upscale)", "upscaleFirst=\(upscaleBeforeRIFE)", "computeUnits=\(modelCompute)", "fps=60"].joined(separator: "|")
+        let configKey = ["pipeline-v4-gif-video", "hq", "ghost=\(guardEnabled)", "cuts=\(cuts)", "compression=\(compressionEnabled)", "outline=\(outlineEnabled)", "colorpop=\(colorPop)", "colorpopStrength=\(gradeStrength)", "watermark=\(watermark.enabled)", "watermarkMasks=\(watermark.serializedRegions)", "watermarkPadding=\(watermark.paddingPixels)", "watermarkModel=\(WatermarkConfiguration.modelID)", String(format: "sensitivity=%.2f", sensitivity), "audio=\(audio)", "reddit=\(redditMode)", "videoToGIF=\(videoToGIFEnabled)", "upscale=\(upscale)", "upscaleFirst=\(upscaleBeforeRIFE)", "computeUnits=\(modelCompute)", "fps=60"].joined(separator: "|")
         DiagnosticsLogger.shared.log("Render requested • \(configKey)")
 
         currentTask = Task.detached(priority: .userInitiated) { [weak self] in
             do {
-                let secured = source.startAccessingSecurityScopedResource()
-                defer { if secured { source.stopAccessingSecurityScopedResource() } }
-                let job = try RecoveryStore.prepare(source: source, configurationKey: configKey)
+                var processingSource = selectedSource
+                let secured = selectedSource.startAccessingSecurityScopedResource()
+                defer { if secured { selectedSource.stopAccessingSecurityScopedResource() } }
+
+                if inputWasGIF {
+                    await MainActor.run { [weak self] in
+                        guard let self, self.renderGeneration == generation, self.isProcessing else { return }
+                        self.statusText = "Converting GIF to temporary video…"
+                        self.progress = 0.01
+                        self.updateClock(progress: self.progress)
+                    }
+                    processingSource = try await GIFVideoBridge.makeVideo(from: selectedSource) { p, message in
+                        Task { @MainActor [weak self] in
+                            guard let self, self.renderGeneration == generation, self.isProcessing else { return }
+                            self.progress = min(0.08, max(0.01, p * 0.08))
+                            self.statusText = message
+                            self.updateClock(progress: self.progress)
+                        }
+                    }
+                    try Task.checkCancellation()
+                    DiagnosticsLogger.shared.log("GIF input bridged to video • source=\(selectedSource.lastPathComponent) • bridge=\(processingSource.lastPathComponent)")
+                    await MainActor.run { [weak self] in
+                        guard let self, self.renderGeneration == generation, self.isProcessing else { return }
+                        self.statusText = "GIF converted • starting full RIFE/CUGAN video pipeline…"
+                        self.progress = 0.08
+                        self.updateClock(progress: self.progress)
+                    }
+                }
+
+                let job = try RecoveryStore.prepare(source: processingSource, configurationKey: configKey)
                 RecoveryStore.update(progress: job.manifest.progress, message: "Recovery source secured", force: true)
                 guard let self else { return }
                 if resumingExistingJob && !job.resumed {
@@ -432,6 +467,11 @@ final class VideoProcessorViewModel: ObservableObject {
                     self.etaSeconds = nil
                 }
                 let saved = try await self.saveFinishedVideo(result)
+                if inputWasGIF {
+                    // The bridge is only an internal processing source. The final user-facing
+                    // asset is the GIF produced from the fully processed video master.
+                    try? FileManager.default.removeItem(at: processingSource)
+                }
                 RecoveryStore.finishAndClean()
                 await MainActor.run { [weak self] in
                     guard let self else { return }
@@ -439,7 +479,7 @@ final class VideoProcessorViewModel: ObservableObject {
                     self.saveStatusText = saved.message
                     self.progress = 1; self.restorationProgress = 1; self.upscaleProgress = upscale ? 1 : 0
                     self.updateClock(progress: 1); self.etaSeconds = 0; self.statusText = "Finished"
-                    self.recoveryAvailable = false; self.recoveryStatusText = ""; self.isProcessing = false; self.currentTask = nil
+                    self.recoveryAvailable = false; self.recoveryStatusText = ""; self.isProcessing = false; self.currentTask = nil; self.currentJobForcesGIF = false
                     self.blackScreenTask?.cancel(); self.processingScreenAwake = true; self.restoreDisplayState()
                 }
             } catch is CancellationError {
@@ -480,6 +520,7 @@ final class VideoProcessorViewModel: ObservableObject {
                 if let value = Double(pair[1]), value.isFinite { colorPopStrength = min(max(value, 0), 1) }
             case "audio": preserveAudio = enabled
             case "reddit": redditMode = enabled
+            case "videoToGIF": videoToGIFEnabled = enabled
             case "upscaleFirst": upscaleFirst = enabled
             case "computeUnits": computePreference = ModelComputePreference(rawValue: pair[1]) ?? .auto
             case "upscale": upscaleTo4K = enabled
@@ -489,98 +530,7 @@ final class VideoProcessorViewModel: ObservableObject {
         }
     }
 
-    // MARK: - Reddit GIF input
-
-    private func startGIFForReddit(source: URL) async -> Task<Void, Never>? {
-        let generation = UUID()
-        renderGeneration = generation
-        isProcessing = true
-        isPaused = false
-        processingScreenAwake = false
-        progress = 0
-        restorationProgress = 0
-        upscaleProgress = 0
-        telemetry = PerformanceTelemetry()
-        outputURL = nil
-        errorText = nil
-        saveStatusText = ""
-        diagnosticsCopyStatus = ""
-        elapsedSeconds = 0
-        etaSeconds = nil
-        resumeBaseProgress = nil
-        renderStartedAt = Date()
-        statusText = "Preparing Reddit GIF…"
-        if renderPowerMode { applyRenderPowerMode() }
-
-        currentTask = Task.detached(priority: .userInitiated) { [weak self] in
-            do {
-                let secured = source.startAccessingSecurityScopedResource()
-                defer { if secured { source.stopAccessingSecurityScopedResource() } }
-
-                let optimizer = RedditMediaOptimizer()
-                let result = try await optimizer.optimizeGIF(sourceURL: source) { p, message in
-                    Task { @MainActor [weak self] in
-                        guard let self, self.isProcessing, self.renderGeneration == generation else { return }
-                        self.progress = min(max(p, 0), 1) * 0.96
-                        self.statusText = message
-                        self.updateClock(progress: self.progress)
-                    }
-                }
-
-                try Task.checkCancellation()
-                guard let self else { return }
-
-                DiagnosticsLogger.shared.log("Reddit GIF export • \(result.processing.rawValue) • source=\(result.originalBytes) bytes • output=\(result.bytes) bytes • \(result.summary)")
-
-                let saved = try await self.saveRedditAsset(
-                    result,
-                    filenamePrefix: "RIFE60-Reddit-GIF"
-                )
-                if result.url != saved.url { try? FileManager.default.removeItem(at: result.url) }
-
-                await MainActor.run { [weak self] in
-                    guard let self else { return }
-                    self.outputURL = saved.url
-                    self.saveStatusText = "\(result.summary) • \(saved.message)"
-                    self.progress = 1
-                    self.restorationProgress = 1
-                    self.upscaleProgress = 0
-                    self.updateClock(progress: 1)
-                    self.etaSeconds = 0
-                    self.statusText = "Finished"
-                    self.isProcessing = false
-                    self.currentTask = nil
-                    self.blackScreenTask?.cancel()
-                    self.processingScreenAwake = true
-                    self.restoreDisplayState()
-                }
-            } catch is CancellationError {
-                DiagnosticsLogger.shared.log("Reddit GIF optimization cancelled.")
-                await MainActor.run { [weak self] in
-                    guard let self else { return }
-                    self.statusText = "Cancelled"
-                    self.isProcessing = false
-                    self.currentTask = nil
-                    self.blackScreenTask?.cancel()
-                    self.processingScreenAwake = true
-                    self.restoreDisplayState()
-                }
-            } catch {
-                DiagnosticsLogger.shared.log("Reddit GIF optimization failed: \(error.localizedDescription)")
-                await MainActor.run { [weak self] in
-                    guard let self else { return }
-                    self.errorText = error.localizedDescription
-                    self.statusText = "Failed"
-                    self.isProcessing = false
-                    self.currentTask = nil
-                    self.blackScreenTask?.cancel()
-                    self.processingScreenAwake = true
-                    self.restoreDisplayState()
-                }
-            }
-        }
-        return currentTask
-    }
+    // MARK: - GIF inputs now use the normal video pipeline
 
     // MARK: - Still images (RIFE is skipped entirely)
 
@@ -750,9 +700,9 @@ final class VideoProcessorViewModel: ObservableObject {
     private struct SavedResult: Sendable { let url: URL; let message: String }
 
     private func saveFinishedVideo(_ source: URL) async throws -> SavedResult {
-        if redditMode {
+        if currentJobForcesGIF || videoToGIFEnabled {
             let redditOptimizer = RedditMediaOptimizer()
-            statusText = "Converting finished video to Reddit GIF…"
+            statusText = "Converting fully processed video to GIF…"
             let result = try await redditOptimizer.optimizeVideoAsGIF(sourceURL: source) { [weak self] p, message in
                 Task { @MainActor in
                     guard let self else { return }
@@ -764,12 +714,12 @@ final class VideoProcessorViewModel: ObservableObject {
 
             let saved = try await saveRedditAsset(
                 result,
-                filenamePrefix: "RIFE60-Reddit-GIF"
+                filenamePrefix: "RIFE60-Processed-GIF"
             )
             if result.url != source { try? FileManager.default.removeItem(at: result.url) }
             if source != saved.url { try? FileManager.default.removeItem(at: source) }
 
-            DiagnosticsLogger.shared.log("Reddit video-to-GIF export • \(result.processing.rawValue) • source=\(result.originalBytes) bytes • output=\(result.bytes) bytes • \(result.summary)")
+            DiagnosticsLogger.shared.log("Processed video-to-GIF export • \(result.processing.rawValue) • source=\(result.originalBytes) bytes • output=\(result.bytes) bytes • \(result.summary)")
             return SavedResult(
                 url: saved.url,
                 message: "\(result.summary) • saved \(saved.bytes) bytes • \(saved.message) • audio omitted because GIF has no audio track"
@@ -886,7 +836,8 @@ final class VideoProcessorViewModel: ObservableObject {
 
     private func validateFinishedGIF(_ url: URL) throws {
         guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
-              CGImageSourceGetCount(source) > 0 else {
+              CGImageSourceGetCount(source) > 0,
+              let firstFrame = CGImageSourceCreateImageAtIndex(source, 0, nil) else {
             throw NSError(
                 domain: "RIFE60GhostGuard",
                 code: 36,
@@ -895,8 +846,17 @@ final class VideoProcessorViewModel: ObservableObject {
         }
 
         let count = CGImageSourceGetCount(source)
+        let width = firstFrame.width
+        let height = firstFrame.height
+        guard width > 0, height > 0 else {
+            throw NSError(
+                domain: "RIFE60GhostGuard",
+                code: 37,
+                userInfo: [NSLocalizedDescriptionKey: "The finished GIF has invalid frame dimensions."]
+            )
+        }
         DiagnosticsLogger.shared.log(
-            "Finished GIF validation passed • \(count) frame\(count == 1 ? "" : "s")"
+            "Finished GIF validation passed • \(count) frame\(count == 1 ? "" : "s") • \(width)x\(height) • long edge \(max(width, height))px"
         )
     }
 
@@ -1188,7 +1148,7 @@ final class VideoProcessorViewModel: ObservableObject {
         let sensitivity = ghostSensitivity, audio = preserveAudio, upscale = upscaleTo4K
         let upscaleBeforeRIFE = upscaleFirst && upscale, modelCompute = computePreference.rawValue
         let watermark = WatermarkConfiguration(enabled: watermarkRemovalEnabled, regions: watermarkRegions, paddingPixels: Int(watermarkPaddingPixels))
-        return ["pipeline-v3-final-size", "hq", "ghost=\(guardEnabled)", "cuts=\(cuts)", "compression=\(compressionEnabled)", "outline=\(outlineEnabled)", "colorpop=\(colorPop)", "colorpopStrength=\(gradeStrength)", "watermark=\(watermark.enabled)", "watermarkMasks=\(watermark.serializedRegions)", "watermarkPadding=\(watermark.paddingPixels)", "watermarkModel=\(WatermarkConfiguration.modelID)", String(format: "sensitivity=%.2f", sensitivity), "audio=\(audio)", "reddit=\(redditMode)", "upscale=\(upscale)", "upscaleFirst=\(upscaleBeforeRIFE)", "computeUnits=\(modelCompute)", "fps=60"].joined(separator: "|")
+        return ["pipeline-v4-gif-video", "hq", "ghost=\(guardEnabled)", "cuts=\(cuts)", "compression=\(compressionEnabled)", "outline=\(outlineEnabled)", "colorpop=\(colorPop)", "colorpopStrength=\(gradeStrength)", "watermark=\(watermark.enabled)", "watermarkMasks=\(watermark.serializedRegions)", "watermarkPadding=\(watermark.paddingPixels)", "watermarkModel=\(WatermarkConfiguration.modelID)", String(format: "sensitivity=%.2f", sensitivity), "audio=\(audio)", "reddit=\(redditMode)", "videoToGIF=\(videoToGIFEnabled)", "upscale=\(upscale)", "upscaleFirst=\(upscaleBeforeRIFE)", "computeUnits=\(modelCompute)", "fps=60"].joined(separator: "|")
     }
 
 }
