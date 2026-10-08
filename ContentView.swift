@@ -68,7 +68,9 @@ struct ContentView: View {
                         if vm.inputKind == .image || vm.inputKind == .gif {
                             Label(vm.inputKind == .gif ? "Skipped for GIF" : "Skipped for images", systemImage: vm.inputKind == .gif ? "photo.on.rectangle.angled" : "photo")
                             Text(vm.inputKind == .gif
-                                ? "GIF animation does not enter RIFE. Reddit mode preserves the animation and optimizes it to the Reddit media limit."
+                                ? (vm.redditMode
+                                    ? "GIF animation does not enter RIFE. Reddit mode preserves the animation and optimizes it to the Reddit media limit."
+                                    : "Reddit mode is off, so the GIF follows the app's previous still-image behavior.")
                                 : "A single image has no neighbouring frame to interpolate, so images go straight through Compression Guard → Real-CUGAN → Final Sharpie.")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
@@ -182,7 +184,7 @@ struct ContentView: View {
                         }
                         Section("Processing") {
                             Text(vm.inputKind == .gif
-                                ? "Reddit GIF optimization • RIFE skipped"
+                                ? (vm.redditMode ? "Reddit GIF optimization • RIFE skipped" : "GIF follows the previous image export path • RIFE skipped")
                                 : vm.inputKind == .image
                                     ? "Compression Guard → Real-CUGAN → Final Sharpie (RIFE skipped)"
                                     : "Compression Guard → RIFE HQ → Real-CUGAN → Final Sharpie")
@@ -203,7 +205,7 @@ struct ContentView: View {
                                     Label(vm.isPaused ? "Resume" : "Pause", systemImage: vm.isPaused ? "play.fill" : "pause.fill")
                                 }
                                 .buttonStyle(.bordered)
-                                .disabled(!vm.isBusy && !vm.isPaused)
+                                .disabled((!vm.isBusy && !vm.isPaused) || vm.inputKind == .gif)
                             }
                         }
                         if vm.inputKind == .video {
@@ -374,7 +376,9 @@ struct ContentView: View {
         if let queue = vm.mediaQueue, queue.items.count > 1 {
             return queue.settingsKey == nil ? "Process \(queue.items.count) Media in Order" : "Resume Media Queue"
         }
-        if vm.inputKind == .gif { return "Prepare Reddit GIF" }
+        if vm.inputKind == .gif {
+            return vm.redditMode ? "Prepare Reddit GIF" : "Process GIF as Image"
+        }
         if vm.inputKind == .image { return vm.upscaleTo4K ? "Create 2× Image" : "Create Enhanced Image" }
         return vm.upscaleTo4K ? "Create 2× 60 FPS Video" : "Create 60 FPS Video"
     }
