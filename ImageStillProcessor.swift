@@ -44,23 +44,6 @@ final class ImageStillProcessor {
         var notes: [String] = []
 
         progress(0.02, "Image • Loading…")
-        // ImageIO exposes APNG as a multi-frame image source. Never send an
-        // animated APNG through the single-frame CIImage(contentsOf:) path.
-        // That path only gives us one frame and was the reason APNG exports
-        // could stall at the single-image AVIF stage.
-        if let source = CGImageSourceCreateWithURL(sourceURL as CFURL, nil), CGImageSourceGetCount(source) > 1 {
-            progress(0.04, "Image • Animated APNG detected…")
-            let animated = AnimatedAVIFEncoder(
-                compressionProtection: compressionProtection,
-                outlineProtection: outlineProtection,
-                upscale2x: upscale2x,
-                colorPopStrength: colorPopStrength,
-                watermark: watermark
-            )
-            let result = try await animated.encode(sourceURL: sourceURL, quality: 95.0, speed: 6, progress: progress)
-            DiagnosticsLogger.shared.log("Animated image pipeline complete • APNG frames=\\(result.frameCount) • output=\\(result.width)x\\(result.height) AVIF")
-            return ImageStillResult(url: result.url, width: result.width, height: result.height, notes: ["Animated APNG encoded as animated AVIF"])
-        }
         var buffer = try loadBGRABuffer(from: sourceURL)
         let sourceWidth = CVPixelBufferGetWidth(buffer)
         let sourceHeight = CVPixelBufferGetHeight(buffer)
