@@ -648,6 +648,26 @@ final class VideoProcessorViewModel: ObservableObject {
     }
 
     private func saveFinishedImage(_ source: URL, notes: [String]) async throws -> SavedResult {
+        if redditMode {
+            statusText = "Preparing highest-quality Reddit image under 20 MB…"
+            progress = max(progress, 0.97)
+            let optimizer = RedditMediaOptimizer()
+            let result = try await optimizer.optimizeImage(sourceURL: source) { [weak self] p, message in
+                Task { @MainActor in
+                    guard let self else { return }
+                    self.progress = 0.97 + min(max(p, 0), 1) * 0.02
+                    self.statusText = message
+                }
+            }
+            let saved = try await saveRedditAsset(result, filenamePrefix: "RIFE60-Reddit-Image")
+            if result.url != source { try? FileManager.default.removeItem(at: result.url) }
+            if source != saved.url { try? FileManager.default.removeItem(at: source) }
+            return SavedResult(
+                url: saved.url,
+                message: "Reddit-ready image • (saved.bytes) bytes • (saved.message)"
+            )
+        }
+
         statusText = "Saving image to Files…"
         progress = max(progress, 0.97)
         let formatter = DateFormatter(); formatter.dateFormat = "yyyyMMdd-HHmmss"
@@ -726,6 +746,31 @@ final class VideoProcessorViewModel: ObservableObject {
     private struct SavedResult: Sendable { let url: URL; let message: String }
 
     private func saveFinishedVideo(_ source: URL) async throws -> SavedResult {
+        if redditMode {
+            let redditOptimizer = RedditMediaOptimizer()
+            statusText = "Converting finished video to Reddit GIF…"
+            let result = try await redditOptimizer.optimizeVideoAsGIF(sourceURL: source) { [weak self] p, message in
+                Task { @MainActor in
+                    guard let self else { return }
+                    self.progress = 0.97 + min(max(p, 0), 1) * 0.025
+                    self.statusText = message
+                }
+            }
+            try Task.checkCancellation()
+
+            let saved = try await saveRedditAsset(
+                result,
+                filenamePrefix: "RIFE60-Reddit-GIF"
+            )
+            if result.url != source { try? FileManager.default.removeItem(at: result.url) }
+            if source != saved.url { try? FileManager.default.removeItem(at: source) }
+
+            return SavedResult(
+                url: saved.url,
+                message: "Reddit-ready GIF • (saved.bytes) bytes • (saved.message) • audio omitted because GIF has no audio track"
+            )
+        }
+
         let optimizer = FinalSizeOptimizer()
         let optimized = try await optimizer.optimizeIfNeeded(sourceURL: source) { [weak self] p, message in
             Task { @MainActor in
@@ -770,6 +815,84 @@ final class VideoProcessorViewModel: ObservableObject {
         guard seconds.isFinite, seconds > 0 else { throw NSError(domain: "RIFE60GhostGuard", code: 31, userInfo: [NSLocalizedDescriptionKey: "Finished export has an invalid duration."]) }
         let size = try await track.load(.naturalSize)
         DiagnosticsLogger.shared.log("Finished export validation passed • \(Int(abs(size.width)))x\(Int(abs(size.height))) • \(String(format: "%.3f", seconds))s")
+    }
+
+    private func saveRedditAsset(
+        _ result: RedditMediaResult,
+        filenamePrefix: String
+    ) async throws -> (url: URL, message: String, bytes: Int64) {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyyMMdd-HHmmss"
+        let ext = result.url.pathExtension.isEmpty
+            ? (result.kind == .gif ? "gif" : "jpg")
+            : result.url.pathExtension.lowercased()
+        let filename = "(filenamePrefix)-(formatter.string(from: Date())).(ext)"
+
+        func persist(to folder: URL, messagePrefix: String) async throws -> (url: URL, message: String, bytes: Int64) {
+            let destination = uniqueDestination(in: folder, filename: filename)
+            let persisted = try coordinatedCopy(result.url, to: destination, inside: folder)
+            try verifyPersistedFile(persisted)
+
+            if result.kind == .gif {
+                try validateFinishedGIF(persisted)
+            } else {
+                try validateFinishedImage(persisted)
+            }
+
+            let attrs = try FileManager.default.attributesOfItem(atPath: persisted.path)
+            let bytes = (attrs[.size] as? NSNumber)?.int64Value ?? 0
+            guard bytes > 0, bytes <= RedditMediaOptimizer.hardLimitBytes else {
+                throw NSError(
+                    domain: "RIFE60GhostGuard",
+                    code: 35,
+                    userInfo: [NSLocalizedDescriptionKey: "The Reddit-ready export exceeded 20 MB."]
+                )
+            }
+
+            return (persisted, "(messagePrefix) > (persisted.lastPathComponent)", bytes)
+        }
+
+        if let folder = resolveSelectedExportFolder() {
+            let secured = folder.startAccessingSecurityScopedResource()
+            if secured {
+                defer { folder.stopAccessingSecurityScopedResource() }
+                do {
+                    return try await persist(
+                        to: folder,
+                        messagePrefix: "Files > (folder.lastPathComponent)"
+                    )
+                } catch {
+                    DiagnosticsLogger.shared.log("Selected Files folder Reddit export failed: (error.localizedDescription). Falling back to app Exports folder.")
+                }
+            } else {
+                DiagnosticsLogger.shared.log("Selected Files folder security scope could not be activated for Reddit export. Falling back to app Exports folder.")
+            }
+        }
+
+        let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        let exports = documents.appendingPathComponent("Exports", isDirectory: true)
+        try FileManager.default.createDirectory(at: exports, withIntermediateDirectories: true)
+
+        return try await persist(
+            to: exports,
+            messagePrefix: "On My iPhone > RIFE 60 Ghost Guard > Exports"
+        )
+    }
+
+    private func validateFinishedGIF(_ url: URL) throws {
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+              CGImageSourceGetCount(source) > 0 else {
+            throw NSError(
+                domain: "RIFE60GhostGuard",
+                code: 36,
+                userInfo: [NSLocalizedDescriptionKey: "The finished GIF could not be read back after saving."]
+            )
+        }
+
+        let count = CGImageSourceGetCount(source)
+        DiagnosticsLogger.shared.log(
+            "Finished GIF validation passed • (count) frame(count == 1 ? "" : "s")"
+        )
     }
 
     private func saveToFiles(_ source: URL) async throws -> (url: URL, message: String, bytes: Int64) {
