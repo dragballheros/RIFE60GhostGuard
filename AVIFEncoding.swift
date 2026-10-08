@@ -81,7 +81,7 @@ final class AVIFEncoderGate: @unchecked Sendable {
         }
     }
 
-    private static func hasAVIFSignature(_ data: Data) -> Bool {
+    static func isAVIFData(_ data: Data) -> Bool {
         guard data.count >= 12 else { return false }
 
         // ISO-BMFF AVIF files contain an ftyp box at byte 4 and an avif/avis
