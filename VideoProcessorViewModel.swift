@@ -331,7 +331,12 @@ final class VideoProcessorViewModel: ObservableObject {
             errorText = "Mark at least one watermark region before starting removal."
             return nil
         }
-        if inputKind == .image { return await startImage(source: source) }
+        if inputKind == .image {
+            return await startImage(source: source)
+        }
+        if inputKind == .gif {
+            return redditMode ? await startGIFForReddit(source: source) : await startImage(source: source)
+        }
         let resumingExistingJob = recoveryAvailable
         let generation = UUID(); renderGeneration = generation
         PauseCheckpointCoordinator.shared.clear()
