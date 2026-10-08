@@ -43,7 +43,7 @@ struct ContentView: View {
                             if vm.inputKind == .image {
                                 Text("Image • RIFE interpolation is skipped").font(.caption).foregroundStyle(.secondary)
                             } else if vm.inputKind == .gif {
-                                Text(vm.redditMode ? "GIF • preserved and optimized for Reddit mode" : "GIF • handled as a still image when Reddit mode is off")
+                                Text(vm.redditMode ? "GIF • compliant files pass through unchanged; re-encoding only when needed" : "GIF • handled as a still image when Reddit mode is off")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                             }
@@ -69,7 +69,7 @@ struct ContentView: View {
                             Label(vm.inputKind == .gif ? "Skipped for GIF" : "Skipped for images", systemImage: vm.inputKind == .gif ? "photo.on.rectangle.angled" : "photo")
                             Text(vm.inputKind == .gif
                                 ? (vm.redditMode
-                                    ? "GIF animation does not enter RIFE. Reddit mode preserves the animation and optimizes it to the Reddit media limit."
+                                    ? "GIF animation does not enter RIFE. Reddit mode passes through GIFs unchanged when they fit the 20 MB, 1440p, and 60 FPS targets; otherwise it re-encodes only when required."
                                     : "Reddit mode is off, so the GIF follows the app's previous still-image behavior.")
                                 : "A single image has no neighbouring frame to interpolate, so images go straight through Compression Guard → Real-CUGAN → Final Sharpie.")
                                 .font(.caption)
@@ -148,7 +148,7 @@ struct ContentView: View {
                     Section("Export to Files") {
                         Toggle("Reddit Mode (≤20 MB)", isOn: $vm.redditMode)
                             .disabled(vm.queueLocked || vm.isImporting)
-                        Text("When enabled, every finished media item is prepared specifically for Reddit's 20 MB media limit. Videos are automatically converted to GIF, images keep PNG when they fit and otherwise use the highest-quality JPEG that fits, and existing GIFs are optimized without flattening them.")
+                        Text("When enabled, videos are converted to GIF and images/GIFs are prepared for Reddit's 20 MB limit. Compliant existing GIFs are copied byte-for-byte without re-encoding. Only GIFs over 20 MB, above the 1440p long-edge cap, or above the 60 FPS target are re-encoded. The finished status tells you whether the GIF was passed through unchanged or re-encoded.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
 
@@ -162,7 +162,7 @@ struct ContentView: View {
                         if vm.inputKind == .image {
                             LabeledContent("Delivery format", value: vm.redditMode ? "PNG or high-quality JPEG ≤20 MB" : "PNG (lossless)")
                         } else if vm.inputKind == .gif {
-                            LabeledContent("Delivery format", value: vm.redditMode ? "Animated GIF ≤20 MB" : "PNG first frame")
+                            LabeledContent("Delivery format", value: vm.redditMode ? "Animated GIF ≤20 MB (pass-through when compliant)" : "PNG first frame")
                         } else if vm.redditMode {
                             LabeledContent("Delivery format", value: "Animated GIF ≤20 MB")
                             Text("Reddit mode intentionally removes audio because GIF has no audio track.").font(.caption).foregroundStyle(.secondary)
