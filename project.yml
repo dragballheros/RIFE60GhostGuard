@@ -8,6 +8,9 @@ options:
 packages:
   RifeMetal:
     path: Vendor/rife-metal
+  AVIF:
+    url: https://github.com/awxkee/avif.swift.git
+    exactVersion: 2.1.2
 
 targets:
   RIFE60GhostGuard:
@@ -22,6 +25,8 @@ targets:
     dependencies:
       - package: RifeMetal
         product: RifeMetal
+      - package: AVIF
+        product: avif
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.za.rife60ghostguard
