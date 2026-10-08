@@ -79,13 +79,13 @@ final class AnimatedAVIFEncoder: @unchecked Sendable {
         try? FileManager.default.removeItem(at: outputURL)
 
         let encoder = AVIFAnimatedEncoder()
-        var nativeError: Error?
+        var nativeError: NSError?
         guard encoder.create(.AOM, error: &nativeError) != nil else {
             throw AVIFEncodingError.encoderFailed(
                 nativeError?.localizedDescription ?? "could not initialize the animated AVIF encoder"
             )
         }
-        encoder.setSpeed(Int64(max(0, min(speed, 10))))
+        encoder.setSpeed(max(0, min(speed, 10)))
         encoder.setCompressionQuality(quality)
         encoder.setLoopsCount(readLoopCount(source))
 
@@ -138,7 +138,7 @@ final class AnimatedAVIFEncoder: @unchecked Sendable {
                 let duration = frameDurationMilliseconds(source: source, index: index)
                 let platformImage = UIImage(cgImage: image)
 
-                var addError: Error?
+                var addError: NSError?
                 guard encoder.addImage(platformImage, duration: UInt(duration), error: &addError) != nil else {
                     throw AVIFEncodingError.encoderFailed(
                         addError?.localizedDescription ?? "animated AVIF rejected frame \(index + 1)"
@@ -151,7 +151,7 @@ final class AnimatedAVIFEncoder: @unchecked Sendable {
                 )
             }
 
-            var encodeError: Error?
+            var encodeError: NSError?
             guard let data = encoder.encode(&encodeError) else {
                 throw AVIFEncodingError.encoderFailed(
                     encodeError?.localizedDescription ?? "animated AVIF encoder returned no data"
