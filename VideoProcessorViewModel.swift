@@ -69,6 +69,7 @@ final class VideoProcessorViewModel: ObservableObject {
     private var benchmarkTask: Task<Void, Never>?
     @Published var ghostSensitivity = 1.0
     @Published var preserveAudio = true
+    @Published var redditMode = false
     @Published var renderPowerMode = true
     @Published var telemetry = PerformanceTelemetry()
     @Published var processingScreenAwake = false
