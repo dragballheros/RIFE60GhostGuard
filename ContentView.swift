@@ -181,7 +181,13 @@ struct ContentView: View {
                             if let eta = vm.etaSeconds, eta > 0 { LabeledContent("Estimated finish", value: finishTime(after: eta)) }
                         }
                         Section("Processing") {
-                            Text(vm.inputKind == .image ? "Compression Guard → Real-CUGAN → Final Sharpie (RIFE skipped)" : "Compression Guard → RIFE HQ → Real-CUGAN → Final Sharpie").font(.caption).foregroundStyle(.secondary)
+                            Text(vm.inputKind == .gif
+                                ? "Reddit GIF optimization • RIFE skipped"
+                                : vm.inputKind == .image
+                                    ? "Compression Guard → Real-CUGAN → Final Sharpie (RIFE skipped)"
+                                    : "Compression Guard → RIFE HQ → Real-CUGAN → Final Sharpie")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
                             ProgressView(value: vm.progress)
                             Text(vm.statusText).font(.caption)
                             HStack(spacing: 12) {
@@ -368,6 +374,7 @@ struct ContentView: View {
         if let queue = vm.mediaQueue, queue.items.count > 1 {
             return queue.settingsKey == nil ? "Process \(queue.items.count) Media in Order" : "Resume Media Queue"
         }
+        if vm.inputKind == .gif { return "Prepare Reddit GIF" }
         if vm.inputKind == .image { return vm.upscaleTo4K ? "Create 2× Image" : "Create Enhanced Image" }
         return vm.upscaleTo4K ? "Create 2× 60 FPS Video" : "Create 60 FPS Video"
     }
