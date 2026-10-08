@@ -356,17 +356,8 @@ struct RedditMediaOptimizer: Sendable {
     }
 
     private static func qualityLabel(forLongEdge dimension: Int) -> String {
-        switch dimension {
-        case 2560...: return "1440p"
-        case 1920...: return "1080p"
-        case 1600...: return "900p"
-        case 1280...: return "720p"
-        case 1080...: return "608p"
-        case 900...: return "506p"
-        case 720...: return "405p"
-        case 540...: return "304p"
-        default: return "low-resolution"
-        }
+        let landscapeEquivalentHeight = Int((Double(dimension) * 9.0 / 16.0).rounded())
+        return "\(landscapeEquivalentHeight)p"
     }
 
     /// GIF stores frame delays in 1/100-second units. Quantize cumulative target
