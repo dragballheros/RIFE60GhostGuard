@@ -65,7 +65,7 @@ final class TwoPassVideoProcessor {
             if max(sourceWidth, sourceHeight) < 1080 && fourPixels <= 40_000_000 { return 2 }
             if twoPixels <= 40_000_000 { return 1 }
             return 0
-        }
+        }()
         let automaticFinalWidth = sourceWidth * (automaticCuganPasses == 2 ? 4 : automaticCuganPasses == 1 ? 2 : 1)
         let automaticFinalHeight = sourceHeight * (automaticCuganPasses == 2 ? 4 : automaticCuganPasses == 1 ? 2 : 1)
 
