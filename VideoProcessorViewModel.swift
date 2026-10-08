@@ -664,7 +664,7 @@ final class VideoProcessorViewModel: ObservableObject {
             if source != saved.url { try? FileManager.default.removeItem(at: source) }
             return SavedResult(
                 url: saved.url,
-                message: "Reddit-ready image • (saved.bytes) bytes • (saved.message)"
+                message: "Reddit-ready image • \(saved.bytes) bytes • \(saved.message)"
             )
         }
 
@@ -767,7 +767,7 @@ final class VideoProcessorViewModel: ObservableObject {
 
             return SavedResult(
                 url: saved.url,
-                message: "Reddit-ready GIF • (saved.bytes) bytes • (saved.message) • audio omitted because GIF has no audio track"
+                message: "Reddit-ready GIF • \(saved.bytes) bytes • \(saved.message) • audio omitted because GIF has no audio track"
             )
         }
 
