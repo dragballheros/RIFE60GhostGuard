@@ -82,7 +82,7 @@ struct RedditMediaOptimizer: Sendable {
                 url: copy,
                 bytes: originalBytes,
                 kind: .image,
-                summary: "Reddit image • (formatMB(originalBytes)) • no recompression needed"
+                summary: "Reddit image • \(formatMB(originalBytes)) • no recompression needed"
             )
         }
 
@@ -98,7 +98,7 @@ struct RedditMediaOptimizer: Sendable {
                     url: png.url,
                     bytes: png.bytes,
                     kind: .image,
-                    summary: "Reddit image • (formatMB(png.bytes)) • lossless PNG"
+                    summary: "Reddit image • \(formatMB(png.bytes)) • lossless PNG"
                 )
             }
             try? FileManager.default.removeItem(at: png.url)
@@ -124,7 +124,7 @@ struct RedditMediaOptimizer: Sendable {
                     url: best.url,
                     bytes: best.bytes,
                     kind: .image,
-                    summary: "Reddit image • (formatMB(best.bytes)) • JPEG quality (Int(best.quality * 100))% • (best.width)x(best.height)"
+                    summary: "Reddit image • \(formatMB(best.bytes)) • JPEG quality \(Int(best.quality * 100))% • \(best.width)x\(best.height)"
                 )
             }
 
@@ -150,7 +150,7 @@ struct RedditMediaOptimizer: Sendable {
                 url: copy,
                 bytes: originalBytes,
                 kind: .gif,
-                summary: "Reddit GIF • (formatMB(originalBytes)) • no recompression needed"
+                summary: "Reddit GIF • \(formatMB(originalBytes)) • no recompression needed"
             )
         }
 
@@ -196,7 +196,7 @@ struct RedditMediaOptimizer: Sendable {
 
                 progress(
                     min(0.96, Double(attempt - 1) / Double(totalAttempts)),
-                    "Reddit GIF • (dimension)p • (String(format: "%.0f", fps)) fps • optimizing…"
+                    "Reddit GIF • \(dimension)p • \(String(format: "%.0f", fps)) fps • optimizing…"
                 )
 
                 let candidate = try encodeGIF(
@@ -217,13 +217,13 @@ struct RedditMediaOptimizer: Sendable {
                 if candidate.bytes <= targetBytes {
                     progress(
                         1,
-                        "Reddit GIF • (formatMB(candidate.bytes)) • (dimension)p • (String(format: "%.0f", fps)) fps"
+                        "Reddit GIF • \(formatMB(candidate.bytes)) • \(dimension)p • \(String(format: "%.0f", fps)) fps"
                     )
                     return RedditMediaResult(
                         url: candidate.url,
                         bytes: candidate.bytes,
                         kind: .gif,
-                        summary: "Reddit GIF • (formatMB(candidate.bytes)) • (dimension)p • (String(format: "%.0f", fps)) fps"
+                        summary: "Reddit GIF • \(formatMB(candidate.bytes)) • \(dimension)p • \(String(format: "%.0f", fps)) fps"
                     )
                 }
 
@@ -278,7 +278,7 @@ struct RedditMediaOptimizer: Sendable {
                 let fraction = min(0.96, Double(attempt - 1) / Double(totalAttempts))
                 progress(
                     fraction,
-                    "Reddit GIF • (dimension)p • (String(format: "%.0f", fps)) fps • converting…"
+                    "Reddit GIF • \(dimension)p • \(String(format: "%.0f", fps)) fps • converting…"
                 )
 
                 let candidateURL = temporaryGIFURL()
@@ -300,13 +300,13 @@ struct RedditMediaOptimizer: Sendable {
                     if candidate.bytes <= targetBytes {
                         progress(
                             1,
-                            "Reddit GIF • (formatMB(candidate.bytes)) • (dimension)p • (String(format: "%.0f", fps)) fps"
+                            "Reddit GIF • \(formatMB(candidate.bytes)) • \(dimension)p • \(String(format: "%.0f", fps)) fps"
                         )
                         return RedditMediaResult(
                             url: candidate.url,
                             bytes: candidate.bytes,
                             kind: .gif,
-                            summary: "Reddit GIF • (formatMB(candidate.bytes)) • (dimension)p • (String(format: "%.0f", fps)) fps"
+                            summary: "Reddit GIF • \(formatMB(candidate.bytes)) • \(dimension)p • \(String(format: "%.0f", fps)) fps"
                         )
                     }
 
@@ -471,7 +471,7 @@ struct RedditMediaOptimizer: Sendable {
                     width: image.width,
                     height: image.height
                 )
-                high = quality
+                low = quality
             } else {
                 try? FileManager.default.removeItem(at: encoded.url)
                 low = quality
@@ -493,7 +493,7 @@ struct RedditMediaOptimizer: Sendable {
     ) throws -> RawEncodedImage {
         let extensionName = type == .png ? "png" : "jpg"
         let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("RIFE60-Reddit-(UUID().uuidString).(extensionName)")
+            .appendingPathComponent("RIFE60-Reddit-\(UUID().uuidString).\(extensionName)")
         try? FileManager.default.removeItem(at: url)
 
         let utType: UTType = type == .png ? .png : .jpeg
@@ -554,7 +554,7 @@ struct RedditMediaOptimizer: Sendable {
     private static func copyForDelivery(_ sourceURL: URL) throws -> URL {
         let ext = sourceURL.pathExtension.isEmpty ? "dat" : sourceURL.pathExtension.lowercased()
         let destination = FileManager.default.temporaryDirectory
-            .appendingPathComponent("RIFE60-Reddit-(UUID().uuidString).(ext)")
+            .appendingPathComponent("RIFE60-Reddit-\(UUID().uuidString).\(ext)")
         try? FileManager.default.removeItem(at: destination)
         try FileManager.default.copyItem(at: sourceURL, to: destination)
         return destination
@@ -562,7 +562,7 @@ struct RedditMediaOptimizer: Sendable {
 
     private static func temporaryGIFURL() -> URL {
         FileManager.default.temporaryDirectory
-            .appendingPathComponent("RIFE60-Reddit-GIF-(UUID().uuidString).gif")
+            .appendingPathComponent("RIFE60-Reddit-GIF-\(UUID().uuidString).gif")
     }
 
     private static func fileSize(_ url: URL) -> Int64 {
