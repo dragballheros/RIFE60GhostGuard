@@ -436,7 +436,7 @@ final class VideoProcessorViewModel: ObservableObject {
                 await MainActor.run { [weak self] in
                     guard let self else { return }
                     self.outputURL = saved.url
-                    self.saveStatusText = saved.message
+                    self.saveStatusText = "\(result.summary) • \(saved.message)"
                     self.progress = 1; self.restorationProgress = 1; self.upscaleProgress = upscale ? 1 : 0
                     self.updateClock(progress: 1); self.etaSeconds = 0; self.statusText = "Finished"
                     self.recoveryAvailable = false; self.recoveryStatusText = ""; self.isProcessing = false; self.currentTask = nil
@@ -529,6 +529,8 @@ final class VideoProcessorViewModel: ObservableObject {
 
                 try Task.checkCancellation()
                 guard let self else { return }
+
+                DiagnosticsLogger.shared.log("Reddit GIF export • \(result.processing.rawValue) • source=\(result.originalBytes) bytes • output=\(result.bytes) bytes • \(result.summary)")
 
                 let saved = try await self.saveRedditAsset(
                     result,
@@ -662,9 +664,10 @@ final class VideoProcessorViewModel: ObservableObject {
             let saved = try await saveRedditAsset(result, filenamePrefix: "RIFE60-Reddit-Image")
             if result.url != source { try? FileManager.default.removeItem(at: result.url) }
             if source != saved.url { try? FileManager.default.removeItem(at: source) }
+            DiagnosticsLogger.shared.log("Reddit image export • \(result.processing.rawValue) • source=\(result.originalBytes) bytes • output=\(result.bytes) bytes • \(result.summary)")
             return SavedResult(
                 url: saved.url,
-                message: "Reddit-ready image • \(saved.bytes) bytes • \(saved.message)"
+                message: "\(result.summary) • saved \(saved.bytes) bytes • \(saved.message)"
             )
         }
 
@@ -765,9 +768,10 @@ final class VideoProcessorViewModel: ObservableObject {
             if result.url != source { try? FileManager.default.removeItem(at: result.url) }
             if source != saved.url { try? FileManager.default.removeItem(at: source) }
 
+            DiagnosticsLogger.shared.log("Reddit video-to-GIF export • \(result.processing.rawValue) • source=\(result.originalBytes) bytes • output=\(result.bytes) bytes • \(result.summary)")
             return SavedResult(
                 url: saved.url,
-                message: "Reddit-ready GIF • \(saved.bytes) bytes • \(saved.message) • audio omitted because GIF has no audio track"
+                message: "\(result.summary) • saved \(saved.bytes) bytes • \(saved.message) • audio omitted because GIF has no audio track"
             )
         }
 
