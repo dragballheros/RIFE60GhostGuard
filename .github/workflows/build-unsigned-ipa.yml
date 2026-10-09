@@ -24,7 +24,8 @@ permissions:
 jobs:
   build:
     runs-on: macos-15
-    timeout-minutes: 45
+    # Large Draw Things SwiftPM dependency graph needs more than 45 minutes on a cold cache.
+    timeout-minutes: 120
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -373,16 +374,45 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          set -o pipefail
+          set -uo pipefail
           : > xcodebuild.log
-          xcodebuild -project RIFE60GhostGuard.xcodeproj -scheme RIFE60GhostGuard -configuration Release -sdk iphoneos -destination 'generic/platform=iOS' -derivedDataPath build -jobs 4 SWIFT_COMPILATION_MODE=incremental CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY='' build | tee xcodebuild.log &
+          : > build-diagnostics.log
+          # Run xcodebuild in the background so the live-log publisher and
+          # resource monitor can continue independently of compiler output.
+          xcodebuild -project RIFE60GhostGuard.xcodeproj -scheme RIFE60GhostGuard -configuration Release -sdk iphoneos -destination 'generic/platform=iOS' -derivedDataPath build -jobs 4 SWIFT_COMPILATION_MODE=incremental CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY='' build 2>&1 | tee xcodebuild.log &
           BUILD_PID=$!
           bash Scripts/publish_live_build_log.sh "$BUILD_PID" &
           PUBLISH_PID=$!
+          (
+            previous_bytes=0
+            previous_lines=0
+            while kill -0 "$BUILD_PID" 2>/dev/null; do
+              {
+                echo "===== $(date -u '+%Y-%m-%dT%H:%M:%SZ') ====="
+                echo "--- build process tree / CPU / memory ---"
+                ps -axo pid,ppid,%cpu,%mem,etime,state,command | grep -E '[x]codebuild|[s]wift-frontend|[s]wift-driver|[s]wiftc|[t]ee xcodebuild.log' || true
+                current_bytes=$(wc -c < xcodebuild.log 2>/dev/null || echo 0)
+                current_lines=$(wc -l < xcodebuild.log 2>/dev/null || echo 0)
+                echo "log_bytes=$current_bytes log_lines=$current_lines byte_delta=$((current_bytes - previous_bytes)) line_delta=$((current_lines - previous_lines))"
+                echo "--- latest compiler activity ---"
+                tail -n 12 xcodebuild.log 2>/dev/null || true
+                previous_bytes=$current_bytes
+                previous_lines=$current_lines
+              } >> build-diagnostics.log
+              sleep 60
+            done
+            {
+              echo "===== final monitor snapshot $(date -u '+%Y-%m-%dT%H:%M:%SZ') ====="
+              ps -axo pid,ppid,%cpu,%mem,etime,state,command | grep -E '[x]codebuild|[s]wift-frontend|[s]wift-driver|[s]wiftc' || true
+              tail -n 30 xcodebuild.log 2>/dev/null || true
+            } >> build-diagnostics.log
+          ) &
+          MONITOR_PID=$!
           set +e
           wait "$BUILD_PID"
           BUILD_STATUS=$?
           wait "$PUBLISH_PID"
+          wait "$MONITOR_PID"
           set -e
           exit "$BUILD_STATUS"
 
