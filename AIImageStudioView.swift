@@ -24,6 +24,8 @@ worst quality, bad quality, low quality, lowres, scan artifacts, jpeg artifacts,
     @State private var steps = 8.0
     @State private var cfg = 1.0
     @State private var shift = 3.0
+    @State private var samplerName = "Euler a"
+    @State private var schedulerName = "Normal"
     @State private var seedText = "1647498191"
     @State private var randomSeed = false
     @State private var turboWeight = 1.0
@@ -75,10 +77,10 @@ worst quality, bad quality, low quality, lowres, scan artifacts, jpeg artifacts,
             .navigationTitle("AI Image Studio")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
+                ToolbarItem(placement: .navigationBarLeading) {
                     Button("Close") { dismiss() }
                 }
-                ToolbarItem(placement: .topBarTrailing) {
+                ToolbarItem(placement: .navigationBarTrailing) {
                     Button("Save Settings") { saveSettings() }
                 }
             }
@@ -131,11 +133,17 @@ worst quality, bad quality, low quality, lowres, scan artifacts, jpeg artifacts,
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section("Generation Settings") {
-                Picker("Sampler", selection: .constant("Euler a")) {
+                Picker("Sampler", selection: $samplerName) {
                     Text("Euler a").tag("Euler a")
+                    Text("Euler").tag("Euler")
+                    Text("DPM++ 2M").tag("DPM++ 2M")
+                    Text("DPM++ 2M SDE").tag("DPM++ 2M SDE")
                 }
-                Picker("Schedule type", selection: .constant("Normal")) {
+                Picker("Schedule type", selection: $schedulerName) {
                     Text("Normal").tag("Normal")
+                    Text("Karras").tag("Karras")
+                    Text("Simple").tag("Simple")
+                    Text("SGM Uniform").tag("SGM Uniform")
                 }
                 HStack {
                     Text("Steps")
@@ -336,6 +344,8 @@ worst quality, bad quality, low quality, lowres, scan artifacts, jpeg artifacts,
                 steps: Int(steps),
                 cfg: cfg,
                 shift: shift,
+                samplerName: samplerName,
+                schedulerName: schedulerName,
                 seed: resolvedSeed,
                 turboWeight: turboWeight,
                 characterWeight: characterWeight,

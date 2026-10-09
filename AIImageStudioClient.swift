@@ -94,6 +94,8 @@ enum AIImageStudioClient {
         steps: Int,
         cfg: Double,
         shift: Double,
+        samplerName: String,
+        schedulerName: String,
         seed: Int64,
         turboWeight: Double,
         characterWeight: Double,
@@ -121,6 +123,8 @@ enum AIImageStudioClient {
                 steps: steps,
                 cfg: cfg,
                 shift: shift,
+                samplerName: samplerName,
+                schedulerName: schedulerName,
                 seed: seed,
                 turboWeight: turboWeight,
                 characterWeight: characterWeight,
@@ -134,8 +138,8 @@ enum AIImageStudioClient {
         request.httpBody = try JSONSerialization.data(withJSONObject: requestBody)
 
         progress("Submitting ANIMA workflow to the GPU endpoint…")
-        let (_, initialResponse) = try await URLSession.shared.data(for: request)
-        let initial = try checkedJSONObject(response: initialResponse, context: "submit generation")
+        let (initialData, initialResponse) = try await URLSession.shared.data(for: request)
+        let initial = try checkedJSONObject(data: initialData, response: initialResponse, context: "submit generation")
         guard let jobID = initial["id"] as? String else {
             throw AIImageStudioError("GPU endpoint did not return a job ID. Check the endpoint type and RunPod configuration.")
         }
@@ -208,7 +212,10 @@ enum AIImageStudioClient {
             "11": ["class_type": "KSampler", "inputs": [
                 "model": ["10", 0], "positive": ["6", 0], "negative": ["7", 0],
                 "latent_image": ["8", 0], "seed": max(0, seed), "steps": steps,
-                "cfg": cfg, "sampler_name": "euler_ancestral", "scheduler": "normal", "denoise": 1.0
+                "cfg": cfg,
+                "sampler_name": comfySamplerName(samplerName),
+                "scheduler": comfySchedulerName(schedulerName),
+                "denoise": 1.0
             ]],
             "12": ["class_type": "VAEDecode", "inputs": [
                 "samples": ["11", 0], "vae": ["3", 0]
@@ -236,11 +243,23 @@ enum AIImageStudioClient {
         return graph
     }
 
-    private static func checkedJSONObject(response: URLResponse, context: String) throws -> [String: Any] {
-        guard let http = response as? HTTPURLResponse else {
-            throw AIImageStudioError("Invalid server response while trying to \(context).")
+    private static func comfySamplerName(_ value: String) -> String {
+        switch value {
+        case "Euler": return "euler"
+        case "DPM++ 2M": return "dpmpp_2m"
+        case "DPM++ 2M SDE": return "dpmpp_2m_sde"
+        case "Euler a": return "euler_ancestral"
+        default: return "euler_ancestral"
         }
-        throw AIImageStudioError("Unexpected empty response while trying to \(context) (HTTP \(http.statusCode)).")
+    }
+
+    private static func comfySchedulerName(_ value: String) -> String {
+        switch value {
+        case "Karras": return "karras"
+        case "Simple": return "simple"
+        case "SGM Uniform": return "sgm_uniform"
+        default: return "normal"
+        }
     }
 
     private static func checkedJSONObject(data: Data, response: URLResponse, context: String) throws -> [String: Any] {
