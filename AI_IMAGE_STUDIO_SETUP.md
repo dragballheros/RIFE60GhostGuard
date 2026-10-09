@@ -1,92 +1,31 @@
-# AI Image Studio integration
+# AI Image Studio: On-device GPU setup
 
-This feature adds a SwiftUI image-generation interface to RIFE60GhostGuard. The iPhone is the control surface; generation and LoRA training require GPU services. Model weights are intentionally not bundled in the IPA.
+AI Image Studio runs image generation and compatible LoRA training directly on the iPhone. It does not require RunPod, a remote ComfyUI endpoint, a trainer server, or a paid inference service.
 
-## Image generation endpoint
+## Local image generation
 
-Use a RunPod Serverless endpoint running the official RunPod ComfyUI worker or a compatible worker:
+The app embeds the open-source Draw Things MediaGenerationKit engine and defaults to the supported catalog model Animagine XL v3.1 (8-bit), file identifier animagine_xl_v3.1_q6p_q8p.ckpt. First generation downloads the checkpoint and required files to the app's Application Support directory. Allow several GB of free storage and keep the app open during the initial download and model load. Once downloaded, image sampling runs on-device through the engine's Apple GPU/Metal stack.
 
-- https://github.com/runpod-workers/worker-comfyui
-- RunPod deployment guide: https://www.runpod.io/blog/deploy-comfyui-as-a-serverless-api-endpoint
+The generated PNG stays in the app until you save it to Photos, share/export it, or send it to the existing Real-CUGAN + Sharpie local upscale pipeline. For iPhone 14 Pro Max, start around 832 × 1216 with high-resolution diffusion disabled. For a larger final image, use the existing local upscaler after generation rather than holding a 2× diffusion pass in unified memory.
 
-A model-install script is included at `cloud/comfyui-models/install-runpod-models.sh`. **Important mount-path difference:** a RunPod Pod typically mounts its Network Volume or Global Volume at `/workspace`, while RunPod Serverless workers see the same volume at `/runpod-volume`. Run the installer from the Pod and target `/workspace/models` so model files persist on the attached volume:
+The model field accepts a model ID supported by the embedded Draw Things catalog. Arbitrary ComfyUI .safetensors filenames are not automatically recognized as model IDs.
 
-```bash
-curl -fsSLO https://raw.githubusercontent.com/dragballheros/RIFE60GhostGuard/main/cloud/comfyui-models/install-runpod-models.sh
-bash install-runpod-models.sh all /workspace/models
-# Or: bash install-runpod-models.sh anima /workspace/models
-# Or: bash install-runpod-models.sh wai /workspace/models
-```
+## Local LoRA training
 
-The script downloads several multi-gigabyte model files. Provision at least a 30 GB Network Volume for both profiles and the official ANIMA training base (more if you will keep training outputs or additional LoRAs). Ensure the correct model licenses permit your intended use. The script validates known SHA-256 hashes for the checkpoint/LoRA/SDXL VAE files where available. It intentionally does not download either unverified character LoRA. After it completes, stop the temporary Pod, attach the same Network Volume to the Serverless ComfyUI endpoint, and restart the endpoint so ComfyUI rescans the model directories.
+The LoRA Trainer invokes the Draw Things local trainer in-process. Selected images and captions are written to a temporary app-local dataset, training runs locally, and the resulting LoRA checkpoint is stored in the same on-device Models folder. The app selects the trained LoRA for subsequent local generation.
 
-For current RunPod availability across data centers, a Global Volume is the simplest shared-storage choice (RunPod announced Global Volumes in beta on October 8, 2026). If using a traditional Network Volume, keep all attached resources in its data center. Attach the same volume to the temporary model-download Pod, the ComfyUI Serverless endpoint, and the trainer Pod. Model files written to `/workspace/models` from the Pod become visible under `/runpod-volume/models` to Serverless workers.
+Training defaults to low-memory settings, 512-pixel training resolution, and a bounded step count. This does not override iOS memory limits. Start with a small dataset and keep the app foregrounded with the phone cooler attached. iOS can still terminate training if model loading, GPU allocations, thermal pressure, or system memory demand exceeds the available budget. If it fails repeatedly, reduce dataset size, rank, and epochs, or use a smaller compatible base model.
 
-The app calls the endpoint's `/run` and `/status/{job_id}` routes and sends a ComfyUI API-format workflow in `input.workflow`. The official RunPod ComfyUI worker returns generated PNGs in `output.images[]`, normally as base64 data or as a URL when S3 output is configured. Use the **Test GPU Endpoint** button in AI Image Studio > Settings to verify endpoint reachability. This test does not validate every installed model file.
+## Compatibility limits
 
-The app now includes two distinct profile-specific workflows. Install all model files in the corresponding ComfyUI model folders:
+The supplied source PNGs used the screenChantvMerge_v20 ANIMA checkpoint and Turbo-ANIMA-v2.9 LoRA. Those files are not automatically compatible with the supported Draw Things inference pipeline. The local build intentionally does not pretend they have been loaded. It uses Animagine XL v3.1, a supported SDXL anime model, until a native ANIMA model-import or architecture path is implemented and validated.
 
-For a normal ComfyUI install, the ANIMA profile uses:
-- `models/diffusion_models/screenChantvMerge_v20.safetensors`
-- `models/text_encoders/qwen_3_06b_base.safetensors`
-- `models/vae/qwen_image_vae.safetensors`
-- `models/loras/Turbo-ANIMA-v2.9.safetensors`
-- Optional character LoRA: `models/loras/Ichinose_Chizuru.safetensors`
+The WAI Illustrious checkpoint and its LoRA are also not assumed importable merely because they are SDXL-format files. They need conversion or registration through the embedded engine's supported import path before use.
 
-For the **official RunPod ComfyUI worker's Network Volume mapping**, the same ANIMA files should be placed under:
-- `/runpod-volume/models/diffusion_models/screenChantvMerge_v20.safetensors`
-- `/runpod-volume/models/text_encoders/qwen_3_06b_base.safetensors`
-- `/runpod-volume/models/diffusion_models/anima-base-v1.0.safetensors` (training base for the LoRA trainer)
-- `/runpod-volume/models/vae/qwen_image_vae.safetensors`
-- `/runpod-volume/models/loras/Turbo-ANIMA-v2.9.safetensors`
-- Optional: `/runpod-volume/models/loras/Ichinose_Chizuru.safetensors`
+## Licensing
 
-The official worker's default volume mapping still focuses on legacy `unet` and `clip` folders, while the current ComfyUI `UNETLoader` and `CLIPLoader` nodes look under `diffusion_models` and `text_encoders`. This repository's `Publish RunPod GPU Images` workflow builds a custom worker image with those additional mappings. Use that custom image rather than the stock worker image for the profiles below. See [the official worker's default model-path mapping](https://github.com/runpod-workers/worker-comfyui/blob/main/src/extra_model_paths.yaml) and [current ComfyUI loader implementation](https://github.com/Comfy-Org/ComfyUI/blob/master/nodes.py).
+Draw Things community code is GPL-3.0 licensed. Keep the pinned source and its license available with this project. If distributing this combined app to others, comply with GPL-3.0 source and notice requirements for the combined work.
 
-For **WAI Illustrious v1.3**, install:
+## Pinned engine
 
-- `models/checkpoints/waiNSFWIllustrious_v130.safetensors` (SDXL checkpoint, 6.94 GB; a public copy has fingerprint prefix `a810e710a2`: https://huggingface.co/elski/models-moved/blob/main/waiNSFWIllustrious_v130.safetensors)
-- `models/vae/sdxl.vae.safetensors`
-- `models/loras/のなかゆき.safetensors` (the second PNG identifies this LoRA at weight 0.8; hash `dffb5926186c` is not independently verified)
-- `models/upscale_models/RealESRGAN_x4plus_anime_6B.pth`
-
-On the official RunPod Network Volume these paths map to `/runpod-volume/models/checkpoints`, `/runpod-volume/models/vae`, `/runpod-volume/models/loras`, and `/runpod-volume/models/upscale_models`, respectively.
-
-These names are configurable in the app. The checkpoint and the exact character LoRA require verification before their compatibility can be guaranteed. The character LoRA hash from the source PNG is `160fca5c6aae`, and remains unresolved. If the worker reports a missing model, install the correct file or disable the optional character LoRA. The ANIMA workflow uses `UNETLoader`, `CLIPLoader`, `VAELoader`, `LoraLoaderModelOnly`, and `ModelSamplingAuraFlow`. The repository builds a custom RunPod worker image that adds the current `diffusion_models` and `text_encoders` network-volume mappings required by these ComfyUI loaders. WAI Illustrious uses the SDXL `CheckpointLoaderSimple` path, optional `CLIPSetLastLayer` for CLIP skip, and an external VAE and LoRA. Both profiles can run a high-resolution second pass using `UpscaleModelLoader`, `ImageUpscaleWithModel`, `ImageScale`, `VAEEncode`, `KSampler`, and `VAEDecode`. All required nodes and model files must be installed on the remote worker.
-
-The Turbo-ANIMA profile recovers the first PNG's settings. The **WAI Illustrious v1.3** profile uses the second PNG's settings: checkpoint `waiNSFWIllustrious_v130`, LoRA `のなかゆき` at 0.8, Euler a, Automatic schedule (mapped to ComfyUI's `normal` scheduler), 30 steps, CFG 7, seed 624067427, base 896×1344, CLIP skip 2, ESRGAN Anime6B 2× high-resolution pass, 20 hires steps, and 0.5 denoise. ENSD and token-merging values are displayed for reference but are not applied by stock ComfyUI without compatible custom nodes. The Turbo-ANIMA profile recovers the supplied PNG's settings: positive/negative prompts, Euler a (ComfyUI `euler_ancestral`), Normal scheduler, 8 steps, CFG 1, shift 3, seed 1647498191, 848×1200 output, Turbo LoRA 1.0 and character LoRA 0.7. The stored PNG was 848×1200 while its generation metadata said 850×1200, so the UI defaults to the actual saved dimensions.
-
-### Costs and credentials
-
-### Concrete deployment settings
-
-1. **Create persistent storage.** In RunPod Storage, create a Global Volume (beta) for shared models if available. Otherwise create a Network Volume and keep all attached resources in its data center. The model installer command above writes to `/workspace/models` on the Pod; the inference worker sees the files under `/runpod-volume/models`.
-2. **Install the models once.** Start a temporary RunPod Pod with the volume attached at `/workspace`, open its web Terminal, run the installer command, and wait until every checksum/download completes. Do not terminate the Pod before the script finishes.
-3. **Create the image endpoint.** First wait for the `Publish RunPod GPU Images` GitHub Actions workflow to complete, then make the published `rife60-comfyui-worker` container package public in GitHub Packages if it is private. Create a RunPod Serverless endpoint using `ghcr.io/dragballheros/rife60-comfyui-worker:latest`. This custom image is built from the official RunPod worker source with current `diffusion_models` and `text_encoders` volume mappings. Attach the same Global/Network Volume. Set Active Workers to 0, Max Workers to 1 initially, and an idle timeout such as 5 minutes to avoid paying for idle inference workers. Start with a 24 GB VRAM GPU such as an RTX 4090-class worker for both profiles. Once a generated image succeeds, adjust the worker cap to suit your budget. Copy the endpoint ID into AI Image Studio > Settings, enter the RunPod API key, and tap **Test GPU Endpoint**.
-4. **Deploy the ANIMA trainer separately.** First wait for the `Publish RunPod GPU Images` GitHub Actions workflow to publish `ghcr.io/dragballheros/rife60-anima-lora-trainer:latest`, then make that GitHub Packages container public if it is private. Create a second GPU Pod using that image. Attach the same Global/Network Volume at `/workspace`, expose `8080` over HTTP through RunPod's HTTPS proxy, and set these environment variables on the container:
-   - `MODEL_ROOT=/workspace/models`
-   - `ANIMA_DIT_PATH=/workspace/models/diffusion_models/anima-base-v1.0.safetensors`
-   - `QWEN3_PATH=/workspace/models/text_encoders/qwen_3_06b_base.safetensors`
-   - `ANIMA_VAE_PATH=/workspace/models/vae/qwen_image_vae.safetensors`
-   - `LORA_INSTALL_DIR=/workspace/models/loras`
-   - `TRAINER_JOB_ROOT=/workspace/rife60-anima-jobs`
-   - `TRAINER_API_TOKEN` set to a long, random secret kept private
-5. **Connect the trainer.** Copy the Pod's HTTPS proxy URL for port 8080, typically `https://POD_ID-8080.proxy.runpod.net`, into AI Image Studio > Settings > LoRA Trainer Endpoint. Enter the same `TRAINER_API_TOKEN` value. Tap the newly added **Test LoRA Trainer Endpoint** button. The test verifies the URL, token, CUDA availability, ANIMA training files, and training script. Keep the trainer Pod running during a training job. Stop it when not in use to stop GPU charges; LoRA training will be unavailable until it is started again.
-6. **Train and use the LoRA.** The trainer installs completed LoRAs into the shared volume at `/workspace/models/loras`, which the inference endpoint sees as `/runpod-volume/models/loras`. If a new LoRA is not found by a warm ComfyUI worker, restart/recycle that worker so it rescans its model folder. The app also downloads the finished LoRA to its Documents folder for export.
-
-The GitHub Actions workflow builds and publishes both container images without requiring registry passwords; the resulting GitHub Packages may need their visibility switched to public once. The RunPod console/API key and provider account are still required to create billed GPU resources and connect those endpoint credentials. I cannot deploy resources or authorize GPU spending in your RunPod account from GitHub alone. Credentials entered into the iOS app are stored in iOS Keychain, not in source code or UserDefaults. GPU execution and persistent storage are billable. Keep the inference endpoint at zero minimum workers, stop the trainer Pod after use, and configure provider spending limits. GitHub Actions builds the IPA but does not provide GPU inference.
-
-## Existing upscale path
-
-After a PNG is returned, **Upscale with Real-CUGAN + Sharpie** passes the generated image URL to the existing `VideoProcessorViewModel.handleImport` and `start()` image pipeline. This uses the app's currently bundled Core ML Real-CUGAN model and existing final outline/colour pipeline. At native 2× mode, an 848×1200 generated image becomes 1696×2400. It does not claim to output 4K from an 848×1200 source.
-
-## ANIMA LoRA trainer service
-
-A deployable companion trainer API is included in cloud/anima-lora-trainer. It uses the ANIMA-specific anima_train_network.py entrypoint and implements the routes called by the app. See cloud/anima-lora-trainer/README.md to build and run it on a trusted NVIDIA GPU machine. The stock RunPod ComfyUI worker does not implement training routes. To automatically make a newly trained LoRA available to the generation worker, configure both services to access the same writable network volume and set LORA_INSTALL_DIR to the volume's loras directory.
-
-- `POST /api/anima/lora/train`: multipart fields `caption`, `trigger_word`, `rank`, `epochs`, `learning_rate`, `base_model=anima`, and repeated `images` files. Return JSON `{"job_id":"..."}`.
-- `GET /api/anima/lora/train/{job_id}`: return `{"status":"queued|running|completed|failed|cancelled","progress":0.0,"lora_url":"https://...","error":"..."}`. The completed response must include `lora_url` or `download_url`.
-
-The trainer should use the ANIMA-specific training entrypoint, not an SDXL/Pony training script: https://github.com/kohya-ss/sd-scripts/blob/main/docs/anima_train_network.md. It requires ANIMA DiT, Qwen3 text encoder, Qwen Image VAE, a dataset configuration and a CUDA GPU. Only run training on a trusted endpoint, use images you are authorized to train on, and remove uploaded datasets when no longer needed.
-
-The app and trainer code are committed, but GPU services are not hosted by GitHub Actions. Image generation requires your RunPod endpoint, installed model files and API key. LoRA training requires the companion trainer container to be deployed to a trusted GPU host with the ANIMA training models mounted.
+The app build fetches drawthingsai/draw-things-community at commit 4f288803ac898525012c0fe8d998c85bcb920b70. GitHub Actions patches its Swift package manifest only to expose the existing DrawThingsCLILib and DataModels targets as products for app integration. The vendored copy is generated during CI and is not bundled as model weights in the IPA.
