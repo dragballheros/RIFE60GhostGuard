@@ -248,7 +248,11 @@ jobs:
       - name: Generate Xcode project
         run: xcodegen generate
       - name: Resolve packages
-        run: xcodebuild -resolvePackageDependencies -project RIFE60GhostGuard.xcodeproj -scheme RIFE60GhostGuard
+        run: xcodebuild -resolvePackageDependencies -derivedDataPath build -project RIFE60GhostGuard.xcodeproj -scheme RIFE60GhostGuard
+      - name: Verify resolved Core ML compatibility source
+        run: |
+          set -euo pipefail
+          test -f build/SourcePackages/checkouts/ccv/lib/nnc/mfa/ccv_nnc_mfa_ane_rowwise_coreml.mm
       - name: Patch optional Core ML Int8 ANE path for Xcode 16.4
         run: |
           set -euo pipefail

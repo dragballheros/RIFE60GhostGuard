@@ -39,7 +39,7 @@ struct AIImageStudioView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var settings = AIImageStudioSettings.load()
     @State private var activeTab = "Generate"
-    @State private var modelProfile = UserDefaults.standard.string(forKey: "RIFE60.AIImageStudio.SelectedProfile") ?? "Turbo-ANIMA"
+    @State private var modelProfile = "Animagine XL v3.1 (Local)"
     @State private var didRestoreDraft = false
 
     @State private var positivePrompt = """
@@ -134,7 +134,7 @@ worst quality, bad quality, low quality, lowres, scan artifacts, jpeg artifacts,
         Group {
             Section("Generation Preset") {
                 Picker("Model profile", selection: $modelProfile) {
-                    Text("On-device Anime (Animagine XL)").tag("Turbo-ANIMA")
+                    Text("Animagine XL v3.1 (Local)").tag("Animagine XL v3.1 (Local)")
                 }
                 .onChange(of: modelProfile) { profile in applyModelProfile(profile) }
                 Text("Animagine XL v3.1 runs locally on the iPhone GPU/Metal. The first generation downloads the model and required files; allow several GB of free storage.")
@@ -312,7 +312,7 @@ worst quality, bad quality, low quality, lowres, scan artifacts, jpeg artifacts,
     }
 
     private func applyModelProfile(_ profile: String) {
-        modelProfile = "Turbo-ANIMA"
+        modelProfile = "Animagine XL v3.1 (Local)"
         UserDefaults.standard.set(modelProfile, forKey: "RIFE60.AIImageStudio.SelectedProfile")
         settings.localModelID = OnDeviceImageGenerator.defaultModelID
         errorText = ""
@@ -338,10 +338,10 @@ worst quality, bad quality, low quality, lowres, scan artifacts, jpeg artifacts,
         didRestoreDraft = true
         guard let data = UserDefaults.standard.data(forKey: AIImageStudioDraft.key),
               let draft = try? JSONDecoder().decode(AIImageStudioDraft.self, from: data) else {
-            applyModelProfile("Turbo-ANIMA")
+            applyModelProfile("Animagine XL v3.1 (Local)")
             return
         }
-        modelProfile = "Turbo-ANIMA"
+        modelProfile = "Animagine XL v3.1 (Local)"
         positivePrompt = draft.positivePrompt
         negativePrompt = draft.negativePrompt
         // Migrate the old remote ANIMA/Illustrious controls to valid local SDXL defaults.
@@ -401,7 +401,6 @@ worst quality, bad quality, low quality, lowres, scan artifacts, jpeg artifacts,
         }
         UserDefaults.standard.set(modelProfile, forKey: "RIFE60.AIImageStudio.SelectedProfile")
         try? settings.save()
-        saveGenerationDraft()
     }
 
     private func saveSettings() {
