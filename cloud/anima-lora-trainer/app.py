@@ -133,6 +133,7 @@ def run_training(job_id: str, options: dict[str, Any]) -> None:
             "--gradient_checkpointing",
             "--cache_latents",
             "--cache_text_encoder_outputs",
+            "--network_train_unet_only",
             "--vae_chunk_size=64",
             "--vae_disable_cache",
             "--max_data_loader_n_workers=2",

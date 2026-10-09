@@ -270,16 +270,16 @@ enum AIImageStudioClient {
                     "clip_name": settings.textEncoderName, "type": "stable_diffusion", "device": "default"
                 ]],
                 "3": ["class_type": "VAELoader", "inputs": ["vae_name": settings.vaeName]],
-                "4": ["class_type": "LoraLoader", "inputs": [
-                    "model": ["1", 0], "clip": ["2", 0],
+                "4": ["class_type": "LoraLoaderModelOnly", "inputs": [
+                    "model": ["1", 0],
                     "lora_name": settings.turboLoraName,
-                    "strength_model": turboWeight, "strength_clip": turboWeight
+                    "strength_model": turboWeight
                 ]],
                 "6": ["class_type": "CLIPTextEncode", "inputs": [
-                    "clip": ["4", 1], "text": positivePrompt
+                    "clip": ["2", 0], "text": positivePrompt
                 ]],
                 "7": ["class_type": "CLIPTextEncode", "inputs": [
-                    "clip": ["4", 1], "text": negativePrompt
+                    "clip": ["2", 0], "text": negativePrompt
                 ]],
                 "8": ["class_type": "EmptyLatentImage", "inputs": [
                     "width": width, "height": height, "batch_size": 1
@@ -301,10 +301,10 @@ enum AIImageStudioClient {
             decodedLink = ["12", 0]
             modelLink = ["10", 0]
             if enableCharacterLora && characterWeight > 0 {
-                graph["5"] = ["class_type": "LoraLoader", "inputs": [
-                    "model": ["4", 0], "clip": ["4", 1],
+                graph["5"] = ["class_type": "LoraLoaderModelOnly", "inputs": [
+                    "model": ["4", 0],
                     "lora_name": settings.characterLoraName,
-                    "strength_model": characterWeight, "strength_clip": characterWeight
+                    "strength_model": characterWeight
                 ]]
                 graph["6"] = ["class_type": "CLIPTextEncode", "inputs": [
                     "clip": ["5", 1], "text": positivePrompt

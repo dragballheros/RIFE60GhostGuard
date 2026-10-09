@@ -41,7 +41,7 @@ worst quality, bad quality, low quality, lowres, scan artifacts, jpeg artifacts,
     @State private var randomSeed = false
     @State private var turboWeight = 1.0
     @State private var characterWeight = 0.7
-    @State private var enableCharacterLora = true
+    @State private var enableCharacterLora = false
     @State private var isGenerating = false
     @State private var generationStatus = ""
     @State private var errorText = ""
@@ -392,7 +392,7 @@ bad anatomy, bad hands, morbid, deformed, disfigured, mutilated, malformed, miss
             randomSeed = false
             turboWeight = 0
             characterWeight = 0.8
-            enableCharacterLora = true
+            enableCharacterLora = false
             hiresEnabled = true
             hiresScale = 2
             hiresSteps = 20
@@ -425,7 +425,7 @@ worst quality, bad quality, low quality, lowres, scan artifacts, jpeg artifacts,
             randomSeed = false
             turboWeight = 1
             characterWeight = 0.7
-            enableCharacterLora = true
+            enableCharacterLora = false
             hiresEnabled = false
             hiresScale = 2
             hiresSteps = 20
