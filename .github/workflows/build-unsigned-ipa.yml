@@ -247,6 +247,18 @@ jobs:
 
       - name: Generate Xcode project
         run: xcodegen generate
+      - name: Cache Xcode and Swift package build outputs
+        uses: actions/cache@v4
+        with:
+          path: |
+            build/SourcePackages
+            build/Build/Intermediates.noindex
+            build/ModuleCache.noindex
+            build/SDKStatCaches.noindex
+          key: macos-15-xcode16.4-drawthings-${{ hashFiles('project.yml', 'Vendor/draw-things-community/Package.swift', 'Vendor/rife-metal/Package.swift') }}
+          restore-keys: |
+            macos-15-xcode16.4-drawthings-
+
       - name: Resolve packages
         run: xcodebuild -resolvePackageDependencies -derivedDataPath build -project RIFE60GhostGuard.xcodeproj -scheme RIFE60GhostGuard
       - name: Verify resolved Core ML compatibility source
@@ -360,7 +372,7 @@ jobs:
       - name: Build unsigned app
         run: |
           set -o pipefail
-          xcodebuild -project RIFE60GhostGuard.xcodeproj -scheme RIFE60GhostGuard -configuration Release -sdk iphoneos -destination 'generic/platform=iOS' -derivedDataPath build CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY='' build | tee xcodebuild.log
+          xcodebuild -project RIFE60GhostGuard.xcodeproj -scheme RIFE60GhostGuard -configuration Release -sdk iphoneos -destination 'generic/platform=iOS' -derivedDataPath build -jobs 4 SWIFT_COMPILATION_MODE=incremental CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY='' build | tee xcodebuild.log
 
       - name: Create verified IPA
         run: |
