@@ -497,10 +497,13 @@ enum AIImageStudioClient {
         return try checkedJSONObject(data: data, response: response, context: "check LoRA training status")
     }
 
-    static func downloadFile(from urlText: String, token: String = "") async throws -> URL {
+    static func downloadFile(from urlText: String, settings: AIImageStudioSettings, token: String = "") async throws -> URL {
         guard let url = URL(string: urlText) else { throw AIImageStudioError("Trainer returned an invalid LoRA download URL.") }
         var request = URLRequest(url: url)
-        if !token.isEmpty { request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
+        let trustedTrainerHost = URL(string: settings.trainerBaseURL)?.host?.lowercased()
+        if !token.isEmpty, url.scheme?.lowercased() == "https", url.host?.lowercased() == trustedTrainerHost {
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
         let (data, response) = try await URLSession.shared.data(for: request)
         guard (response as? HTTPURLResponse).map({ (200..<300).contains($0.statusCode) }) == true else {
             throw AIImageStudioError("Could not download the trained LoRA.")

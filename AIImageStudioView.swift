@@ -544,6 +544,8 @@ worst quality, bad quality, low quality, lowres, scan artifacts, jpeg artifacts,
             UserDefaults.standard.set(data, forKey: AIImageStudioDraft.key)
         }
         UserDefaults.standard.set(modelProfile, forKey: "RIFE60.AIImageStudio.SelectedProfile")
+        try? settings.save()
+        saveGenerationDraft()
     }
 
     private func testGenerationEndpoint() async {
@@ -697,7 +699,7 @@ worst quality, bad quality, low quality, lowres, scan artifacts, jpeg artifacts,
                     guard let downloadURL = state["lora_url"] as? String ?? state["download_url"] as? String else {
                         throw AIImageStudioError("Training completed but the service did not return lora_url or download_url.")
                     }
-                    trainedLoRAURL = try await AIImageStudioClient.downloadFile(from: downloadURL, token: trainerToken)
+                    trainedLoRAURL = try await AIImageStudioClient.downloadFile(from: downloadURL, settings: settings, token: trainerToken)
                     trainerProgress = 1
                     trainingStatus = "LoRA training complete and file downloaded."
                     return

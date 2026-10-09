@@ -9,7 +9,7 @@ Use a RunPod Serverless endpoint running the official RunPod ComfyUI worker or a
 - https://github.com/runpod-workers/worker-comfyui
 - RunPod deployment guide: https://www.runpod.io/blog/deploy-comfyui-as-a-serverless-api-endpoint
 
-The app calls the endpoint's `/run` and `/status/{job_id}` routes and sends a ComfyUI API-format workflow in `input.workflow`. The worker must return image output as `output.images[].data` (base64 PNG) or `output.images[].url`.
+The app calls the endpoint's `/run` and `/status/{job_id}` routes and sends a ComfyUI API-format workflow in `input.workflow`. The official RunPod ComfyUI worker returns generated PNGs in `output.images[]`, normally as base64 data or as a URL when S3 output is configured. Use the **Test GPU Endpoint** button in AI Image Studio > Settings to verify endpoint reachability. This test does not validate every installed model file.
 
 The app now includes two distinct profile-specific workflows. Install all model files in the corresponding ComfyUI model folders:
 
@@ -24,7 +24,7 @@ For **WAI Illustrious v1.3**, install:
 - `models/checkpoints/waiNSFWIllustrious_v130.safetensors` (SDXL checkpoint, 6.94 GB; a public copy has fingerprint prefix `a810e710a2`: https://huggingface.co/elski/models-moved/blob/main/waiNSFWIllustrious_v130.safetensors)
 - `models/vae/sdxl.vae.safetensors`
 - `models/loras/のなかゆき.safetensors` (the second PNG identifies this LoRA at weight 0.8; hash `dffb5926186c` is not independently verified)
-- `models/upscale_models/RealESRGAN_x4plus_anime_6B.pth
+- `models/upscale_models/RealESRGAN_x4plus_anime_6B.pth`
 
 These names are configurable in the app. The checkpoint and the exact character LoRA require verification before their compatibility can be guaranteed. The character LoRA hash from the source PNG is `160fca5c6aae`, and remains unresolved. If the worker reports a missing model, install the correct file or disable the optional character LoRA. The ANIMA workflow uses `UNETLoader`, `CLIPLoader`, `VAELoader`, `LoraLoader` and `ModelSamplingAuraFlow`. WAI Illustrious uses the SDXL `CheckpointLoaderSimple` path, optional `CLIPSetLastLayer` for CLIP skip, and an external VAE and LoRA. Both profiles can run a high-resolution second pass using `UpscaleModelLoader`, `ImageUpscaleWithModel`, `ImageScale`, `VAEEncode`, `KSampler`, and `VAEDecode`. All required nodes and model files must be installed on the remote worker.
 
@@ -32,7 +32,7 @@ The Turbo-ANIMA profile recovers the first PNG's settings. The **WAI Illustrious
 
 ### Costs and credentials
 
-Create your own RunPod endpoint and API key. Add the endpoint ID and key in AI Image Studio > Settings. Credentials are stored in iOS Keychain, not in UserDefaults or source code. Serverless GPU execution is billable; configure scale-to-zero and usage limits on the provider side. GitHub Actions builds the IPA but does not provide GPU inference.
+Create a RunPod account, deploy a Serverless endpoint with the official ComfyUI worker, attach persistent model storage, and install the model files above. Paste the endpoint ID and API key in AI Image Studio > Settings and tap Test GPU Endpoint. Credentials are stored in iOS Keychain, not in UserDefaults or source code. Serverless GPU execution is billable; configure scale-to-zero and spending limits on the provider side. GitHub Actions builds the IPA but does not provide GPU inference.
 
 ## Existing upscale path
 
@@ -47,4 +47,4 @@ A deployable companion trainer API is included in cloud/anima-lora-trainer. It u
 
 The trainer should use the ANIMA-specific training entrypoint, not an SDXL/Pony training script: https://github.com/kohya-ss/sd-scripts/blob/main/docs/anima_train_network.md. It requires ANIMA DiT, Qwen3 text encoder, Qwen Image VAE, a dataset configuration and a CUDA GPU. Only run training on a trusted endpoint, use images you are authorized to train on, and remove uploaded datasets when no longer needed.
 
-This repository does not provision a paid GPU endpoint or trainer automatically, and this guide does not claim that either endpoint has been deployed. The iOS client now has the two model-family workflows and the WAI Illustrious two-stage hires graph. A GPU endpoint and compatible model files still must be provisioned before generation can run. The code in this repository does not create a RunPod account, endpoint, or API key on your behalf.
+The app and trainer code are committed, but GPU services are not hosted by GitHub Actions. Image generation requires your RunPod endpoint, installed model files and API key. LoRA training requires the companion trainer container to be deployed to a trusted GPU host with the ANIMA training models mounted.
