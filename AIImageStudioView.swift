@@ -700,8 +700,19 @@ worst quality, bad quality, low quality, lowres, scan artifacts, jpeg artifacts,
                         throw AIImageStudioError("Training completed but the service did not return lora_url or download_url.")
                     }
                     trainedLoRAURL = try await AIImageStudioClient.downloadFile(from: downloadURL, settings: settings, token: trainerToken)
+                    if modelProfile == "Turbo-ANIMA", let installedName = state["installed_filename"] as? String, !installedName.isEmpty {
+                        settings.characterLoraName = installedName
+                        enableCharacterLora = true
+                        try settings.save()
+                        saveGenerationDraft()
+                        trainingStatus = "LoRA training complete. Installed as \\(installedName) and selected for the ANIMA profile."
+                    } else if let installedName = state["installed_filename"] as? String, !installedName.isEmpty {
+                        trainingStatus = "Training complete. \\(installedName) is installed in the shared model folder. Switch to Turbo-ANIMA to select it."
+                    } else {
+                        let installError = state["install_error"] as? String
+                        trainingStatus = installError ?? "Training finished. The LoRA was downloaded to this app, but it was not installed in the generation worker's model folder. Configure LORA_INSTALL_DIR on the trainer and share that folder with the generation worker, or manually upload the LoRA."
+                    }
                     trainerProgress = 1
-                    trainingStatus = "LoRA training complete and file downloaded."
                     return
                 }
             }

@@ -13,11 +13,21 @@ The app calls the endpoint's `/run` and `/status/{job_id}` routes and sends a Co
 
 The app now includes two distinct profile-specific workflows. Install all model files in the corresponding ComfyUI model folders:
 
+For a normal ComfyUI install, the ANIMA profile uses:
 - `models/diffusion_models/screenChantvMerge_v20.safetensors`
 - `models/text_encoders/qwen_3_06b_base.safetensors`
 - `models/vae/qwen_image_vae.safetensors`
 - `models/loras/Turbo-ANIMA-v2.9.safetensors`
 - Optional character LoRA: `models/loras/Ichinose_Chizuru.safetensors`
+
+For the **official RunPod ComfyUI worker's Network Volume mapping**, the same ANIMA files should be placed under:
+- `/runpod-volume/models/unet/screenChantvMerge_v20.safetensors`
+- `/runpod-volume/models/clip/qwen_3_06b_base.safetensors`
+- `/runpod-volume/models/vae/qwen_image_vae.safetensors`
+- `/runpod-volume/models/loras/Turbo-ANIMA-v2.9.safetensors`
+- Optional: `/runpod-volume/models/loras/Ichinose_Chizuru.safetensors`
+
+RunPod's worker maps its `UNETLoader` files to `models/unet` and CLIP/text-encoder files to `models/clip`, which differs from a standard local ComfyUI directory layout. See [the official worker model-path mapping](https://github.com/runpod-workers/worker-comfyui/blob/main/src/extra_model_paths.yaml).
 
 For **WAI Illustrious v1.3**, install:
 
@@ -25,6 +35,8 @@ For **WAI Illustrious v1.3**, install:
 - `models/vae/sdxl.vae.safetensors`
 - `models/loras/のなかゆき.safetensors` (the second PNG identifies this LoRA at weight 0.8; hash `dffb5926186c` is not independently verified)
 - `models/upscale_models/RealESRGAN_x4plus_anime_6B.pth`
+
+On the official RunPod Network Volume these paths map to `/runpod-volume/models/checkpoints`, `/runpod-volume/models/vae`, `/runpod-volume/models/loras`, and `/runpod-volume/models/upscale_models`, respectively.
 
 These names are configurable in the app. The checkpoint and the exact character LoRA require verification before their compatibility can be guaranteed. The character LoRA hash from the source PNG is `160fca5c6aae`, and remains unresolved. If the worker reports a missing model, install the correct file or disable the optional character LoRA. The ANIMA workflow uses `UNETLoader`, `CLIPLoader`, `VAELoader`, `LoraLoader` and `ModelSamplingAuraFlow`. WAI Illustrious uses the SDXL `CheckpointLoaderSimple` path, optional `CLIPSetLastLayer` for CLIP skip, and an external VAE and LoRA. Both profiles can run a high-resolution second pass using `UpscaleModelLoader`, `ImageUpscaleWithModel`, `ImageScale`, `VAEEncode`, `KSampler`, and `VAEDecode`. All required nodes and model files must be installed on the remote worker.
 
@@ -40,7 +52,7 @@ After a PNG is returned, **Upscale with Real-CUGAN + Sharpie** passes the genera
 
 ## ANIMA LoRA trainer service
 
-A deployable companion trainer API is included in cloud/anima-lora-trainer. It uses the ANIMA-specific anima_train_network.py entrypoint and implements the routes called by the app. See cloud/anima-lora-trainer/README.md to build and run it on a trusted NVIDIA GPU machine. The stock RunPod ComfyUI worker does not implement training routes.
+A deployable companion trainer API is included in cloud/anima-lora-trainer. It uses the ANIMA-specific anima_train_network.py entrypoint and implements the routes called by the app. See cloud/anima-lora-trainer/README.md to build and run it on a trusted NVIDIA GPU machine. The stock RunPod ComfyUI worker does not implement training routes. To automatically make a newly trained LoRA available to the generation worker, configure both services to access the same writable network volume and set LORA_INSTALL_DIR to the volume's loras directory.
 
 - `POST /api/anima/lora/train`: multipart fields `caption`, `trigger_word`, `rank`, `epochs`, `learning_rate`, `base_model=anima`, and repeated `images` files. Return JSON `{"job_id":"..."}`.
 - `GET /api/anima/lora/train/{job_id}`: return `{"status":"queued|running|completed|failed|cancelled","progress":0.0,"lora_url":"https://...","error":"..."}`. The completed response must include `lora_url` or `download_url`.

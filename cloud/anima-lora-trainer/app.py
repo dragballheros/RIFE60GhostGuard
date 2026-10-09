@@ -22,6 +22,7 @@ SD_SCRIPTS_ROOT = Path(os.environ.get("SD_SCRIPTS_ROOT", "/opt/sd-scripts"))
 ANIMA_DIT = Path(os.environ.get("ANIMA_DIT_PATH", str(MODEL_ROOT / "anima-base-v1.0.safetensors")))
 QWEN3 = Path(os.environ.get("QWEN3_PATH", str(MODEL_ROOT / "qwen_3_06b_base.safetensors")))
 ANIMA_VAE = Path(os.environ.get("ANIMA_VAE_PATH", str(MODEL_ROOT / "qwen_image_vae.safetensors")))
+LORA_INSTALL_DIR = os.environ.get("LORA_INSTALL_DIR", "").strip()
 TRAINER_API_TOKEN = os.environ.get("TRAINER_API_TOKEN", "")
 MAX_IMAGES = int(os.environ.get("MAX_TRAINING_IMAGES", "40"))
 MAX_DATASET_BYTES = int(os.environ.get("MAX_TRAINING_BYTES", str(180 * 1024 * 1024)))
@@ -182,11 +183,24 @@ def run_training(job_id: str, options: dict[str, Any]) -> None:
             if not candidates:
                 state.update(status="failed", error="Training exited successfully but produced no .safetensors file.")
             else:
+                installed_filename = None
+                install_error = None
+                if LORA_INSTALL_DIR:
+                    try:
+                        install_dir = Path(LORA_INSTALL_DIR)
+                        install_dir.mkdir(parents=True, exist_ok=True)
+                        installed_path = install_dir / candidates[0].name
+                        shutil.copy2(candidates[0], installed_path)
+                        installed_filename = installed_path.name
+                    except OSError as exc:
+                        install_error = f"LoRA finished but could not be installed to the shared model directory: {exc}"
                 state.update(
                     status="completed",
                     progress=1.0,
                     message="Training finished.",
                     output_filename=candidates[0].name,
+                    installed_filename=installed_filename,
+                    install_error=install_error,
                 )
         write_state(job_id, state)
     except Exception as exc:
@@ -302,6 +316,8 @@ def training_status(
         "progress": state.get("progress", 0.0),
         "message": state.get("message", ""),
         "error": state.get("error"),
+        "installed_filename": state.get("installed_filename"),
+        "install_error": state.get("install_error"),
     }
     if response["status"] == "completed":
         response["lora_url"] = str(request.base_url).rstrip("/") + f"/api/anima/lora/train/{job_id}/download"

@@ -28,10 +28,13 @@ docker run -d --name rife60-anima-lora-trainer --gpus all \
   -v /path/to/anima-models:/models:ro \
   -v rife60-anima-jobs:/workspace/rife60-anima-jobs \
   -e TRAINER_API_TOKEN='replace-with-a-long-random-secret' \
+  -e LORA_INSTALL_DIR='/runpod-volume/models/loras' \
   rife60-anima-lora-trainer
 ```
 
 Set AI Image Studio > Settings > LoRA Trainer Endpoint to the service's HTTPS URL and paste the same token. Do not expose the port directly to the public internet without HTTPS/reverse proxy, firewalling and a unique token. The app uploads the selected images to this server.
+
+If the trainer and generation worker share the same writable RunPod Network Volume, set `LORA_INSTALL_DIR` to the shared folder that the worker maps as `models/loras` (for the official RunPod ComfyUI worker, `/runpod-volume/models/loras`). The API will copy the finished LoRA into that directory and return `installed_filename`; the app can then select it automatically for Turbo-ANIMA. If they do not share a volume, leave this unset and manually upload the downloaded LoRA into the generation worker's LoRA folder.
 
 ## API contract
 
