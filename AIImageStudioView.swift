@@ -383,7 +383,9 @@ worst quality, bad quality, low quality, lowres, scan artifacts, jpeg artifacts,
                 Text("This is a separate training API, not the RunPod ComfyUI endpoint. It must implement POST /api/anima/lora/train and GET /api/anima/lora/train/{job_id}; the response contract is described in the setup guide.")
                     .font(.caption).foregroundStyle(.secondary)
             }
-            Section("Model Downloads and Compatibility") {
+            Section("Setup and Model Downloads") {
+                Link("RunPod setup and model installation guide", destination: URL(string: "https://github.com/dragballheros/RIFE60GhostGuard/blob/main/AI_IMAGE_STUDIO_SETUP.md")!)
+                Link("RunPod model installer script", destination: URL(string: "https://raw.githubusercontent.com/dragballheros/RIFE60GhostGuard/main/cloud/comfyui-models/install-runpod-models.sh")!)
                 Link("Official ANIMA model files", destination: URL(string: "https://huggingface.co/circlestone-labs/Anima")!)
                 Link("Turbo-ANIMA-v2.9 model page", destination: URL(string: "https://civarchive.com/models/2619830?modelVersionId=3139645")!)
                 Link("LoRA training documentation", destination: URL(string: "https://github.com/kohya-ss/sd-scripts/blob/main/docs/anima_train_network.md")!)
