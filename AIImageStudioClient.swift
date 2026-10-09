@@ -29,6 +29,6 @@ struct AIImageStudioError: LocalizedError {
 
 struct LocalTrainingImage {
     let filename: String
-    let data: Data
+    let sourceURL: URL
     let caption: String
 }

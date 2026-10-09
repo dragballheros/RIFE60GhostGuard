@@ -201,7 +201,7 @@ enum OnDeviceLoRATrainer {
         for (index, image) in images.enumerated() {
             try Task.checkCancellation()
             let imageName = "training_\(index + 1).png"
-            try image.data.write(to: datasetDirectory.appendingPathComponent(imageName), options: .atomic)
+            try FileManager.default.copyItem(at: image.sourceURL, to: datasetDirectory.appendingPathComponent(imageName))
             let caption = ([triggerWord, image.caption]
                 .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty })
                 .joined(separator: ", ")

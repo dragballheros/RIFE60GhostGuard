@@ -1,4 +1,9 @@
 name: Build Unsigned IPA
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 # Rebuild trigger after reverting mobile compression restoration
 # Color Pop skin-state preservation fix build trigger
 # Pause-only checkpoint baseline build

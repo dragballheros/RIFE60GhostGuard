@@ -338,7 +338,7 @@ worst quality, bad quality, low quality, lowres, scan artifacts, jpeg artifacts,
         didRestoreDraft = true
         guard let data = UserDefaults.standard.data(forKey: AIImageStudioDraft.key),
               let draft = try? JSONDecoder().decode(AIImageStudioDraft.self, from: data) else {
-            if modelProfile == "WAI Illustrious v1.3" { applyModelProfile(modelProfile) }
+            applyModelProfile("Turbo-ANIMA")
             return
         }
         modelProfile = "Turbo-ANIMA"
@@ -452,7 +452,7 @@ worst quality, bad quality, low quality, lowres, scan artifacts, jpeg artifacts,
                 progress: { generationStatus = $0 }
             )
             guard let image = UIImage(data: data) else {
-                throw AIImageStudioError("The endpoint returned data that could not be decoded as an image.")
+                throw AIImageStudioError("The local engine returned data that could not be decoded as an image.")
             }
             let url = FileManager.default.temporaryDirectory.appendingPathComponent("RIFE60_AI_\(UUID().uuidString).png")
             // Save the local PNG for sharing, Photos, and local upscaling.
@@ -490,17 +490,25 @@ worst quality, bad quality, low quality, lowres, scan artifacts, jpeg artifacts,
         trainedLoRAURL = nil
         defer { isTraining = false }
         do {
+            let stagingDirectory = FileManager.default.temporaryDirectory
+                .appendingPathComponent("RIFE60-LoRA-Input-\(UUID().uuidString)", isDirectory: true)
+            try FileManager.default.createDirectory(at: stagingDirectory, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: stagingDirectory) }
+
             var images: [LocalTrainingImage] = []
             for (index, item) in trainingItems.enumerated() {
-                trainingStatus = "Reading image \(index + 1) of \(trainingItems.count)…"
+                trainingStatus = "Staging image \(index + 1) of \(trainingItems.count)…"
                 guard let source = try await item.loadTransferable(type: Data.self),
                       let image = UIImage(data: source),
                       let png = image.pngData() else {
                     throw AIImageStudioError("Could not decode training image \(index + 1).")
                 }
+                let filename = "training_\(index + 1).png"
+                let sourceURL = stagingDirectory.appendingPathComponent(filename)
+                try png.write(to: sourceURL, options: .atomic)
                 images.append(LocalTrainingImage(
-                    filename: "training_\(index + 1).png",
-                    data: png,
+                    filename: filename,
+                    sourceURL: sourceURL,
                     caption: trainingCaption
                 ))
                 trainerProgress = Double(index + 1) / Double(trainingItems.count) * 0.1
