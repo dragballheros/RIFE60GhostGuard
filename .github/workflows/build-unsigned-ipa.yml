@@ -258,8 +258,14 @@ jobs:
           set -euo pipefail
           python3 - <<'PY'
           from pathlib import Path
+          import stat
 
           path = Path("build/SourcePackages/checkouts/ccv/lib/nnc/mfa/ccv_nnc_mfa_ane_rowwise_coreml.mm")
+          if not path.is_file():
+              raise SystemExit(f"Resolved ccv Core ML source was not found: {path}")
+          # SwiftPM may mark immutable checkout files read-only. This is a generated
+          # runner-local checkout, so grant the current runner user write access before patching.
+          path.chmod(path.stat().st_mode | stat.S_IWUSR)
           source = path.read_text()
           marker = "#import <Metal/Metal.h>\n"
           if source.count(marker) != 1:
