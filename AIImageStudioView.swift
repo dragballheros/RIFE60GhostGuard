@@ -274,7 +274,7 @@ worst quality, bad quality, low quality, lowres, scan artifacts, jpeg artifacts,
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 if let url = trainedLoRAURL {
-                    ShareLink(item: url) { Label("Export trained .safetensors", systemImage: "square.and.arrow.down") }
+                    ShareLink(item: url) { Label("Export trained local LoRA checkpoint", systemImage: "square.and.arrow.down") }
                 }
             }
         }
