@@ -41,7 +41,7 @@ For the **official RunPod ComfyUI worker's Network Volume mapping**, the same AN
 - `/runpod-volume/models/loras/Turbo-ANIMA-v2.9.safetensors`
 - Optional: `/runpod-volume/models/loras/Ichinose_Chizuru.safetensors`
 
-RunPod's worker maps its `UNETLoader` files to `models/unet` and CLIP/text-encoder files to `models/clip`, which differs from a standard local ComfyUI directory layout. See [the official worker model-path mapping](https://github.com/runpod-workers/worker-comfyui/blob/main/src/extra_model_paths.yaml).
+The official worker's default volume mapping still focuses on legacy `unet` and `clip` folders, while the current ComfyUI `UNETLoader` and `CLIPLoader` nodes look under `diffusion_models` and `text_encoders`. This repository's `Publish RunPod GPU Images` workflow builds a custom worker image with those additional mappings. Use that custom image rather than the stock worker image for the profiles below. See [the official worker's default model-path mapping](https://github.com/runpod-workers/worker-comfyui/blob/main/src/extra_model_paths.yaml) and [current ComfyUI loader implementation](https://github.com/Comfy-Org/ComfyUI/blob/master/nodes.py).
 
 For **WAI Illustrious v1.3**, install:
 
