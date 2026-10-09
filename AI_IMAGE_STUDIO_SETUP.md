@@ -11,7 +11,7 @@ Use a RunPod Serverless endpoint running the official RunPod ComfyUI worker or a
 
 The app calls the endpoint's `/run` and `/status/{job_id}` routes and sends a ComfyUI API-format workflow in `input.workflow`. The worker must return image output as `output.images[].data` (base64 PNG) or `output.images[].url`.
 
-The generated workflow expects these ComfyUI model files in the corresponding folders:
+The app now includes two distinct profile-specific workflows. Install all model files in the corresponding ComfyUI model folders:
 
 - `models/diffusion_models/screenChantvMerge_v20.safetensors`
 - `models/text_encoders/qwen_3_06b_base.safetensors`
@@ -19,9 +19,16 @@ The generated workflow expects these ComfyUI model files in the corresponding fo
 - `models/loras/Turbo-ANIMA-v2.9.safetensors`
 - Optional character LoRA: `models/loras/Ichinose_Chizuru.safetensors`
 
-These names are configurable in the app. The checkpoint and the exact character LoRA require verification before their compatibility can be guaranteed. The character LoRA hash from the source PNG is `160fca5c6aae`, and remains unresolved. If the worker reports a missing model, install the correct file or disable the optional character LoRA. The ANIMA workflow uses a ComfyUI `UNETLoader`, `CLIPLoader`, `VAELoader`, `LoraLoader`, `ModelSamplingAuraFlow`, `KSampler`, `VAEDecode` and `SaveImage` graph; the selected checkpoint must support those nodes and model types.
+For **WAI Illustrious v1.3**, install:
 
-The prefilled generation values recover the supplied PNG's settings: positive/negative prompts, Euler a (ComfyUI `euler_ancestral`), Normal scheduler, 8 steps, CFG 1, shift 3, seed 1647498191, 848×1200 output, Turbo LoRA 1.0 and character LoRA 0.7. The stored PNG was 848×1200 while its generation metadata said 850×1200, so the UI defaults to the actual saved dimensions.
+- `models/checkpoints/waiNSFWIllustrious_v130.safetensors` (SDXL checkpoint)
+- `models/vae/sdxl.vae.safetensors`
+- `models/loras/のなかゆき.safetensors` (the second PNG identifies this LoRA at weight 0.8; hash `dffb5926186c` is not independently verified)
+- `models/upscale_models/RealESRGAN_x4plus_anime_6B.pth
+
+These names are configurable in the app. The checkpoint and the exact character LoRA require verification before their compatibility can be guaranteed. The character LoRA hash from the source PNG is `160fca5c6aae`, and remains unresolved. If the worker reports a missing model, install the correct file or disable the optional character LoRA. The ANIMA workflow uses `UNETLoader`, `CLIPLoader`, `VAELoader`, `LoraLoader` and `ModelSamplingAuraFlow`. WAI Illustrious uses the SDXL `CheckpointLoaderSimple` path, optional `CLIPSetLastLayer` for CLIP skip, and an external VAE and LoRA. Both profiles can run a high-resolution second pass using `UpscaleModelLoader`, `ImageUpscaleWithModel`, `ImageScale`, `VAEEncode`, `KSampler`, and `VAEDecode`. All required nodes and model files must be installed on the remote worker.
+
+The Turbo-ANIMA profile recovers the first PNG's settings. The **WAI Illustrious v1.3** profile uses the second PNG's settings: checkpoint `waiNSFWIllustrious_v130`, LoRA `のなかゆき` at 0.8, Euler a, Automatic schedule (mapped to ComfyUI's `normal` scheduler), 30 steps, CFG 7, seed 624067427, base 896×1344, CLIP skip 2, ESRGAN Anime6B 2× high-resolution pass, 20 hires steps, and 0.5 denoise. ENSD and token-merging values are displayed for reference but are not applied by stock ComfyUI without compatible custom nodes. The Turbo-ANIMA profile recovers the supplied PNG's settings: positive/negative prompts, Euler a (ComfyUI `euler_ancestral`), Normal scheduler, 8 steps, CFG 1, shift 3, seed 1647498191, 848×1200 output, Turbo LoRA 1.0 and character LoRA 0.7. The stored PNG was 848×1200 while its generation metadata said 850×1200, so the UI defaults to the actual saved dimensions.
 
 ### Costs and credentials
 

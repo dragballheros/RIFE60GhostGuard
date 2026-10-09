@@ -100,6 +100,13 @@ enum AIImageStudioClient {
         turboWeight: Double,
         characterWeight: Double,
         enableCharacterLora: Bool,
+        modelFamily: String,
+        hiresEnabled: Bool,
+        hiresScale: Double,
+        hiresSteps: Int,
+        hiresDenoise: Double,
+        upscalerName: String,
+        clipSkip: Int,
         progress: (String) -> Void
     ) async throws -> Data {
         guard !settings.runPodEndpointID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
@@ -128,7 +135,14 @@ enum AIImageStudioClient {
                 seed: seed,
                 turboWeight: turboWeight,
                 characterWeight: characterWeight,
-                enableCharacterLora: enableCharacterLora
+                enableCharacterLora: enableCharacterLora,
+                modelFamily: modelFamily,
+                hiresEnabled: hiresEnabled,
+                hiresScale: hiresScale,
+                hiresSteps: hiresSteps,
+                hiresDenoise: hiresDenoise,
+                upscalerName: upscalerName,
+                clipSkip: clipSkip
             )]
         ]
         var request = URLRequest(url: URL(string: endpoint + "/run")!)
@@ -137,7 +151,7 @@ enum AIImageStudioClient {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONSerialization.data(withJSONObject: requestBody)
 
-        progress("Submitting ANIMA workflow to the GPU endpoint…")
+        progress("Submitting \(modelFamily == "sdxl" ? "WAI Illustrious" : "ANIMA") workflow to the GPU endpoint…")
         let (initialData, initialResponse) = try await URLSession.shared.data(for: request)
         let initial = try checkedJSONObject(data: initialData, response: initialResponse, context: "submit generation")
         guard let jobID = initial["id"] as? String else {
@@ -184,64 +198,159 @@ enum AIImageStudioClient {
         seed: Int64,
         turboWeight: Double,
         characterWeight: Double,
-        enableCharacterLora: Bool
+        enableCharacterLora: Bool,
+        modelFamily: String,
+        hiresEnabled: Bool,
+        hiresScale: Double,
+        hiresSteps: Int,
+        hiresDenoise: Double,
+        upscalerName: String,
+        clipSkip: Int
     ) -> [String: Any] {
-        var graph: [String: Any] = [
-            "1": ["class_type": "UNETLoader", "inputs": [
-                "unet_name": settings.checkpointName, "weight_dtype": "default"
-            ]],
-            "2": ["class_type": "CLIPLoader", "inputs": [
-                "clip_name": settings.textEncoderName, "type": "stable_diffusion", "device": "default"
-            ]],
-            "3": ["class_type": "VAELoader", "inputs": ["vae_name": settings.vaeName]],
-            "4": ["class_type": "LoraLoader", "inputs": [
-                "model": ["1", 0], "clip": ["2", 0],
-                "lora_name": settings.turboLoraName,
-                "strength_model": turboWeight, "strength_clip": turboWeight
-            ]],
-            "6": ["class_type": "CLIPTextEncode", "inputs": [
-                "clip": ["4", 1], "text": positivePrompt
-            ]],
-            "7": ["class_type": "CLIPTextEncode", "inputs": [
-                "clip": ["4", 1], "text": negativePrompt
-            ]],
-            "8": ["class_type": "EmptyLatentImage", "inputs": [
-                "width": width, "height": height, "batch_size": 1
-            ]],
-            "10": ["class_type": "ModelSamplingAuraFlow", "inputs": [
-                "model": ["4", 0], "shift": shift
-            ]],
-            "11": ["class_type": "KSampler", "inputs": [
-                "model": ["10", 0], "positive": ["6", 0], "negative": ["7", 0],
-                "latent_image": ["8", 0], "seed": max(0, seed), "steps": steps,
-                "cfg": cfg,
+        let isSDXL = modelFamily == "sdxl"
+        var graph: [String: Any]
+        var modelLink: [Any]
+        let vaeLink: [Any]
+        let decodedLink: [Any]
+
+        if isSDXL {
+            graph = [
+                "1": ["class_type": "CheckpointLoaderSimple", "inputs": [
+                    "ckpt_name": settings.checkpointName
+                ]],
+                "2": ["class_type": "VAELoader", "inputs": ["vae_name": settings.vaeName]],
+                "4": ["class_type": "CLIPSetLastLayer", "inputs": [
+                    "clip": ["1", 1], "stop_at_clip_layer": -max(1, clipSkip)
+                ]],
+                "6": ["class_type": "CLIPTextEncode", "inputs": [
+                    "clip": ["4", 0], "text": positivePrompt
+                ]],
+                "7": ["class_type": "CLIPTextEncode", "inputs": [
+                    "clip": ["4", 0], "text": negativePrompt
+                ]],
+                "8": ["class_type": "EmptyLatentImage", "inputs": [
+                    "width": width, "height": height, "batch_size": 1
+                ]],
+                "9": ["class_type": "KSampler", "inputs": [
+                    "model": ["1", 0], "positive": ["6", 0], "negative": ["7", 0],
+                    "latent_image": ["8", 0], "seed": max(0, seed), "steps": steps,
+                    "cfg": cfg, "sampler_name": comfySamplerName(samplerName),
+                    "scheduler": comfySchedulerName(schedulerName), "denoise": 1.0
+                ]],
+                "10": ["class_type": "VAEDecode", "inputs": [
+                    "samples": ["9", 0], "vae": ["2", 0]
+                ]]
+            ]
+            vaeLink = ["2", 0]
+            decodedLink = ["10", 0]
+            modelLink = ["1", 0]
+            if enableCharacterLora && characterWeight > 0 {
+                graph["3"] = ["class_type": "LoraLoader", "inputs": [
+                    "model": ["1", 0], "clip": ["1", 1],
+                    "lora_name": settings.characterLoraName,
+                    "strength_model": characterWeight, "strength_clip": characterWeight
+                ]]
+                modelLink = ["3", 0]
+                graph["4"] = ["class_type": "CLIPSetLastLayer", "inputs": [
+                    "clip": ["3", 1], "stop_at_clip_layer": -max(1, clipSkip)
+                ]]
+                graph["9"] = ["class_type": "KSampler", "inputs": [
+                    "model": modelLink, "positive": ["6", 0], "negative": ["7", 0],
+                    "latent_image": ["8", 0], "seed": max(0, seed), "steps": steps,
+                    "cfg": cfg, "sampler_name": comfySamplerName(samplerName),
+                    "scheduler": comfySchedulerName(schedulerName), "denoise": 1.0
+                ]]
+            }
+        } else {
+            graph = [
+                "1": ["class_type": "UNETLoader", "inputs": [
+                    "unet_name": settings.checkpointName, "weight_dtype": "default"
+                ]],
+                "2": ["class_type": "CLIPLoader", "inputs": [
+                    "clip_name": settings.textEncoderName, "type": "stable_diffusion", "device": "default"
+                ]],
+                "3": ["class_type": "VAELoader", "inputs": ["vae_name": settings.vaeName]],
+                "4": ["class_type": "LoraLoader", "inputs": [
+                    "model": ["1", 0], "clip": ["2", 0],
+                    "lora_name": settings.turboLoraName,
+                    "strength_model": turboWeight, "strength_clip": turboWeight
+                ]],
+                "6": ["class_type": "CLIPTextEncode", "inputs": [
+                    "clip": ["4", 1], "text": positivePrompt
+                ]],
+                "7": ["class_type": "CLIPTextEncode", "inputs": [
+                    "clip": ["4", 1], "text": negativePrompt
+                ]],
+                "8": ["class_type": "EmptyLatentImage", "inputs": [
+                    "width": width, "height": height, "batch_size": 1
+                ]],
+                "10": ["class_type": "ModelSamplingAuraFlow", "inputs": [
+                    "model": ["4", 0], "shift": shift
+                ]],
+                "11": ["class_type": "KSampler", "inputs": [
+                    "model": ["10", 0], "positive": ["6", 0], "negative": ["7", 0],
+                    "latent_image": ["8", 0], "seed": max(0, seed), "steps": steps,
+                    "cfg": cfg, "sampler_name": comfySamplerName(samplerName),
+                    "scheduler": comfySchedulerName(schedulerName), "denoise": 1.0
+                ]],
+                "12": ["class_type": "VAEDecode", "inputs": [
+                    "samples": ["11", 0], "vae": ["3", 0]
+                ]]
+            ]
+            vaeLink = ["3", 0]
+            decodedLink = ["12", 0]
+            modelLink = ["10", 0]
+            if enableCharacterLora && characterWeight > 0 {
+                graph["5"] = ["class_type": "LoraLoader", "inputs": [
+                    "model": ["4", 0], "clip": ["4", 1],
+                    "lora_name": settings.characterLoraName,
+                    "strength_model": characterWeight, "strength_clip": characterWeight
+                ]]
+                graph["6"] = ["class_type": "CLIPTextEncode", "inputs": [
+                    "clip": ["5", 1], "text": positivePrompt
+                ]]
+                graph["7"] = ["class_type": "CLIPTextEncode", "inputs": [
+                    "clip": ["5", 1], "text": negativePrompt
+                ]]
+                graph["10"] = ["class_type": "ModelSamplingAuraFlow", "inputs": [
+                    "model": ["5", 0], "shift": shift
+                ]]
+            }
+        }
+
+        var finalImageLink = decodedLink
+        if hiresEnabled {
+            let finalWidth = max(64, Int(Double(width) * hiresScale / 8.0) * 8)
+            let finalHeight = max(64, Int(Double(height) * hiresScale / 8.0) * 8)
+            graph["30"] = ["class_type": "UpscaleModelLoader", "inputs": [
+                "model_name": upscalerName
+            ]]
+            graph["31"] = ["class_type": "ImageUpscaleWithModel", "inputs": [
+                "upscale_model": ["30", 0], "image": decodedLink
+            ]]
+            graph["32"] = ["class_type": "ImageScale", "inputs": [
+                "image": ["31", 0], "upscale_method": "lanczos",
+                "width": finalWidth, "height": finalHeight, "crop": "disabled"
+            ]]
+            graph["33"] = ["class_type": "VAEEncode", "inputs": [
+                "pixels": ["32", 0], "vae": vaeLink
+            ]]
+            graph["34"] = ["class_type": "KSampler", "inputs": [
+                "model": modelLink, "positive": ["6", 0], "negative": ["7", 0],
+                "latent_image": ["33", 0], "seed": max(0, seed),
+                "steps": max(1, hiresSteps), "cfg": cfg,
                 "sampler_name": comfySamplerName(samplerName),
                 "scheduler": comfySchedulerName(schedulerName),
-                "denoise": 1.0
-            ]],
-            "12": ["class_type": "VAEDecode", "inputs": [
-                "samples": ["11", 0], "vae": ["3", 0]
-            ]],
-            "13": ["class_type": "SaveImage", "inputs": [
-                "images": ["12", 0], "filename_prefix": "RIFE60_AIStudio"
+                "denoise": min(max(hiresDenoise, 0.05), 1.0)
             ]]
-        ]
-        if enableCharacterLora && characterWeight > 0 {
-            graph["5"] = ["class_type": "LoraLoader", "inputs": [
-                "model": ["4", 0], "clip": ["4", 1],
-                "lora_name": settings.characterLoraName,
-                "strength_model": characterWeight, "strength_clip": characterWeight
+            graph["35"] = ["class_type": "VAEDecode", "inputs": [
+                "samples": ["34", 0], "vae": vaeLink
             ]]
-            graph["6"] = ["class_type": "CLIPTextEncode", "inputs": [
-                "clip": ["5", 1], "text": positivePrompt
-            ]]
-            graph["7"] = ["class_type": "CLIPTextEncode", "inputs": [
-                "clip": ["5", 1], "text": negativePrompt
-            ]]
-            graph["10"] = ["class_type": "ModelSamplingAuraFlow", "inputs": [
-                "model": ["5", 0], "shift": shift
-            ]]
+            finalImageLink = ["35", 0]
         }
+        graph["40"] = ["class_type": "SaveImage", "inputs": [
+            "images": finalImageLink, "filename_prefix": "RIFE60_AIStudio"
+        ]]
         return graph
     }
 
@@ -284,7 +393,8 @@ enum AIImageStudioClient {
                 if let encoded = first["data"] as? String, let data = Data(base64Encoded: encoded), UIImage(data: data) != nil {
                     return data
                 }
-                if let urlText = first["url"] as? String, let url = URL(string: urlText) {
+                if let urlText = first["url"] as? String ?? ((first["type"] as? String == "s3_url") ? first["data"] as? String : nil),
+                   let url = URL(string: urlText) {
                     let (data, response) = try await URLSession.shared.data(from: url)
                     guard (response as? HTTPURLResponse).map({ (200..<300).contains($0.statusCode) }) == true,
                           UIImage(data: data) != nil else {

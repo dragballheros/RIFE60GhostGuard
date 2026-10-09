@@ -13,6 +13,7 @@ struct AIImageStudioView: View {
     @State private var runPodKey = AIImageStudioKeychain.read("runpod")
     @State private var trainerToken = AIImageStudioKeychain.read("trainer")
     @State private var activeTab = "Generate"
+    @State private var modelProfile = "Turbo-ANIMA"
 
     @State private var positivePrompt = """
 newest, very awa, masterpiece, high quality, high resolution, amazing quality, best quality, good lighting, detailed eyes, anime coloring, anime screencap, looking at viewer, large breasts, parted lips, :o, looking to the side, blush, standing, arched back, shoulders tilted, one hand behind neck, other hand resting on thigh, detailed background, 8k, blurry background, beach, night, 1girl, solo, mizuhara chizuru, long hair, brown hair, brown eyes, sky blue micro bikini, tight clothes, cleavage, covered nipples, covered pussy
@@ -25,13 +26,22 @@ worst quality, bad quality, low quality, lowres, scan artifacts, jpeg artifacts,
     @State private var steps = 8.0
     @State private var cfg = 1.0
     @State private var shift = 3.0
+    @State private var hiresEnabled = false
+    @State private var hiresScale = 2.0
+    @State private var hiresSteps = 20.0
+    @State private var hiresDenoise = 0.5
+    @State private var upscalerName = "RealESRGAN_x4plus_anime_6B.pth"
+    @State private var clipSkip = 2.0
+    @State private var ensd = 31337.0
+    @State private var tokenMergingRatio = 0.1
+    @State private var tokenMergingHiresRatio = 0.1
     @State private var samplerName = "Euler a"
     @State private var schedulerName = "Normal"
     @State private var seedText = "1647498191"
     @State private var randomSeed = false
     @State private var turboWeight = 1.0
     @State private var characterWeight = 0.7
-    @State private var enableCharacterLora = true
+    @State private var enableCharacterLora = false
     @State private var isGenerating = false
     @State private var generationStatus = ""
     @State private var errorText = ""
@@ -93,6 +103,17 @@ worst quality, bad quality, low quality, lowres, scan artifacts, jpeg artifacts,
 
     private var generationSections: some View {
         Group {
+            Section("Generation Preset") {
+                Picker("Model profile", selection: $modelProfile) {
+                    Text("Turbo-ANIMA").tag("Turbo-ANIMA")
+                    Text("WAI Illustrious v1.3").tag("WAI Illustrious v1.3")
+                }
+                .onChange(of: modelProfile) { profile in applyModelProfile(profile) }
+                Text(modelProfile == "Turbo-ANIMA"
+                     ? "ANIMA pipeline • 8 steps • CFG 1 • shift 3 • 848 × 1200 source settings"
+                     : "SDXL/Illustrious pipeline • 896 × 1344 base • 2× high-resolution pass to 1792 × 2688")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
             Section("Positive Prompt") {
                 TextEditor(text: $positivePrompt).frame(minHeight: 150)
                 Text("The prompt from the supplied PNG is loaded by default. Edit it freely before generating.")
@@ -104,22 +125,26 @@ worst quality, bad quality, low quality, lowres, scan artifacts, jpeg artifacts,
             Section("Model Files on GPU") {
                 TextField("Checkpoint filename", text: $settings.checkpointName)
                     .textInputAutocapitalization(.never).autocorrectionDisabled()
-                TextField("Text encoder filename", text: $settings.textEncoderName)
-                    .textInputAutocapitalization(.never).autocorrectionDisabled()
+                if modelProfile == "Turbo-ANIMA" {
+                    TextField("Text encoder filename", text: $settings.textEncoderName)
+                        .textInputAutocapitalization(.never).autocorrectionDisabled()
+                }
                 TextField("VAE filename", text: $settings.vaeName)
                     .textInputAutocapitalization(.never).autocorrectionDisabled()
-                Text("These filenames must exist in the matching ComfyUI model folders on your GPU worker. The app does not silently substitute a different checkpoint.")
+                if modelProfile == "Turbo-ANIMA" {
+                    TextField("Turbo LoRA filename", text: $settings.turboLoraName)
+                        .textInputAutocapitalization(.never).autocorrectionDisabled()
+                    HStack {
+                        Text("Turbo-ANIMA strength")
+                        Spacer()
+                        Text(String(format: "%.2f", turboWeight)).monospacedDigit()
+                    }
+                    Slider(value: $turboWeight, in: 0...1.5, step: 0.05)
+                }
+                Text("Filenames must match the model files installed in ComfyUI's matching model folders on your GPU worker.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section("LoRAs") {
-                TextField("Turbo LoRA filename", text: $settings.turboLoraName)
-                    .textInputAutocapitalization(.never).autocorrectionDisabled()
-                HStack {
-                    Text("Turbo-ANIMA strength")
-                    Spacer()
-                    Text(String(format: "%.2f", turboWeight)).monospacedDigit()
-                }
-                Slider(value: $turboWeight, in: 0...1.5, step: 0.05)
                 Toggle("Enable character LoRA", isOn: $enableCharacterLora)
                 TextField("Character LoRA filename", text: $settings.characterLoraName)
                     .textInputAutocapitalization(.never).autocorrectionDisabled()
@@ -130,7 +155,9 @@ worst quality, bad quality, low quality, lowres, scan artifacts, jpeg artifacts,
                     Text(String(format: "%.2f", characterWeight)).monospacedDigit()
                 }
                 Slider(value: $characterWeight, in: 0...1.5, step: 0.05).disabled(!enableCharacterLora)
-                Text("The character LoRA from the source image is not yet verified. Disable it until that exact file is installed, otherwise the worker will report a missing-file error.")
+                Text(modelProfile == "Turbo-ANIMA"
+                     ? "Ichinose_Chizuru is not yet hash-verified. Leave this off until the exact file is installed. The base model and Turbo LoRA can generate without it."
+                     : "The Japanese-name LoRA hash dffb5926186c is not yet verified. Disable this toggle if that file is not installed on the worker.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section("Generation Settings") {
@@ -141,6 +168,7 @@ worst quality, bad quality, low quality, lowres, scan artifacts, jpeg artifacts,
                     Text("DPM++ 2M SDE").tag("DPM++ 2M SDE")
                 }
                 Picker("Schedule type", selection: $schedulerName) {
+                    Text("Automatic").tag("Automatic")
                     Text("Normal").tag("Normal")
                     Text("Karras").tag("Karras")
                     Text("Simple").tag("Simple")
@@ -158,12 +186,21 @@ worst quality, bad quality, low quality, lowres, scan artifacts, jpeg artifacts,
                     Text(String(format: "%.1f", cfg)).monospacedDigit()
                 }
                 Slider(value: $cfg, in: 0...10, step: 0.5)
-                HStack {
-                    Text("Shift")
-                    Spacer()
-                    Text(String(format: "%.1f", shift)).monospacedDigit()
+                if modelProfile == "Turbo-ANIMA" {
+                    HStack {
+                        Text("Shift")
+                        Spacer()
+                        Text(String(format: "%.1f", shift)).monospacedDigit()
+                    }
+                    Slider(value: $shift, in: 0...6, step: 0.5)
+                } else {
+                    HStack {
+                        Text("CLIP skip")
+                        Spacer()
+                        Text("\(Int(clipSkip))").monospacedDigit()
+                    }
+                    Slider(value: $clipSkip, in: 1...2, step: 1)
                 }
-                Slider(value: $shift, in: 0...6, step: 0.5)
                 HStack {
                     Text("Width")
                     Spacer()
@@ -179,7 +216,27 @@ worst quality, bad quality, low quality, lowres, scan artifacts, jpeg artifacts,
                 TextField("Seed", text: $seedText)
                     .keyboardType(.numberPad)
                 Toggle("Random seed", isOn: $randomSeed)
-                Text("Defaults recovered from metadata: 8 steps, CFG 1, shift 3, Euler a, Normal, seed 1647498191. The generated resolution defaults to the PNG dimensions, 848 × 1200.")
+                if modelProfile == "WAI Illustrious v1.3" {
+                    Toggle("Enable high-resolution pass", isOn: $hiresEnabled)
+                    if hiresEnabled {
+                        HStack { Text("Hires upscale"); Spacer(); Text(String(format: "%.1fx", hiresScale)) }
+                        Slider(value: $hiresScale, in: 1.5...2.5, step: 0.25)
+                        HStack { Text("Hires steps"); Spacer(); Text("\(Int(hiresSteps))") }
+                        Slider(value: $hiresSteps, in: 1...40, step: 1)
+                        HStack { Text("Hires denoising"); Spacer(); Text(String(format: "%.2f", hiresDenoise)) }
+                        Slider(value: $hiresDenoise, in: 0.1...0.8, step: 0.05)
+                        TextField("Upscaler filename", text: $upscalerName)
+                            .textInputAutocapitalization(.never).autocorrectionDisabled()
+                    }
+                    HStack { Text("ENSD"); Spacer(); Text("\(Int(ensd))") }
+                    HStack { Text("Token merging ratio"); Spacer(); Text(String(format: "%.2f", tokenMergingRatio)) }
+                    HStack { Text("Token merging ratio (hires)"); Spacer(); Text(String(format: "%.2f", tokenMergingHiresRatio)) }
+                    Text("ENSD and token-merging values are shown from source metadata. Stock ComfyUI does not apply these Automatic1111-specific values without compatible custom nodes.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                Text(modelProfile == "Turbo-ANIMA"
+                     ? "Defaults recovered from the original PNG: Euler a, Normal, 8 steps, CFG 1, shift 3, seed 1647498191, 848 × 1200."
+                     : "Defaults recovered from the second PNG: Euler a, Automatic schedule, 30 steps, CFG 7, seed 624067427, 896 × 1344 base, 2× hires, 20 hires steps, denoise 0.5, CLIP skip 2.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section("Generate") {
@@ -305,6 +362,80 @@ worst quality, bad quality, low quality, lowres, scan artifacts, jpeg artifacts,
         }
     }
 
+    private func applyModelProfile(_ profile: String) {
+        errorText = ""
+        generationStatus = ""
+        generatedImage = nil
+        generatedURL = nil
+        if profile == "WAI Illustrious v1.3" {
+            settings.checkpointName = "waiNSFWIllustrious_v130.safetensors"
+            settings.textEncoderName = ""
+            settings.vaeName = "sdxl.vae.safetensors"
+            settings.characterLoraName = "のなかゆき.safetensors"
+            settings.turboLoraName = ""
+            positivePrompt = """
+weird atmosphere,(best quality:1.1),(masterpiece:1.2),high quality shadow,beautiful detailed,(high detailed skin, skin details),(wide_landscape, 8k),beautiful face,depth of field,dramatic light,best quality,highres,best shadow,best illumination,(extremely detailed CG unity 8k wallpaper,masterpiece, best quality, ultra-detailed:1.2),(best illumination, best shadow, an extremely delicate and beautiful, bloom),(beautiful face,fashion:1.2),(mature female:1.6),anime style,anime screencap, anime coloring, 1people,1girl, nonaka yuki, yellow eyes, blue hair, medium breasts, short hair, ahoge, side braid, white hairband, shinmai maou no testament, nipples, smile, cleavage, apron, light blue_apron,cooking, modern kitchen, indoors, clean, minimalist, creamy white walls, beige walls, wooden floor, kitchen sink,neutral colors, cozy atmosphere
+"""
+            negativePrompt = """
+bad anatomy, bad hands, morbid, deformed, disfigured, mutilated, malformed, missing body part, error, malformed hands, legs, bad feet, fused legs, broken legs, bad penis, bad eyes, censored, bad butt, bad body proportions, bad face, bad facial expression, gross proportions, bad abs, disappearing hands, fused hands, fused body part, fused legs, fused digits, missing digit, extra digit, hands with more than 5 digits, hands with less than 5 digits, bad pecs, cropped, watermark, username, signature, not in perspective, bad artist, bad background, ugly, jpeg artifacts, squares, faded, worst quality, blurred, lowres, low quality, bad quality, not in perspective, plain pose, plain figure
+"""
+            width = 896
+            height = 1344
+            steps = 30
+            cfg = 7
+            shift = 0
+            samplerName = "Euler a"
+            schedulerName = "Automatic"
+            seedText = "624067427"
+            randomSeed = false
+            turboWeight = 0
+            characterWeight = 0.8
+            enableCharacterLora = true
+            hiresEnabled = true
+            hiresScale = 2
+            hiresSteps = 20
+            hiresDenoise = 0.5
+            upscalerName = "RealESRGAN_x4plus_anime_6B.pth"
+            clipSkip = 2
+            ensd = 31337
+            tokenMergingRatio = 0.1
+            tokenMergingHiresRatio = 0.1
+        } else {
+            settings.checkpointName = "screenChantvMerge_v20.safetensors"
+            settings.textEncoderName = "qwen_3_06b_base.safetensors"
+            settings.vaeName = "qwen_image_vae.safetensors"
+            settings.turboLoraName = "Turbo-ANIMA-v2.9.safetensors"
+            settings.characterLoraName = "Ichinose_Chizuru.safetensors"
+            positivePrompt = """
+newest, very awa, masterpiece, high quality, high resolution, amazing quality, best quality, good lighting, detailed eyes, anime coloring, anime screencap, looking at viewer, large breasts, parted lips, :o, looking to the side, blush, standing, arched back, shoulders tilted, one hand behind neck, other hand resting on thigh, detailed background, 8k, blurry background, beach, night, 1girl, solo, mizuhara chizuru, long hair, brown hair, brown eyes, sky blue micro bikini, tight clothes, cleavage, covered nipples, covered pussy
+"""
+            negativePrompt = """
+worst quality, bad quality, low quality, lowres, scan artifacts, jpeg artifacts, sketch, bad quality, jpeg, artifacts, signature, username, text, logo, bad anatomy, artist name, artist logo, extra limbs, extra digit, extra legs, extra arms, blurry background, simple background, huge breasts, puckered anus
+"""
+            width = 848
+            height = 1200
+            steps = 8
+            cfg = 1
+            shift = 3
+            samplerName = "Euler a"
+            schedulerName = "Normal"
+            seedText = "1647498191"
+            randomSeed = false
+            turboWeight = 1
+            characterWeight = 0.7
+            enableCharacterLora = false
+            hiresEnabled = false
+            hiresScale = 2
+            hiresSteps = 20
+            hiresDenoise = 0.5
+            upscalerName = "RealESRGAN_x4plus_anime_6B.pth"
+            clipSkip = 1
+            ensd = 0
+            tokenMergingRatio = 0
+            tokenMergingHiresRatio = 0
+        }
+    }
+
     private func saveSettings() {
         do {
             try settings.save()
@@ -351,13 +482,21 @@ worst quality, bad quality, low quality, lowres, scan artifacts, jpeg artifacts,
                 turboWeight: turboWeight,
                 characterWeight: characterWeight,
                 enableCharacterLora: enableCharacterLora,
+                modelFamily: modelProfile == "WAI Illustrious v1.3" ? "sdxl" : "anima",
+                hiresEnabled: hiresEnabled,
+                hiresScale: hiresScale,
+                hiresSteps: Int(hiresSteps),
+                hiresDenoise: hiresDenoise,
+                upscalerName: upscalerName,
+                clipSkip: Int(clipSkip),
                 progress: { generationStatus = $0 }
             )
-            guard let image = UIImage(data: data), let png = image.pngData() else {
+            guard let image = UIImage(data: data) else {
                 throw AIImageStudioError("The endpoint returned data that could not be decoded as an image.")
             }
             let url = FileManager.default.temporaryDirectory.appendingPathComponent("RIFE60_AI_\(UUID().uuidString).png")
-            try png.write(to: url, options: .atomic)
+            // Keep ComfyUI's original PNG bytes, including any embedded generation metadata.
+            try data.write(to: url, options: .atomic)
             generatedImage = image
             generatedURL = url
             generationStatus = "Generation complete • \(image.size.width.rounded()) × \(image.size.height.rounded())"
