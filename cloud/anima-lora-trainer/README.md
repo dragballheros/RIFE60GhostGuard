@@ -40,14 +40,14 @@ The model installer script also downloads the official `anima-base-v1.0.safetens
 
 ```bash
 -e MODEL_ROOT=/workspace/models \
--e ANIMA_DIT_PATH=/workspace/models/unet/anima-base-v1.0.safetensors \
--e QWEN3_PATH=/workspace/models/clip/qwen_3_06b_base.safetensors \
+-e ANIMA_DIT_PATH=/workspace/models/diffusion_models/anima-base-v1.0.safetensors \
+-e QWEN3_PATH=/workspace/models/text_encoders/qwen_3_06b_base.safetensors \
 -e ANIMA_VAE_PATH=/workspace/models/vae/qwen_image_vae.safetensors \
 -e TRAINER_JOB_ROOT=/workspace/rife60-anima-jobs \
 -e LORA_INSTALL_DIR=/workspace/models/loras
 ```
 
-The trainer Pod sees the attached RunPod volume at `/workspace`; a Serverless worker sees the same volume at `/runpod-volume`. The trainer copies a completed LoRA into the shared `loras` directory and returns `installed_filename`; the app can then select it automatically for Turbo-ANIMA. If ComfyUI does not detect a newly written file immediately, recycle its worker. If your provider cannot make the volume accessible to both services, leave `LORA_INSTALL_DIR` unset and manually upload the downloaded LoRA into the inference worker's LoRA folder after training.
+The trainer Pod sees the attached RunPod volume at `/workspace`; a Serverless worker sees the same volume at `/runpod-volume`. The current worker image maps ComfyUI's `UNETLoader` and `CLIPLoader` through `diffusion_models` and `text_encoders`; these are the directories configured by the custom worker image built by this repository. The trainer copies a completed LoRA into the shared `loras` directory and returns `installed_filename`; the app can then select it automatically for Turbo-ANIMA. If ComfyUI does not detect a newly written file immediately, recycle its worker. If your provider cannot make the volume accessible to both services, leave `LORA_INSTALL_DIR` unset and manually upload the downloaded LoRA into the inference worker's LoRA folder after training.
 
 ## API contract
 

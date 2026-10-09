@@ -48,17 +48,17 @@ download_model() {
 
 install_anima() {
   # This merge checkpoint copy was previously identified in 123543o/124052.
-  download_model "unet" "screenChantvMerge_v20.safetensors" \
+  download_model "diffusion_models" "screenChantvMerge_v20.safetensors" \
     "https://huggingface.co/123543o/124052/resolve/main/Test/screenChantvMerge_v20.safetensors" \
     "4dbb10d55c611492394900b39d89eea38dc02edb2ba056fc538038babf19ab1d"
 
   # Keep the official ANIMA Base checkpoint alongside the customized screenChantvMerge preset.
   # The trainer API uses this unmodified base model, not the customized inference checkpoint.
-  download_model "unet" "anima-base-v1.0.safetensors" \
+  download_model "diffusion_models" "anima-base-v1.0.safetensors" \
     "https://huggingface.co/circlestone-labs/Anima/resolve/main/split_files/diffusion_models/anima-base-v1.0.safetensors" \
     "bd43b7cffe1ed1153d9c41e7beb2f18cb1273eafbaa3af3edd6a173dc90a006e"
 
-  download_model "clip" "qwen_3_06b_base.safetensors" \
+  download_model "text_encoders" "qwen_3_06b_base.safetensors" \
     "https://huggingface.co/circlestone-labs/Anima/resolve/main/split_files/text_encoders/qwen_3_06b_base.safetensors"
 
   download_model "vae" "qwen_image_vae.safetensors" \
