@@ -38,9 +38,9 @@ Create your own RunPod endpoint and API key. Add the endpoint ID and key in AI I
 
 After a PNG is returned, **Upscale with Real-CUGAN + Sharpie** passes the generated image URL to the existing `VideoProcessorViewModel.handleImport` and `start()` image pipeline. This uses the app's currently bundled Core ML Real-CUGAN model and existing final outline/colour pipeline. At native 2× mode, an 848×1200 generated image becomes 1696×2400. It does not claim to output 4K from an 848×1200 source.
 
-## ANIMA LoRA trainer API contract
+## ANIMA LoRA trainer service
 
-The app's LoRA Trainer tab targets a separate, authenticated GPU service. The stock RunPod ComfyUI worker does not implement training routes. Configure a base URL for a service that implements this contract:
+A deployable companion trainer API is included in cloud/anima-lora-trainer. It uses the ANIMA-specific anima_train_network.py entrypoint and implements the routes called by the app. See cloud/anima-lora-trainer/README.md to build and run it on a trusted NVIDIA GPU machine. The stock RunPod ComfyUI worker does not implement training routes.
 
 - `POST /api/anima/lora/train`: multipart fields `caption`, `trigger_word`, `rank`, `epochs`, `learning_rate`, `base_model=anima`, and repeated `images` files. Return JSON `{"job_id":"..."}`.
 - `GET /api/anima/lora/train/{job_id}`: return `{"status":"queued|running|completed|failed|cancelled","progress":0.0,"lora_url":"https://...","error":"..."}`. The completed response must include `lora_url` or `download_url`.
