@@ -101,7 +101,7 @@ enum AIImageStudioClient {
         let (data, response) = try await URLSession.shared.data(for: request)
         let object = try checkedJSONObject(data: data, response: response, context: "test GPU endpoint")
         let status = object["status"] as? String ?? "reachable"
-        return "RunPod API responded successfully (\\(status)). This verifies endpoint reachability, not model-file availability; run a generation test to validate the selected checkpoint and LoRAs."
+        return "RunPod API responded successfully (\(status)). This verifies endpoint reachability, not model-file availability; run a generation test to validate the selected checkpoint and LoRAs."
     }
 
     static func generate(
