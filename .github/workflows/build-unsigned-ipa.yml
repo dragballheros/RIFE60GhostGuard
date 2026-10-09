@@ -23,7 +23,25 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-      - name: Validate cloud service and model installer syntax
+
+      - name: Fetch pinned on-device diffusion engine
+        run: |
+          set -euo pipefail
+          git clone https://github.com/drawthingsai/draw-things-community.git Vendor/draw-things-community
+          git -C Vendor/draw-things-community checkout 4f288803ac898525012c0fe8d998c85bcb920b70
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path("Vendor/draw-things-community/Package.swift")
+          source = path.read_text()
+          needle = '    .library(name: "_MediaGenerationKit", targets: ["_MediaGenerationKit"]),'
+          addition = '''    .library(name: "_MediaGenerationKit", targets: ["_MediaGenerationKit"]),
+              .library(name: "DrawThingsCLILib", targets: ["DrawThingsCLILib"]),
+              .library(name: "DataModels", targets: ["DataModels"]),'''
+          if source.count(needle) != 1:
+              raise SystemExit("Pinned Draw Things package layout changed. Inspect Package.swift before updating the patch.")
+          path.write_text(source.replace(needle, addition))
+          PY
+      - name: Validate app source and remaining scripts
         run: |
           python3 -m py_compile cloud/anima-lora-trainer/app.py
           bash -n cloud/comfyui-models/install-runpod-models.sh

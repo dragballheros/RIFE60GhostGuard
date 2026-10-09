@@ -8,6 +8,8 @@ options:
 packages:
   RifeMetal:
     path: Vendor/rife-metal
+  DrawThings:
+    path: Vendor/draw-things-community
   AVIF:
     url: https://github.com/awxkee/avif.swift.git
     exactVersion: 2.1.2
@@ -25,6 +27,12 @@ targets:
     dependencies:
       - package: RifeMetal
         product: RifeMetal
+      - package: DrawThings
+        product: _MediaGenerationKit
+      - package: DrawThings
+        product: DrawThingsCLILib
+      - package: DrawThings
+        product: DataModels
       - package: AVIF
         product: avif
     settings:
@@ -45,7 +53,7 @@ targets:
           - "-lc++"
         PRODUCT_NAME: RIFE60GhostGuard
         MARKETING_VERSION: 1.0
-        CURRENT_PROJECT_VERSION: 184
+        CURRENT_PROJECT_VERSION: 185
         INFOPLIST_KEY_CFBundleShortVersionString: "$(MARKETING_VERSION)"
         INFOPLIST_KEY_CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
         SWIFT_VERSION: 5.10
