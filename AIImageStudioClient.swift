@@ -92,12 +92,12 @@ enum AIImageStudioClient {
         guard !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw AIImageStudioError("Enter the RunPod API key first.")
         }
-        guard let url = URL(string: "https://api.runpod.ai/v2/\\(endpointID)/health") else {
+        guard let url = URL(string: "https://api.runpod.ai/v2/\(endpointID)/health") else {
             throw AIImageStudioError("The RunPod endpoint ID is invalid.")
         }
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
-        request.setValue("Bearer \\(apiKey)", forHTTPHeaderField: "Authorization")
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         let (data, response) = try await URLSession.shared.data(for: request)
         let object = try checkedJSONObject(data: data, response: response, context: "test GPU endpoint")
         let status = object["status"] as? String ?? "reachable"
@@ -465,7 +465,7 @@ enum AIImageStudioClient {
         var readinessRequest = URLRequest(url: readinessURL)
         readinessRequest.httpMethod = "GET"
         readinessRequest.timeoutInterval = 30
-        readinessRequest.setValue("Bearer \\(token)", forHTTPHeaderField: "Authorization")
+        readinessRequest.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         let (readinessData, readinessResponse) = try await URLSession.shared.data(for: readinessRequest)
         let readiness = try checkedJSONObject(data: readinessData, response: readinessResponse, context: "check trainer authorization and GPU readiness")
         guard readiness["ok"] as? Bool == true else {
@@ -479,9 +479,9 @@ enum AIImageStudioClient {
                 reasons.append("CUDA GPU is not available to the trainer process.")
             }
             let reasonText = reasons.isEmpty ? "unknown readiness issue" : reasons.joined(separator: ", ")
-            return "Trainer URL and token are valid, but training is not ready. GPU: \\(gpuName). Missing: \\(reasonText)."
+            return "Trainer URL and token are valid, but training is not ready. GPU: \(gpuName). Missing: \(reasonText)."
         }
-        return "Trainer is ready. API token accepted, CUDA available (\\(gpuName)), all ANIMA models present, and training script found."
+        return "Trainer is ready. API token accepted, CUDA available (\(gpuName)), all ANIMA models present, and training script found."
     }
 
     static func submitLoRATraining(
