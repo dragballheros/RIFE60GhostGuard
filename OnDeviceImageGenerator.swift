@@ -1,6 +1,8 @@
 import Foundation
 import UniformTypeIdentifiers
+import Darwin
 import _MediaGenerationKit
+import DrawThingsCLILib
 import DataModels
 
 enum OnDeviceImageGenerator {
@@ -117,7 +119,7 @@ enum OnDeviceImageGenerator {
         let results = try await pipeline.generate(prompt: positivePrompt, negativePrompt: negativePrompt) { state, _ in
             let message: String
             switch state {
-            case .resolvingBackend:
+            case .resolvingBackend(_):
                 message = "Preparing on-device backend…"
             case .resolvingModel(let name):
                 message = "Resolving \(name)…"
@@ -125,7 +127,7 @@ enum OnDeviceImageGenerator {
                 message = "Preparing local generation…"
             case .ensuringResources:
                 message = "Checking local model resources…"
-            case .uploading, .downloading:
+            case .uploading(_, _), .downloading(_, _):
                 message = "Processing local model resources…"
             case .encodingText:
                 message = "Encoding prompt on device…"
