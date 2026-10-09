@@ -119,6 +119,7 @@ worst quality, bad quality, low quality, lowres, scan artifacts, jpeg artifacts,
             .navigationTitle("AI Image Studio")
             .navigationBarTitleDisplayMode(.inline)
             .onAppear { restoreGenerationDraft() }
+            .onDisappear { saveGenerationDraft(); try? settings.save() }
             .toolbar {
                 ToolbarItem(placement: .navigationBarLeading) {
                     Button("Close") { dismiss() }

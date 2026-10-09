@@ -18,7 +18,7 @@ bash install-runpod-models.sh all
 # Or: bash install-runpod-models.sh wai
 ```
 
-The script downloads several multi-gigabyte model files. Provision at least a 20 GB Network Volume for both profiles (more if you will keep training outputs or additional LoRAs). Ensure the correct model licenses permit your intended use. The script validates known SHA-256 hashes for the checkpoint/LoRA/SDXL VAE files where available. It intentionally does not download either unverified character LoRA. After it completes, stop the temporary Pod, attach the same Network Volume to the Serverless ComfyUI endpoint, and restart the endpoint so ComfyUI rescans the model directories.
+The script downloads several multi-gigabyte model files. Provision at least a 30 GB Network Volume for both profiles and the official ANIMA training base (more if you will keep training outputs or additional LoRAs). Ensure the correct model licenses permit your intended use. The script validates known SHA-256 hashes for the checkpoint/LoRA/SDXL VAE files where available. It intentionally does not download either unverified character LoRA. After it completes, stop the temporary Pod, attach the same Network Volume to the Serverless ComfyUI endpoint, and restart the endpoint so ComfyUI rescans the model directories.
 
 The app calls the endpoint's `/run` and `/status/{job_id}` routes and sends a ComfyUI API-format workflow in `input.workflow`. The official RunPod ComfyUI worker returns generated PNGs in `output.images[]`, normally as base64 data or as a URL when S3 output is configured. Use the **Test GPU Endpoint** button in AI Image Studio > Settings to verify endpoint reachability. This test does not validate every installed model file.
 
@@ -34,6 +34,7 @@ For a normal ComfyUI install, the ANIMA profile uses:
 For the **official RunPod ComfyUI worker's Network Volume mapping**, the same ANIMA files should be placed under:
 - `/runpod-volume/models/unet/screenChantvMerge_v20.safetensors`
 - `/runpod-volume/models/clip/qwen_3_06b_base.safetensors`
+- `/runpod-volume/models/unet/anima-base-v1.0.safetensors` (training base for the LoRA trainer)
 - `/runpod-volume/models/vae/qwen_image_vae.safetensors`
 - `/runpod-volume/models/loras/Turbo-ANIMA-v2.9.safetensors`
 - Optional: `/runpod-volume/models/loras/Ichinose_Chizuru.safetensors`
