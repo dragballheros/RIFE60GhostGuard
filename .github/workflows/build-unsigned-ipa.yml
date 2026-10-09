@@ -2,7 +2,7 @@ name: Build Unsigned IPA
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 # Rebuild trigger after reverting mobile compression restoration
 # Color Pop skin-state preservation fix build trigger
@@ -18,7 +18,7 @@ on:
     branches: [main]
 
 permissions:
-  contents: read
+  contents: write
   actions: read
 
 jobs:
@@ -370,9 +370,21 @@ jobs:
           PY
 
       - name: Build unsigned app
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -o pipefail
-          xcodebuild -project RIFE60GhostGuard.xcodeproj -scheme RIFE60GhostGuard -configuration Release -sdk iphoneos -destination 'generic/platform=iOS' -derivedDataPath build -jobs 4 SWIFT_COMPILATION_MODE=incremental CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY='' build | tee xcodebuild.log
+          : > xcodebuild.log
+          xcodebuild -project RIFE60GhostGuard.xcodeproj -scheme RIFE60GhostGuard -configuration Release -sdk iphoneos -destination 'generic/platform=iOS' -derivedDataPath build -jobs 4 SWIFT_COMPILATION_MODE=incremental CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY='' build | tee xcodebuild.log &
+          BUILD_PID=$!
+          bash Scripts/publish_live_build_log.sh "$BUILD_PID" &
+          PUBLISH_PID=$!
+          set +e
+          wait "$BUILD_PID"
+          BUILD_STATUS=$?
+          wait "$PUBLISH_PID"
+          set -e
+          exit "$BUILD_STATUS"
 
       - name: Create verified IPA
         run: |
