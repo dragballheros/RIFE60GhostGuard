@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-# Run inside a Pod with the official RunPod ComfyUI Network Volume mounted.
-# Usage: bash install-runpod-models.sh [all|anima|wai] [/runpod-volume/models]
+# Run inside a RunPod Pod with the persistent Network/Global Volume mounted at /workspace.
+# RunPod Serverless workers see that same volume at /runpod-volume.
+# Usage: bash install-runpod-models.sh [all|anima|wai] [/workspace/models]
 PROFILE="${1:-all}"
-ROOT="${2:-/runpod-volume/models}"
+ROOT="${2:-/workspace/models}"
 
 case "$PROFILE" in
   all|anima|wai) ;;

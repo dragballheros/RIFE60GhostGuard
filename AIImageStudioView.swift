@@ -45,6 +45,8 @@ struct AIImageStudioView: View {
     @State private var didRestoreDraft = false
     @State private var endpointTestStatus = ""
     @State private var isTestingEndpoint = false
+    @State private var trainerTestStatus = ""
+    @State private var isTestingTrainer = false
 
     @State private var positivePrompt = """
 newest, very awa, masterpiece, high quality, high resolution, amazing quality, best quality, good lighting, detailed eyes, anime coloring, anime screencap, looking at viewer, large breasts, parted lips, :o, looking to the side, blush, standing, arched back, shoulders tilted, one hand behind neck, other hand resting on thigh, detailed background, 8k, blurry background, beach, night, 1girl, solo, mizuhara chizuru, long hair, brown hair, brown eyes, sky blue micro bikini, tight clothes, cleavage, covered nipples, covered pussy
@@ -383,6 +385,17 @@ worst quality, bad quality, low quality, lowres, scan artifacts, jpeg artifacts,
                     .textInputAutocapitalization(.never).autocorrectionDisabled()
                 Text("This is a separate training API, not the RunPod ComfyUI endpoint. It must implement POST /api/anima/lora/train and GET /api/anima/lora/train/{job_id}; the response contract is described in the setup guide.")
                     .font(.caption).foregroundStyle(.secondary)
+                Button {
+                    Task { await testTrainerEndpoint() }
+                } label: {
+                    Label(isTestingTrainer ? "Testing trainer…" : "Test LoRA Trainer Endpoint", systemImage: "checkmark.shield")
+                }
+                .disabled(isTestingTrainer)
+                if !trainerTestStatus.isEmpty {
+                    Text(trainerTestStatus)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
             Section("Setup and Model Downloads") {
                 Link("RunPod setup and model installation guide", destination: URL(string: "https://github.com/dragballheros/RIFE60GhostGuard/blob/main/AI_IMAGE_STUDIO_SETUP.md")!)
@@ -648,6 +661,19 @@ worst quality, bad quality, low quality, lowres, scan artifacts, jpeg artifacts,
                     showAlert(success ? "Image saved to Photos." : "Could not save image: \(error?.localizedDescription ?? "unknown error")")
                 }
             }
+        }
+    }
+
+    private func testTrainerEndpoint() async {
+        isTestingTrainer = true
+        trainerTestStatus = ""
+        defer { isTestingTrainer = false }
+        do {
+            try settings.save()
+            try AIImageStudioKeychain.write(trainerToken, account: "trainer")
+            trainerTestStatus = try await AIImageStudioClient.testTrainerEndpoint(settings: settings, token: trainerToken)
+        } catch {
+            trainerTestStatus = error.localizedDescription
         }
     }
 

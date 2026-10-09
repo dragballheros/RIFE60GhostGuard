@@ -227,6 +227,32 @@ def health() -> dict[str, Any]:
     }
 
 
+@app.get("/api/anima/lora/ready")
+def trainer_readiness(
+    authorization: Annotated[HTTPAuthorizationCredentials | None, Depends(AUTH_SCHEME)],
+) -> dict[str, Any]:
+    """Authenticated readiness check used by the iOS setup screen."""
+    require_token(authorization)
+    missing_models = [str(path) for path in (ANIMA_DIT, QWEN3, ANIMA_VAE) if not path.is_file()]
+    script_present = (SD_SCRIPTS_ROOT / "anima_train_network.py").is_file()
+    if not script_present:
+        missing_models.append(str(SD_SCRIPTS_ROOT / "anima_train_network.py"))
+    try:
+        import torch
+        cuda_available = bool(torch.cuda.is_available())
+        gpu_name = torch.cuda.get_device_name(0) if cuda_available else None
+    except Exception:
+        cuda_available = False
+        gpu_name = None
+    return {
+        "ok": True,
+        "ready": not missing_models and cuda_available,
+        "cuda_available": cuda_available,
+        "gpu_name": gpu_name,
+        "missing": missing_models,
+    }
+
+
 @app.post("/api/anima/lora/train")
 async def submit_training(
     request: Request,

@@ -9,16 +9,18 @@ Use a RunPod Serverless endpoint running the official RunPod ComfyUI worker or a
 - https://github.com/runpod-workers/worker-comfyui
 - RunPod deployment guide: https://www.runpod.io/blog/deploy-comfyui-as-a-serverless-api-endpoint
 
-A model-install script has been added at `cloud/comfyui-models/install-runpod-models.sh`. In a RunPod Pod/terminal with the network volume mounted at `/runpod-volume`, run it to install both profiles or only one profile:
+A model-install script is included at `cloud/comfyui-models/install-runpod-models.sh`. **Important mount-path difference:** a RunPod Pod typically mounts its Network Volume or Global Volume at `/workspace`, while RunPod Serverless workers see the same volume at `/runpod-volume`. Run the installer from the Pod and target `/workspace/models` so model files persist on the attached volume:
 
 ```bash
 curl -fsSLO https://raw.githubusercontent.com/dragballheros/RIFE60GhostGuard/main/cloud/comfyui-models/install-runpod-models.sh
-bash install-runpod-models.sh all
-# Or: bash install-runpod-models.sh anima
-# Or: bash install-runpod-models.sh wai
+bash install-runpod-models.sh all /workspace/models
+# Or: bash install-runpod-models.sh anima /workspace/models
+# Or: bash install-runpod-models.sh wai /workspace/models
 ```
 
 The script downloads several multi-gigabyte model files. Provision at least a 30 GB Network Volume for both profiles and the official ANIMA training base (more if you will keep training outputs or additional LoRAs). Ensure the correct model licenses permit your intended use. The script validates known SHA-256 hashes for the checkpoint/LoRA/SDXL VAE files where available. It intentionally does not download either unverified character LoRA. After it completes, stop the temporary Pod, attach the same Network Volume to the Serverless ComfyUI endpoint, and restart the endpoint so ComfyUI rescans the model directories.
+
+For current RunPod availability across data centers, a Global Volume is the simplest shared-storage choice (RunPod announced Global Volumes in beta on October 8, 2026). If using a traditional Network Volume, keep all attached resources in its data center. Attach the same volume to the temporary model-download Pod, the ComfyUI Serverless endpoint, and the trainer Pod. Model files written to `/workspace/models` from the Pod become visible under `/runpod-volume/models` to Serverless workers.
 
 The app calls the endpoint's `/run` and `/status/{job_id}` routes and sends a ComfyUI API-format workflow in `input.workflow`. The official RunPod ComfyUI worker returns generated PNGs in `output.images[]`, normally as base64 data or as a URL when S3 output is configured. Use the **Test GPU Endpoint** button in AI Image Studio > Settings to verify endpoint reachability. This test does not validate every installed model file.
 
@@ -56,7 +58,23 @@ The Turbo-ANIMA profile recovers the first PNG's settings. The **WAI Illustrious
 
 ### Costs and credentials
 
-Create a RunPod account, deploy a Serverless endpoint with the official ComfyUI worker, attach persistent model storage, and install the model files above. Paste the endpoint ID and API key in AI Image Studio > Settings and tap Test GPU Endpoint. Credentials are stored in iOS Keychain, not in UserDefaults or source code. Serverless GPU execution is billable; configure scale-to-zero and spending limits on the provider side. GitHub Actions builds the IPA but does not provide GPU inference.
+### Concrete deployment settings
+
+1. **Create persistent storage.** In RunPod Storage, create a Global Volume (beta) for shared models if available. Otherwise create a Network Volume and keep all attached resources in its data center. The model installer command above writes to `/workspace/models` on the Pod; the inference worker sees the files under `/runpod-volume/models`.
+2. **Install the models once.** Start a temporary RunPod Pod with the volume attached at `/workspace`, open its web Terminal, run the installer command, and wait until every checksum/download completes. Do not terminate the Pod before the script finishes.
+3. **Create the image endpoint.** Create a RunPod Serverless endpoint using the official `runpod-workers/worker-comfyui` worker image with a current ComfyUI version that supports ANIMA. Attach the same Global/Network Volume. Set Active Workers to 0, Max Workers to 1 initially, and an idle timeout such as 5 minutes to avoid paying for idle inference workers. Start with a 24 GB VRAM GPU such as an RTX 4090-class worker for both profiles. Once a generated image succeeds, adjust the worker cap to suit your budget. Copy the endpoint ID into AI Image Studio > Settings, enter the RunPod API key, and tap **Test GPU Endpoint**.
+4. **Deploy the ANIMA trainer separately.** The training service is not part of the ComfyUI worker. Create a second GPU Pod using the Dockerfile in `cloud/anima-lora-trainer` (build it with Docker and push to a registry RunPod can pull, or deploy the repository through RunPod's GitHub deployment flow using `cloud/anima-lora-trainer` as context and `Dockerfile` as the Dockerfile path). Attach the same Global/Network Volume at `/workspace`, expose `8080` over HTTP through RunPod's HTTPS proxy, and set these environment variables on the container:
+   - `MODEL_ROOT=/workspace/models`
+   - `ANIMA_DIT_PATH=/workspace/models/unet/anima-base-v1.0.safetensors`
+   - `QWEN3_PATH=/workspace/models/clip/qwen_3_06b_base.safetensors`
+   - `ANIMA_VAE_PATH=/workspace/models/vae/qwen_image_vae.safetensors`
+   - `LORA_INSTALL_DIR=/workspace/models/loras`
+   - `TRAINER_JOB_ROOT=/workspace/rife60-anima-jobs`
+   - `TRAINER_API_TOKEN` set to a long, random secret kept private
+5. **Connect the trainer.** Copy the Pod's HTTPS proxy URL for port 8080, typically `https://POD_ID-8080.proxy.runpod.net`, into AI Image Studio > Settings > LoRA Trainer Endpoint. Enter the same `TRAINER_API_TOKEN` value. Tap the newly added **Test LoRA Trainer Endpoint** button. The test verifies the URL, token, CUDA availability, ANIMA training files, and training script. Keep the trainer Pod running during a training job. Stop it when not in use to stop GPU charges; LoRA training will be unavailable until it is started again.
+6. **Train and use the LoRA.** The trainer installs completed LoRAs into the shared volume at `/workspace/models/loras`, which the inference endpoint sees as `/runpod-volume/models/loras`. If a new LoRA is not found by a warm ComfyUI worker, restart/recycle that worker so it rescans its model folder. The app also downloads the finished LoRA to its Documents folder for export.
+
+The RunPod console/API key and the provider account are required to provision these resources. I cannot deploy them into your account from GitHub alone. Credentials entered into the iOS app are stored in iOS Keychain, not in source code or UserDefaults. GPU execution and persistent storage are billable. Keep the inference endpoint at zero minimum workers, stop the trainer Pod after use, and configure provider spending limits. GitHub Actions builds the IPA but does not provide GPU inference.
 
 ## Existing upscale path
 

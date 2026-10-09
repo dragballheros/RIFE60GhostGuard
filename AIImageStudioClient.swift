@@ -438,6 +438,52 @@ enum AIImageStudioClient {
         throw AIImageStudioError("The GPU worker completed but returned no recognized image. Use a RunPod ComfyUI worker that returns output.images[].data or output.images[].url.")
     }
 
+    static func testTrainerEndpoint(settings: AIImageStudioSettings, token: String) async throws -> String {
+        let rawBase = settings.trainerBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let base = URL(string: rawBase),
+              base.scheme?.lowercased() == "https",
+              base.host != nil else {
+            throw AIImageStudioError("Set the trainer's HTTPS base URL in Settings.")
+        }
+        guard !token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw AIImageStudioError("Enter the trainer API token in Settings.")
+        }
+
+        var healthRequest = URLRequest(url: base.appendingPathComponent("health"))
+        healthRequest.httpMethod = "GET"
+        healthRequest.timeoutInterval = 20
+        let (healthData, healthResponse) = try await URLSession.shared.data(for: healthRequest)
+        let health = try checkedJSONObject(data: healthData, response: healthResponse, context: "check trainer health")
+        guard health["ok"] as? Bool == true else {
+            throw AIImageStudioError("The trainer API responded but did not report healthy status.")
+        }
+
+        let readinessURL = base.appendingPathComponent("api")
+            .appendingPathComponent("anima")
+            .appendingPathComponent("lora")
+            .appendingPathComponent("ready")
+        var readinessRequest = URLRequest(url: readinessURL)
+        readinessRequest.httpMethod = "GET"
+        readinessRequest.timeoutInterval = 30
+        readinessRequest.setValue("Bearer \\(token)", forHTTPHeaderField: "Authorization")
+        let (readinessData, readinessResponse) = try await URLSession.shared.data(for: readinessRequest)
+        let readiness = try checkedJSONObject(data: readinessData, response: readinessResponse, context: "check trainer authorization and GPU readiness")
+        guard readiness["ok"] as? Bool == true else {
+            throw AIImageStudioError("Trainer readiness check did not succeed.")
+        }
+        let gpuName = readiness["gpu_name"] as? String ?? "not detected"
+        let missing = readiness["missing"] as? [String] ?? []
+        if readiness["ready"] as? Bool != true {
+            var reasons = missing
+            if readiness["cuda_available"] as? Bool != true {
+                reasons.append("CUDA GPU is not available to the trainer process.")
+            }
+            let reasonText = reasons.isEmpty ? "unknown readiness issue" : reasons.joined(separator: ", ")
+            return "Trainer URL and token are valid, but training is not ready. GPU: \\(gpuName). Missing: \\(reasonText)."
+        }
+        return "Trainer is ready. API token accepted, CUDA available (\\(gpuName)), all ANIMA models present, and training script found."
+    }
+
     static func submitLoRATraining(
         settings: AIImageStudioSettings,
         token: String,

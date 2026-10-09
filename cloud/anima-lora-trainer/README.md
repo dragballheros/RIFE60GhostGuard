@@ -4,7 +4,7 @@ This companion API implements the endpoints called by the AI Image Studio LoRA T
 
 ## Deploy on a GPU machine
 
-Build and run this service on a trusted NVIDIA CUDA GPU machine. It is not part of the iOS IPA and is not hosted by GitHub Actions.
+Build and run this service on a trusted NVIDIA CUDA GPU machine. It is not part of the iOS IPA and is not hosted by GitHub Actions. The easiest RunPod setup is a dedicated GPU Pod for training, started only when needed; the stock ComfyUI Serverless worker cannot serve these training routes. Keep the trainer Pod running from submission until the LoRA completes because the training subprocess runs inside that process.
 
 Required model files under /models:
 
@@ -39,14 +39,15 @@ Set AI Image Studio > Settings > LoRA Trainer Endpoint to the service's HTTPS UR
 The model installer script also downloads the official `anima-base-v1.0.safetensors` specifically for training. If your GPU host can mount the same writable network volume that the inference worker uses, mount it at `/runpod-volume` and configure these environment variables:
 
 ```bash
--e MODEL_ROOT=/runpod-volume/models \
--e ANIMA_DIT_PATH=/runpod-volume/models/unet/anima-base-v1.0.safetensors \
--e QWEN3_PATH=/runpod-volume/models/clip/qwen_3_06b_base.safetensors \
--e ANIMA_VAE_PATH=/runpod-volume/models/vae/qwen_image_vae.safetensors \
--e LORA_INSTALL_DIR=/runpod-volume/models/loras
+-e MODEL_ROOT=/workspace/models \
+-e ANIMA_DIT_PATH=/workspace/models/unet/anima-base-v1.0.safetensors \
+-e QWEN3_PATH=/workspace/models/clip/qwen_3_06b_base.safetensors \
+-e ANIMA_VAE_PATH=/workspace/models/vae/qwen_image_vae.safetensors \
+-e TRAINER_JOB_ROOT=/workspace/rife60-anima-jobs \
+-e LORA_INSTALL_DIR=/workspace/models/loras
 ```
 
-The trainer will copy a completed LoRA into the shared `loras` directory and return `installed_filename`; the app can then select it automatically for Turbo-ANIMA. If your provider cannot make the volume accessible to both services, leave `LORA_INSTALL_DIR` unset and manually upload the downloaded LoRA into the inference worker's LoRA folder after training.
+The trainer Pod sees the attached RunPod volume at `/workspace`; a Serverless worker sees the same volume at `/runpod-volume`. The trainer copies a completed LoRA into the shared `loras` directory and returns `installed_filename`; the app can then select it automatically for Turbo-ANIMA. If ComfyUI does not detect a newly written file immediately, recycle its worker. If your provider cannot make the volume accessible to both services, leave `LORA_INSTALL_DIR` unset and manually upload the downloaded LoRA into the inference worker's LoRA folder after training.
 
 ## API contract
 
