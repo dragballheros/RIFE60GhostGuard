@@ -23,8 +23,10 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-      - name: Validate AI trainer service syntax
-        run: python3 -m py_compile cloud/anima-lora-trainer/app.py
+      - name: Validate cloud service and model installer syntax
+        run: |
+          python3 -m py_compile cloud/anima-lora-trainer/app.py
+          bash -n cloud/comfyui-models/install-runpod-models.sh
       - name: Select Xcode 16.4
         run: sudo xcode-select -s /Applications/Xcode_16.4.app/Contents/Developer
       - name: Show Xcode version

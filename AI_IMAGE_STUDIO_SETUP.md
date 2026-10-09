@@ -9,6 +9,17 @@ Use a RunPod Serverless endpoint running the official RunPod ComfyUI worker or a
 - https://github.com/runpod-workers/worker-comfyui
 - RunPod deployment guide: https://www.runpod.io/blog/deploy-comfyui-as-a-serverless-api-endpoint
 
+A model-install script has been added at `cloud/comfyui-models/install-runpod-models.sh`. In a RunPod Pod/terminal with the network volume mounted at `/runpod-volume`, run it to install both profiles or only one profile:
+
+```bash
+curl -fsSLO https://raw.githubusercontent.com/dragballheros/RIFE60GhostGuard/main/cloud/comfyui-models/install-runpod-models.sh
+bash install-runpod-models.sh all
+# Or: bash install-runpod-models.sh anima
+# Or: bash install-runpod-models.sh wai
+```
+
+The script downloads several multi-gigabyte model files. Ensure the volume has enough storage and the correct license permits your intended use. It validates known SHA-256 hashes for the checkpoint/LoRA/SDXL VAE files where available. It intentionally does not download either unverified character LoRA.
+
 The app calls the endpoint's `/run` and `/status/{job_id}` routes and sends a ComfyUI API-format workflow in `input.workflow`. The official RunPod ComfyUI worker returns generated PNGs in `output.images[]`, normally as base64 data or as a URL when S3 output is configured. Use the **Test GPU Endpoint** button in AI Image Studio > Settings to verify endpoint reachability. This test does not validate every installed model file.
 
 The app now includes two distinct profile-specific workflows. Install all model files in the corresponding ComfyUI model folders:
