@@ -327,10 +327,10 @@ enum AIImageStudioClient {
                     "strength_model": characterWeight
                 ]]
                 graph["6"] = ["class_type": "CLIPTextEncode", "inputs": [
-                    "clip": ["5", 1], "text": positivePrompt
+                    "clip": ["2", 0], "text": positivePrompt
                 ]]
                 graph["7"] = ["class_type": "CLIPTextEncode", "inputs": [
-                    "clip": ["5", 1], "text": negativePrompt
+                    "clip": ["2", 0], "text": negativePrompt
                 ]]
                 graph["10"] = ["class_type": "ModelSamplingAuraFlow", "inputs": [
                     "model": ["5", 0], "shift": shift
