@@ -179,6 +179,8 @@ enum AIImageStudioClient {
         steps: Int,
         cfg: Double,
         shift: Double,
+        samplerName: String,
+        schedulerName: String,
         seed: Int64,
         turboWeight: Double,
         characterWeight: Double,
