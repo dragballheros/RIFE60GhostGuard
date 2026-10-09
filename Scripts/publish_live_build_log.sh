@@ -29,7 +29,7 @@ unset AUTH TOKEN
 
 publish_snapshot() {
   [[ -f "$LOG_FILE" ]] || : > "$LOG_FILE"
-  cp "$LOG_FILE" "$TMP_DIR/build.log"
+  tail -c 1048576 "$LOG_FILE" > "$TMP_DIR/build.log"
   {
     echo
     echo "--- Live snapshot metadata ---"
