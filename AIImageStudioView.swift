@@ -13,7 +13,7 @@ struct AIImageStudioView: View {
     @State private var runPodKey = AIImageStudioKeychain.read("runpod")
     @State private var trainerToken = AIImageStudioKeychain.read("trainer")
     @State private var activeTab = "Generate"
-    @State private var modelProfile = "Turbo-ANIMA"
+    @State private var modelProfile = UserDefaults.standard.string(forKey: "RIFE60.AIImageStudio.SelectedProfile") ?? "Turbo-ANIMA"
 
     @State private var positivePrompt = """
 newest, very awa, masterpiece, high quality, high resolution, amazing quality, best quality, good lighting, detailed eyes, anime coloring, anime screencap, looking at viewer, large breasts, parted lips, :o, looking to the side, blush, standing, arched back, shoulders tilted, one hand behind neck, other hand resting on thigh, detailed background, 8k, blurry background, beach, night, 1girl, solo, mizuhara chizuru, long hair, brown hair, brown eyes, sky blue micro bikini, tight clothes, cleavage, covered nipples, covered pussy
@@ -41,7 +41,7 @@ worst quality, bad quality, low quality, lowres, scan artifacts, jpeg artifacts,
     @State private var randomSeed = false
     @State private var turboWeight = 1.0
     @State private var characterWeight = 0.7
-    @State private var enableCharacterLora = false
+    @State private var enableCharacterLora = true
     @State private var isGenerating = false
     @State private var generationStatus = ""
     @State private var errorText = ""
@@ -87,6 +87,7 @@ worst quality, bad quality, low quality, lowres, scan artifacts, jpeg artifacts,
             }
             .navigationTitle("AI Image Studio")
             .navigationBarTitleDisplayMode(.inline)
+            .onAppear { if modelProfile == "WAI Illustrious v1.3" { applyModelProfile(modelProfile) } }
             .toolbar {
                 ToolbarItem(placement: .navigationBarLeading) {
                     Button("Close") { dismiss() }
@@ -363,6 +364,7 @@ worst quality, bad quality, low quality, lowres, scan artifacts, jpeg artifacts,
     }
 
     private func applyModelProfile(_ profile: String) {
+        UserDefaults.standard.set(profile, forKey: "RIFE60.AIImageStudio.SelectedProfile")
         errorText = ""
         generationStatus = ""
         generatedImage = nil
@@ -423,7 +425,7 @@ worst quality, bad quality, low quality, lowres, scan artifacts, jpeg artifacts,
             randomSeed = false
             turboWeight = 1
             characterWeight = 0.7
-            enableCharacterLora = false
+            enableCharacterLora = true
             hiresEnabled = false
             hiresScale = 2
             hiresSteps = 20

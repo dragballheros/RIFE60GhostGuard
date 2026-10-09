@@ -21,7 +21,7 @@ The app now includes two distinct profile-specific workflows. Install all model 
 
 For **WAI Illustrious v1.3**, install:
 
-- `models/checkpoints/waiNSFWIllustrious_v130.safetensors` (SDXL checkpoint)
+- `models/checkpoints/waiNSFWIllustrious_v130.safetensors` (SDXL checkpoint, 6.94 GB; a public copy has fingerprint prefix `a810e710a2`: https://huggingface.co/elski/models-moved/blob/main/waiNSFWIllustrious_v130.safetensors)
 - `models/vae/sdxl.vae.safetensors`
 - `models/loras/のなかゆき.safetensors` (the second PNG identifies this LoRA at weight 0.8; hash `dffb5926186c` is not independently verified)
 - `models/upscale_models/RealESRGAN_x4plus_anime_6B.pth
@@ -47,4 +47,4 @@ The app's LoRA Trainer tab targets a separate, authenticated GPU service. The st
 
 The trainer should use the ANIMA-specific training entrypoint, not an SDXL/Pony training script: https://github.com/kohya-ss/sd-scripts/blob/main/docs/anima_train_network.md. It requires ANIMA DiT, Qwen3 text encoder, Qwen Image VAE, a dataset configuration and a CUDA GPU. Only run training on a trusted endpoint, use images you are authorized to train on, and remove uploaded datasets when no longer needed.
 
-This repository does not provision a paid GPU endpoint or trainer automatically, and this guide does not claim that either endpoint has been deployed. The app and request client are ready to connect once the GPU services and compatible model files are provisioned.
+This repository does not provision a paid GPU endpoint or trainer automatically, and this guide does not claim that either endpoint has been deployed. The iOS client now has the two model-family workflows and the WAI Illustrious two-stage hires graph. A GPU endpoint and compatible model files still must be provisioned before generation can run. The code in this repository does not create a RunPod account, endpoint, or API key on your behalf.
