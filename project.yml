@@ -45,7 +45,7 @@ targets:
           - "-lc++"
         PRODUCT_NAME: RIFE60GhostGuard
         MARKETING_VERSION: 1.0
-        CURRENT_PROJECT_VERSION: 179
+        CURRENT_PROJECT_VERSION: 180
         INFOPLIST_KEY_CFBundleShortVersionString: "$(MARKETING_VERSION)"
         INFOPLIST_KEY_CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
         SWIFT_VERSION: 5.10

@@ -8,6 +8,7 @@ struct ContentView: View {
     @StateObject private var vm = VideoProcessorViewModel()
     @StateObject private var pipController = ProcessingPiPController()
     @State private var showingImporter = false
+    @State private var showingAIImageStudio = false
     @State private var showingWatermarkEditor = false
     @State private var showingPhotosPicker = false
     @State private var showingExportFolderPicker = false
@@ -29,6 +30,15 @@ struct ContentView: View {
 
             NavigationStack {
                 Form {
+                    Section("AI Image Studio") {
+                        Button { showingAIImageStudio = true } label: {
+                            Label("Open AI Image Studio", systemImage: "sparkles")
+                        }
+                        Text("Generate anime images with a remote GPU, edit prompts and model settings, then send the generated still directly through this app's Real-CUGAN upscale and final Sharpie pipeline.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+
                     Section("Input") {
                         Button { showingPhotosPicker = true } label: { Label("Select media from Photos", systemImage: "photo.on.rectangle") }.disabled(vm.isBusy || vm.isImporting || vm.isBenchmarking)
                         Button { showingImporter = true } label: { Label("Select media from Files", systemImage: "folder") }.disabled(vm.isBusy || vm.isImporting || vm.isBenchmarking)
@@ -280,6 +290,19 @@ struct ContentView: View {
                     if let err = vm.errorText { Section("Error") { Text(err).foregroundStyle(.red) } }
                 }
                 .navigationTitle("RIFE 60")
+                .fullScreenCover(isPresented: $showingAIImageStudio) {
+                    AIImageStudioView(
+                        canUpscale: !vm.queueLocked && !vm.isImporting && !vm.isBenchmarking,
+                        onUpscale: { imageURL in
+                            Task {
+                                await vm.handleImport(.success([imageURL]))
+                                if vm.inputKind == .image && !vm.isBusy && !vm.isImporting {
+                                    await vm.start()
+                                }
+                            }
+                        }
+                    )
+                }
                 .photosPicker(isPresented: $showingPhotosPicker, selection: $photoItems, maxSelectionCount: 100, selectionBehavior: .ordered, matching: .any(of: [.videos, .images]), photoLibrary: .shared())
                 .fileImporter(isPresented: $showingImporter, allowedContentTypes: [.movie, .mpeg4Movie, .quickTimeMovie, .video, .image], allowsMultipleSelection: true) { result in Task { await vm.handleImport(result) } }
                 .fileImporter(isPresented: $showingExportFolderPicker, allowedContentTypes: [.folder], allowsMultipleSelection: false) { result in
@@ -463,4 +486,3 @@ struct ContentView: View {
         return formatter.string(from: Date().addingTimeInterval(seconds))
     }
 }
-
