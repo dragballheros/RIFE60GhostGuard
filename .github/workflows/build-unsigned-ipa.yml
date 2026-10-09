@@ -41,10 +41,10 @@ jobs:
               raise SystemExit("Pinned Draw Things package layout changed. Inspect Package.swift before updating the patch.")
           path.write_text(source.replace(needle, addition))
           PY
-      - name: Validate app source and remaining scripts
+      - name: Validate pinned model ID and package patch prerequisites
         run: |
-          python3 -m py_compile cloud/anima-lora-trainer/app.py
-          bash -n cloud/comfyui-models/install-runpod-models.sh
+          grep -q 'animagine_xl_v3.1_q6p_q8p.ckpt' OnDeviceImageGenerator.swift
+          test -f Vendor/draw-things-community/Package.swift
       - name: Select Xcode 16.4
         run: sudo xcode-select -s /Applications/Xcode_16.4.app/Contents/Developer
       - name: Show Xcode version
