@@ -20,11 +20,6 @@ jobs:
       - name: Checkout application repository
         uses: actions/checkout@v4
 
-      - name: Clone official RunPod ComfyUI worker source
-        run: |
-          git clone --depth 1 https://github.com/runpod-workers/worker-comfyui.git upstream-worker
-          cp cloud/runpod-comfyui-worker/extra_model_paths.yaml upstream-worker/src/extra_model_paths.yaml
-
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -38,14 +33,10 @@ jobs:
       - name: Build and publish ComfyUI worker
         uses: docker/build-push-action@v6
         with:
-          context: ./upstream-worker
-          file: ./upstream-worker/Dockerfile
+          context: ./cloud/runpod-comfyui-worker
+          file: ./cloud/runpod-comfyui-worker/Dockerfile
           platforms: linux/amd64
           push: true
-          build-args: |
-            COMFYUI_VERSION=0.34.0
-            MODEL_TYPE=base
-            CUDA_VERSION_FOR_COMFY=12.8
           tags: |
             ghcr.io/dragballheros/rife60-comfyui-worker:latest
             ghcr.io/dragballheros/rife60-comfyui-worker:${{ github.sha }}
