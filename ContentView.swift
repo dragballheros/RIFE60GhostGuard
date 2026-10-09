@@ -296,7 +296,7 @@ struct ContentView: View {
                         onUpscale: { imageURL in
                             Task {
                                 await vm.handleImport(.success([imageURL]))
-                                if vm.inputKind == .image && !vm.isBusy && !vm.isImporting {
+                                if !vm.isBusy && !vm.isImporting {
                                     await vm.start()
                                 }
                             }

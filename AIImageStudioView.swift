@@ -1,6 +1,7 @@
 import SwiftUI
 import PhotosUI
 import Photos
+import UniformTypeIdentifiers
 import UIKit
 
 struct AIImageStudioView: View {
