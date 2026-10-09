@@ -84,6 +84,26 @@ struct AITrainingImage {
 
 @MainActor
 enum AIImageStudioClient {
+    static func testRunPod(settings: AIImageStudioSettings, apiKey: String) async throws -> String {
+        let endpointID = settings.runPodEndpointID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !endpointID.isEmpty else {
+            throw AIImageStudioError("Enter the RunPod Serverless endpoint ID first.")
+        }
+        guard !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw AIImageStudioError("Enter the RunPod API key first.")
+        }
+        guard let url = URL(string: "https://api.runpod.ai/v2/\\(endpointID)/health") else {
+            throw AIImageStudioError("The RunPod endpoint ID is invalid.")
+        }
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.setValue("Bearer \\(apiKey)", forHTTPHeaderField: "Authorization")
+        let (data, response) = try await URLSession.shared.data(for: request)
+        let object = try checkedJSONObject(data: data, response: response, context: "test GPU endpoint")
+        let status = object["status"] as? String ?? "reachable"
+        return "RunPod API responded successfully (\\(status)). This verifies endpoint reachability, not model-file availability; run a generation test to validate the selected checkpoint and LoRAs."
+    }
+
     static func generate(
         settings: AIImageStudioSettings,
         apiKey: String,
@@ -429,7 +449,7 @@ enum AIImageStudioClient {
         learningRate: Double
     ) async throws -> String {
         guard let base = URL(string: settings.trainerBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)),
-              ["https", "http"].contains(base.scheme?.lowercased() ?? "") else {
+              base.scheme?.lowercased() == "https" else {
             throw AIImageStudioError("Set a reachable HTTPS trainer API URL in Settings.")
         }
         guard !token.isEmpty else { throw AIImageStudioError("Enter the trainer API token in Settings.") }

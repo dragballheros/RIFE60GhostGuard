@@ -4,6 +4,34 @@ import Photos
 import UniformTypeIdentifiers
 import UIKit
 
+private struct AIImageStudioDraft: Codable {
+    var modelProfile: String
+    var positivePrompt: String
+    var negativePrompt: String
+    var width: Double
+    var height: Double
+    var steps: Double
+    var cfg: Double
+    var shift: Double
+    var hiresEnabled: Bool
+    var hiresScale: Double
+    var hiresSteps: Double
+    var hiresDenoise: Double
+    var upscalerName: String
+    var clipSkip: Double
+    var ensd: Double
+    var tokenMergingRatio: Double
+    var tokenMergingHiresRatio: Double
+    var samplerName: String
+    var schedulerName: String
+    var seedText: String
+    var randomSeed: Bool
+    var turboWeight: Double
+    var characterWeight: Double
+    var enableCharacterLora: Bool
+    static let key = "RIFE60.AIImageStudio.GenerationDraft.v1"
+}
+
 struct AIImageStudioView: View {
     let canUpscale: Bool
     let onUpscale: (URL) -> Void
@@ -14,6 +42,9 @@ struct AIImageStudioView: View {
     @State private var trainerToken = AIImageStudioKeychain.read("trainer")
     @State private var activeTab = "Generate"
     @State private var modelProfile = UserDefaults.standard.string(forKey: "RIFE60.AIImageStudio.SelectedProfile") ?? "Turbo-ANIMA"
+    @State private var didRestoreDraft = false
+    @State private var endpointTestStatus = ""
+    @State private var isTestingEndpoint = false
 
     @State private var positivePrompt = """
 newest, very awa, masterpiece, high quality, high resolution, amazing quality, best quality, good lighting, detailed eyes, anime coloring, anime screencap, looking at viewer, large breasts, parted lips, :o, looking to the side, blush, standing, arched back, shoulders tilted, one hand behind neck, other hand resting on thigh, detailed background, 8k, blurry background, beach, night, 1girl, solo, mizuhara chizuru, long hair, brown hair, brown eyes, sky blue micro bikini, tight clothes, cleavage, covered nipples, covered pussy
@@ -87,7 +118,7 @@ worst quality, bad quality, low quality, lowres, scan artifacts, jpeg artifacts,
             }
             .navigationTitle("AI Image Studio")
             .navigationBarTitleDisplayMode(.inline)
-            .onAppear { if modelProfile == "WAI Illustrious v1.3" { applyModelProfile(modelProfile) } }
+            .onAppear { restoreGenerationDraft() }
             .toolbar {
                 ToolbarItem(placement: .navigationBarLeading) {
                     Button("Close") { dismiss() }
@@ -332,8 +363,17 @@ worst quality, bad quality, low quality, lowres, scan artifacts, jpeg artifacts,
                     .textInputAutocapitalization(.never).autocorrectionDisabled()
                 SecureField("RunPod API key", text: $runPodKey)
                     .textInputAutocapitalization(.never).autocorrectionDisabled()
-                Text("Use a RunPod Serverless endpoint running the ComfyUI worker with a custom ANIMA workflow. The endpoint must have the checkpoint, text encoder, VAE and enabled LoRAs installed.")
+                Text("Use a RunPod Serverless endpoint running the ComfyUI worker. The endpoint must have the selected checkpoint, VAE, text encoder (ANIMA only), LoRAs and any hires upscaler installed.")
                     .font(.caption).foregroundStyle(.secondary)
+                Button {
+                    Task { await testGenerationEndpoint() }
+                } label: {
+                    Label(isTestingEndpoint ? "Testing GPU endpoint…" : "Test GPU Endpoint", systemImage: "network")
+                }
+                .disabled(isTestingEndpoint)
+                if !endpointTestStatus.isEmpty {
+                    Text(endpointTestStatus).font(.caption).foregroundStyle(.secondary)
+                }
             }
             Section("LoRA Trainer Endpoint") {
                 TextField("Trainer base URL (HTTPS)", text: $settings.trainerBaseURL)
@@ -438,12 +478,92 @@ worst quality, bad quality, low quality, lowres, scan artifacts, jpeg artifacts,
         }
     }
 
+    private func restoreGenerationDraft() {
+        guard !didRestoreDraft else { return }
+        didRestoreDraft = true
+        guard let data = UserDefaults.standard.data(forKey: AIImageStudioDraft.key),
+              let draft = try? JSONDecoder().decode(AIImageStudioDraft.self, from: data) else {
+            if modelProfile == "WAI Illustrious v1.3" { applyModelProfile(modelProfile) }
+            return
+        }
+        modelProfile = draft.modelProfile
+        positivePrompt = draft.positivePrompt
+        negativePrompt = draft.negativePrompt
+        width = draft.width
+        height = draft.height
+        steps = draft.steps
+        cfg = draft.cfg
+        shift = draft.shift
+        hiresEnabled = draft.hiresEnabled
+        hiresScale = draft.hiresScale
+        hiresSteps = draft.hiresSteps
+        hiresDenoise = draft.hiresDenoise
+        upscalerName = draft.upscalerName
+        clipSkip = draft.clipSkip
+        ensd = draft.ensd
+        tokenMergingRatio = draft.tokenMergingRatio
+        tokenMergingHiresRatio = draft.tokenMergingHiresRatio
+        samplerName = draft.samplerName
+        schedulerName = draft.schedulerName
+        seedText = draft.seedText
+        randomSeed = draft.randomSeed
+        turboWeight = draft.turboWeight
+        characterWeight = draft.characterWeight
+        enableCharacterLora = draft.enableCharacterLora
+        UserDefaults.standard.set(modelProfile, forKey: "RIFE60.AIImageStudio.SelectedProfile")
+    }
+
+    private func saveGenerationDraft() {
+        let draft = AIImageStudioDraft(
+            modelProfile: modelProfile,
+            positivePrompt: positivePrompt,
+            negativePrompt: negativePrompt,
+            width: width,
+            height: height,
+            steps: steps,
+            cfg: cfg,
+            shift: shift,
+            hiresEnabled: hiresEnabled,
+            hiresScale: hiresScale,
+            hiresSteps: hiresSteps,
+            hiresDenoise: hiresDenoise,
+            upscalerName: upscalerName,
+            clipSkip: clipSkip,
+            ensd: ensd,
+            tokenMergingRatio: tokenMergingRatio,
+            tokenMergingHiresRatio: tokenMergingHiresRatio,
+            samplerName: samplerName,
+            schedulerName: schedulerName,
+            seedText: seedText,
+            randomSeed: randomSeed,
+            turboWeight: turboWeight,
+            characterWeight: characterWeight,
+            enableCharacterLora: enableCharacterLora
+        )
+        if let data = try? JSONEncoder().encode(draft) {
+            UserDefaults.standard.set(data, forKey: AIImageStudioDraft.key)
+        }
+        UserDefaults.standard.set(modelProfile, forKey: "RIFE60.AIImageStudio.SelectedProfile")
+    }
+
+    private func testGenerationEndpoint() async {
+        isTestingEndpoint = true
+        endpointTestStatus = "Contacting RunPod…"
+        defer { isTestingEndpoint = false }
+        do {
+            endpointTestStatus = try await AIImageStudioClient.testRunPod(settings: settings, apiKey: runPodKey)
+        } catch {
+            endpointTestStatus = error.localizedDescription
+        }
+    }
+
     private func saveSettings() {
         do {
             try settings.save()
             try AIImageStudioKeychain.write(runPodKey, account: "runpod")
             try AIImageStudioKeychain.write(trainerToken, account: "trainer")
-            showAlert("Settings saved. API credentials are stored in iOS Keychain.")
+            saveGenerationDraft()
+            showAlert("Settings saved. Prompts and generation settings are saved locally; API credentials are stored in iOS Keychain.")
         } catch {
             errorText = error.localizedDescription
         }
@@ -463,6 +583,7 @@ worst quality, bad quality, low quality, lowres, scan artifacts, jpeg artifacts,
         do {
             try settings.save()
             try AIImageStudioKeychain.write(runPodKey, account: "runpod")
+            saveGenerationDraft()
             let resolvedSeed: Int64
             if randomSeed { resolvedSeed = Int64.random(in: 0...Int64.max / 2) }
             else if let value = Int64(seedText), value >= 0 { resolvedSeed = value }
