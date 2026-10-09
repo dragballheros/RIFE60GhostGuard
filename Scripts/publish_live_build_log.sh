@@ -30,14 +30,29 @@ unset AUTH TOKEN
 publish_snapshot() {
   [[ -f "$LOG_FILE" ]] || : > "$LOG_FILE"
   tail -c 1048576 "$LOG_FILE" > "$TMP_DIR/build.log"
+  # Publish the resource/process monitor beside the compiler log. This file is
+  # updated by the Build unsigned app step every 60 seconds and lets users
+  # distinguish an active compiler from a live-but-idle runner before the job ends.
+  DIAGNOSTICS_FILE="${GITHUB_WORKSPACE:-$PWD}/build-diagnostics.log"
+  if [[ -f "$DIAGNOSTICS_FILE" ]]; then
+    tail -c 1048576 "$DIAGNOSTICS_FILE" > "$TMP_DIR/diagnostics.log"
+  else
+    printf 'Diagnostics are not available yet; waiting for the first monitor sample.\n' > "$TMP_DIR/diagnostics.log"
+  fi
   {
     echo
     echo "--- Live snapshot metadata ---"
     echo "Workflow run: ${GITHUB_SERVER_URL:-https://github.com}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
     echo "Snapshot time (UTC): $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
-    echo "Note: this is a point-in-time copy; the next snapshot replaces this file."
+    echo "Note: these are point-in-time copies; the next snapshot replaces these files."
   } >> "$TMP_DIR/build.log"
-  git -C "$TMP_DIR" add build.log
+  {
+    echo
+    echo "--- Live diagnostics metadata ---"
+    echo "Workflow run: ${GITHUB_SERVER_URL:-https://github.com}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+    echo "Snapshot time (UTC): $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+  } >> "$TMP_DIR/diagnostics.log"
+  git -C "$TMP_DIR" add build.log diagnostics.log
   if git -C "$TMP_DIR" rev-parse --verify HEAD >/dev/null 2>&1; then
     git -C "$TMP_DIR" commit --amend --no-edit -q
   else
