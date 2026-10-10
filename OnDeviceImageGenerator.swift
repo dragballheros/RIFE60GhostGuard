@@ -60,7 +60,7 @@ enum OnDeviceImageGenerator {
         // Diffusion inference competes with the rest of iOS for unified memory.
         // Pick a conservative working size before loading SDXL, then enable the
         // engine's native tiled paths when headroom is limited.
-        let memory = currentRenderPerformanceSnapshot()
+        var memory = currentRenderPerformanceSnapshot()
         guard memory.availableMemoryMB >= 450 else {
             throw AIImageStudioError(
                 "AI Image Studio paused before loading the model because only \(Int(memory.availableMemoryMB)) MB of memory headroom is available. Close other apps, wait for memory to recover, and retry."
@@ -69,8 +69,8 @@ enum OnDeviceImageGenerator {
 
         let requestedWidth = multipleOf64(width)
         let requestedHeight = multipleOf64(height)
-        let outputWidth: Int
-        let outputHeight: Int
+        var outputWidth: Int
+        var outputHeight: Int
         if memory.availableMemoryMB < 1_000 {
             // SDXL can still exceed iOS's per-process memory limit at 512x768,
             // even when tiled paths are enabled. Use a square 512px working
@@ -85,12 +85,12 @@ enum OnDeviceImageGenerator {
             outputWidth = requestedWidth
             outputHeight = requestedHeight
         }
-        let useTiledDiffusion = memory.availableMemoryMB < 1_800
-        let useTiledDecoding = memory.availableMemoryMB < 2_400
+        var useTiledDiffusion = memory.availableMemoryMB < 1_800
+        var useTiledDecoding = memory.availableMemoryMB < 2_400
         // Smaller native tiles reduce transient activation and decoder buffers
         // when generation starts with less than 1 GB of available memory.
-        let diffusionTileSize = memory.availableMemoryMB < 1_000 ? 256 : 512
-        let decodingTileSize = memory.availableMemoryMB < 1_000 ? 256 : 512
+        var diffusionTileSize = memory.availableMemoryMB < 1_000 ? 256 : 512
+        var decodingTileSize = memory.availableMemoryMB < 1_000 ? 256 : 512
 
         DiagnosticsLogger.shared.log(
             "AI Image Studio memory preflight • available=\(Int(memory.availableMemoryMB)) MB • physical=\(Int(memory.physicalMemoryMB)) MB • tier=\(memory.tier.rawValue) • requested=\(requestedWidth)x\(requestedHeight) • selected=\(outputWidth)x\(outputHeight) • tiledDiffusion=\(useTiledDiffusion) • tiledDecoding=\(useTiledDecoding)"
@@ -124,11 +124,68 @@ enum OnDeviceImageGenerator {
         }
 
         try Task.checkCancellation()
+
+        // Downloading/verifying model files can take time and memory headroom can
+        // change while it runs. Re-evaluate before constructing the heavy SDXL
+        // pipeline rather than trusting the initial snapshot.
+        memory = currentRenderPerformanceSnapshot()
+        guard memory.availableMemoryMB >= 450 else {
+            DiagnosticsLogger.shared.log("AI Image Studio stopped before pipeline load • headroom fell to \(Int(memory.availableMemoryMB)) MB")
+            throw AIImageStudioError(
+                "AI Image Studio paused after checking model files because memory headroom fell to \(Int(memory.availableMemoryMB)) MB. Close other apps, wait for memory to recover, and retry."
+            )
+        }
+        if memory.availableMemoryMB < 1_000 {
+            outputWidth = 512
+            outputHeight = 512
+        } else if memory.availableMemoryMB < 1_800 {
+            let scale = min(1.0, 1024.0 / Double(max(requestedWidth, requestedHeight)))
+            outputWidth = multipleOf64(Int(Double(requestedWidth) * scale))
+            outputHeight = multipleOf64(Int(Double(requestedHeight) * scale))
+        } else {
+            outputWidth = requestedWidth
+            outputHeight = requestedHeight
+        }
+        useTiledDiffusion = memory.availableMemoryMB < 1_800
+        useTiledDecoding = memory.availableMemoryMB < 2_400
+        diffusionTileSize = memory.availableMemoryMB < 1_000 ? 256 : 512
+        decodingTileSize = memory.availableMemoryMB < 1_000 ? 256 : 512
+        DiagnosticsLogger.shared.log(
+            "AI Image Studio refreshed pre-load memory • available=\(Int(memory.availableMemoryMB)) MB • selected=\(outputWidth)x\(outputHeight) • diffusionTile=\(diffusionTileSize) • decodeTile=\(decodingTileSize)"
+        )
+
         notify("Loading local Metal model…", progress: progress)
         var pipeline: MediaGenerationPipeline? = try await MediaGenerationPipeline.fromPretrained(
             resolvedModel.file,
             backend: .local
         )
+        memory = currentRenderPerformanceSnapshot()
+        DiagnosticsLogger.shared.log(
+            "AI Image Studio model loaded • available=\(Int(memory.availableMemoryMB)) MB • physical=\(Int(memory.physicalMemoryMB)) MB • thermal=\(memory.thermalAndMode)"
+        )
+        guard memory.availableMemoryMB >= 300 else {
+            pipeline = nil
+            throw AIImageStudioError(
+                "The local model loaded, but iOS memory headroom fell to \(Int(memory.availableMemoryMB)) MB. Generation was stopped before starting to reduce the risk of an app termination. Close other apps and retry."
+            )
+        }
+        // If model loading consumed most of the remaining headroom, force the
+        // smallest supported image and tiled paths before the first denoising step.
+        if memory.availableMemoryMB < 1_000 {
+            pipeline!.configuration.width = 512
+            pipeline!.configuration.height = 512
+            outputWidth = 512
+            outputHeight = 512
+            useTiledDiffusion = true
+            useTiledDecoding = true
+            diffusionTileSize = 256
+            decodingTileSize = 256
+        } else if memory.availableMemoryMB < 1_800 {
+            useTiledDiffusion = true
+            useTiledDecoding = true
+            diffusionTileSize = 256
+            decodingTileSize = 256
+        }
         pipeline!.configuration.width = outputWidth
         pipeline!.configuration.height = outputHeight
         pipeline!.configuration.steps = max(1, min(60, steps))
@@ -180,6 +237,8 @@ enum OnDeviceImageGenerator {
             "Generating locally on the iPhone GPU/Metal… \(outputWidth)x\(outputHeight) • \(Int(memory.availableMemoryMB)) MB initial headroom",
             progress: progress
         )
+        DiagnosticsLogger.shared.log("AI Image Studio generation begin • steps=\(max(1, min(60, steps))) • size=\(outputWidth)x\(outputHeight) • tiledDiffusion=\(useTiledDiffusion) • diffusionTile=\(diffusionTileSize) • tiledDecoding=\(useTiledDecoding) • decodeTile=\(decodingTileSize)")
+        var lastLoggedStep = 0
         var results = try await pipeline!.generate(prompt: positivePrompt, negativePrompt: negativePrompt) { state, _ in
             let message: String
             switch state {
@@ -200,9 +259,14 @@ enum OnDeviceImageGenerator {
             case .generating(let step, let total):
                 let currentMemory = currentRenderPerformanceSnapshot()
                 message = "Local GPU generation: step \(step)/\(total) • \(Int(currentMemory.availableMemoryMB)) MB free"
-                DiagnosticsLogger.shared.log(
-                    "AI Image Studio step \(step)/\(total) • available=\(Int(currentMemory.availableMemoryMB)) MB • thermal=\(currentMemory.thermalAndMode)"
-                )
+                // Capture every step so a crash after the first few denoising
+                // iterations can be correlated with memory pressure in device logs.
+                if step != lastLoggedStep {
+                    lastLoggedStep = step
+                    DiagnosticsLogger.shared.log(
+                        "AI Image Studio step \(step)/\(total) • available=\(Int(currentMemory.availableMemoryMB)) MB • physical=\(Int(currentMemory.physicalMemoryMB)) MB • tier=\(currentMemory.tier.rawValue) • thermal=\(currentMemory.thermalAndMode)"
+                    )
+                }
             case .decoding:
                 message = "Decoding image…"
             case .postprocessing:
