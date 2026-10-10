@@ -72,8 +72,11 @@ enum OnDeviceImageGenerator {
         let outputWidth: Int
         let outputHeight: Int
         if memory.availableMemoryMB < 1_000 {
-            outputWidth = multipleOf64(min(requestedWidth, 512))
-            outputHeight = multipleOf64(min(requestedHeight, 768))
+            // SDXL can still exceed iOS's per-process memory limit at 512x768,
+            // even when tiled paths are enabled. Use a square 512px working
+            // surface in this tier, then let the app's Real-CUGAN pass upscale it.
+            outputWidth = 512
+            outputHeight = 512
         } else if memory.availableMemoryMB < 1_800 {
             let scale = min(1.0, 1024.0 / Double(max(requestedWidth, requestedHeight)))
             outputWidth = multipleOf64(Int(Double(requestedWidth) * scale))
@@ -84,6 +87,10 @@ enum OnDeviceImageGenerator {
         }
         let useTiledDiffusion = memory.availableMemoryMB < 1_800
         let useTiledDecoding = memory.availableMemoryMB < 2_400
+        // Smaller native tiles reduce transient activation and decoder buffers
+        // when generation starts with less than 1 GB of available memory.
+        let diffusionTileSize = memory.availableMemoryMB < 1_000 ? 256 : 512
+        let decodingTileSize = memory.availableMemoryMB < 1_000 ? 256 : 512
 
         DiagnosticsLogger.shared.log(
             "AI Image Studio memory preflight • available=\(Int(memory.availableMemoryMB)) MB • physical=\(Int(memory.physicalMemoryMB)) MB • tier=\(memory.tier.rawValue) • requested=\(requestedWidth)x\(requestedHeight) • selected=\(outputWidth)x\(outputHeight) • tiledDiffusion=\(useTiledDiffusion) • tiledDecoding=\(useTiledDecoding)"
@@ -129,14 +136,14 @@ enum OnDeviceImageGenerator {
         pipeline!.configuration.batchSize = 1
         pipeline!.configuration.tiledDecoding = useTiledDecoding
         if useTiledDecoding {
-            pipeline!.configuration.decodingTileWidth = 512
-            pipeline!.configuration.decodingTileHeight = 512
+            pipeline!.configuration.decodingTileWidth = decodingTileSize
+            pipeline!.configuration.decodingTileHeight = decodingTileSize
             pipeline!.configuration.decodingTileOverlap = 32
         }
         pipeline!.configuration.tiledDiffusion = useTiledDiffusion
         if useTiledDiffusion {
-            pipeline!.configuration.diffusionTileWidth = 512
-            pipeline!.configuration.diffusionTileHeight = 512
+            pipeline!.configuration.diffusionTileWidth = diffusionTileSize
+            pipeline!.configuration.diffusionTileHeight = diffusionTileSize
             pipeline!.configuration.diffusionTileOverlap = 32
         }
         pipeline!.configuration.guidanceScale = Float(max(0, min(20, cfg)))
