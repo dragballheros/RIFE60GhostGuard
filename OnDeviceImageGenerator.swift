@@ -5,6 +5,23 @@ import _MediaGenerationKit
 import DrawThingsCLILib
 import DataModels
 
+private final class AIImageGenerationMemoryWatchdog: @unchecked Sendable {
+    private let lock = NSLock()
+    private var triggered = false
+
+    func trigger() {
+        lock.lock()
+        triggered = true
+        lock.unlock()
+    }
+
+    var didTrigger: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return triggered
+    }
+}
+
 enum OnDeviceImageGenerator {
     static let defaultModelID = "animagine_xl_v3.1_q6p_q8p.ckpt"
 
@@ -244,7 +261,11 @@ enum OnDeviceImageGenerator {
             progress: progress
         )
         DiagnosticsLogger.shared.log("AI Image Studio generation begin • steps=\(max(1, min(60, steps))) • size=\(outputWidth)x\(outputHeight) • tiledDiffusion=\(useTiledDiffusion) • diffusionTile=\(diffusionTileSize) • tiledDecoding=\(useTiledDecoding) • decodeTile=\(decodingTileSize)")
-        var results = try await pipeline!.generate(prompt: positivePrompt, negativePrompt: negativePrompt) { state, _ in
+        // Poll memory during inference because SDXL can allocate transient Metal buffers during early denoising.
+        let activePipeline = pipeline!
+        let memoryWatchdog = AIImageGenerationMemoryWatchdog()
+        let generationTask = Task {
+            try await activePipeline.generate(prompt: positivePrompt, negativePrompt: negativePrompt) { state, _ in
             let message: String
             switch state {
             case .resolvingBackend(_):
@@ -280,7 +301,35 @@ enum OnDeviceImageGenerator {
             case .cancelled:
                 message = "Generation cancelled."
             }
+            if case .generating = state {
+                let headroom = currentRenderPerformanceSnapshot().availableMemoryMB
+                if headroom < 900 {
+                    memoryWatchdog.trigger()
+                    DiagnosticsLogger.shared.log("AI Image Studio memory watchdog triggered at step boundary • available=\\(Int(headroom)) MB • requesting cancellation")
+                }
+            }
             Task { @MainActor in progress(message) }
+            }
+        }
+        let memoryMonitorTask = Task {
+            while !Task.isCancelled && !memoryWatchdog.didTrigger {
+                try? await Task.sleep(nanoseconds: 100_000_000)
+                if Task.isCancelled { return }
+                let snapshot = currentRenderPerformanceSnapshot()
+                if snapshot.availableMemoryMB < 900 {
+                    memoryWatchdog.trigger()
+                    DiagnosticsLogger.shared.log("AI Image Studio memory watchdog • available=\\(Int(snapshot.availableMemoryMB)) MB • tier=\\(snapshot.tier.rawValue) • requesting cancellation")
+                    generationTask.cancel()
+                    return
+                }
+            }
+        }
+        defer { memoryMonitorTask.cancel() }
+        var results = try await generationTask.value
+        if memoryWatchdog.didTrigger {
+            pipeline = nil
+            results.removeAll(keepingCapacity: false)
+            throw AIImageStudioError("Generation was stopped because available memory fell below 900 MB. The model remains downloaded. Close other apps and retry; this guard requests cancellation before iOS terminates the app.")
         }
         guard let result = results.first else {
             pipeline = nil
