@@ -175,7 +175,10 @@ enum OnDeviceImageGenerator {
         // run as a recovery retry. Favor small activations over preserving requested
         // output dimensions; the user can upscale after the diffusion pipeline exits.
         let recoveringAfterInterruption = previousGenerationWarning() != nil
-        let effectiveSteps = recoveringAfterInterruption ? max(1, min(20, steps)) : max(1, min(60, steps))
+        // A successful model load does not guarantee headroom for the first UNet activation.
+        // On this 6 GiB iPhone, keep inference conservative whenever less than 4 GiB is free.
+        let lowMemoryInferenceMode = recoveringAfterInterruption || currentRenderPerformanceSnapshot().availableMemoryMB < 4_096
+        let effectiveSteps = lowMemoryInferenceMode ? max(1, min(20, steps)) : max(1, min(60, steps))
 
         // Diffusion inference competes with the rest of iOS for unified memory.
         // Pick a conservative working size before loading SDXL, then enable the
@@ -325,8 +328,10 @@ enum OnDeviceImageGenerator {
             let scale = min(1.0, 512.0 / Double(max(requestedWidth, requestedHeight)))
             outputWidth = multipleOf64(Int(Double(requestedWidth) * scale))
             outputHeight = multipleOf64(Int(Double(requestedHeight) * scale))
-        } else if memory.availableMemoryMB < 3_072 {
-            let scale = min(1.0, 640.0 / Double(max(requestedWidth, requestedHeight)))
+        } else if memory.availableMemoryMB < 4_096 {
+            // Model loading leaves only ~3 GiB free on the target phone. Keep the
+            // first denoising activations small; a later Real-CUGAN pass can upscale.
+            let scale = min(1.0, 384.0 / Double(max(requestedWidth, requestedHeight)))
             outputWidth = multipleOf64(Int(Double(requestedWidth) * scale))
             outputHeight = multipleOf64(Int(Double(requestedHeight) * scale))
         }
