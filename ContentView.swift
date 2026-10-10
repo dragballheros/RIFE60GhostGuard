@@ -34,7 +34,8 @@ struct ContentView: View {
                         Button { showingAIImageStudio = true } label: {
                             Label("Open AI Image Studio", systemImage: "sparkles")
                         }
-                        Text("Generate anime images with a remote GPU, edit prompts and model settings, then send the generated still directly through this app's Real-CUGAN upscale and final Sharpie pipeline.")
+                        .disabled(vm.isBusy || vm.isImporting || vm.isBenchmarking)
+                        Text("Generate anime images locally on the iPhone. To protect memory, AI Image Studio cannot open while video processing, importing, or model benchmarking is active. Generated stills can then go through this app's Real-CUGAN upscale and final Sharpie pipeline.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
