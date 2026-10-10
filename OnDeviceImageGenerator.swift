@@ -98,7 +98,7 @@ enum OnDeviceImageGenerator {
             try handle.seek(toOffset: fileSize - UInt64(byteCount))
             guard let data = try handle.read(upToCount: byteCount),
                   let text = String(data: data, encoding: .utf8),
-                  let lastLine = text.split(whereSeparator: \\.isNewline).last else {
+                  let lastLine = text.split(whereSeparator: \.isNewline).last else {
                 return nil
             }
             let fields = lastLine.split(separator: "|", maxSplits: 2, omittingEmptySubsequences: false)
