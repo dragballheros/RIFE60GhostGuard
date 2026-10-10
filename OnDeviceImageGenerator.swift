@@ -305,20 +305,20 @@ enum OnDeviceImageGenerator {
                 let headroom = currentRenderPerformanceSnapshot().availableMemoryMB
                 if headroom < 900 {
                     memoryWatchdog.trigger()
-                    DiagnosticsLogger.shared.log("AI Image Studio memory watchdog triggered at step boundary • available=\\(Int(headroom)) MB • requesting cancellation")
+                    DiagnosticsLogger.shared.log("AI Image Studio memory watchdog triggered at step boundary • available=\(Int(headroom)) MB • requesting cancellation")
                 }
             }
             Task { @MainActor in progress(message) }
             }
         }
         let memoryMonitorTask = Task {
-            while !Task.isCancelled && !memoryWatchdog.didTrigger {
+            while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 100_000_000)
                 if Task.isCancelled { return }
                 let snapshot = currentRenderPerformanceSnapshot()
-                if snapshot.availableMemoryMB < 900 {
+                if memoryWatchdog.didTrigger || snapshot.availableMemoryMB < 900 {
                     memoryWatchdog.trigger()
-                    DiagnosticsLogger.shared.log("AI Image Studio memory watchdog • available=\\(Int(snapshot.availableMemoryMB)) MB • tier=\\(snapshot.tier.rawValue) • requesting cancellation")
+                    DiagnosticsLogger.shared.log("AI Image Studio memory watchdog • available=\(Int(snapshot.availableMemoryMB)) MB • tier=\(snapshot.tier.rawValue) • requesting cancellation")
                     generationTask.cancel()
                     return
                 }
