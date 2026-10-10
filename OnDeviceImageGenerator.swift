@@ -269,9 +269,10 @@ enum OnDeviceImageGenerator {
         )
         DiagnosticsLogger.shared.log("AI Image Studio generation begin • steps=\(max(1, min(60, steps))) • size=\(outputWidth)x\(outputHeight) • tiledDiffusion=\(useTiledDiffusion) • diffusionTilePixels=\(diffusionTileSize) • tiledDecoding=\(useTiledDecoding) • decodeTilePixels=\(decodingTileSize) • overlapPixels=\(tileOverlapPixels)")
         // Poll memory during inference because SDXL can allocate transient Metal buffers during early denoising.
-        let activePipeline = pipeline!
         let memoryWatchdog = AIImageGenerationMemoryWatchdog()
-        let generationTask = Task {
+        // Keep the pipeline's strong reference inside the task only. Once the
+        // task completes, its operation can release that capture before PNG encoding.
+        let generationTask = Task { [activePipeline = pipeline!] in
             try await activePipeline.generate(prompt: positivePrompt, negativePrompt: negativePrompt) { state, _ in
             let message: String
             switch state {
@@ -340,20 +341,35 @@ enum OnDeviceImageGenerator {
             pipeline = nil
             throw AIImageStudioError("The local image engine returned no image.")
         }
-        let outputURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("RIFE60_AI_\(UUID().uuidString).png")
+        // Release the diffusion pipeline before encoding the decoded image. PNG
+        // compression can allocate substantial CPU-side buffers; retaining SDXL's
+        // model and Metal resources during that phase needlessly compounds peak RAM.
+        pipeline = nil
+        let beforeEncoding = currentRenderPerformanceSnapshot()
+        DiagnosticsLogger.shared.log(
+            "AI Image Studio pipeline released before PNG encoding • available=\(Int(beforeEncoding.availableMemoryMB)) MB • physical=\(Int(beforeEncoding.physicalMemoryMB)) MB"
+        )
+
+        // Generated images are user output, not scratch files. Keep them in the app's
+        // persistent Application Support area so iOS temporary-file cleanup cannot
+        // remove a completed result. Never duplicate the PNG into a full Data buffer.
+        let support = try FileManager.default.url(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask,
+            appropriateFor: nil,
+            create: true
+        )
+        let outputDirectory = support.appendingPathComponent("RIFE60GhostGuard/GeneratedImages", isDirectory: true)
+        try FileManager.default.createDirectory(at: outputDirectory, withIntermediateDirectories: true)
+        let outputURL = outputDirectory.appendingPathComponent("RIFE60_AI_\(UUID().uuidString).png")
         do {
             try result.write(to: outputURL, type: .png)
         } catch {
-            pipeline = nil
             results.removeAll(keepingCapacity: false)
             throw error
         }
-        // The UI consumes the file URL directly. Do not read the full PNG into
-        // Data here, which duplicates the encoded image while the model is resident.
         results.removeAll(keepingCapacity: false)
-        pipeline = nil
-        notify("PNG saved. Releasing diffusion pipeline memory…", progress: progress)
+        notify("PNG saved to Generated Images. Diffusion pipeline was released before encoding.", progress: progress)
         return outputURL
     }
 }
