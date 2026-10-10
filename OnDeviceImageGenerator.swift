@@ -122,9 +122,14 @@ enum OnDeviceImageGenerator {
         // Force its conservative capacity tier and CPU partial-offload path before
         // constructing the pipeline. This trades speed for a smaller resident GPU
         // working set on memory-constrained iPhones.
-        DeviceCapability.memoryCapacity = .medium
+        // Use Draw Things' lowest-memory execution tier for this SDXL workload.
+        // The medium tier can still retain more model state than this device can
+        // safely accommodate after pipeline construction. Restore the app's
+        // established medium tier when this generation call exits.
+        DeviceCapability.memoryCapacity = .low
+        defer { DeviceCapability.memoryCapacity = .medium }
         DeviceCapability.isPartialOffloadPreferred.store(true, ordering: .releasing)
-        DiagnosticsLogger.shared.log("AI Image Studio memory policy • partial CPU offload enabled • capacity=medium • weights cache disabled")
+        DiagnosticsLogger.shared.log("AI Image Studio memory policy • partial CPU offload enabled • capacity=low • weights cache disabled")
 
         var environment = MediaGenerationEnvironment.default
         environment.externalUrls = [modelsDirectory]
