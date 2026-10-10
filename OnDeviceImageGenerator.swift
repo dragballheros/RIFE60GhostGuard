@@ -325,12 +325,12 @@ enum OnDeviceImageGenerator {
             }
         }
         defer { memoryMonitorTask.cancel() }
-        var results = try await generationTask.value
+        let generationResult = await generationTask.result
         if memoryWatchdog.didTrigger {
             pipeline = nil
-            results.removeAll(keepingCapacity: false)
             throw AIImageStudioError("Generation was stopped because available memory fell below 900 MB. The model remains downloaded. Close other apps and retry; this guard requests cancellation before iOS terminates the app.")
         }
+        var results = try generationResult.get()
         guard let result = results.first else {
             pipeline = nil
             throw AIImageStudioError("The local image engine returned no image.")
