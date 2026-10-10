@@ -406,7 +406,6 @@ enum OnDeviceImageGenerator {
         )
         DiagnosticsLogger.shared.log("AI Image Studio generation begin • steps=\(effectiveSteps) • size=\(outputWidth)x\(outputHeight) • tiledDiffusion=\(useTiledDiffusion) • diffusionTilePixels=\(diffusionTileSize) • tiledDecoding=\(useTiledDecoding) • decodeTilePixels=\(decodingTileSize) • overlapPixels=\(tileOverlapPixels)")
         // Poll memory during inference because SDXL can allocate transient Metal buffers during early denoising.
-        let memoryWatchdog = AIImageGenerationMemoryWatchdog()
         // Keep the pipeline's strong reference inside the task only. Once the
         // task completes, its operation can release that capture before PNG encoding.
         let generationTask = Task { [activePipeline = pipeline!] in
@@ -475,10 +474,6 @@ enum OnDeviceImageGenerator {
         }
         defer { memoryMonitorTask.cancel() }
         let generationResult = await generationTask.result
-        if memoryWatchdog.didTrigger {
-            pipeline = nil
-            throw AIImageStudioError("Generation was cancelled by the image engine. The model remains downloaded. Check the diagnostic log for the last memory snapshot.")
-        }
         var results = try generationResult.get()
         guard let result = results.first else {
             pipeline = nil
