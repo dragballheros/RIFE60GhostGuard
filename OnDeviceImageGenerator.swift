@@ -57,9 +57,44 @@ enum OnDeviceImageGenerator {
             throw AIImageStudioError("Choose a supported local model catalog ID.")
         }
 
+        // Diffusion inference competes with the rest of iOS for unified memory.
+        // Pick a conservative working size before loading SDXL, then enable the
+        // engine's native tiled paths when headroom is limited.
+        let memory = currentRenderPerformanceSnapshot()
+        guard memory.availableMemoryMB >= 450 else {
+            throw AIImageStudioError(
+                "AI Image Studio paused before loading the model because only \(Int(memory.availableMemoryMB)) MB of memory headroom is available. Close other apps, wait for memory to recover, and retry."
+            )
+        }
+
+        let requestedWidth = multipleOf64(width)
+        let requestedHeight = multipleOf64(height)
+        let outputWidth: Int
+        let outputHeight: Int
+        if memory.availableMemoryMB < 1_000 {
+            outputWidth = multipleOf64(min(requestedWidth, 512))
+            outputHeight = multipleOf64(min(requestedHeight, 768))
+        } else if memory.availableMemoryMB < 1_800 {
+            let scale = min(1.0, 1024.0 / Double(max(requestedWidth, requestedHeight)))
+            outputWidth = multipleOf64(Int(Double(requestedWidth) * scale))
+            outputHeight = multipleOf64(Int(Double(requestedHeight) * scale))
+        } else {
+            outputWidth = requestedWidth
+            outputHeight = requestedHeight
+        }
+        let useTiledDiffusion = memory.availableMemoryMB < 1_800
+        let useTiledDecoding = memory.availableMemoryMB < 2_400
+
+        DiagnosticsLogger.shared.log(
+            "AI Image Studio memory preflight • available=\(Int(memory.availableMemoryMB)) MB • physical=\(Int(memory.physicalMemoryMB)) MB • tier=\(memory.tier.rawValue) • requested=\(requestedWidth)x\(requestedHeight) • selected=\(outputWidth)x\(outputHeight) • tiledDiffusion=\(useTiledDiffusion) • tiledDecoding=\(useTiledDecoding)"
+        )
+
         let modelsDirectory = try modelsDirectoryURL()
         var environment = MediaGenerationEnvironment.default
         environment.externalUrls = [modelsDirectory]
+        // This device is below Draw Things' 47 GiB weights-cache threshold.
+        // Keep the cache explicitly disabled on constrained devices.
+        environment.maxTotalWeightsCacheSize = 0
         MediaGenerationEnvironment.default = environment
 
         notify("Checking local model files…", progress: progress)
@@ -83,40 +118,62 @@ enum OnDeviceImageGenerator {
 
         try Task.checkCancellation()
         notify("Loading local Metal model…", progress: progress)
-        var pipeline = try await MediaGenerationPipeline.fromPretrained(
+        var pipeline: MediaGenerationPipeline? = try await MediaGenerationPipeline.fromPretrained(
             resolvedModel.file,
             backend: .local
         )
-        let outputWidth = multipleOf64(width)
-        let outputHeight = multipleOf64(height)
-        pipeline.configuration.width = outputWidth
-        pipeline.configuration.height = outputHeight
-        pipeline.configuration.steps = max(1, min(60, steps))
+        pipeline!.configuration.width = outputWidth
+        pipeline!.configuration.height = outputHeight
+        pipeline!.configuration.steps = max(1, min(60, steps))
+        pipeline!.configuration.batchCount = 1
+        pipeline!.configuration.batchSize = 1
+        pipeline!.configuration.tiledDecoding = useTiledDecoding
+        if useTiledDecoding {
+            pipeline!.configuration.decodingTileWidth = 512
+            pipeline!.configuration.decodingTileHeight = 512
+            pipeline!.configuration.decodingTileOverlap = 32
+        }
+        pipeline!.configuration.tiledDiffusion = useTiledDiffusion
+        if useTiledDiffusion {
+            pipeline!.configuration.diffusionTileWidth = 512
+            pipeline!.configuration.diffusionTileHeight = 512
+            pipeline!.configuration.diffusionTileOverlap = 32
+        }
         pipeline.configuration.guidanceScale = Float(max(0, min(20, cfg)))
         pipeline.configuration.seed = UInt32(truncatingIfNeeded: max(0, seed))
         pipeline.configuration.clipSkip = max(1, min(2, clipSkip))
 
         if hiresEnabled {
-            pipeline.configuration.hiresFix = true
-            pipeline.configuration.hiresFixWidth = multipleOf64(Int(Double(outputWidth) * hiresScale))
-            pipeline.configuration.hiresFixHeight = multipleOf64(Int(Double(outputHeight) * hiresScale))
-            pipeline.configuration.hiresFixStrength = Float(max(0.05, min(0.95, hiresDenoise)))
-            pipeline.configuration.stage2Steps = max(1, min(60, hiresSteps))
-            pipeline.configuration.stage2Guidance = Float(max(0, min(20, cfg)))
+            // Hires diffusion can double or quadruple the latent working surface.
+            // Skip it automatically when the current memory budget is constrained.
+            if memory.availableMemoryMB >= 2_400 {
+                pipeline!.configuration.hiresFix = true
+                pipeline!.configuration.hiresFixWidth = multipleOf64(Int(Double(outputWidth) * hiresScale))
+                pipeline!.configuration.hiresFixHeight = multipleOf64(Int(Double(outputHeight) * hiresScale))
+                pipeline!.configuration.hiresFixStrength = Float(max(0.05, min(0.95, hiresDenoise)))
+                pipeline!.configuration.stage2Steps = max(1, min(60, hiresSteps))
+                pipeline!.configuration.stage2Guidance = Float(max(0, min(20, cfg)))
+            } else {
+                pipeline!.configuration.hiresFix = false
+                notify("Memory Safe Mode: high-resolution diffusion was disabled; you can upscale the result with Real-CUGAN afterward.", progress: progress)
+            }
         } else {
-            pipeline.configuration.hiresFix = false
+            pipeline!.configuration.hiresFix = false
         }
 
         if enableLoRA && !settings.localLoraFile.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            pipeline.configuration.loras = [
+            pipeline!.configuration.loras = [
                 DataModels.LoRA(file: settings.localLoraFile, weight: Float(loraWeight), mode: .all)
             ]
         } else {
-            pipeline.configuration.loras = []
+            pipeline!.configuration.loras = []
         }
 
-        notify("Generating locally on the iPhone GPU/Metal…", progress: progress)
-        let results = try await pipeline.generate(prompt: positivePrompt, negativePrompt: negativePrompt) { state, _ in
+        notify(
+            "Generating locally on the iPhone GPU/Metal… \(outputWidth)x\(outputHeight) • \(Int(memory.availableMemoryMB)) MB initial headroom",
+            progress: progress
+        )
+        var results = try await pipeline!.generate(prompt: positivePrompt, negativePrompt: negativePrompt) { state, _ in
             let message: String
             switch state {
             case .resolvingBackend(_):
@@ -134,7 +191,11 @@ enum OnDeviceImageGenerator {
             case .encodingInputs:
                 message = "Preparing generation inputs…"
             case .generating(let step, let total):
-                message = "Local GPU generation: step \(step)/\(total)"
+                let currentMemory = currentRenderPerformanceSnapshot()
+                message = "Local GPU generation: step \(step)/\(total) • \(Int(currentMemory.availableMemoryMB)) MB free"
+                DiagnosticsLogger.shared.log(
+                    "AI Image Studio step \(step)/\(total) • available=\(Int(currentMemory.availableMemoryMB)) MB • thermal=\(currentMemory.thermalAndMode)"
+                )
             case .decoding:
                 message = "Decoding image…"
             case .postprocessing:
@@ -149,13 +210,24 @@ enum OnDeviceImageGenerator {
             Task { @MainActor in progress(message) }
         }
         guard let result = results.first else {
+            pipeline = nil
             throw AIImageStudioError("The local image engine returned no image.")
         }
         let outputURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("RIFE60_AI_\(UUID().uuidString).png")
-        try result.write(to: outputURL, type: .png)
-        defer { try? FileManager.default.removeItem(at: outputURL) }
-        return try Data(contentsOf: outputURL)
+        do {
+            try result.write(to: outputURL, type: .png)
+        } catch {
+            pipeline = nil
+            results.removeAll(keepingCapacity: false)
+            throw error
+        }
+        // The UI consumes the file URL directly. Do not read the full PNG into
+        // Data here, which duplicates the encoded image while the model is resident.
+        results.removeAll(keepingCapacity: false)
+        pipeline = nil
+        notify("PNG saved. Releasing diffusion pipeline memory…", progress: progress)
+        return outputURL
     }
 }
 
