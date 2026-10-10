@@ -106,7 +106,7 @@ enum OnDeviceImageGenerator {
         var useTiledDecoding = true
         // Draw Things stores tile dimensions and overlap in 64-pixel units.
         // Keep the human-readable sizes in pixels here and convert at assignment.
-        // CPU partial-offload is enabled below; real 128px tiles limit the working set.
+        // CPU partial-offload is enabled below; 64px tiles minimize transient activation memory.
         var diffusionTileSize = 64
         var decodingTileSize = 64
         let tileOverlapPixels = 0
@@ -317,13 +317,15 @@ enum OnDeviceImageGenerator {
             Task { @MainActor in progress(message) }
             }
         }
+        let lowMemoryWarningLogged = AIImageGenerationMemoryWatchdog()
         let memoryMonitorTask = Task {
             while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 100_000_000)
+                try? await Task.sleep(nanoseconds: 500_000_000)
                 if Task.isCancelled { return }
                 let snapshot = currentRenderPerformanceSnapshot()
-                if snapshot.availableMemoryMB < 768 {
-                    DiagnosticsLogger.shared.log("AI Image Studio low-memory monitor • available=\(Int(snapshot.availableMemoryMB)) MB • tier=\(snapshot.tier.rawValue) • monitoring without the former 2.25 GiB auto-cancel")
+                if snapshot.availableMemoryMB < 768 && !lowMemoryWarningLogged.didTrigger {
+                    lowMemoryWarningLogged.trigger()
+                    DiagnosticsLogger.shared.log("AI Image Studio low-memory monitor • available=\(Int(snapshot.availableMemoryMB)) MB • tier=\(snapshot.tier.rawValue) • continuing without the former 2.25 GiB auto-cancel")
                 }
             }
         }
