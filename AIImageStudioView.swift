@@ -432,7 +432,7 @@ worst quality, bad quality, low quality, lowres, scan artifacts, jpeg artifacts,
             else if let value = Int64(seedText), value >= 0 { resolvedSeed = value }
             else { throw AIImageStudioError("Enter a non-negative integer seed or enable Random seed.") }
             generationStatus = "Preparing local GPU/Metal generation…"
-            let data = try await OnDeviceImageGenerator.generate(
+            let url = try await OnDeviceImageGenerator.generate(
                 settings: settings,
                 positivePrompt: positivePrompt,
                 negativePrompt: negativePrompt,
@@ -450,12 +450,10 @@ worst quality, bad quality, low quality, lowres, scan artifacts, jpeg artifacts,
                 clipSkip: Int(clipSkip),
                 progress: { generationStatus = $0 }
             )
-            guard let image = UIImage(data: data) else {
-                throw AIImageStudioError("The local engine returned data that could not be decoded as an image.")
+            guard let image = UIImage(contentsOfFile: url.path) else {
+                try? FileManager.default.removeItem(at: url)
+                throw AIImageStudioError("The local engine saved a PNG that could not be decoded as an image.")
             }
-            let url = FileManager.default.temporaryDirectory.appendingPathComponent("RIFE60_AI_\(UUID().uuidString).png")
-            // Save the local PNG for sharing, Photos, and local upscaling.
-            try data.write(to: url, options: .atomic)
             generatedImage = image
             generatedURL = url
             generationStatus = "Generation complete • \(image.size.width.rounded()) × \(image.size.height.rounded())"
