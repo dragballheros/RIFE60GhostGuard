@@ -51,9 +51,22 @@ jobs:
           PY
       - name: Validate pinned model ID and package patch prerequisites
         run: |
+          set -euo pipefail
           grep -q 'animagine_xl_v3.1_q6p_q8p.ckpt' OnDeviceImageGenerator.swift
           test -f Vendor/draw-things-community/Package.swift
           grep -q 'RIFE60GhostGuard runs alongside other GPU/video features' Vendor/draw-things-community/Libraries/LocalImageGenerator/Sources/ModelPreloader.swift
+          grep -Fq 'case .unet, .textEncoder, .diffusionMapping, .autoencoder:' Scripts/patch_draw_things_memory.py
+          python3 - <<'PY'
+          from pathlib import Path
+          source = Path("Vendor/draw-things-community/Libraries/LocalImageGenerator/Sources/ModelPreloader.swift").read_text()
+          expected = "case .unet, .textEncoder, .diffusionMapping, .autoencoder:"
+          if source.count(expected) != 1:
+              raise SystemExit(f"Expected exactly one file-backed SDXL component switch, found {source.count(expected)}")
+          if "case .control, .autoencoder:" in source:
+              raise SystemExit("Duplicate autoencoder variant would make the patched Swift switch invalid.")
+          if "case .control:\n          break" not in source:
+              raise SystemExit("Expected control-only fallback case is missing.")
+          PY
       - name: Select Xcode 26.6
         run: sudo xcode-select -s /Applications/Xcode_26.6.app/Contents/Developer
       - name: Verify selected Xcode and iOS SDK
