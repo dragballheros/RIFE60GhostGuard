@@ -24,8 +24,8 @@ private final class AIImageGenerationMemoryWatchdog: @unchecked Sendable {
 
 enum OnDeviceImageGenerator {
     static let defaultModelID = "animagine_xl_v3.1_q6p_q8p.ckpt"
-    private static let minimumPreloadHeadroomMB = 3_072.0
-    private static let minimumInferenceHeadroomMB = 2_048.0
+    private static let minimumPreloadHeadroomMB = 2_560.0
+    private static let minimumInferenceHeadroomMB = 2_304.0
     private static let runtimeCancellationHeadroomMB = 2_304.0
 
     static func modelsDirectoryURL() throws -> URL {
@@ -84,7 +84,7 @@ enum OnDeviceImageGenerator {
         guard memory.availableMemoryMB >= minimumPreloadHeadroomMB else {
             DiagnosticsLogger.shared.log("AI Image Studio refused model loading • headroom below safe reserve: \(Int(memory.availableMemoryMB)) MB")
             throw AIImageStudioError(
-                "AI Image Studio did not load the SDXL model because only \(Int(memory.availableMemoryMB)) MB of memory headroom is available. SDXL can be terminated by iOS when started this low. Close other apps, reopen the studio, and retry when at least 3 GB is available before loading the model."
+                "AI Image Studio did not load the SDXL model because only \(Int(memory.availableMemoryMB)) MB of memory headroom is available. SDXL can be terminated by iOS when started this low. Close other apps, reopen the studio, and retry when at least 2.5 GB is available before loading the model."
             )
         }
 
@@ -161,7 +161,7 @@ enum OnDeviceImageGenerator {
         guard memory.availableMemoryMB >= minimumPreloadHeadroomMB else {
             DiagnosticsLogger.shared.log("AI Image Studio stopped before pipeline load • headroom fell below safe reserve: \(Int(memory.availableMemoryMB)) MB")
             throw AIImageStudioError(
-                "AI Image Studio stopped before loading the SDXL pipeline because memory headroom fell to \(Int(memory.availableMemoryMB)) MB while checking model files. Reopen the studio when at least 3 GB is available before model loading."
+                "AI Image Studio stopped before loading the SDXL pipeline because memory headroom fell to \(Int(memory.availableMemoryMB)) MB while checking model files. Reopen the studio when at least 2.5 GB is available before model loading."
             )
         }
         if memory.availableMemoryMB < 1_400 {
@@ -194,11 +194,11 @@ enum OnDeviceImageGenerator {
         )
         guard memory.availableMemoryMB >= minimumInferenceHeadroomMB else {
             // A loaded SDXL pipeline can still allocate transient Metal buffers.
-            // Require at least 2 GiB of app allocation headroom before denoising.
+            // Require at least 2.25 GiB of app allocation headroom before denoising, leaving a margin above the 2 GiB floor.
             pipeline = nil
             DiagnosticsLogger.shared.log("AI Image Studio aborted after model load • insufficient inference reserve: \(Int(memory.availableMemoryMB)) MB")
             throw AIImageStudioError(
-                "The SDXL model loaded, but only \(Int(memory.availableMemoryMB)) MB remained. Generation was stopped before denoising because this phone needs at least 2 GiB of available app memory after model loading. The model remains downloaded; close other apps and retry when at least 3 GiB is available before loading."
+                "The SDXL model loaded, but only \(Int(memory.availableMemoryMB)) MB remained. Generation was stopped before denoising because this phone needs at least 2.25 GiB of available app memory after model loading. The model remains downloaded; close other apps and retry when at least 2.5 GiB is available before loading."
             )
         }
         // If model loading leaves less than 3 GiB, reduce latent dimensions while
