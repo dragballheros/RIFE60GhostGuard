@@ -53,6 +53,7 @@ jobs:
         run: |
           grep -q 'animagine_xl_v3.1_q6p_q8p.ckpt' OnDeviceImageGenerator.swift
           test -f Vendor/draw-things-community/Package.swift
+          grep -q 'RIFE60GhostGuard runs alongside other GPU/video features' Vendor/draw-things-community/Libraries/LocalImageGenerator/Sources/ModelPreloader.swift
       - name: Select Xcode 26.6
         run: sudo xcode-select -s /Applications/Xcode_26.6.app/Contents/Developer
       - name: Verify selected Xcode and iOS SDK
