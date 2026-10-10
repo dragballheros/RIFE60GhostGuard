@@ -107,11 +107,12 @@ enum OnDeviceImageGenerator {
         }
         var useTiledDiffusion = true
         var useTiledDecoding = true
-        // Keep the working set deliberately small on this 6 GB-class phone.
-        // CPU partial-offload is enabled below; 128-pixel tiles further limit
-        // transient activation and VAE decoder buffers.
-        var diffusionTileSize = 128
-        var decodingTileSize = 128
+        // Draw Things stores tile dimensions and overlap in 64-pixel units.
+        // Keep the human-readable sizes in pixels here and convert at assignment.
+        // CPU partial-offload is enabled below; real 128px tiles limit the working set.
+        let diffusionTileSize = 128
+        let decodingTileSize = 128
+        let tileOverlapPixels = 64
 
         DiagnosticsLogger.shared.log(
             "AI Image Studio memory preflight • available=\(Int(memory.availableMemoryMB)) MB • physical=\(Int(memory.physicalMemoryMB)) MB • tier=\(memory.tier.rawValue) • requested=\(requestedWidth)x\(requestedHeight) • selected=\(outputWidth)x\(outputHeight) • tiledDiffusion=\(useTiledDiffusion) • tiledDecoding=\(useTiledDecoding)"
@@ -182,10 +183,8 @@ enum OnDeviceImageGenerator {
         }
         useTiledDiffusion = true
         useTiledDecoding = true
-        diffusionTileSize = 128
-        decodingTileSize = 128
         DiagnosticsLogger.shared.log(
-            "AI Image Studio refreshed pre-load memory • available=\(Int(memory.availableMemoryMB)) MB • selected=\(outputWidth)x\(outputHeight) • diffusionTile=\(diffusionTileSize) • decodeTile=\(decodingTileSize)"
+            "AI Image Studio refreshed pre-load memory • available=\(Int(memory.availableMemoryMB)) MB • selected=\(outputWidth)x\(outputHeight) • diffusionTilePixels=\(diffusionTileSize) • decodeTilePixels=\(decodingTileSize) • overlapPixels=\(tileOverlapPixels)"
         )
 
         notify("Loading local Metal model…", progress: progress)
@@ -225,15 +224,15 @@ enum OnDeviceImageGenerator {
         pipeline!.configuration.batchSize = 1
         pipeline!.configuration.tiledDecoding = useTiledDecoding
         if useTiledDecoding {
-            pipeline!.configuration.decodingTileWidth = decodingTileSize
-            pipeline!.configuration.decodingTileHeight = decodingTileSize
-            pipeline!.configuration.decodingTileOverlap = 32
+            pipeline!.configuration.decodingTileWidth = decodingTileSize / 64
+            pipeline!.configuration.decodingTileHeight = decodingTileSize / 64
+            pipeline!.configuration.decodingTileOverlap = tileOverlapPixels / 64
         }
         pipeline!.configuration.tiledDiffusion = useTiledDiffusion
         if useTiledDiffusion {
-            pipeline!.configuration.diffusionTileWidth = diffusionTileSize
-            pipeline!.configuration.diffusionTileHeight = diffusionTileSize
-            pipeline!.configuration.diffusionTileOverlap = 32
+            pipeline!.configuration.diffusionTileWidth = diffusionTileSize / 64
+            pipeline!.configuration.diffusionTileHeight = diffusionTileSize / 64
+            pipeline!.configuration.diffusionTileOverlap = tileOverlapPixels / 64
         }
         pipeline!.configuration.guidanceScale = Float(max(0, min(20, cfg)))
         pipeline!.configuration.seed = UInt32(truncatingIfNeeded: max(0, seed))
@@ -272,7 +271,7 @@ enum OnDeviceImageGenerator {
             "Generating locally on the iPhone GPU/Metal… \(outputWidth)x\(outputHeight) • \(Int(memory.availableMemoryMB)) MB initial headroom",
             progress: progress
         )
-        DiagnosticsLogger.shared.log("AI Image Studio generation begin • steps=\(max(1, min(60, steps))) • size=\(outputWidth)x\(outputHeight) • tiledDiffusion=\(useTiledDiffusion) • diffusionTile=\(diffusionTileSize) • tiledDecoding=\(useTiledDecoding) • decodeTile=\(decodingTileSize)")
+        DiagnosticsLogger.shared.log("AI Image Studio generation begin • steps=\(max(1, min(60, steps))) • size=\(outputWidth)x\(outputHeight) • tiledDiffusion=\(useTiledDiffusion) • diffusionTilePixels=\(diffusionTileSize) • tiledDecoding=\(useTiledDecoding) • decodeTilePixels=\(decodingTileSize) • overlapPixels=\(tileOverlapPixels)")
         // Poll memory during inference because SDXL can allocate transient Metal buffers during early denoising.
         let activePipeline = pipeline!
         let memoryWatchdog = AIImageGenerationMemoryWatchdog()
