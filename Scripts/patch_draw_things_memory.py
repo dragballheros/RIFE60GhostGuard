@@ -4,7 +4,7 @@
 The upstream default treats SDXL as resident on devices with >=5 GiB physical RAM.
 That is too aggressive for a multi-feature iPhone app sharing unified memory with
 Metal, video buffers, and the UI. Force file-backed/on-demand weights for SDXL's
-UNet, text encoder, and diffusion mapping. Keep VAE decoding on its native path.
+UNet, text encoder, diffusion mapping, and autoencoder weights.
 """
 from pathlib import Path
 
@@ -26,7 +26,7 @@ replacement = """  ) -> Bool {
         return DeviceCapability.externalOnDemand(
           version: version, scale: scale, force: true, suffix: suffix,
           is8BitModel: is8BitModel)
-      case .control, .autoencoder:
+      case .control:
         break
       }
     }
