@@ -30,13 +30,13 @@ private final class AIImageGenerationMemoryJournal: @unchecked Sendable {
 
     private init() {}
 
-    func record(_ stage: String, snapshot: some Any, step: Int? = nil) {
+    func record(_ stage: String, step: Int? = nil) {
         let memory = currentRenderPerformanceSnapshot()
-        let safeStage = stage.replacingOccurrences(of: "\\n", with: " ")
-            .replacingOccurrences(of: "\\r", with: " ")
+        let safeStage = stage.replacingOccurrences(of: "\n", with: " ")
+            .replacingOccurrences(of: "\r", with: " ")
             .replacingOccurrences(of: "|", with: "/")
-        let stepText = step.map(String.init) ?? "-"
-        let line = "\\(Date().timeIntervalSince1970)|\\(safeStage)|step=\\(stepText)|availableMB=\\(Int(memory.availableMemoryMB))|physicalMB=\\(Int(memory.physicalMemoryMB))|tier=\\(memory.tier.rawValue)|thermal=\\(memory.thermalAndMode)\\n"
+        let stepText = step.map { String($0) } ?? "-"
+        let line = "\(Date().timeIntervalSince1970)|\(safeStage)|step=\(stepText)|availableMB=\(Int(memory.availableMemoryMB))|physicalMB=\(Int(memory.physicalMemoryMB))|tier=\(memory.tier.rawValue)|thermal=\(memory.thermalAndMode)\n"
         guard let data = line.data(using: .utf8) else { return }
 
         lock.lock()
@@ -50,7 +50,7 @@ private final class AIImageGenerationMemoryJournal: @unchecked Sendable {
             )
             let directory = base.appendingPathComponent("RIFE60GhostGuard/Diagnostics", isDirectory: true)
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-            let url = directory.appendingPathComponent("AIImageGenerationMemory.jsonl")
+            let url = directory.appendingPathComponent("AIImageGenerationMemory.log")
             if !FileManager.default.fileExists(atPath: url.path) {
                 FileManager.default.createFile(atPath: url.path, contents: nil)
             }
@@ -62,7 +62,7 @@ private final class AIImageGenerationMemoryJournal: @unchecked Sendable {
             // does not lose the final useful memory sample.
             try handle.synchronize()
         } catch {
-            DiagnosticsLogger.shared.log("AI Image Studio memory journal write failed: \\(error.localizedDescription)")
+            DiagnosticsLogger.shared.log("AI Image Studio memory journal write failed: \(error.localizedDescription)")
         }
     }
 }
@@ -160,7 +160,7 @@ enum OnDeviceImageGenerator {
             "AI Image Studio memory preflight • available=\(Int(memory.availableMemoryMB)) MB • physical=\(Int(memory.physicalMemoryMB)) MB • tier=\(memory.tier.rawValue) • requested=\(requestedWidth)x\(requestedHeight) • selected=\(outputWidth)x\(outputHeight) • tiledDiffusion=\(useTiledDiffusion) • tiledDecoding=\(useTiledDecoding)"
         )
 
-        AIImageGenerationMemoryJournal.shared.record("pre-model-policy", snapshot: memory)
+        AIImageGenerationMemoryJournal.shared.record("pre-model-policy")
         let modelsDirectory = try modelsDirectoryURL()
         // Draw Things exposes a supported partial-offload policy in DataModels.
         // Force its conservative capacity tier and CPU partial-offload path before
@@ -228,13 +228,13 @@ enum OnDeviceImageGenerator {
         )
 
         notify("Loading local Metal model…", progress: progress)
-        AIImageGenerationMemoryJournal.shared.record("model-load-start", snapshot: memory)
+        AIImageGenerationMemoryJournal.shared.record("model-load-start")
         var pipeline: MediaGenerationPipeline? = try await MediaGenerationPipeline.fromPretrained(
             resolvedModel.file,
             backend: .local
         )
         memory = currentRenderPerformanceSnapshot()
-        AIImageGenerationMemoryJournal.shared.record("model-load-complete", snapshot: memory)
+        AIImageGenerationMemoryJournal.shared.record("model-load-complete")
         DiagnosticsLogger.shared.log(
             "AI Image Studio model loaded • available=\(Int(memory.availableMemoryMB)) MB • physical=\(Int(memory.physicalMemoryMB)) MB • thermal=\(memory.thermalAndMode)"
         )
@@ -346,19 +346,22 @@ enum OnDeviceImageGenerator {
                 DiagnosticsLogger.shared.log(
                     "AI Image Studio step \(step)/\(total) • available=\(Int(currentMemory.availableMemoryMB)) MB • physical=\(Int(currentMemory.physicalMemoryMB)) MB • tier=\(currentMemory.tier.rawValue) • thermal=\(currentMemory.thermalAndMode)"
                 )
+                if step == 1 || step == total || step.isMultiple(of: 2) {
+                    AIImageGenerationMemoryJournal.shared.record("denoising", step: step)
+                }
             case .decoding:
                 message = "Decoding image…"
-                AIImageGenerationMemoryJournal.shared.record("decoder-start", snapshot: currentRenderPerformanceSnapshot())
+                AIImageGenerationMemoryJournal.shared.record("decoder-start")
             case .postprocessing:
                 message = "Running local high-resolution pass…"
             case .cancelling:
                 message = "Cancelling generation…"
             case .completed:
                 message = "Generation complete."
-                AIImageGenerationMemoryJournal.shared.record("generation-complete", snapshot: currentRenderPerformanceSnapshot())
+                AIImageGenerationMemoryJournal.shared.record("generation-complete")
             case .cancelled:
                 message = "Generation cancelled."
-                AIImageGenerationMemoryJournal.shared.record("generation-cancelled", snapshot: currentRenderPerformanceSnapshot())
+                AIImageGenerationMemoryJournal.shared.record("generation-cancelled")
             }
             if case .generating = state {
                 let headroom = currentRenderPerformanceSnapshot().availableMemoryMB
