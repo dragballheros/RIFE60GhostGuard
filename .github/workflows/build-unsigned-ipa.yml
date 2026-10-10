@@ -23,7 +23,7 @@ permissions:
 
 jobs:
   build:
-    runs-on: macos-15
+    runs-on: macos-26
     # Large Draw Things SwiftPM dependency graph needs more than 45 minutes on a cold cache.
     timeout-minutes: 120
     steps:
@@ -51,10 +51,19 @@ jobs:
         run: |
           grep -q 'animagine_xl_v3.1_q6p_q8p.ckpt' OnDeviceImageGenerator.swift
           test -f Vendor/draw-things-community/Package.swift
-      - name: Select Xcode 16.4
-        run: sudo xcode-select -s /Applications/Xcode_16.4.app/Contents/Developer
-      - name: Show Xcode version
-        run: xcodebuild -version
+      - name: Select Xcode 26.6
+        run: sudo xcode-select -s /Applications/Xcode_26.6.app/Contents/Developer
+      - name: Verify selected Xcode and iOS SDK
+        run: |
+          set -euo pipefail
+          xcodebuild -version
+          SDK_VERSION="$(xcrun --sdk iphoneos --show-sdk-version)"
+          echo "Selected iOS SDK: $SDK_VERSION"
+          SDK_MAJOR="${SDK_VERSION%%.*}"
+          if [ "$SDK_MAJOR" -lt 26 ]; then
+            echo "::error::Draw Things uses Metal GPU family APIs that require an iOS 26 SDK; selected SDK is $SDK_VERSION"
+            exit 1
+          fi
       - name: Install XcodeGen
         run: brew install xcodegen
 
@@ -256,9 +265,9 @@ jobs:
             build/Build/Intermediates.noindex
             build/ModuleCache.noindex
             build/SDKStatCaches.noindex
-          key: macos-15-xcode16.4-drawthings-${{ hashFiles('project.yml', 'Vendor/draw-things-community/Package.swift', 'Vendor/rife-metal/Package.swift') }}
+          key: macos-26-xcode26.6-drawthings-${{ hashFiles('project.yml', 'Vendor/draw-things-community/Package.swift', 'Vendor/rife-metal/Package.swift') }}
           restore-keys: |
-            macos-15-xcode16.4-drawthings-
+            macos-26-xcode26.6-drawthings-
 
       - name: Resolve packages
         run: xcodebuild -resolvePackageDependencies -derivedDataPath build -project RIFE60GhostGuard.xcodeproj -scheme RIFE60GhostGuard
@@ -266,50 +275,55 @@ jobs:
         run: |
           set -euo pipefail
           test -f build/SourcePackages/checkouts/ccv/lib/nnc/mfa/ccv_nnc_mfa_ane_rowwise_coreml.mm
-      - name: Patch optional Core ML Int8 ANE path for Xcode 16.4
+      - name: Patch optional Core ML Int8 ANE path only when SDK lacks Int8 support
         run: |
           set -euo pipefail
           python3 - <<'PY'
           from pathlib import Path
           import stat
+          import subprocess
 
+          sdk = Path(subprocess.check_output(
+              ["xcrun", "--sdk", "iphoneos", "--show-sdk-path"], text=True
+          ).strip())
+          headers = sdk / "System/Library/Frameworks/CoreML.framework/Headers"
+          has_int8 = headers.is_dir() and any(
+              "MLMultiArrayDataTypeInt8" in p.read_text(errors="ignore")
+              for p in headers.rglob("*") if p.is_file()
+          )
+          if has_int8:
+              print("Selected SDK declares MLMultiArrayDataTypeInt8; preserving the native optional Core ML Int8 ANE path.")
+              raise SystemExit(0)
+
+          # Older SDK fallback: disable only the optional Core ML Int8 rowwise path.
+          # Other Metal/ANE paths remain intact. This branch is not used on Xcode 26.6.
           path = Path("build/SourcePackages/checkouts/ccv/lib/nnc/mfa/ccv_nnc_mfa_ane_rowwise_coreml.mm")
           if not path.is_file():
               raise SystemExit(f"Resolved ccv Core ML source was not found: {path}")
-          # SwiftPM may mark immutable checkout files read-only. This is a generated
-          # runner-local checkout, so grant the current runner user write access before patching.
           path.chmod(path.stat().st_mode | stat.S_IWUSR)
           source = path.read_text()
-          marker = "#import <Metal/Metal.h>\n"
+          marker = "#import <Metal/Metal.h>\\n"
           if source.count(marker) != 1:
-              raise SystemExit("Unexpected ccv Core ML source layout; do not apply a blind compatibility patch.")
+              raise SystemExit("Unexpected ccv Core ML source layout; refusing a blind compatibility patch.")
           source = source.replace(
               marker,
-              marker + "\n// RIFE60 compatibility: the Xcode 16.4 SDK has no MLMultiArrayDataTypeInt8.\n"
-                       "#define CCV_HAS_ML_INT8_MULTARRAY 0\n",
+              marker + "\\n// RIFE60 compatibility: selected SDK has no MLMultiArrayDataTypeInt8.\\n"
+                       "#define CCV_HAS_ML_INT8_MULTARRAY 0\\n",
               1,
           )
 
-          byte_case = "    case MLMultiArrayDataTypeInt8:\n      return sizeof(int8_t);"
+          byte_case = "    case MLMultiArrayDataTypeInt8:\\n      return sizeof(int8_t);"
           if source.count(byte_case) != 1:
-              raise SystemExit("Expected one Int8 byte-size case.")
-          source = source.replace(
-              byte_case,
-              "#if CCV_HAS_ML_INT8_MULTARRAY\n" + byte_case + "\n#endif",
-              1,
-          )
+              raise SystemExit("Expected exactly one Int8 byte-size case in old-SDK compatibility mode.")
+          source = source.replace(byte_case, "#if CCV_HAS_ML_INT8_MULTARRAY\\n" + byte_case + "\\n#endif", 1)
 
-          pixel_case = "    case MLMultiArrayDataTypeInt8:\n      return kCVPixelFormatType_OneComponent8;"
+          pixel_case = "    case MLMultiArrayDataTypeInt8:\\n      return kCVPixelFormatType_OneComponent8;"
           if source.count(pixel_case) != 1:
-              raise SystemExit("Expected one Int8 pixel-format case.")
-          source = source.replace(
-              pixel_case,
-              "#if CCV_HAS_ML_INT8_MULTARRAY\n" + pixel_case + "\n#endif",
-              1,
-          )
+              raise SystemExit("Expected exactly one Int8 pixel-format case in old-SDK compatibility mode.")
+          source = source.replace(pixel_case, "#if CCV_HAS_ML_INT8_MULTARRAY\\n" + pixel_case + "\\n#endif", 1)
 
           compile_start = source.index("static std::unique_ptr<CompiledProgram> compile_program(")
-          compile_end = source.index("\n} // namespace", compile_start)
+          compile_end = source.index("\\n} // namespace", compile_start)
           compile_body = source[compile_start:compile_end].rstrip()
           compile_stub = """static std::unique_ptr<CompiledProgram> compile_program(
               const uint32_t padded_M,
@@ -325,18 +339,14 @@ jobs:
             return {};
           }"""
           source = (
-              source[:compile_start]
-              + "#if CCV_HAS_ML_INT8_MULTARRAY\n"
-              + compile_body
-              + "\n#else\n"
-              + compile_stub
-              + "\n#endif\n"
+              source[:compile_start] + "#if CCV_HAS_ML_INT8_MULTARRAY\\n"
+              + compile_body + "\\n#else\\n" + compile_stub + "\\n#endif\\n"
               + source[compile_end:]
           )
 
           scratch_start = source.index("int ccv_nnc_mfa_ane_rowwise_coreml_cache_ensure_scratch(")
           scratch_end = source.index(
-              "\nmtl_buffer_t* ccv_nnc_mfa_ane_rowwise_coreml_cache_activation_surface_buffer(",
+              "\\nmtl_buffer_t* ccv_nnc_mfa_ane_rowwise_coreml_cache_activation_surface_buffer(",
               scratch_start,
           )
           scratch_body = source[scratch_start:scratch_end].rstrip()
@@ -357,17 +367,12 @@ jobs:
             return 0;
           }"""
           source = (
-              source[:scratch_start]
-              + "#if CCV_HAS_ML_INT8_MULTARRAY\n"
-              + scratch_body
-              + "\n#else\n"
-              + scratch_stub
-              + "\n#endif\n"
+              source[:scratch_start] + "#if CCV_HAS_ML_INT8_MULTARRAY\\n"
+              + scratch_body + "\\n#else\\n" + scratch_stub + "\\n#endif\\n"
               + source[scratch_end:]
           )
-
           path.write_text(source)
-          print("Patched optional Core ML Int8 ANE path; the normal Metal fallback remains enabled.")
+          print("Applied old-SDK fallback: optional Core ML Int8 rowwise path disabled; other acceleration paths preserved.")
           PY
 
       - name: Build unsigned app
