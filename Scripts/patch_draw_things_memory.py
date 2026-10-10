@@ -22,7 +22,7 @@ replacement = """  ) -> Bool {
     // components; this trades throughput for a lower resident working set.
     if version == .sdxlBase || version == .sdxlRefiner {
       switch variant {
-      case .unet, .textEncoder, .diffusionMapping:
+      case .unet, .textEncoder, .diffusionMapping, .autoencoder:
         return DeviceCapability.externalOnDemand(
           version: version, scale: scale, force: true, suffix: suffix,
           is8BitModel: is8BitModel)
