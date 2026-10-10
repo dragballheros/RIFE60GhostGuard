@@ -69,6 +69,23 @@ private final class AIImageGenerationMemoryJournal: @unchecked Sendable {
 
 enum OnDeviceImageGenerator {
     static let defaultModelID = "animagine_xl_v3.1_q6p_q8p.ckpt"
+
+    static func memoryJournalURL() -> URL? {
+        guard let base = try? FileManager.default.url(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask,
+            appropriateFor: nil,
+            create: false
+        ) else { return nil }
+        return base
+            .appendingPathComponent("RIFE60GhostGuard/Diagnostics", isDirectory: true)
+            .appendingPathComponent("AIImageGenerationMemory.log")
+    }
+
+    static func recordGenerationFailure() {
+        AIImageGenerationMemoryJournal.shared.record("ui-generation-failure")
+    }
+
     // No fixed 2.25 GiB stop threshold: the engine uses on-demand disk-backed weights,
     // low-memory device capability, partial CPU offload, and the smallest supported tiles.
     // iOS can still terminate the process if transient Metal allocations exceed its budget.
