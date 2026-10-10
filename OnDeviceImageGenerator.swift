@@ -48,7 +48,7 @@ enum OnDeviceImageGenerator {
         hiresDenoise: Double,
         clipSkip: Int,
         progress: @escaping @MainActor @Sendable (String) -> Void
-    ) async throws -> Data {
+    ) async throws -> URL {
         guard !positivePrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw AIImageStudioError("The positive prompt cannot be empty.")
         }
@@ -139,9 +139,9 @@ enum OnDeviceImageGenerator {
             pipeline!.configuration.diffusionTileHeight = 512
             pipeline!.configuration.diffusionTileOverlap = 32
         }
-        pipeline.configuration.guidanceScale = Float(max(0, min(20, cfg)))
-        pipeline.configuration.seed = UInt32(truncatingIfNeeded: max(0, seed))
-        pipeline.configuration.clipSkip = max(1, min(2, clipSkip))
+        pipeline!.configuration.guidanceScale = Float(max(0, min(20, cfg)))
+        pipeline!.configuration.seed = UInt32(truncatingIfNeeded: max(0, seed))
+        pipeline!.configuration.clipSkip = max(1, min(2, clipSkip))
 
         if hiresEnabled {
             // Hires diffusion can double or quadruple the latent working surface.
