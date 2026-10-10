@@ -64,7 +64,7 @@ jobs:
               raise SystemExit(f"Expected exactly one file-backed SDXL component switch, found {source.count(expected)}")
           if "case .control, .autoencoder:" in source:
               raise SystemExit("Duplicate autoencoder variant would make the patched Swift switch invalid.")
-          if "case .control:\n          break" not in source:
+          if "case .control:\n        break" not in source:
               raise SystemExit("Expected control-only fallback case is missing.")
           PY
       - name: Select Xcode 26.6
