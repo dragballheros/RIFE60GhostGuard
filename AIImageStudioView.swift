@@ -231,6 +231,14 @@ worst quality, bad quality, low quality, lowres, scan artifacts, jpeg artifacts,
                     .buttonStyle(.borderedProminent)
                 }
                 if !generationStatus.isEmpty { Text(generationStatus).font(.caption).foregroundStyle(.secondary) }
+                if let journalURL = OnDeviceImageGenerator.memoryJournalURL(),
+                   FileManager.default.fileExists(atPath: journalURL.path) {
+                    ShareLink(item: journalURL) {
+                        Label("Export memory diagnostics", systemImage: "doc.text.magnifyingglass")
+                    }
+                    Text("Shares the latest on-device generation memory trace, including the last recorded stage before a failure.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
                 Text("Image generation runs on this iPhone. No remote GPU endpoint or paid inference service is used. The generated PNG can be sent directly into the existing local Real-CUGAN + Sharpie upscale pipeline.")
                     .font(.caption).foregroundStyle(.secondary)
             }
@@ -459,6 +467,7 @@ worst quality, bad quality, low quality, lowres, scan artifacts, jpeg artifacts,
             generatedURL = url
             generationStatus = "Generation complete • \(image.size.width.rounded()) × \(image.size.height.rounded())"
         } catch {
+            OnDeviceImageGenerator.recordGenerationFailure()
             errorText = error.localizedDescription
             generationStatus = "Generation failed"
         }
