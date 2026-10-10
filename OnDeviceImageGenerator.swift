@@ -24,9 +24,9 @@ private final class AIImageGenerationMemoryWatchdog: @unchecked Sendable {
 
 enum OnDeviceImageGenerator {
     static let defaultModelID = "animagine_xl_v3.1_q6p_q8p.ckpt"
-    private static let minimumPreloadHeadroomMB = 2_560.0
-    private static let minimumInferenceHeadroomMB = 2_304.0
-    private static let runtimeCancellationHeadroomMB = 2_304.0
+    // No fixed 2.25 GiB stop threshold: the engine uses on-demand disk-backed weights,
+    // low-memory device capability, partial CPU offload, and the smallest supported tiles.
+    // iOS can still terminate the process if transient Metal allocations exceed its budget.
 
     static func modelsDirectoryURL() throws -> URL {
         let base = try FileManager.default.url(
@@ -81,11 +81,8 @@ enum OnDeviceImageGenerator {
         // Pick a conservative working size before loading SDXL, then enable the
         // engine's native tiled paths when headroom is limited.
         var memory = currentRenderPerformanceSnapshot()
-        guard memory.availableMemoryMB >= minimumPreloadHeadroomMB else {
-            DiagnosticsLogger.shared.log("AI Image Studio refused model loading • headroom below safe reserve: \(Int(memory.availableMemoryMB)) MB")
-            throw AIImageStudioError(
-                "AI Image Studio did not load the SDXL model because only \(Int(memory.availableMemoryMB)) MB of memory headroom is available. SDXL can be terminated by iOS when started this low. Close other apps, reopen the studio, and retry when at least 2.5 GB is available before loading the model."
-            )
+        if memory.availableMemoryMB < 1_024 {
+            DiagnosticsLogger.shared.log("AI Image Studio entering low-memory mode before model load • available=\(Int(memory.availableMemoryMB)) MB")
         }
 
         let requestedWidth = multipleOf64(width)
@@ -110,9 +107,9 @@ enum OnDeviceImageGenerator {
         // Draw Things stores tile dimensions and overlap in 64-pixel units.
         // Keep the human-readable sizes in pixels here and convert at assignment.
         // CPU partial-offload is enabled below; real 128px tiles limit the working set.
-        var diffusionTileSize = 128
-        var decodingTileSize = 128
-        let tileOverlapPixels = 64
+        var diffusionTileSize = 64
+        var decodingTileSize = 64
+        let tileOverlapPixels = 0
 
         DiagnosticsLogger.shared.log(
             "AI Image Studio memory preflight • available=\(Int(memory.availableMemoryMB)) MB • physical=\(Int(memory.physicalMemoryMB)) MB • tier=\(memory.tier.rawValue) • requested=\(requestedWidth)x\(requestedHeight) • selected=\(outputWidth)x\(outputHeight) • tiledDiffusion=\(useTiledDiffusion) • tiledDecoding=\(useTiledDecoding)"
@@ -164,11 +161,8 @@ enum OnDeviceImageGenerator {
         // change while it runs. Re-evaluate before constructing the heavy SDXL
         // pipeline rather than trusting the initial snapshot.
         memory = currentRenderPerformanceSnapshot()
-        guard memory.availableMemoryMB >= minimumPreloadHeadroomMB else {
-            DiagnosticsLogger.shared.log("AI Image Studio stopped before pipeline load • headroom fell below safe reserve: \(Int(memory.availableMemoryMB)) MB")
-            throw AIImageStudioError(
-                "AI Image Studio stopped before loading the SDXL pipeline because memory headroom fell to \(Int(memory.availableMemoryMB)) MB while checking model files. Reopen the studio when at least 2.5 GB is available before model loading."
-            )
+        if memory.availableMemoryMB < 1_024 {
+            DiagnosticsLogger.shared.log("AI Image Studio model-load headroom is low • continuing with on-demand weights and tiled inference • available=\(Int(memory.availableMemoryMB)) MB")
         }
         if memory.availableMemoryMB < 1_400 {
             outputWidth = 384
@@ -196,27 +190,29 @@ enum OnDeviceImageGenerator {
         DiagnosticsLogger.shared.log(
             "AI Image Studio model loaded • available=\(Int(memory.availableMemoryMB)) MB • physical=\(Int(memory.physicalMemoryMB)) MB • thermal=\(memory.thermalAndMode)"
         )
-        guard memory.availableMemoryMB >= minimumInferenceHeadroomMB else {
-            // A loaded SDXL pipeline can still allocate transient Metal buffers.
-            // Require at least 2.25 GiB of app allocation headroom before denoising, leaving a margin above the 2 GiB floor.
-            pipeline = nil
-            DiagnosticsLogger.shared.log("AI Image Studio aborted after model load • insufficient inference reserve: \(Int(memory.availableMemoryMB)) MB")
-            throw AIImageStudioError(
-                "The SDXL model loaded, but only \(Int(memory.availableMemoryMB)) MB remained. Generation was stopped before denoising because this phone needs at least 2.25 GiB of available app memory after model loading. The model remains downloaded; close other apps and retry when at least 2.5 GiB is available before loading."
-            )
+        if memory.availableMemoryMB < 1_024 {
+            DiagnosticsLogger.shared.log("AI Image Studio continuing below former inference reserve • available=\(Int(memory.availableMemoryMB)) MB • using minimum tiles and reduced dimensions")
         }
         // If model loading leaves less than 3 GiB, reduce latent dimensions while
         // preserving the requested aspect ratio. Upscaling can happen afterward via
         // the existing Real-CUGAN stage, which runs after this pipeline is released.
-        if memory.availableMemoryMB < 3_072 {
-            let scale = min(1.0, 768.0 / Double(max(requestedWidth, requestedHeight)))
+        if memory.availableMemoryMB < 1_200 {
+            let scale = min(1.0, 384.0 / Double(max(requestedWidth, requestedHeight)))
+            outputWidth = multipleOf64(Int(Double(requestedWidth) * scale))
+            outputHeight = multipleOf64(Int(Double(requestedHeight) * scale))
+        } else if memory.availableMemoryMB < 1_800 {
+            let scale = min(1.0, 512.0 / Double(max(requestedWidth, requestedHeight)))
+            outputWidth = multipleOf64(Int(Double(requestedWidth) * scale))
+            outputHeight = multipleOf64(Int(Double(requestedHeight) * scale))
+        } else if memory.availableMemoryMB < 3_072 {
+            let scale = min(1.0, 640.0 / Double(max(requestedWidth, requestedHeight)))
             outputWidth = multipleOf64(Int(Double(requestedWidth) * scale))
             outputHeight = multipleOf64(Int(Double(requestedHeight) * scale))
         }
         useTiledDiffusion = true
         useTiledDecoding = true
-        diffusionTileSize = 128
-        decodingTileSize = 128
+        diffusionTileSize = 64
+        decodingTileSize = 64
         pipeline!.configuration.width = outputWidth
         pipeline!.configuration.height = outputHeight
         pipeline!.configuration.steps = max(1, min(60, steps))
@@ -314,9 +310,8 @@ enum OnDeviceImageGenerator {
             }
             if case .generating = state {
                 let headroom = currentRenderPerformanceSnapshot().availableMemoryMB
-                if headroom < runtimeCancellationHeadroomMB {
-                    memoryWatchdog.trigger()
-                    DiagnosticsLogger.shared.log("AI Image Studio memory watchdog triggered at step boundary • available=\(Int(headroom)) MB • requesting cancellation")
+                if headroom < 768 {
+                    DiagnosticsLogger.shared.log("AI Image Studio critical memory warning at step boundary • available=\(Int(headroom)) MB • continuing with engine-managed offload; iOS may still terminate on an allocation spike")
                 }
             }
             Task { @MainActor in progress(message) }
@@ -327,11 +322,8 @@ enum OnDeviceImageGenerator {
                 try? await Task.sleep(nanoseconds: 100_000_000)
                 if Task.isCancelled { return }
                 let snapshot = currentRenderPerformanceSnapshot()
-                if memoryWatchdog.didTrigger || snapshot.availableMemoryMB < runtimeCancellationHeadroomMB {
-                    memoryWatchdog.trigger()
-                    DiagnosticsLogger.shared.log("AI Image Studio memory watchdog • available=\(Int(snapshot.availableMemoryMB)) MB • tier=\(snapshot.tier.rawValue) • requesting cancellation")
-                    generationTask.cancel()
-                    return
+                if snapshot.availableMemoryMB < 768 {
+                    DiagnosticsLogger.shared.log("AI Image Studio low-memory monitor • available=\(Int(snapshot.availableMemoryMB)) MB • tier=\(snapshot.tier.rawValue) • monitoring without the former 2.25 GiB auto-cancel")
                 }
             }
         }
@@ -339,7 +331,7 @@ enum OnDeviceImageGenerator {
         let generationResult = await generationTask.result
         if memoryWatchdog.didTrigger {
             pipeline = nil
-            throw AIImageStudioError("Generation was stopped early because available app memory fell below the 2.25 GiB safety trigger. The model remains downloaded. Close other apps and retry; iOS can still terminate an app before a watchdog reacts to a sudden allocation spike.")
+            throw AIImageStudioError("Generation was cancelled by the image engine. The model remains downloaded. Check the diagnostic log for the last memory snapshot.")
         }
         var results = try generationResult.get()
         guard let result = results.first else {
