@@ -86,6 +86,38 @@ enum OnDeviceImageGenerator {
         AIImageGenerationMemoryJournal.shared.record("ui-generation-failure")
     }
 
+    static func previousGenerationWarning() -> String? {
+        guard let url = memoryJournalURL(),
+              let handle = try? FileHandle(forReadingFrom: url) else { return nil }
+        defer { try? handle.close() }
+
+        do {
+            let fileSize = try handle.seekToEnd()
+            guard fileSize > 0 else { return nil }
+            let byteCount = Int(min(fileSize, 16 * 1024))
+            try handle.seek(toOffset: fileSize - UInt64(byteCount))
+            guard let data = try handle.read(upToCount: byteCount),
+                  let text = String(data: data, encoding: .utf8),
+                  let lastLine = text.split(whereSeparator: \\.isNewline).last else {
+                return nil
+            }
+            let fields = lastLine.split(separator: "|", maxSplits: 2, omittingEmptySubsequences: false)
+            guard fields.count > 1 else { return nil }
+            let stage = String(fields[1])
+            // "generation-complete" is retained as a legacy terminal marker from
+            // earlier builds. New builds distinguish sampler completion from a
+            // successfully written output file.
+            let terminalStages: Set<String> = [
+                "generation-complete", "image-output-saved",
+                "generation-cancelled", "ui-generation-failure"
+            ]
+            guard !terminalStages.contains(stage) else { return nil }
+            return "The previous AI generation may have stopped before its output was safely saved. Export memory diagnostics below to inspect the last recorded stage."
+        } catch {
+            return nil
+        }
+    }
+
     // No fixed 2.25 GiB stop threshold: the engine uses on-demand disk-backed weights,
     // low-memory device capability, partial CPU offload, and the smallest supported tiles.
     // iOS can still terminate the process if transient Metal allocations exceed its budget.
@@ -375,7 +407,7 @@ enum OnDeviceImageGenerator {
                 message = "Cancelling generation…"
             case .completed:
                 message = "Generation complete."
-                AIImageGenerationMemoryJournal.shared.record("generation-complete")
+                AIImageGenerationMemoryJournal.shared.record("sampler-complete")
             case .cancelled:
                 message = "Generation cancelled."
                 AIImageGenerationMemoryJournal.shared.record("generation-cancelled")
@@ -435,6 +467,7 @@ enum OnDeviceImageGenerator {
         let outputURL = outputDirectory.appendingPathComponent("RIFE60_AI_\(UUID().uuidString).png")
         do {
             try result.write(to: outputURL, type: .png)
+            AIImageGenerationMemoryJournal.shared.record("image-output-saved")
         } catch {
             results.removeAll(keepingCapacity: false)
             throw error
