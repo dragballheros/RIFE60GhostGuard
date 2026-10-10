@@ -112,7 +112,7 @@ enum OnDeviceImageGenerator {
                 "generation-cancelled", "ui-generation-failure"
             ]
             guard !terminalStages.contains(stage) else { return nil }
-            return "The previous AI generation may have stopped before its output was safely saved. Export memory diagnostics below to inspect the last recorded stage."
+            return "The previous AI generation may have stopped before its output was safely saved. The next attempt will use Recovery Safe Mode (maximum 384 px, 20 steps, Hires/LoRA off). Export memory diagnostics below to inspect the last recorded stage."
         } catch {
             return nil
         }
@@ -171,6 +171,12 @@ enum OnDeviceImageGenerator {
             throw AIImageStudioError("Choose a supported local model catalog ID.")
         }
 
+        // If a prior attempt ended without a terminal journal marker, treat this
+        // run as a recovery retry. Favor small activations over preserving requested
+        // output dimensions; the user can upscale after the diffusion pipeline exits.
+        let recoveringAfterInterruption = previousGenerationWarning() != nil
+        let effectiveSteps = recoveringAfterInterruption ? max(1, min(20, steps)) : max(1, min(60, steps))
+
         // Diffusion inference competes with the rest of iOS for unified memory.
         // Pick a conservative working size before loading SDXL, then enable the
         // engine's native tiled paths when headroom is limited.
@@ -183,7 +189,11 @@ enum OnDeviceImageGenerator {
         let requestedHeight = multipleOf64(height)
         var outputWidth: Int
         var outputHeight: Int
-        if memory.availableMemoryMB < 1_400 {
+        if recoveringAfterInterruption {
+            let scale = min(1.0, 384.0 / Double(max(requestedWidth, requestedHeight)))
+            outputWidth = multipleOf64(Int(Double(requestedWidth) * scale))
+            outputHeight = multipleOf64(Int(Double(requestedHeight) * scale))
+        } else if memory.availableMemoryMB < 1_400 {
             // Keep the latent surface very small when the phone is under pressure.
             // The existing Real-CUGAN pipeline can upscale after diffusion releases its model.
             outputWidth = 384
@@ -231,7 +241,12 @@ enum OnDeviceImageGenerator {
         environment.maxTotalWeightsCacheSize = 0
         MediaGenerationEnvironment.default = environment
 
-        notify("Checking local model files…", progress: progress)
+        notify(
+            recoveringAfterInterruption
+                ? "Recovery Safe Mode: checking local model files…"
+                : "Checking local model files…",
+            progress: progress
+        )
         let resolvedModel = try await environment.ensure(modelID, offline: false) { state in
             let message: String
             switch state {
@@ -259,7 +274,11 @@ enum OnDeviceImageGenerator {
         if memory.availableMemoryMB < 1_024 {
             DiagnosticsLogger.shared.log("AI Image Studio model-load headroom is low • continuing with on-demand weights and tiled inference • available=\(Int(memory.availableMemoryMB)) MB")
         }
-        if memory.availableMemoryMB < 1_400 {
+        if recoveringAfterInterruption {
+            let scale = min(1.0, 384.0 / Double(max(requestedWidth, requestedHeight)))
+            outputWidth = multipleOf64(Int(Double(requestedWidth) * scale))
+            outputHeight = multipleOf64(Int(Double(requestedHeight) * scale))
+        } else if memory.availableMemoryMB < 1_400 {
             outputWidth = 384
             outputHeight = 384
         } else if memory.availableMemoryMB < 1_800 {
@@ -276,7 +295,12 @@ enum OnDeviceImageGenerator {
             "AI Image Studio refreshed pre-load memory • available=\(Int(memory.availableMemoryMB)) MB • selected=\(outputWidth)x\(outputHeight) • diffusionTilePixels=\(diffusionTileSize) • decodeTilePixels=\(decodingTileSize) • overlapPixels=\(tileOverlapPixels)"
         )
 
-        notify("Loading local Metal model…", progress: progress)
+        notify(
+            recoveringAfterInterruption
+                ? "Recovery Safe Mode: loading local Metal model…"
+                : "Loading local Metal model…",
+            progress: progress
+        )
         AIImageGenerationMemoryJournal.shared.record("model-load-start")
         var pipeline: MediaGenerationPipeline? = try await MediaGenerationPipeline.fromPretrained(
             resolvedModel.file,
@@ -306,13 +330,19 @@ enum OnDeviceImageGenerator {
             outputWidth = multipleOf64(Int(Double(requestedWidth) * scale))
             outputHeight = multipleOf64(Int(Double(requestedHeight) * scale))
         }
+        if recoveringAfterInterruption {
+            let scale = min(1.0, 384.0 / Double(max(requestedWidth, requestedHeight)))
+            outputWidth = multipleOf64(Int(Double(requestedWidth) * scale))
+            outputHeight = multipleOf64(Int(Double(requestedHeight) * scale))
+            DiagnosticsLogger.shared.log("AI Image Studio Recovery Safe Mode • capped output to \(outputWidth)x\(outputHeight) • steps=\(effectiveSteps) • Hires/LoRA disabled")
+        }
         useTiledDiffusion = true
         useTiledDecoding = true
         diffusionTileSize = 64
         decodingTileSize = 64
         pipeline!.configuration.width = outputWidth
         pipeline!.configuration.height = outputHeight
-        pipeline!.configuration.steps = max(1, min(60, steps))
+        pipeline!.configuration.steps = effectiveSteps
         pipeline!.configuration.batchCount = 1
         pipeline!.configuration.batchSize = 1
         pipeline!.configuration.tiledDecoding = useTiledDecoding
@@ -334,7 +364,7 @@ enum OnDeviceImageGenerator {
         if hiresEnabled {
             // Hires diffusion multiplies the latent working surface. Keep it disabled
             // for this device profile; use the app's separate Real-CUGAN stage instead.
-            if memory.availableMemoryMB >= 4_096 {
+            if memory.availableMemoryMB >= 4_096 && !recoveringAfterInterruption {
                 pipeline!.configuration.hiresFix = true
                 pipeline!.configuration.hiresFixWidth = multipleOf64(Int(Double(outputWidth) * hiresScale))
                 pipeline!.configuration.hiresFixHeight = multipleOf64(Int(Double(outputHeight) * hiresScale))
@@ -343,28 +373,38 @@ enum OnDeviceImageGenerator {
                 pipeline!.configuration.stage2Guidance = Float(max(0, min(20, cfg)))
             } else {
                 pipeline!.configuration.hiresFix = false
-                notify("Memory Safe Mode: high-resolution diffusion was disabled; you can upscale the result with Real-CUGAN afterward.", progress: progress)
+                notify(
+                    recoveringAfterInterruption
+                        ? "Recovery Safe Mode: high-resolution diffusion is disabled for this retry; upscale afterward with Real-CUGAN."
+                        : "Memory Safe Mode: high-resolution diffusion was disabled; you can upscale the result with Real-CUGAN afterward.",
+                    progress: progress
+                )
             }
         } else {
             pipeline!.configuration.hiresFix = false
         }
 
-        if memory.availableMemoryMB >= 4_096 && enableLoRA && !settings.localLoraFile.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        if memory.availableMemoryMB >= 4_096 && !recoveringAfterInterruption && enableLoRA && !settings.localLoraFile.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             pipeline!.configuration.loras = [
                 DataModels.LoRA(file: settings.localLoraFile, weight: Float(loraWeight), mode: .all)
             ]
         } else {
             pipeline!.configuration.loras = []
-            if enableLoRA && memory.availableMemoryMB < 4_096 {
+            if enableLoRA && recoveringAfterInterruption {
+                notify("Recovery Safe Mode: local LoRA is disabled for this retry.", progress: progress)
+            } else if enableLoRA && memory.availableMemoryMB < 4_096 {
                 notify("Memory Safe Mode: local LoRA disabled for this run to reduce model residency.", progress: progress)
             }
         }
 
+        let generationMode = recoveringAfterInterruption
+            ? "Recovery Safe Mode retry"
+            : "Generating locally on the iPhone GPU/Metal…"
         notify(
-            "Generating locally on the iPhone GPU/Metal… \(outputWidth)x\(outputHeight) • \(Int(memory.availableMemoryMB)) MB initial headroom",
+            "\(generationMode) • \(outputWidth)x\(outputHeight) • \(effectiveSteps) steps • \(Int(memory.availableMemoryMB)) MB initial headroom",
             progress: progress
         )
-        DiagnosticsLogger.shared.log("AI Image Studio generation begin • steps=\(max(1, min(60, steps))) • size=\(outputWidth)x\(outputHeight) • tiledDiffusion=\(useTiledDiffusion) • diffusionTilePixels=\(diffusionTileSize) • tiledDecoding=\(useTiledDecoding) • decodeTilePixels=\(decodingTileSize) • overlapPixels=\(tileOverlapPixels)")
+        DiagnosticsLogger.shared.log("AI Image Studio generation begin • steps=\(effectiveSteps) • size=\(outputWidth)x\(outputHeight) • tiledDiffusion=\(useTiledDiffusion) • diffusionTilePixels=\(diffusionTileSize) • tiledDecoding=\(useTiledDecoding) • decodeTilePixels=\(decodingTileSize) • overlapPixels=\(tileOverlapPixels)")
         // Poll memory during inference because SDXL can allocate transient Metal buffers during early denoising.
         let memoryWatchdog = AIImageGenerationMemoryWatchdog()
         // Keep the pipeline's strong reference inside the task only. Once the
