@@ -9,6 +9,7 @@ concurrency:
 # Pause-only checkpoint baseline build
 # Regular image AVIF export build
 # CI validation trigger
+# Combined clean build trigger: Xcode 26.6 SDK + corrected optional Core ML Int8 guard
 
 on:
   workflow_dispatch:
