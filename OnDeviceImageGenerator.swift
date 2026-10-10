@@ -110,8 +110,8 @@ enum OnDeviceImageGenerator {
         // Draw Things stores tile dimensions and overlap in 64-pixel units.
         // Keep the human-readable sizes in pixels here and convert at assignment.
         // CPU partial-offload is enabled below; real 128px tiles limit the working set.
-        let diffusionTileSize = 128
-        let decodingTileSize = 128
+        var diffusionTileSize = 128
+        var decodingTileSize = 128
         let tileOverlapPixels = 64
 
         DiagnosticsLogger.shared.log(
