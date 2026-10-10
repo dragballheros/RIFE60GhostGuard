@@ -238,7 +238,6 @@ enum OnDeviceImageGenerator {
             progress: progress
         )
         DiagnosticsLogger.shared.log("AI Image Studio generation begin • steps=\(max(1, min(60, steps))) • size=\(outputWidth)x\(outputHeight) • tiledDiffusion=\(useTiledDiffusion) • diffusionTile=\(diffusionTileSize) • tiledDecoding=\(useTiledDecoding) • decodeTile=\(decodingTileSize)")
-        var lastLoggedStep = 0
         var results = try await pipeline!.generate(prompt: positivePrompt, negativePrompt: negativePrompt) { state, _ in
             let message: String
             switch state {
@@ -261,12 +260,9 @@ enum OnDeviceImageGenerator {
                 message = "Local GPU generation: step \(step)/\(total) • \(Int(currentMemory.availableMemoryMB)) MB free"
                 // Capture every step so a crash after the first few denoising
                 // iterations can be correlated with memory pressure in device logs.
-                if step != lastLoggedStep {
-                    lastLoggedStep = step
-                    DiagnosticsLogger.shared.log(
-                        "AI Image Studio step \(step)/\(total) • available=\(Int(currentMemory.availableMemoryMB)) MB • physical=\(Int(currentMemory.physicalMemoryMB)) MB • tier=\(currentMemory.tier.rawValue) • thermal=\(currentMemory.thermalAndMode)"
-                    )
-                }
+                DiagnosticsLogger.shared.log(
+                    "AI Image Studio step \(step)/\(total) • available=\(Int(currentMemory.availableMemoryMB)) MB • physical=\(Int(currentMemory.physicalMemoryMB)) MB • tier=\(currentMemory.tier.rawValue) • thermal=\(currentMemory.thermalAndMode)"
+                )
             case .decoding:
                 message = "Decoding image…"
             case .postprocessing:
