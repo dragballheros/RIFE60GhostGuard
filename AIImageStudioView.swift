@@ -133,10 +133,11 @@ worst quality, bad quality, low quality, lowres, scan artifacts, jpeg artifacts,
     private var generationSections: some View {
         Group {
             Section("Generation Preset") {
-                Picker("Model profile", selection: $modelProfile) {
-                    Text("Animagine XL v3.1 (Local)").tag("Animagine XL v3.1 (Local)")
-                }
-                .onChange(of: modelProfile) { profile in applyModelProfile(profile) }
+                // Only one local model profile is currently supported. A Picker
+                // with a single option adds no choice and triggers a multi-state
+                // reset on selection, which has been crashing on-device. Show the
+                // active profile as a static row instead.
+                LabeledContent("Model profile", value: "Animagine XL v3.1 (Local)")
                 Text("Animagine XL v3.1 runs locally on the iPhone GPU/Metal. The first generation downloads the model and required files; allow several GB of free storage.")
                     .font(.caption).foregroundStyle(.secondary)
             }
