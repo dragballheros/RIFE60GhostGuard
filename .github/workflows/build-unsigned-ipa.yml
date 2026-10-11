@@ -465,6 +465,38 @@ jobs:
           name: RIFE60GhostGuard-verified-unsigned-ipa
           path: RIFE60GhostGuard-verified-unsigned.ipa
           retention-days: 30
+      - name: Publish temporary GitHub Release with IPA
+        id: publish_ipa_release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          TAG="ipa-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          gh release create "$TAG" RIFE60GhostGuard-verified-unsigned.ipa \
+            --title "RIFE60GhostGuard IPA — build ${GITHUB_RUN_NUMBER}" \
+            --notes "Verified unsigned IPA from GitHub Actions run ${GITHUB_RUN_ID}. This temporary release and its asset are automatically deleted 15 minutes after publication."
+          RELEASE_URL="$(gh release view "$TAG" --json url --jq .url)"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "url=$RELEASE_URL" >> "$GITHUB_OUTPUT"
+          {
+            echo "## Temporary IPA release"
+            echo
+            echo "Download: [$TAG]($RELEASE_URL)"
+            echo
+            echo "This release is scheduled for automatic deletion 15 minutes after publication."
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "Published IPA release: $RELEASE_URL"
+
+      - name: Delete temporary IPA release after 15 minutes
+        if: success() && steps.publish_ipa_release.outputs.tag != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ steps.publish_ipa_release.outputs.tag }}
+        run: |
+          set -euo pipefail
+          sleep 900
+          gh release delete "$RELEASE_TAG" --yes --cleanup-tag
+          echo "Deleted temporary IPA release $RELEASE_TAG after its 15-minute download window."
       - name: Upload build diagnostics
         if: always()
         uses: actions/upload-artifact@v4
