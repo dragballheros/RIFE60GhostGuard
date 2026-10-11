@@ -195,6 +195,14 @@ worst quality, bad quality, low quality, lowres, scan artifacts, jpeg artifacts,
                 if !selectedLoRAStatus.isEmpty {
                     Text(selectedLoRAStatus).font(.caption).foregroundStyle(.secondary)
                 }
+                TextField("LoRA trigger word or phrase", text: $selectedLoRATrigger)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .disabled(settings.localLoraFile.isEmpty)
+                Button("Add trigger word to positive prompt") {
+                    appendSelectedLoRATriggerToPrompt()
+                }
+                .disabled(settings.localLoraFile.isEmpty || selectedLoRATrigger.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 Toggle("Apply selected local LoRA", isOn: $enableCharacterLora)
                     .disabled(settings.localLoraFile.isEmpty)
                 HStack {
@@ -463,6 +471,15 @@ worst quality, bad quality, low quality, lowres, scan artifacts, jpeg artifacts,
         try? settings.save()
     }
 
+    private func appendSelectedLoRATriggerToPrompt() {
+        let trigger = selectedLoRATrigger.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trigger.isEmpty else { return }
+        let existing = positivePrompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !existing.localizedCaseInsensitiveContains(trigger) else { return }
+        positivePrompt = existing.isEmpty ? trigger : existing + ", " + trigger
+        saveGenerationDraft()
+    }
+
     private func importSelectedLoRA(_ result: Result<[URL], Error>) {
         do {
             let urls = try result.get()
@@ -490,10 +507,7 @@ worst quality, bad quality, low quality, lowres, scan artifacts, jpeg artifacts,
                 .replacingOccurrences(of: "-", with: " ")
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             selectedLoRATrigger = stem
-            if !stem.isEmpty && !positivePrompt.localizedCaseInsensitiveContains(stem) {
-                let trimmed = positivePrompt.trimmingCharacters(in: .whitespacesAndNewlines)
-                positivePrompt = trimmed.isEmpty ? stem : trimmed + ", " + stem
-            }
+            appendSelectedLoRATriggerToPrompt()
             try settings.save()
             saveGenerationDraft()
             selectedLoRAStatus = "Imported and selected: " + safeName + ". Review the prompt for the LoRA's actual trigger word."
