@@ -343,10 +343,17 @@ enum OnDeviceImageGenerator {
             outputHeight = multipleOf64(Int(Double(requestedHeight) * scale))
             DiagnosticsLogger.shared.log("AI Image Studio Recovery Safe Mode • capped output to \(outputWidth)x\(outputHeight) • steps=\(effectiveSteps) • Hires/LoRA disabled")
         }
-        useTiledDiffusion = true
+        // Recovery/small-canvas mode must not use 64px diffusion tiles. At 256px
+        // output, one-unit tiles can force an unnecessarily fragmented first Metal
+        // inference path and are not a useful memory optimization. Run one small
+        // latent surface instead; retain tiled decoding to keep VAE decode bounded.
+        useTiledDiffusion = !(recoveringAfterInterruption || max(outputWidth, outputHeight) <= 384)
         useTiledDecoding = true
         diffusionTileSize = 64
         decodingTileSize = 64
+        DiagnosticsLogger.shared.log(
+            "AI Image Studio execution policy • recovery=\(recoveringAfterInterruption) • size=\(outputWidth)x\(outputHeight) • steps=\(effectiveSteps) • tiledDiffusion=\(useTiledDiffusion) • tiledDecode=\(useTiledDecoding) • available=\(Int(currentRenderPerformanceSnapshot().availableMemoryMB)) MB"
+        )
         pipeline!.configuration.width = outputWidth
         pipeline!.configuration.height = outputHeight
         pipeline!.configuration.steps = effectiveSteps
@@ -417,7 +424,7 @@ enum OnDeviceImageGenerator {
         // task completes, its operation can release that capture before PNG encoding.
         let preDenoisingMemory = currentRenderPerformanceSnapshot()
         DiagnosticsLogger.shared.log(
-            "AI Image Studio pre-denoising checkpoint • available=\(Int(preDenoisingMemory.availableMemoryMB)) MB • physical=\(Int(preDenoisingMemory.physicalMemoryMB)) MB • size=\(outputWidth)x\(outputHeight) • steps=\(effectiveSteps) • tiled=\(useTiledDiffusion) • partialOffload=true"
+            "AI Image Studio immediately before generate() • available=\(Int(preDenoisingMemory.availableMemoryMB)) MB • physical=\(Int(preDenoisingMemory.physicalMemoryMB)) MB • size=\(outputWidth)x\(outputHeight) • steps=\(effectiveSteps) • tiledDiffusion=\(useTiledDiffusion) • tiledDecode=\(useTiledDecoding) • partialOffload=true"
         )
         AIImageGenerationMemoryJournal.shared.record("pre-denoising-allocation")
         AIImageGenerationMemoryJournal.shared.record("pipeline-configured")
