@@ -441,7 +441,7 @@ worst quality, bad quality, low quality, lowres, scan artifacts, jpeg artifacts,
         randomSeed = draft.randomSeed
         turboWeight = draft.turboWeight
         characterWeight = draft.characterWeight
-        enableCharacterLora = draft.enableCharacterLora
+        enableCharacterLora = draft.enableCharacterLora && !settings.localLoraFile.isEmpty
         UserDefaults.standard.set(modelProfile, forKey: "RIFE60.AIImageStudio.SelectedProfile")
     }
 
