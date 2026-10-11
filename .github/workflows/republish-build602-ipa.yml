@@ -1,0 +1,40 @@
+name: Republish Build 602 IPA
+
+on:
+  push:
+    branches:
+      - republish-ipa-602
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download the retained Build 602 IPA artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 38169183341 --repo "${GITHUB_REPOSITORY}" --name verified-unsigned-ipa --dir ipa-artifact
+          IPA="$(find ipa-artifact -type f -name '*.ipa' -print -quit)"
+          test -n "$IPA"
+          echo "IPA_PATH=$IPA" >> "$GITHUB_ENV"
+      - name: Publish temporary release with direct IPA
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TAG="ipa-build602-republish-${GITHUB_RUN_ID}"
+          echo "IPA_RELEASE_TAG=$TAG" >> "$GITHUB_ENV"
+          gh release create "$TAG" "$IPA_PATH#RIFE60GhostGuard-build602.ipa" --repo "${GITHUB_REPOSITORY}" --title "RIFE60GhostGuard Build 602 IPA" --notes "Republished from the verified Build 602 Actions artifact. This release is temporary and will be deleted after 15 minutes."
+          echo "Release URL: https://github.com/${GITHUB_REPOSITORY}/releases/tag/$TAG"
+          echo "Direct IPA: https://github.com/${GITHUB_REPOSITORY}/releases/download/$TAG/RIFE60GhostGuard-build602.ipa"
+      - name: Delete temporary release after 15 minutes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          sleep 900
+          gh release delete "$IPA_RELEASE_TAG" --repo "${GITHUB_REPOSITORY}" --cleanup-tag --yes
