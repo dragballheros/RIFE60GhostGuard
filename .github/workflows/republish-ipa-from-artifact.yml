@@ -1,0 +1,74 @@
+name: Republish IPA from Existing Artifact
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_run_id:
+        description: GitHub Actions run ID containing the verified-unsigned-ipa artifact
+        required: true
+        default: "38159318380"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/republish-ipa-from-artifact.yml"
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  republish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Download existing IPA artifact ZIP and extract IPA
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SOURCE_RUN_ID: ${{ github.event.inputs.source_run_id || '38159318380' }}
+        run: |
+          set -euo pipefail
+          mkdir -p recovered
+          gh run download "$SOURCE_RUN_ID" --repo "$GITHUB_REPOSITORY" --name verified-unsigned-ipa --dir recovered
+          IPA_PATH="$(find recovered -type f -name '*.ipa' -print -quit)"
+          if [ -z "$IPA_PATH" ]; then
+            echo "::error::No IPA found inside the downloaded Actions artifact."
+            find recovered -maxdepth 3 -type f -print
+            exit 1
+          fi
+          unzip -t "$IPA_PATH" >/dev/null
+          cp "$IPA_PATH" RIFE60GhostGuard-recovered-unsigned.ipa
+          test -s RIFE60GhostGuard-recovered-unsigned.ipa
+          echo "Recovered IPA size: $(stat -c%s RIFE60GhostGuard-recovered-unsigned.ipa) bytes"
+
+      - name: Publish recovered IPA as temporary GitHub Release
+        id: publish
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          TAG="ipa-recovered-${GITHUB_RUN_ID}"
+          gh release create "$TAG" RIFE60GhostGuard-recovered-unsigned.ipa \
+            --title "RIFE60GhostGuard recovered IPA from build 596" \
+            --notes "Raw verified unsigned IPA extracted from the existing GitHub Actions artifact of run 38159318380 (build 596). The Actions artifact ZIP remains available separately. This temporary release is deleted 15 minutes after publication."
+          URL="$(gh release view "$TAG" --json url --jq .url)"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+          {
+            echo "## Recovered IPA release"
+            echo
+            echo "Download the raw IPA: [$TAG]($URL)"
+            echo
+            echo "The source Actions artifact remains intact. This temporary Release is deleted after 15 minutes."
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "Published recovered IPA release: $URL"
+
+      - name: Delete temporary recovered IPA Release after 15 minutes
+        if: success() && steps.publish.outputs.tag != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ steps.publish.outputs.tag }}
+        run: |
+          set -euo pipefail
+          sleep 900
+          gh release delete "$RELEASE_TAG" --yes --cleanup-tag
+          echo "Deleted temporary recovered IPA release after 15 minutes."
