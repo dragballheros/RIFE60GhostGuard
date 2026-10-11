@@ -112,7 +112,7 @@ enum OnDeviceImageGenerator {
                 "generation-cancelled", "ui-generation-failure"
             ]
             guard !terminalStages.contains(stage), !stage.hasPrefix("benchmark-complete-") else { return nil }
-            return "The previous AI generation may have stopped before its output was safely saved. The next attempt will use Recovery Safe Mode (maximum 128 px, requested denoising steps preserved, Hires/LoRA off). Export memory diagnostics below to inspect the last recorded stage."
+            return "The previous AI generation may have stopped before its output was safely saved. The next attempt will preserve the requested aspect ratio and use memory-based sizing, with Hires/LoRA disabled for safety. Export memory diagnostics below to inspect the last recorded stage."
         } catch {
             return nil
         }
@@ -178,8 +178,8 @@ enum OnDeviceImageGenerator {
         }
 
         // If a prior attempt ended without a terminal journal marker, treat this
-        // run as a recovery retry. Favor small activations over preserving requested
-        // output dimensions; the user can upscale after the diffusion pipeline exits.
+        // run as a recovery retry. Recovery disables memory-heavy Hires/LoRA paths,
+        // but output size is still chosen by the same live-memory policy as normal runs.
         let recoveringAfterInterruption = previousGenerationWarning() != nil && !benchmarkMode
         // Preserve the requested diffusion step count in normal and recovery runs.
         // Step count is a quality/runtime control, not the primary peak-memory control;
@@ -199,11 +199,7 @@ enum OnDeviceImageGenerator {
         let requestedHeight = multipleOf64(height)
         var outputWidth: Int
         var outputHeight: Int
-        if recoveringAfterInterruption {
-            let scale = min(1.0, 128.0 / Double(max(requestedWidth, requestedHeight)))
-            outputWidth = multipleOf64(Int(Double(requestedWidth) * scale))
-            outputHeight = multipleOf64(Int(Double(requestedHeight) * scale))
-        } else if memory.availableMemoryMB < 1_400 {
+        if memory.availableMemoryMB < 1_400 {
             // Keep the latent surface very small when the phone is under pressure.
             // The existing Real-CUGAN pipeline can upscale after diffusion releases its model.
             outputWidth = 384
@@ -298,11 +294,7 @@ enum OnDeviceImageGenerator {
         if memory.availableMemoryMB < 1_024 {
             DiagnosticsLogger.shared.log("AI Image Studio model-load headroom is low • continuing with on-demand weights and tiled inference • available=\(Int(memory.availableMemoryMB)) MB")
         }
-        if recoveringAfterInterruption {
-            let scale = min(1.0, 128.0 / Double(max(requestedWidth, requestedHeight)))
-            outputWidth = multipleOf64(Int(Double(requestedWidth) * scale))
-            outputHeight = multipleOf64(Int(Double(requestedHeight) * scale))
-        } else if memory.availableMemoryMB < 1_400 {
+        if memory.availableMemoryMB < 1_400 {
             outputWidth = 384
             outputHeight = 384
         } else if memory.availableMemoryMB < 1_800 {
@@ -361,13 +353,7 @@ enum OnDeviceImageGenerator {
             outputHeight = multipleOf64(Int(Double(requestedHeight) * scale))
         }
         if recoveringAfterInterruption {
-            // Keep the post-load recovery cap identical to the preflight cap.
-            // The previous 256px override silently doubled the advertised safe-mode
-            // canvas immediately before inference, increasing peak activation memory.
-            let scale = min(1.0, 128.0 / Double(max(requestedWidth, requestedHeight)))
-            outputWidth = multipleOf64(Int(Double(requestedWidth) * scale))
-            outputHeight = multipleOf64(Int(Double(requestedHeight) * scale))
-            DiagnosticsLogger.shared.log("AI Image Studio Recovery Safe Mode • capped output to \(outputWidth)x\(outputHeight) • steps=\(effectiveSteps) • Hires/LoRA disabled")
+            DiagnosticsLogger.shared.log("AI Image Studio Recovery Safe Mode • preserving memory-policy output size \(outputWidth)x\(outputHeight) • steps=\(effectiveSteps) • Hires/LoRA disabled")
         }
         if benchmarkMode {
             // Exercise the actual local pipeline with a deliberately small workload.
@@ -384,7 +370,7 @@ enum OnDeviceImageGenerator {
         // Use a single VAE decode surface at these sizes too: 64px tiles add extra
         // decoder invocations/stitching at the sampler-to-decoder transition and
         // do not provide a useful memory reduction. Keep tiled decode for larger images.
-        useTiledDiffusion = !(recoveringAfterInterruption || max(outputWidth, outputHeight) <= 384)
+        useTiledDiffusion = max(outputWidth, outputHeight) > 384
         useTiledDecoding = max(outputWidth, outputHeight) > 384
         diffusionTileSize = 64
         decodingTileSize = 64
