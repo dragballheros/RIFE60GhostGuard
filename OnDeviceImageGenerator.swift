@@ -112,7 +112,7 @@ enum OnDeviceImageGenerator {
                 "generation-cancelled", "ui-generation-failure"
             ]
             guard !terminalStages.contains(stage) else { return nil }
-            return "The previous AI generation may have stopped before its output was safely saved. The next attempt will use Recovery Safe Mode (maximum 384 px, 20 steps, Hires/LoRA off). Export memory diagnostics below to inspect the last recorded stage."
+            return "The previous AI generation may have stopped before its output was safely saved. The next attempt will use Recovery Safe Mode (maximum 256 px, 8 steps, Hires/LoRA off). Export memory diagnostics below to inspect the last recorded stage."
         } catch {
             return nil
         }
@@ -178,7 +178,7 @@ enum OnDeviceImageGenerator {
         // A successful model load does not guarantee headroom for the first UNet activation.
         // On this 6 GiB iPhone, keep inference conservative whenever less than 4 GiB is free.
         let lowMemoryInferenceMode = recoveringAfterInterruption || currentRenderPerformanceSnapshot().availableMemoryMB < 4_096
-        let effectiveSteps = lowMemoryInferenceMode ? max(1, min(20, steps)) : max(1, min(60, steps))
+        let effectiveSteps = lowMemoryInferenceMode ? max(1, min(8, steps)) : max(1, min(60, steps))
 
         // Diffusion inference competes with the rest of iOS for unified memory.
         // Pick a conservative working size before loading SDXL, then enable the
@@ -193,7 +193,7 @@ enum OnDeviceImageGenerator {
         var outputWidth: Int
         var outputHeight: Int
         if recoveringAfterInterruption {
-            let scale = min(1.0, 384.0 / Double(max(requestedWidth, requestedHeight)))
+            let scale = min(1.0, 256.0 / Double(max(requestedWidth, requestedHeight)))
             outputWidth = multipleOf64(Int(Double(requestedWidth) * scale))
             outputHeight = multipleOf64(Int(Double(requestedHeight) * scale))
         } else if memory.availableMemoryMB < 1_400 {
@@ -278,7 +278,7 @@ enum OnDeviceImageGenerator {
             DiagnosticsLogger.shared.log("AI Image Studio model-load headroom is low • continuing with on-demand weights and tiled inference • available=\(Int(memory.availableMemoryMB)) MB")
         }
         if recoveringAfterInterruption {
-            let scale = min(1.0, 384.0 / Double(max(requestedWidth, requestedHeight)))
+            let scale = min(1.0, 256.0 / Double(max(requestedWidth, requestedHeight)))
             outputWidth = multipleOf64(Int(Double(requestedWidth) * scale))
             outputHeight = multipleOf64(Int(Double(requestedHeight) * scale))
         } else if memory.availableMemoryMB < 1_400 {
@@ -336,7 +336,7 @@ enum OnDeviceImageGenerator {
             outputHeight = multipleOf64(Int(Double(requestedHeight) * scale))
         }
         if recoveringAfterInterruption {
-            let scale = min(1.0, 384.0 / Double(max(requestedWidth, requestedHeight)))
+            let scale = min(1.0, 256.0 / Double(max(requestedWidth, requestedHeight)))
             outputWidth = multipleOf64(Int(Double(requestedWidth) * scale))
             outputHeight = multipleOf64(Int(Double(requestedHeight) * scale))
             DiagnosticsLogger.shared.log("AI Image Studio Recovery Safe Mode • capped output to \(outputWidth)x\(outputHeight) • steps=\(effectiveSteps) • Hires/LoRA disabled")
@@ -413,24 +413,33 @@ enum OnDeviceImageGenerator {
         // Poll memory during inference because SDXL can allocate transient Metal buffers during early denoising.
         // Keep the pipeline's strong reference inside the task only. Once the
         // task completes, its operation can release that capture before PNG encoding.
+        AIImageGenerationMemoryJournal.shared.record("pipeline-configured")
+        AIImageGenerationMemoryJournal.shared.record("generate-call-start")
         let generationTask = Task { [activePipeline = pipeline!] in
             try await activePipeline.generate(prompt: positivePrompt, negativePrompt: negativePrompt) { state, _ in
             let message: String
             switch state {
             case .resolvingBackend(_):
                 message = "Preparing on-device backend…"
+                AIImageGenerationMemoryJournal.shared.record("engine-resolving-backend")
             case .resolvingModel(let name):
                 message = "Resolving \(name)…"
+                AIImageGenerationMemoryJournal.shared.record("engine-resolving-model")
             case .preparing:
                 message = "Preparing local generation…"
+                AIImageGenerationMemoryJournal.shared.record("engine-preparing")
             case .ensuringResources:
                 message = "Checking local model resources…"
+                AIImageGenerationMemoryJournal.shared.record("engine-ensuring-resources")
             case .uploading(_, _), .downloading(_, _):
                 message = "Processing local model resources…"
+                AIImageGenerationMemoryJournal.shared.record("engine-resource-transfer")
             case .encodingText:
                 message = "Encoding prompt on device…"
+                AIImageGenerationMemoryJournal.shared.record("engine-encoding-text")
             case .encodingInputs:
                 message = "Preparing generation inputs…"
+                AIImageGenerationMemoryJournal.shared.record("engine-encoding-inputs")
             case .generating(let step, let total):
                 let currentMemory = currentRenderPerformanceSnapshot()
                 message = "Local GPU generation: step \(step)/\(total) • \(Int(currentMemory.availableMemoryMB)) MB free"
