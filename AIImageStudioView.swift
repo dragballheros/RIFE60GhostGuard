@@ -396,6 +396,13 @@ worst quality, bad quality, low quality, lowres, scan artifacts, jpeg artifacts,
         }
         modelProfile = "Animagine XL v3.1 (Local)"
         positivePrompt = draft.positivePrompt
+        // Remove the former bundled LoRA's trigger from persisted drafts.
+        positivePrompt = positivePrompt.replacingOccurrences(
+            of: "mayuzumi fuyuko",
+            with: "",
+            options: [.caseInsensitive]
+        )
+        positivePrompt = positivePrompt.replacingOccurrences(of: ", ,", with: ",")
         negativePrompt = draft.negativePrompt
         // Migrate the old remote ANIMA/Illustrious controls to valid local SDXL defaults.
         width = 832
