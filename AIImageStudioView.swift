@@ -508,7 +508,7 @@ worst quality, bad quality, low quality, lowres, scan artifacts, jpeg artifacts,
                 negativePrompt: generationNegativePrompt,
                 width: isBenchmark ? 128 : Int(width),
                 height: isBenchmark ? 128 : Int(height),
-                steps: isBenchmark ? 4 : Int(steps),
+                steps: isBenchmark ? 1 : Int(steps),
                 cfg: cfg,
                 seed: resolvedSeed,
                 enableLoRA: enableCharacterLora,
@@ -528,7 +528,7 @@ worst quality, bad quality, low quality, lowres, scan artifacts, jpeg artifacts,
             generatedImage = image
             generatedURL = url
             generationStatus = isBenchmark
-                ? "Benchmark complete • 128×128 • 4 steps • export diagnostics for stage-by-stage results"
+                ? "Benchmark complete • 128×128 • 1 step • export diagnostics for stage-by-stage results"
                 : "Generation complete • \(image.size.width.rounded()) × \(image.size.height.rounded())"
         } catch {
             OnDeviceImageGenerator.recordGenerationFailure()
