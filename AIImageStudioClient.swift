@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 
 struct AIImageStudioSettings: Codable {
     var localModelID = "animagine_xl_v3.1_q6p_q8p.ckpt"
@@ -31,4 +32,60 @@ struct LocalTrainingImage {
     let filename: String
     let sourceURL: URL
     let caption: String
+}
+
+
+
+/// A public character LoRA explicitly trained for Animagine XL 3.1 / SDXL.
+/// Downloaded on demand into the app's private Models directory; never bundled in the IPA.
+enum RecommendedAnimeLoRAInstaller {
+    static let fileName = "XL-Mayuzumi-Fuyuko-Animagine-XL-3.1.safetensors"
+    static let displayName = "Mayuzumi Fuyuko (Animagine XL 3.1)"
+    static let triggerWord = "mayuzumi fuyuko"
+    static let downloadURL = URL(string: "https://civitai.com/api/download/models/454121")!
+    static let expectedSHA256 = "a150b41294268bad550af11c2f906a853e15fb0f3881711810ed9621414d41cf"
+    static let expectedBytes: Int64 = 456_483_000
+
+    static func install(into directory: URL) async throws -> URL {
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let destination = directory.appendingPathComponent(fileName)
+        if FileManager.default.fileExists(atPath: destination.path) {
+            if try sha256(of: destination) == expectedSHA256 { return destination }
+            try FileManager.default.removeItem(at: destination)
+        }
+
+        let values = try directory.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey])
+        if let available = values.volumeAvailableCapacityForImportantUsage, available < expectedBytes + 100_000_000 {
+            throw AIImageStudioError("The recommended LoRA needs about 435 MB plus temporary download space. Free at least 550 MB, then retry.")
+        }
+
+        var request = URLRequest(url: downloadURL)
+        request.timeoutInterval = 300
+        request.setValue("application/octet-stream", forHTTPHeaderField: "Accept")
+        let (temporaryURL, response) = try await URLSession.shared.download(for: request)
+        guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
+            throw AIImageStudioError("The LoRA host did not provide the file. Check the connection and retry.")
+        }
+        let downloadedSize = try FileManager.default.attributesOfItem(atPath: temporaryURL.path)[.size] as? NSNumber
+        guard let downloadedSize, downloadedSize.int64Value > 100_000_000 else {
+            throw AIImageStudioError("The downloaded LoRA file was incomplete or was not a model file.")
+        }
+        let digest = try sha256(of: temporaryURL)
+        guard digest == expectedSHA256 else {
+            throw AIImageStudioError("The LoRA checksum did not match the published Animagine XL 3.1 file. The incomplete download was rejected.")
+        }
+        try FileManager.default.moveItem(at: temporaryURL, to: destination)
+        return destination
+    }
+
+    private static func sha256(of url: URL) throws -> String {
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        var hasher = SHA256()
+        while true {
+            guard let chunk = try handle.read(upToCount: 1_048_576), !chunk.isEmpty else { break }
+            hasher.update(data: chunk)
+        }
+        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
+    }
 }
