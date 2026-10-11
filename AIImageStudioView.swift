@@ -4,15 +4,19 @@ import Photos
 import UniformTypeIdentifiers
 import UIKit
 
-/// Uses UIKit's UITextView for multiline prompt editing. SwiftUI's vertical
-/// TextField selection path has crashed on-device; this wrapper keeps native
-/// selection/copy/paste while avoiding needless text/selection resets on updates.
+/// Multiline prompt editor using UIKit's mature TextKit 1 selection path.
+/// iOS 26 introduced TextKit 2 multi-range natural selection. These prompts
+/// need ordinary single-direction editing, so explicitly avoid that newer
+/// selection path and never restore a saved range during an active selection.
 private struct StablePromptTextView: UIViewRepresentable {
     @Binding var text: String
     let accessibilityLabel: String
 
     func makeUIView(context: Context) -> UITextView {
-        let view = UITextView()
+        // Use TextKit 1 intentionally: this editor does not need TextKit 2's
+        // multi-range selection features, and this avoids its newer selection path.
+        let view = UITextView(usingTextLayoutManager: false)
+        view.text = text
         view.delegate = context.coordinator
         view.font = UIFont.preferredFont(forTextStyle: .body)
         view.adjustsFontForContentSizeCategory = true
@@ -33,28 +37,50 @@ private struct StablePromptTextView: UIViewRepresentable {
     }
 
     func updateUIView(_ view: UITextView, context: Context) {
-        context.coordinator.parent = self
+        let coordinator = context.coordinator
+        coordinator.parent = self
         view.accessibilityLabel = accessibilityLabel
-        // Never assign text if it already matches: doing so can disrupt the
-        // insertion point, selection handles, and the edit menu during SwiftUI updates.
-        guard view.text != text else { return }
-        let oldSelection = view.selectedRange
-        let nsText = text as NSString
+
+        // SwiftUI may publish an external prompt update while UIKit is tracking
+        // a selection. Defer it until editing ends rather than replace the
+        // backing string underneath active selection indices.
+        guard view.text != text else {
+            coordinator.pendingExternalText = nil
+            return
+        }
+
+        if view.isFirstResponder {
+            coordinator.pendingExternalText = text
+            return
+        }
+
+        coordinator.pendingExternalText = nil
         view.text = text
-        let location = min(max(0, oldSelection.location), nsText.length)
-        let length = min(max(0, oldSelection.length), nsText.length - location)
-        view.selectedRange = NSRange(location: location, length: length)
     }
 
     func makeCoordinator() -> Coordinator { Coordinator(parent: self) }
 
     final class Coordinator: NSObject, UITextViewDelegate {
         var parent: StablePromptTextView
+        var pendingExternalText: String?
+
         init(parent: StablePromptTextView) { self.parent = parent }
 
         func textViewDidChange(_ textView: UITextView) {
+            // A new user edit wins over any deferred external update.
+            pendingExternalText = nil
             let changedText = textView.text ?? ""
             if parent.text != changedText { parent.text = changedText }
+        }
+
+        func textViewDidEndEditing(_ textView: UITextView) {
+            guard let pendingExternalText else { return }
+            self.pendingExternalText = nil
+            if textView.text != pendingExternalText {
+                // Do not touch selectedRange here. UIKit owns caret/selection
+                // normalization when the complete backing text is replaced.
+                textView.text = pendingExternalText
+            }
         }
     }
 }
