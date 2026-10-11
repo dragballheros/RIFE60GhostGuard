@@ -307,7 +307,6 @@ worst quality, bad quality, low quality, lowres, scan artifacts, jpeg artifacts,
                     .font(.caption).foregroundStyle(.secondary)
                 TextField("Trigger word", text: $triggerWord)
                     .textInputAutocapitalization(.never).autocorrectionDisabled()
-                Text("Shared caption or style description")
                 TextField("Shared caption or style description", text: $trainingCaption, axis: .vertical)
                     .lineLimit(3...6)
                     .textInputAutocapitalization(.never)
@@ -449,17 +448,17 @@ worst quality, bad quality, low quality, lowres, scan artifacts, jpeg artifacts,
     private func removingLegacyCharacterTrigger(from prompt: String) -> String {
         var cleaned = prompt
         let legacyPatterns = [
-            #"(?i)<lora:\\s*ichinose[_ -]*chizuru\\s*:\\s*[-+]?\\d*\\.?\\d+>"#,
-            #"(?i)\\bichinose[_ -]+chizuru\\b"#,
-            #"(?i)\\bchizuru\\b"#,
-            #"(?i)\\bmayuzumi\\s+fuyuko\\b"#
+            #"(?i)<lora:\s*ichinose[_ -]*chizuru\s*:\s*[-+]?\d*\.?\d+>"#,
+            #"(?i)\bichinose[_ -]+chizuru\b"#,
+            #"(?i)\bchizuru\b"#,
+            #"(?i)\bmayuzumi\s+fuyuko\b"#
         ]
         for pattern in legacyPatterns {
             cleaned = cleaned.replacingOccurrences(of: pattern, with: "", options: .regularExpression)
         }
-        cleaned = cleaned.replacingOccurrences(of: #",\\s*,+"#, with: ",", options: .regularExpression)
-        cleaned = cleaned.replacingOccurrences(of: #"^\\s*,+|,+\\s*$"#, with: "", options: .regularExpression)
-        cleaned = cleaned.replacingOccurrences(of: #"\\s{2,}"#, with: " ", options: .regularExpression)
+        cleaned = cleaned.replacingOccurrences(of: #",\s*,+"#, with: ",", options: .regularExpression)
+        cleaned = cleaned.replacingOccurrences(of: #"^\s*,+|,+\s*$"#, with: "", options: .regularExpression)
+        cleaned = cleaned.replacingOccurrences(of: #"\s{2,}"#, with: " ", options: .regularExpression)
         return cleaned.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
