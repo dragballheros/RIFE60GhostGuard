@@ -353,10 +353,10 @@ enum OnDeviceImageGenerator {
             outputWidth = multipleOf64(Int(Double(requestedWidth) * scale))
             outputHeight = multipleOf64(Int(Double(requestedHeight) * scale))
         } else if memory.availableMemoryMB < 4_096 {
-            // This iPhone normally has less than 4 GiB available after loading SDXL.
-            // A 128 px cap produces a thumbnail rather than a useful generated image.
-            // Keep a practical SDXL canvas while using tiled decode and on-demand weights.
-            let safeLongEdge = memory.availableMemoryMB < 2_200 ? 768.0 : 1_024.0
+            // Diffusion tiling is disabled because the bundled engine's tiny-tile
+            // UNet compilation path can trap. Compensate with a conservative canvas
+            // cap while preserving the requested aspect ratio; upscale afterward.
+            let safeLongEdge = memory.availableMemoryMB < 2_200 ? 512.0 : 768.0
             let scale = min(1.0, safeLongEdge / Double(max(requestedWidth, requestedHeight)))
             outputWidth = multipleOf64(Int(Double(requestedWidth) * scale))
             outputHeight = multipleOf64(Int(Double(requestedHeight) * scale))
