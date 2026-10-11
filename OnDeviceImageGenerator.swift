@@ -112,7 +112,7 @@ enum OnDeviceImageGenerator {
                 "generation-cancelled", "ui-generation-failure"
             ]
             guard !terminalStages.contains(stage) else { return nil }
-            return "The previous AI generation may have stopped before its output was safely saved. The next attempt will use Recovery Safe Mode (maximum 256 px, 8 steps, Hires/LoRA off). Export memory diagnostics below to inspect the last recorded stage."
+            return "The previous AI generation may have stopped before its output was safely saved. The next attempt will use Recovery Safe Mode (maximum 128 px, 4 steps, Hires/LoRA off). Export memory diagnostics below to inspect the last recorded stage."
         } catch {
             return nil
         }
@@ -193,7 +193,7 @@ enum OnDeviceImageGenerator {
         var outputWidth: Int
         var outputHeight: Int
         if recoveringAfterInterruption {
-            let scale = min(1.0, 256.0 / Double(max(requestedWidth, requestedHeight)))
+            let scale = min(1.0, 128.0 / Double(max(requestedWidth, requestedHeight)))
             outputWidth = multipleOf64(Int(Double(requestedWidth) * scale))
             outputHeight = multipleOf64(Int(Double(requestedHeight) * scale))
         } else if memory.availableMemoryMB < 1_400 {
@@ -329,11 +329,11 @@ enum OnDeviceImageGenerator {
             outputWidth = multipleOf64(Int(Double(requestedWidth) * scale))
             outputHeight = multipleOf64(Int(Double(requestedHeight) * scale))
         } else if memory.availableMemoryMB < 4_096 {
-            // The first denoising activation can allocate a large transient Metal
-            // working set before the engine reports step 1. On this 6 GiB device,
-            // cap the diffusion surface at 256 px and upscale only after the model
-            // pipeline is released. This is intentionally applied after model load.
-            let scale = min(1.0, 256.0 / Double(max(requestedWidth, requestedHeight)))
+            // The final denoising transition can allocate transient Metal/sampler buffers
+            // before decoding begins. On this 6 GiB device, cap the diffusion surface
+            // at 128 px and upscale only after the pipeline is released. Apply this
+            // after model load, when actual remaining headroom is known.
+            let scale = min(1.0, 128.0 / Double(max(requestedWidth, requestedHeight)))
             outputWidth = multipleOf64(Int(Double(requestedWidth) * scale))
             outputHeight = multipleOf64(Int(Double(requestedHeight) * scale))
         }
@@ -343,10 +343,10 @@ enum OnDeviceImageGenerator {
             outputHeight = multipleOf64(Int(Double(requestedHeight) * scale))
             DiagnosticsLogger.shared.log("AI Image Studio Recovery Safe Mode • capped output to \(outputWidth)x\(outputHeight) • steps=\(effectiveSteps) • Hires/LoRA disabled")
         }
-        // Recovery/small-canvas mode must not use 64px diffusion tiles. At 256px
-        // output, one-unit tiles can force an unnecessarily fragmented first Metal
-        // inference path and are not a useful memory optimization. Run one small
-        // latent surface instead; retain tiled decoding to keep VAE decode bounded.
+        // Recovery/small-canvas mode must not use tiled diffusion. At 128px output,
+        // one-unit tiles can fragment the Metal inference path without reducing the
+        // already-small latent surface. Run one small latent surface; keep tiled
+        // decoding enabled to bound VAE decode allocations.
         useTiledDiffusion = !(recoveringAfterInterruption || max(outputWidth, outputHeight) <= 384)
         useTiledDecoding = true
         diffusionTileSize = 64
@@ -467,6 +467,8 @@ enum OnDeviceImageGenerator {
                 }
             case .decoding:
                 message = "Decoding image…"
+                let decodeMemory = currentRenderPerformanceSnapshot()
+                DiagnosticsLogger.shared.log("AI Image Studio decoder entry • available=\(Int(decodeMemory.availableMemoryMB)) MB • physical=\(Int(decodeMemory.physicalMemoryMB)) MB")
                 AIImageGenerationMemoryJournal.shared.record("decoder-start")
             case .postprocessing:
                 message = "Running local high-resolution pass…"
@@ -502,6 +504,11 @@ enum OnDeviceImageGenerator {
         }
         defer { memoryMonitorTask.cancel() }
         let generationResult = await generationTask.result
+        if case .failure(let error) = generationResult {
+            let failureMemory = currentRenderPerformanceSnapshot()
+            DiagnosticsLogger.shared.log("AI Image Studio engine generation failed • error=\(error.localizedDescription) • available=\(Int(failureMemory.availableMemoryMB)) MB • physical=\(Int(failureMemory.physicalMemoryMB)) MB")
+            AIImageGenerationMemoryJournal.shared.record("engine-generation-error")
+        }
         var results = try generationResult.get()
         guard let result = results.first else {
             pipeline = nil
