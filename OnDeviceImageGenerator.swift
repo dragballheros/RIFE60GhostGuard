@@ -222,7 +222,10 @@ enum OnDeviceImageGenerator {
             outputHeight = requestedHeight
         }
         var useTiledDiffusion = true
-        var useTiledDecoding = true
+        // Keep VAE decoding untiled on this iPhone profile. The crash report
+        // terminates inside FirstStage.decode while ccv compiles a convolution;
+        // the 1-unit (64px) tiled decoder is the highest-confidence trigger.
+        var useTiledDecoding = false
         // Draw Things stores tile dimensions and overlap in 64-pixel units.
         // Keep the human-readable sizes in pixels here and convert at assignment.
         // CPU partial-offload is enabled below; 64px tiles minimize transient activation memory.
@@ -315,7 +318,7 @@ enum OnDeviceImageGenerator {
             outputHeight = requestedHeight
         }
         useTiledDiffusion = true
-        useTiledDecoding = true
+        useTiledDecoding = false
         DiagnosticsLogger.shared.log(
             "AI Image Studio refreshed pre-load memory • available=\(Int(memory.availableMemoryMB)) MB • selected=\(outputWidth)x\(outputHeight) • diffusionTilePixels=\(diffusionTileSize) • decodeTilePixels=\(decodingTileSize) • overlapPixels=\(tileOverlapPixels)"
         )
@@ -374,13 +377,14 @@ enum OnDeviceImageGenerator {
             useTiledDecoding = false
             AIImageGenerationMemoryJournal.shared.record("benchmark-configured-128x128-1step")
         }
-        // Disable tiled diffusion on this iPhone profile. The 1-unit diffusion
-        // tiles (64 px) used by the previous policy can force an unsupported tiny
-        // UNet compilation shape in Draw Things and trigger SIGTRAP in
-        // UNetFromNNC.compileModel. Bound the canvas through live-memory sizing
-        // instead; keep tiled VAE decoding for larger canvases, where it is useful.
+        // Disable both tiled diffusion and tiled VAE decoding on this iPhone
+        // profile. The crash report shows SIGABRT in ccv_nnc_hint_tensor_forward
+        // while FirstStage.decode compiles a convolution. A 1-unit (64px) VAE
+        // tile can produce an unsupported convolution shape. Keep the memory
+        // budget bounded with the canvas-size policy above rather than compiling
+        // the tiny-tile decoder graph.
         useTiledDiffusion = false
-        useTiledDecoding = max(outputWidth, outputHeight) > 384
+        useTiledDecoding = false
         diffusionTileSize = 64
         decodingTileSize = 64
         DiagnosticsLogger.shared.log(
