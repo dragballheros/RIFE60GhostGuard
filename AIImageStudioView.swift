@@ -41,6 +41,8 @@ struct AIImageStudioView: View {
     @State private var activeTab = "Generate"
     @State private var modelProfile = "Animagine XL v3.1 (Local)"
     @State private var didRestoreDraft = false
+    @State private var isInstallingRecommendedLoRA = false
+    @State private var recommendedLoRAStatus = ""
 
     @State private var positivePrompt = """
 newest, very awa, masterpiece, high quality, high resolution, amazing quality, best quality, good lighting, detailed eyes, anime coloring, anime screencap, looking at viewer, large breasts, parted lips, :o, looking to the side, blush, standing, arched back, shoulders tilted, one hand behind neck, other hand resting on thigh, detailed background, 8k, blurry background, beach, night, 1girl, solo, mizuhara chizuru, long hair, brown hair, brown eyes, sky blue micro bikini, tight clothes, cleavage, covered nipples, covered pussy
@@ -119,6 +121,7 @@ worst quality, bad quality, low quality, lowres, scan artifacts, jpeg artifacts,
                 if let warning = OnDeviceImageGenerator.previousGenerationWarning() {
                     generationStatus = warning
                 }
+                Task { await ensureRecommendedAnimeLoRA() }
             }
             .onDisappear { saveGenerationDraft(); try? settings.save() }
             .toolbar {
@@ -163,7 +166,20 @@ worst quality, bad quality, low quality, lowres, scan artifacts, jpeg artifacts,
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section("Local LoRA") {
-                Toggle("Apply trained local LoRA", isOn: $enableCharacterLora)
+                if isInstallingRecommendedLoRA {
+                    ProgressView(recommendedLoRAStatus.isEmpty ? "Installing compatible anime LoRA…" : recommendedLoRAStatus)
+                } else if !recommendedLoRAStatus.isEmpty {
+                    Text(recommendedLoRAStatus).font(.caption).foregroundStyle(.secondary)
+                }
+                Button {
+                    Task { await ensureRecommendedAnimeLoRA(forceInstall: true) }
+                } label: {
+                    Label("Install / select compatible anime-girl LoRA (435 MB)", systemImage: "person.crop.square")
+                }
+                .disabled(isInstallingRecommendedLoRA)
+                Text("Recommended: Mayuzumi Fuyuko for Animagine XL v3.1. First use downloads the verified 435 MB SDXL LoRA into this app's private Models folder and selects it by default. Trigger word: mayuzumi fuyuko.")
+                    .font(.caption).foregroundStyle(.secondary)
+                Toggle("Apply selected local LoRA", isOn: $enableCharacterLora)
                 TextField("Trained LoRA filename", text: $settings.localLoraFile)
                     .textInputAutocapitalization(.never).autocorrectionDisabled()
                     .disabled(!enableCharacterLora)
@@ -173,7 +189,7 @@ worst quality, bad quality, low quality, lowres, scan artifacts, jpeg artifacts,
                     Text(String(format: "%.2f", characterWeight)).monospacedDigit()
                 }
                 Slider(value: $characterWeight, in: 0...1.5, step: 0.05).disabled(!enableCharacterLora)
-                Text("A LoRA trained by this app is stored locally and can be applied to the compatible SDXL model. External ANIMA and ComfyUI LoRAs are not assumed compatible.")
+                Text("The selected LoRA is only applied when the on-device memory policy permits it. Recovery Safe Mode and low-memory runs can disable LoRA to reduce crash risk. External ANIMA and Illustrious-only LoRAs are not assumed compatible.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section("Generation Settings") {
@@ -423,6 +439,36 @@ worst quality, bad quality, low quality, lowres, scan artifacts, jpeg artifacts,
         }
         UserDefaults.standard.set(modelProfile, forKey: "RIFE60.AIImageStudio.SelectedProfile")
         try? settings.save()
+    }
+
+    @MainActor
+    private func ensureRecommendedAnimeLoRA(forceInstall: Bool = false) async {
+        guard !isInstallingRecommendedLoRA else { return }
+        let selected = settings.localLoraFile.trimmingCharacters(in: .whitespacesAndNewlines)
+        let recommendedName = RecommendedAnimeLoRAInstaller.fileName
+        if !forceInstall && !selected.isEmpty && selected != recommendedName { return }
+
+        isInstallingRecommendedLoRA = true
+        recommendedLoRAStatus = "Checking the compatible Animagine XL 3.1 LoRA…"
+        defer { isInstallingRecommendedLoRA = false }
+        do {
+            let directory = try OnDeviceImageGenerator.modelsDirectoryURL()
+            recommendedLoRAStatus = "Verifying or downloading the 435 MB LoRA…"
+            let installedURL = try await RecommendedAnimeLoRAInstaller.install(into: directory)
+            settings.localLoraFile = installedURL.lastPathComponent
+            enableCharacterLora = true
+            let oldDefaultPrompt = "mizuhara chizuru, long hair, brown hair, brown eyes"
+            let newDefaultPrompt = "mayuzumi fuyuko, black hair, two side up, brown eyes"
+            if positivePrompt.localizedCaseInsensitiveContains("mizuhara chizuru") {
+                positivePrompt = positivePrompt.replacingOccurrences(of: oldDefaultPrompt, with: newDefaultPrompt, options: [.caseInsensitive])
+                positivePrompt = positivePrompt.replacingOccurrences(of: "mizuhara chizuru", with: RecommendedAnimeLoRAInstaller.triggerWord, options: [.caseInsensitive])
+            }
+            try settings.save()
+            saveGenerationDraft()
+            recommendedLoRAStatus = "Installed and selected: Mayuzumi Fuyuko. Trigger word: mayuzumi fuyuko."
+        } catch {
+            recommendedLoRAStatus = "LoRA installation failed: " + error.localizedDescription
+        }
     }
 
     private func saveSettings() {
