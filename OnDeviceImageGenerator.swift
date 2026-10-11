@@ -178,7 +178,7 @@ enum OnDeviceImageGenerator {
         // A successful model load does not guarantee headroom for the first UNet activation.
         // On this 6 GiB iPhone, keep inference conservative whenever less than 4 GiB is free.
         let lowMemoryInferenceMode = recoveringAfterInterruption || currentRenderPerformanceSnapshot().availableMemoryMB < 4_096
-        let effectiveSteps = lowMemoryInferenceMode ? max(1, min(8, steps)) : max(1, min(60, steps))
+        let effectiveSteps = lowMemoryInferenceMode ? max(1, min(4, steps)) : max(1, min(60, steps))
 
         // Diffusion inference competes with the rest of iOS for unified memory.
         // Pick a conservative working size before loading SDXL, then enable the
@@ -329,9 +329,11 @@ enum OnDeviceImageGenerator {
             outputWidth = multipleOf64(Int(Double(requestedWidth) * scale))
             outputHeight = multipleOf64(Int(Double(requestedHeight) * scale))
         } else if memory.availableMemoryMB < 4_096 {
-            // Model loading leaves only ~3 GiB free on the target phone. Keep the
-            // first denoising activations small; a later Real-CUGAN pass can upscale.
-            let scale = min(1.0, 384.0 / Double(max(requestedWidth, requestedHeight)))
+            // The first denoising activation can allocate a large transient Metal
+            // working set before the engine reports step 1. On this 6 GiB device,
+            // cap the diffusion surface at 256 px and upscale only after the model
+            // pipeline is released. This is intentionally applied after model load.
+            let scale = min(1.0, 256.0 / Double(max(requestedWidth, requestedHeight)))
             outputWidth = multipleOf64(Int(Double(requestedWidth) * scale))
             outputHeight = multipleOf64(Int(Double(requestedHeight) * scale))
         }
@@ -413,6 +415,11 @@ enum OnDeviceImageGenerator {
         // Poll memory during inference because SDXL can allocate transient Metal buffers during early denoising.
         // Keep the pipeline's strong reference inside the task only. Once the
         // task completes, its operation can release that capture before PNG encoding.
+        let preDenoisingMemory = currentRenderPerformanceSnapshot()
+        DiagnosticsLogger.shared.log(
+            "AI Image Studio pre-denoising checkpoint • available=\\(Int(preDenoisingMemory.availableMemoryMB)) MB • physical=\\(Int(preDenoisingMemory.physicalMemoryMB)) MB • size=\\(outputWidth)x\\(outputHeight) • steps=\\(effectiveSteps) • tiled=\\(useTiledDiffusion) • partialOffload=true"
+        )
+        AIImageGenerationMemoryJournal.shared.record("pre-denoising-allocation")
         AIImageGenerationMemoryJournal.shared.record("pipeline-configured")
         AIImageGenerationMemoryJournal.shared.record("generate-call-start")
         let generationTask = Task { [activePipeline = pipeline!] in
