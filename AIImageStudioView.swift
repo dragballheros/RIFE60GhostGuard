@@ -46,7 +46,7 @@ struct AIImageStudioView: View {
     @State private var selectedLoRAStatus = ""
 
     @State private var positivePrompt = """
-newest, very awa, masterpiece, high quality, high resolution, amazing quality, best quality, good lighting, detailed eyes, anime coloring, anime screencap, looking at viewer, large breasts, parted lips, :o, looking to the side, blush, standing, arched back, shoulders tilted, one hand behind neck, other hand resting on thigh, detailed background, 8k, blurry background, beach, night, 1girl, solo, mayuzumi fuyuko, black hair, two side up, brown eyes, sky blue micro bikini, tight clothes, cleavage, covered nipples, covered pussy
+newest, very awa, masterpiece, high quality, high resolution, amazing quality, best quality, good lighting, detailed eyes, anime coloring, anime screencap, looking at viewer, 1girl, solo, parted lips, blush, standing, detailed background, beach, night
 """
     @State private var negativePrompt = """
 worst quality, bad quality, low quality, lowres, scan artifacts, jpeg artifacts, sketch, bad quality, jpeg, artifacts, signature, username, text, logo, bad anatomy, artist name, artist logo, extra limbs, extra digit, extra legs, extra arms, blurry background, simple background, huge breasts, puckered anus
@@ -396,7 +396,6 @@ worst quality, bad quality, low quality, lowres, scan artifacts, jpeg artifacts,
         }
         modelProfile = "Animagine XL v3.1 (Local)"
         positivePrompt = draft.positivePrompt
-        migrateLegacyCharacterPrompt()
         negativePrompt = draft.negativePrompt
         // Migrate the old remote ANIMA/Illustrious controls to valid local SDXL defaults.
         width = 832
@@ -455,42 +454,6 @@ worst quality, bad quality, low quality, lowres, scan artifacts, jpeg artifacts,
         }
         UserDefaults.standard.set(modelProfile, forKey: "RIFE60.AIImageStudio.SelectedProfile")
         try? settings.save()
-    }
-
-    /// Migrate the old Chizuru preset and any A1111-style Chizuru LoRA token to
-    /// the trigger word used by the selected Animagine XL 3.1 LoRA. This engine
-    /// applies the LoRA from the selected local file; it does not parse <lora:...> prompt syntax.
-    @discardableResult
-    private func migrateLegacyCharacterPrompt() -> Bool {
-        let original = positivePrompt
-        let legacyTagPattern = "(?i)<lora:[^>]*(?:chizuru|ichinose)[^>]*>"
-        if let regex = try? NSRegularExpression(pattern: legacyTagPattern) {
-            let range = NSRange(positivePrompt.startIndex..., in: positivePrompt)
-            positivePrompt = regex.stringByReplacingMatches(
-                in: positivePrompt,
-                range: range,
-                withTemplate: RecommendedAnimeLoRAInstaller.triggerWord
-            )
-        }
-        let legacyNames = ["mizuhara chizuru", "ichinose_chizuru", "ichinose chizuru"]
-        let containsLegacyCharacter = legacyNames.contains {
-            positivePrompt.localizedCaseInsensitiveContains($0)
-        }
-        for legacyName in legacyNames {
-            positivePrompt = positivePrompt.replacingOccurrences(
-                of: legacyName,
-                with: RecommendedAnimeLoRAInstaller.triggerWord,
-                options: [.caseInsensitive]
-            )
-        }
-        if containsLegacyCharacter {
-            positivePrompt = positivePrompt.replacingOccurrences(
-                of: "long hair, brown hair, brown eyes",
-                with: "black hair, two side up, brown eyes",
-                options: [.caseInsensitive]
-            )
-        }
-        return positivePrompt != original
     }
 
     private func importSelectedLoRA(_ result: Result<[URL], Error>) {
