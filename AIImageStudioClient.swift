@@ -59,23 +59,49 @@ enum RecommendedAnimeLoRAInstaller {
             throw AIImageStudioError("The recommended LoRA needs about 435 MB plus temporary download space. Free at least 550 MB, then retry.")
         }
 
-        var request = URLRequest(url: downloadURL)
-        request.timeoutInterval = 300
-        request.setValue("application/octet-stream", forHTTPHeaderField: "Accept")
-        let (temporaryURL, response) = try await URLSession.shared.download(for: request)
-        guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
-            throw AIImageStudioError("The LoRA host did not provide the file. Check the connection and retry.")
+        var lastNetworkError = "Unknown network error."
+        for attempt in 1...3 {
+            do {
+                var request = URLRequest(url: downloadURL)
+                request.timeoutInterval = 300
+                request.setValue("application/octet-stream", forHTTPHeaderField: "Accept")
+                request.setValue("RIFE60GhostGuard/1.0 (iOS model downloader)", forHTTPHeaderField: "User-Agent")
+                request.setValue("https://civitai.com/", forHTTPHeaderField: "Referer")
+                let (temporaryURL, response) = try await URLSession.shared.download(for: request)
+                guard let http = response as? HTTPURLResponse else {
+                    try? FileManager.default.removeItem(at: temporaryURL)
+                    throw AIImageStudioError("The LoRA host returned an invalid HTTP response.")
+                }
+                guard (200...299).contains(http.statusCode) else {
+                    try? FileManager.default.removeItem(at: temporaryURL)
+                    let retryable = [408, 425, 429, 500, 502, 503, 504].contains(http.statusCode)
+                    if retryable && attempt < 3 {
+                        try await Task.sleep(nanoseconds: UInt64(attempt) * 1_000_000_000)
+                        continue
+                    }
+                    throw AIImageStudioError("CivitAI returned HTTP \(http.statusCode) while downloading the verified Animagine XL 3.1 LoRA. Check the network or retry later.")
+                }
+                let downloadedSize = try FileManager.default.attributesOfItem(atPath: temporaryURL.path)[.size] as? NSNumber
+                guard let downloadedSize, downloadedSize.int64Value > 100_000_000 else {
+                    try? FileManager.default.removeItem(at: temporaryURL)
+                    throw AIImageStudioError("The LoRA host returned an incomplete file, not the 435 MB model.")
+                }
+                let digest = try sha256(of: temporaryURL)
+                guard digest == expectedSHA256 else {
+                    try? FileManager.default.removeItem(at: temporaryURL)
+                    throw AIImageStudioError("The LoRA checksum did not match the published Animagine XL 3.1 file. The incomplete download was rejected.")
+                }
+                try FileManager.default.moveItem(at: temporaryURL, to: destination)
+                return destination
+            } catch {
+                lastNetworkError = error.localizedDescription
+                if error is AIImageStudioError || attempt == 3 {
+                    throw AIImageStudioError("Could not install the verified Mayuzumi Fuyuko LoRA after \(attempt) attempt(s): \(lastNetworkError)")
+                }
+                try? await Task.sleep(nanoseconds: UInt64(attempt) * 1_000_000_000)
+            }
         }
-        let downloadedSize = try FileManager.default.attributesOfItem(atPath: temporaryURL.path)[.size] as? NSNumber
-        guard let downloadedSize, downloadedSize.int64Value > 100_000_000 else {
-            throw AIImageStudioError("The downloaded LoRA file was incomplete or was not a model file.")
-        }
-        let digest = try sha256(of: temporaryURL)
-        guard digest == expectedSHA256 else {
-            throw AIImageStudioError("The LoRA checksum did not match the published Animagine XL 3.1 file. The incomplete download was rejected.")
-        }
-        try FileManager.default.moveItem(at: temporaryURL, to: destination)
-        return destination
+        throw AIImageStudioError("Could not install the verified Mayuzumi Fuyuko LoRA: \(lastNetworkError)")
     }
 
     private static func sha256(of url: URL) throws -> String {
