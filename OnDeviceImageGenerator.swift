@@ -338,7 +338,10 @@ enum OnDeviceImageGenerator {
             outputHeight = multipleOf64(Int(Double(requestedHeight) * scale))
         }
         if recoveringAfterInterruption {
-            let scale = min(1.0, 256.0 / Double(max(requestedWidth, requestedHeight)))
+            // Keep the post-load recovery cap identical to the preflight cap.
+            // The previous 256px override silently doubled the advertised safe-mode
+            // canvas immediately before inference, increasing peak activation memory.
+            let scale = min(1.0, 128.0 / Double(max(requestedWidth, requestedHeight)))
             outputWidth = multipleOf64(Int(Double(requestedWidth) * scale))
             outputHeight = multipleOf64(Int(Double(requestedHeight) * scale))
             DiagnosticsLogger.shared.log("AI Image Studio Recovery Safe Mode • capped output to \(outputWidth)x\(outputHeight) • steps=\(effectiveSteps) • Hires/LoRA disabled")
@@ -492,13 +495,23 @@ enum OnDeviceImageGenerator {
         }
         let lowMemoryWarningLogged = AIImageGenerationMemoryWatchdog()
         let memoryMonitorTask = Task {
+            // Persist only threshold crossings, not every polling sample, to keep
+            // the journal useful without continuously synchronizing the file.
+            var loggedThresholds: Set<Int> = []
             while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 500_000_000)
+                try? await Task.sleep(nanoseconds: 250_000_000)
                 if Task.isCancelled { return }
                 let snapshot = currentRenderPerformanceSnapshot()
+                let available = Int(snapshot.availableMemoryMB)
+                for threshold in [1_536, 1_024, 768] where available < threshold && !loggedThresholds.contains(threshold) {
+                    loggedThresholds.insert(threshold)
+                    DiagnosticsLogger.shared.log("AI Image Studio memory threshold crossed • threshold=\(threshold) MB • available=\(available) MB • tier=\(snapshot.tier.rawValue) • thermal=\(snapshot.thermalAndMode)")
+                    AIImageGenerationMemoryJournal.shared.record("memory-threshold-\(threshold)MB")
+                }
                 if snapshot.availableMemoryMB < 768 && !lowMemoryWarningLogged.didTrigger {
                     lowMemoryWarningLogged.trigger()
-                    DiagnosticsLogger.shared.log("AI Image Studio low-memory monitor • available=\(Int(snapshot.availableMemoryMB)) MB • tier=\(snapshot.tier.rawValue) • continuing without the former 2.25 GiB auto-cancel")
+                    DiagnosticsLogger.shared.log("AI Image Studio critical memory pressure • available=\(available) MB • inference may be terminated by iOS during a transient Metal allocation")
+                    AIImageGenerationMemoryJournal.shared.record("critical-memory-pressure")
                 }
             }
         }
