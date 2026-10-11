@@ -1,6 +1,6 @@
 name: Unblock Prompt Selection Fix Build
 
-# One-time recovery helper: the pre-fix Build 603 is occupying the serialized
+# One-time recovery helper (triggered by updating this file): the pre-fix Build 603 is occupying the serialized
 # main-branch build slot. This cancels that stale run so the prompt-fix build
 # can start. It does not alter application source.
 on:
