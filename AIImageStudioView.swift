@@ -4,6 +4,61 @@ import Photos
 import UniformTypeIdentifiers
 import UIKit
 
+/// Uses UIKit's UITextView for multiline prompt editing. SwiftUI's vertical
+/// TextField selection path has crashed on-device; this wrapper keeps native
+/// selection/copy/paste while avoiding needless text/selection resets on updates.
+private struct StablePromptTextView: UIViewRepresentable {
+    @Binding var text: String
+    let accessibilityLabel: String
+
+    func makeUIView(context: Context) -> UITextView {
+        let view = UITextView()
+        view.delegate = context.coordinator
+        view.font = UIFont.preferredFont(forTextStyle: .body)
+        view.adjustsFontForContentSizeCategory = true
+        view.backgroundColor = .clear
+        view.textColor = .label
+        view.isEditable = true
+        view.isSelectable = true
+        view.isScrollEnabled = true
+        view.autocapitalizationType = .none
+        view.autocorrectionType = .no
+        view.smartQuotesType = .no
+        view.smartDashesType = .no
+        view.textContainerInset = UIEdgeInsets(top: 8, left: 0, bottom: 8, right: 0)
+        view.textContainer.lineFragmentPadding = 0
+        view.accessibilityLabel = accessibilityLabel
+        view.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        return view
+    }
+
+    func updateUIView(_ view: UITextView, context: Context) {
+        context.coordinator.parent = self
+        view.accessibilityLabel = accessibilityLabel
+        // Never assign text if it already matches: doing so can disrupt the
+        // insertion point, selection handles, and the edit menu during SwiftUI updates.
+        guard view.text != text else { return }
+        let oldSelection = view.selectedRange
+        let nsText = text as NSString
+        view.text = text
+        let location = min(max(0, oldSelection.location), nsText.length)
+        let length = min(max(0, oldSelection.length), nsText.length - location)
+        view.selectedRange = NSRange(location: location, length: length)
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator(parent: self) }
+
+    final class Coordinator: NSObject, UITextViewDelegate {
+        var parent: StablePromptTextView
+        init(parent: StablePromptTextView) { self.parent = parent }
+
+        func textViewDidChange(_ textView: UITextView) {
+            let changedText = textView.text ?? ""
+            if parent.text != changedText { parent.text = changedText }
+        }
+    }
+}
+
 private struct AIImageStudioDraft: Codable {
     var modelProfile: String
     var positivePrompt: String
@@ -153,18 +208,14 @@ worst quality, bad quality, low quality, lowres, scan artifacts, jpeg artifacts,
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section("Positive Prompt") {
-                TextField("Positive prompt", text: $positivePrompt, axis: .vertical)
-                    .lineLimit(5...10)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
+                StablePromptTextView(text: $positivePrompt, accessibilityLabel: "Positive prompt")
+                    .frame(minHeight: 120, maxHeight: 240)
                 Text("The prompt from the supplied PNG is loaded by default. Edit it freely before generating.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section("Negative Prompt") {
-                TextField("Negative prompt", text: $negativePrompt, axis: .vertical)
-                    .lineLimit(4...8)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
+                StablePromptTextView(text: $negativePrompt, accessibilityLabel: "Negative prompt")
+                    .frame(minHeight: 96, maxHeight: 200)
             }
             Section("On-device Model") {
                 TextField("Supported local model catalog ID", text: $settings.localModelID)
@@ -307,10 +358,8 @@ worst quality, bad quality, low quality, lowres, scan artifacts, jpeg artifacts,
                     .font(.caption).foregroundStyle(.secondary)
                 TextField("Trigger word", text: $triggerWord)
                     .textInputAutocapitalization(.never).autocorrectionDisabled()
-                TextField("Shared caption or style description", text: $trainingCaption, axis: .vertical)
-                    .lineLimit(3...6)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
+                StablePromptTextView(text: $trainingCaption, accessibilityLabel: "Shared caption or style description")
+                    .frame(minHeight: 72, maxHeight: 160)
                 Text("For a character LoRA, use clear varied images of the same subject, consistent captions, and a unique trigger word. Only upload images you have permission to use.")
                     .font(.caption).foregroundStyle(.secondary)
             }
