@@ -487,11 +487,9 @@ worst quality, bad quality, low quality, lowres, scan artifacts, jpeg artifacts,
     @MainActor
     private func ensureRecommendedAnimeLoRA(forceInstall: Bool = false) async {
         guard !isInstallingRecommendedLoRA else { return }
-        let selected = settings.localLoraFile.trimmingCharacters(in: .whitespacesAndNewlines)
-        let recommendedName = RecommendedAnimeLoRAInstaller.fileName
-        let isLegacyCharacterLoRA = selected.localizedCaseInsensitiveContains("chizuru")
-            || selected.localizedCaseInsensitiveContains("ichinose")
-        if !forceInstall && !selected.isEmpty && selected != recommendedName && !isLegacyCharacterLoRA { return }
+        // The compatible Animagine XL 3.1 character LoRA is the default for this
+        // profile. Verify the on-disk copy on every entry and replace legacy
+        // Chizuru/other stale selections instead of silently generating without it.
 
         isInstallingRecommendedLoRA = true
         recommendedLoRAStatus = "Checking the compatible Animagine XL 3.1 LoRA…"
