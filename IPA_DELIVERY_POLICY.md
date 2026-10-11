@@ -5,7 +5,7 @@ For RIFE60GhostGuard builds, the unsigned IPA must be delivered through a tempor
 - Do not upload or attach the IPA to ChatGPT Library or the conversation.
 - Do not publish the IPA as a GitHub Actions workflow artifact.
 - Create a uniquely tagged GitHub Release containing the IPA after validation.
-- Provide the release URL to the user.
+- Provide the live release URL to the user immediately after publication, not after the workflow finishes its cleanup delay.
 - Delete the temporary release and its IPA asset 15 minutes after publication.
 - Diagnostics and build logs may remain Actions artifacts; they must not contain the IPA itself.
 
