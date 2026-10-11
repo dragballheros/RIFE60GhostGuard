@@ -41,8 +41,9 @@ struct AIImageStudioView: View {
     @State private var activeTab = "Generate"
     @State private var modelProfile = "Animagine XL v3.1 (Local)"
     @State private var didRestoreDraft = false
-    @State private var isInstallingRecommendedLoRA = false
-    @State private var recommendedLoRAStatus = ""
+    @State private var showLoRAImporter = false
+    @State private var selectedLoRATrigger = ""
+    @State private var selectedLoRAStatus = ""
 
     @State private var positivePrompt = """
 newest, very awa, masterpiece, high quality, high resolution, amazing quality, best quality, good lighting, detailed eyes, anime coloring, anime screencap, looking at viewer, large breasts, parted lips, :o, looking to the side, blush, standing, arched back, shoulders tilted, one hand behind neck, other hand resting on thigh, detailed background, 8k, blurry background, beach, night, 1girl, solo, mayuzumi fuyuko, black hair, two side up, brown eyes, sky blue micro bikini, tight clothes, cleavage, covered nipples, covered pussy
@@ -121,9 +122,11 @@ worst quality, bad quality, low quality, lowres, scan artifacts, jpeg artifacts,
                 if let warning = OnDeviceImageGenerator.previousGenerationWarning() {
                     generationStatus = warning
                 }
-                Task { await ensureRecommendedAnimeLoRA() }
             }
             .onDisappear { saveGenerationDraft(); try? settings.save() }
+            .fileImporter(isPresented: $showLoRAImporter, allowedContentTypes: [.data], allowsMultipleSelection: false) { result in
+                importSelectedLoRA(result)
+            }
             .toolbar {
                 ToolbarItem(placement: .navigationBarLeading) {
                     Button("Close") { dismiss() }
@@ -150,16 +153,16 @@ worst quality, bad quality, low quality, lowres, scan artifacts, jpeg artifacts,
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section("Positive Prompt") {
-                TextField("Describe the image…", text: $positivePrompt, axis: .vertical)
-                    .lineLimit(5...10)
+                TextEditor(text: $positivePrompt)
+                    .frame(minHeight: 130, maxHeight: 240)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
                 Text("The prompt from the supplied PNG is loaded by default. Edit it freely before generating.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section("Negative Prompt") {
-                TextField("Negative prompt", text: $negativePrompt, axis: .vertical)
-                    .lineLimit(4...8)
+                TextEditor(text: $negativePrompt)
+                    .frame(minHeight: 100, maxHeight: 200)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
             }
@@ -172,30 +175,36 @@ worst quality, bad quality, low quality, lowres, scan artifacts, jpeg artifacts,
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section("Local LoRA") {
-                if isInstallingRecommendedLoRA {
-                    ProgressView(recommendedLoRAStatus.isEmpty ? "Installing compatible anime LoRA…" : recommendedLoRAStatus)
-                } else if !recommendedLoRAStatus.isEmpty {
-                    Text(recommendedLoRAStatus).font(.caption).foregroundStyle(.secondary)
-                }
                 Button {
-                    Task { await ensureRecommendedAnimeLoRA(forceInstall: true) }
+                    showLoRAImporter = true
                 } label: {
-                    Label("Install / select compatible anime-girl LoRA (435 MB)", systemImage: "person.crop.square")
+                    Label("Choose LoRA file (.safetensors)", systemImage: "folder")
                 }
-                .disabled(isInstallingRecommendedLoRA)
-                Text("Recommended: Mayuzumi Fuyuko for Animagine XL v3.1. First use downloads the verified 435 MB SDXL LoRA into this app's private Models folder and selects it by default. Trigger word: mayuzumi fuyuko.")
-                    .font(.caption).foregroundStyle(.secondary)
+                if !settings.localLoraFile.isEmpty {
+                    LabeledContent("Selected file", value: settings.localLoraFile)
+                    Button("Choose a different LoRA") { showLoRAImporter = true }
+                    Button("Clear selected LoRA", role: .destructive) {
+                        settings.localLoraFile = ""
+                        selectedLoRATrigger = ""
+                        enableCharacterLora = false
+                        try? settings.save()
+                        saveGenerationDraft()
+                        selectedLoRAStatus = "No LoRA selected."
+                    }
+                }
+                if !selectedLoRAStatus.isEmpty {
+                    Text(selectedLoRAStatus).font(.caption).foregroundStyle(.secondary)
+                }
                 Toggle("Apply selected local LoRA", isOn: $enableCharacterLora)
-                TextField("Trained LoRA filename", text: $settings.localLoraFile)
-                    .textInputAutocapitalization(.never).autocorrectionDisabled()
-                    .disabled(!enableCharacterLora)
+                    .disabled(settings.localLoraFile.isEmpty)
                 HStack {
                     Text("LoRA strength")
                     Spacer()
                     Text(String(format: "%.2f", characterWeight)).monospacedDigit()
                 }
-                Slider(value: $characterWeight, in: 0...1.5, step: 0.05).disabled(!enableCharacterLora)
-                Text("The selected LoRA is only applied when the on-device memory policy permits it. Recovery Safe Mode and low-memory runs can disable LoRA to reduce crash risk. External ANIMA and Illustrious-only LoRAs are not assumed compatible.")
+                Slider(value: $characterWeight, in: 0...1.5, step: 0.05)
+                    .disabled(!enableCharacterLora || settings.localLoraFile.isEmpty)
+                Text("Selecting a LoRA copies it into the app's Models folder and enables it for generation. The file name is also added to the positive prompt. If your LoRA requires a specific trigger word, edit the prompt to use that word.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section("Generation Settings") {
@@ -484,28 +493,44 @@ worst quality, bad quality, low quality, lowres, scan artifacts, jpeg artifacts,
         return positivePrompt != original
     }
 
-    @MainActor
-    private func ensureRecommendedAnimeLoRA(forceInstall: Bool = false) async {
-        guard !isInstallingRecommendedLoRA else { return }
-        // The compatible Animagine XL 3.1 character LoRA is the default for this
-        // profile. Verify the on-disk copy on every entry and replace legacy
-        // Chizuru/other stale selections instead of silently generating without it.
-
-        isInstallingRecommendedLoRA = true
-        recommendedLoRAStatus = "Checking the compatible Animagine XL 3.1 LoRA…"
-        defer { isInstallingRecommendedLoRA = false }
+    private func importSelectedLoRA(_ result: Result<[URL], Error>) {
         do {
+            let urls = try result.get()
+            guard let sourceURL = urls.first else { return }
+            let hasAccess = sourceURL.startAccessingSecurityScopedResource()
+            defer { if hasAccess { sourceURL.stopAccessingSecurityScopedResource() } }
+            let ext = sourceURL.pathExtension.lowercased()
+            guard ["safetensors", "ckpt", "pt", "bin"].contains(ext) else {
+                throw AIImageStudioError("Choose a LoRA checkpoint file (.safetensors, .ckpt, .pt, or .bin).")
+            }
             let directory = try OnDeviceImageGenerator.modelsDirectoryURL()
-            recommendedLoRAStatus = "Verifying or downloading the 435 MB LoRA…"
-            let installedURL = try await RecommendedAnimeLoRAInstaller.install(into: directory)
-            settings.localLoraFile = installedURL.lastPathComponent
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            let safeName = sourceURL.lastPathComponent
+            let destinationURL = directory.appendingPathComponent(safeName)
+            if sourceURL.standardizedFileURL != destinationURL.standardizedFileURL {
+                if FileManager.default.fileExists(atPath: destinationURL.path) {
+                    try FileManager.default.removeItem(at: destinationURL)
+                }
+                try FileManager.default.copyItem(at: sourceURL, to: destinationURL)
+            }
+            settings.localLoraFile = safeName
             enableCharacterLora = true
-            migrateLegacyCharacterPrompt()
+            let stem = sourceURL.deletingPathExtension().lastPathComponent
+                .replacingOccurrences(of: "_", with: " ")
+                .replacingOccurrences(of: "-", with: " ")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            selectedLoRATrigger = stem
+            if !stem.isEmpty && !positivePrompt.localizedCaseInsensitiveContains(stem) {
+                let trimmed = positivePrompt.trimmingCharacters(in: .whitespacesAndNewlines)
+                positivePrompt = trimmed.isEmpty ? stem : trimmed + ", " + stem
+            }
             try settings.save()
             saveGenerationDraft()
-            recommendedLoRAStatus = "Installed and selected: Mayuzumi Fuyuko. Trigger word: mayuzumi fuyuko."
+            selectedLoRAStatus = "Imported and selected: " + safeName + ". Review the prompt for the LoRA's actual trigger word."
+            errorText = ""
         } catch {
-            recommendedLoRAStatus = "LoRA installation failed: " + error.localizedDescription
+            errorText = "Could not import LoRA: " + error.localizedDescription
+            selectedLoRAStatus = "Import failed."
         }
     }
 
