@@ -111,7 +111,7 @@ enum OnDeviceImageGenerator {
                 "generation-complete", "image-output-saved",
                 "generation-cancelled", "ui-generation-failure"
             ]
-            guard !terminalStages.contains(stage) else { return nil }
+            guard !terminalStages.contains(stage), !stage.hasPrefix("benchmark-complete-") else { return nil }
             return "The previous AI generation may have stopped before its output was safely saved. The next attempt will use Recovery Safe Mode (maximum 128 px, 4 steps, Hires/LoRA off). Export memory diagnostics below to inspect the last recorded stage."
         } catch {
             return nil
@@ -256,6 +256,8 @@ enum OnDeviceImageGenerator {
                 : "Checking local model files…",
             progress: progress
         )
+        AIImageGenerationMemoryJournal.shared.record("model-resolution-start")
+        if benchmarkMode { AIImageGenerationMemoryJournal.shared.record("benchmark-model-resolution-start") }
         let resolvedModel = try await environment.ensure(modelID, offline: false) { state in
             let message: String
             switch state {
@@ -271,8 +273,20 @@ enum OnDeviceImageGenerator {
                     message = "Downloading \(index)/\(total): \(file)"
                 }
             }
+            if benchmarkMode {
+                switch state {
+                case .resolving:
+                    AIImageGenerationMemoryJournal.shared.record("benchmark-model-catalog-resolving")
+                case .verifying:
+                    AIImageGenerationMemoryJournal.shared.record("benchmark-model-files-verifying")
+                case .downloading:
+                    AIImageGenerationMemoryJournal.shared.record("benchmark-model-files-downloading")
+                }
+            }
             Task { @MainActor in progress(message) }
         }
+        AIImageGenerationMemoryJournal.shared.record("model-resolution-complete")
+        if benchmarkMode { AIImageGenerationMemoryJournal.shared.record("benchmark-model-resolution-complete") }
 
         try Task.checkCancellation()
 
@@ -449,6 +463,7 @@ enum OnDeviceImageGenerator {
         )
         AIImageGenerationMemoryJournal.shared.record("pre-denoising-allocation")
         AIImageGenerationMemoryJournal.shared.record("pipeline-configured")
+        if benchmarkMode { AIImageGenerationMemoryJournal.shared.record("benchmark-pre-denoising") }
         AIImageGenerationMemoryJournal.shared.record("generate-call-start")
         let generationTask = Task { [activePipeline = pipeline!] in
             try await activePipeline.generate(prompt: positivePrompt, negativePrompt: negativePrompt) { state, _ in
@@ -463,6 +478,7 @@ enum OnDeviceImageGenerator {
             case .preparing:
                 message = "Preparing local generation…"
                 AIImageGenerationMemoryJournal.shared.record("engine-preparing")
+                if benchmarkMode { AIImageGenerationMemoryJournal.shared.record("benchmark-engine-preparing") }
             case .ensuringResources:
                 message = "Checking local model resources…"
                 AIImageGenerationMemoryJournal.shared.record("engine-ensuring-resources")
@@ -504,6 +520,7 @@ enum OnDeviceImageGenerator {
             case .completed:
                 message = "Generation complete."
                 AIImageGenerationMemoryJournal.shared.record("sampler-complete")
+                if benchmarkMode { AIImageGenerationMemoryJournal.shared.record("benchmark-sampler-complete") }
             case .cancelled:
                 message = "Generation cancelled."
                 AIImageGenerationMemoryJournal.shared.record("generation-cancelled")
