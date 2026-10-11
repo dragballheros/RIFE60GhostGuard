@@ -45,7 +45,7 @@ struct AIImageStudioView: View {
     @State private var recommendedLoRAStatus = ""
 
     @State private var positivePrompt = """
-newest, very awa, masterpiece, high quality, high resolution, amazing quality, best quality, good lighting, detailed eyes, anime coloring, anime screencap, looking at viewer, large breasts, parted lips, :o, looking to the side, blush, standing, arched back, shoulders tilted, one hand behind neck, other hand resting on thigh, detailed background, 8k, blurry background, beach, night, 1girl, solo, mizuhara chizuru, long hair, brown hair, brown eyes, sky blue micro bikini, tight clothes, cleavage, covered nipples, covered pussy
+newest, very awa, masterpiece, high quality, high resolution, amazing quality, best quality, good lighting, detailed eyes, anime coloring, anime screencap, looking at viewer, large breasts, parted lips, :o, looking to the side, blush, standing, arched back, shoulders tilted, one hand behind neck, other hand resting on thigh, detailed background, 8k, blurry background, beach, night, 1girl, solo, mayuzumi fuyuko, black hair, two side up, brown eyes, sky blue micro bikini, tight clothes, cleavage, covered nipples, covered pussy
 """
     @State private var negativePrompt = """
 worst quality, bad quality, low quality, lowres, scan artifacts, jpeg artifacts, sketch, bad quality, jpeg, artifacts, signature, username, text, logo, bad anatomy, artist name, artist logo, extra limbs, extra digit, extra legs, extra arms, blurry background, simple background, huge breasts, puckered anus
@@ -150,12 +150,18 @@ worst quality, bad quality, low quality, lowres, scan artifacts, jpeg artifacts,
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section("Positive Prompt") {
-                TextEditor(text: $positivePrompt).frame(minHeight: 150)
+                TextField("Describe the image…", text: $positivePrompt, axis: .vertical)
+                    .lineLimit(5...10)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
                 Text("The prompt from the supplied PNG is loaded by default. Edit it freely before generating.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section("Negative Prompt") {
-                TextEditor(text: $negativePrompt).frame(minHeight: 110)
+                TextField("Negative prompt", text: $negativePrompt, axis: .vertical)
+                    .lineLimit(4...8)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
             }
             Section("On-device Model") {
                 TextField("Supported local model catalog ID", text: $settings.localModelID)
@@ -256,7 +262,7 @@ worst quality, bad quality, low quality, lowres, scan artifacts, jpeg artifacts,
                         Label("Run Full Pipeline Benchmark", systemImage: "speedometer")
                     }
                     .buttonStyle(.bordered)
-                    Text("Runs a safe 128×128, 4-step on-device test through model resolution/loading, prompt and input encoding, denoising, decoding, and PNG saving. Export diagnostics for stage markers and memory snapshots. This is a diagnostic run, not a full-resolution speed test.")
+                    Text("Runs a safe 128×128, 1-step on-device smoke test through model resolution/loading, prompt and input encoding, denoising, decoding, and PNG saving. Export diagnostics for stage markers and memory snapshots. This is a diagnostic run, not a full-resolution speed test.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 if !generationStatus.isEmpty { Text(generationStatus).font(.caption).foregroundStyle(.secondary) }
@@ -381,6 +387,7 @@ worst quality, bad quality, low quality, lowres, scan artifacts, jpeg artifacts,
         }
         modelProfile = "Animagine XL v3.1 (Local)"
         positivePrompt = draft.positivePrompt
+        migrateLegacyCharacterPrompt()
         negativePrompt = draft.negativePrompt
         // Migrate the old remote ANIMA/Illustrious controls to valid local SDXL defaults.
         width = 832
@@ -441,12 +448,50 @@ worst quality, bad quality, low quality, lowres, scan artifacts, jpeg artifacts,
         try? settings.save()
     }
 
+    /// Migrate the old Chizuru preset and any A1111-style Chizuru LoRA token to
+    /// the trigger word used by the selected Animagine XL 3.1 LoRA. This engine
+    /// applies the LoRA from the selected local file; it does not parse <lora:...> prompt syntax.
+    @discardableResult
+    private func migrateLegacyCharacterPrompt() -> Bool {
+        let original = positivePrompt
+        let legacyTagPattern = "(?i)<lora:[^>]*(?:chizuru|ichinose)[^>]*>"
+        if let regex = try? NSRegularExpression(pattern: legacyTagPattern) {
+            let range = NSRange(positivePrompt.startIndex..., in: positivePrompt)
+            positivePrompt = regex.stringByReplacingMatches(
+                in: positivePrompt,
+                range: range,
+                withTemplate: RecommendedAnimeLoRAInstaller.triggerWord
+            )
+        }
+        let legacyNames = ["mizuhara chizuru", "ichinose_chizuru", "ichinose chizuru"]
+        let containsLegacyCharacter = legacyNames.contains {
+            positivePrompt.localizedCaseInsensitiveContains($0)
+        }
+        for legacyName in legacyNames {
+            positivePrompt = positivePrompt.replacingOccurrences(
+                of: legacyName,
+                with: RecommendedAnimeLoRAInstaller.triggerWord,
+                options: [.caseInsensitive]
+            )
+        }
+        if containsLegacyCharacter {
+            positivePrompt = positivePrompt.replacingOccurrences(
+                of: "long hair, brown hair, brown eyes",
+                with: "black hair, two side up, brown eyes",
+                options: [.caseInsensitive]
+            )
+        }
+        return positivePrompt != original
+    }
+
     @MainActor
     private func ensureRecommendedAnimeLoRA(forceInstall: Bool = false) async {
         guard !isInstallingRecommendedLoRA else { return }
         let selected = settings.localLoraFile.trimmingCharacters(in: .whitespacesAndNewlines)
         let recommendedName = RecommendedAnimeLoRAInstaller.fileName
-        if !forceInstall && !selected.isEmpty && selected != recommendedName { return }
+        let isLegacyCharacterLoRA = selected.localizedCaseInsensitiveContains("chizuru")
+            || selected.localizedCaseInsensitiveContains("ichinose")
+        if !forceInstall && !selected.isEmpty && selected != recommendedName && !isLegacyCharacterLoRA { return }
 
         isInstallingRecommendedLoRA = true
         recommendedLoRAStatus = "Checking the compatible Animagine XL 3.1 LoRA…"
@@ -457,12 +502,7 @@ worst quality, bad quality, low quality, lowres, scan artifacts, jpeg artifacts,
             let installedURL = try await RecommendedAnimeLoRAInstaller.install(into: directory)
             settings.localLoraFile = installedURL.lastPathComponent
             enableCharacterLora = true
-            let oldDefaultPrompt = "mizuhara chizuru, long hair, brown hair, brown eyes"
-            let newDefaultPrompt = "mayuzumi fuyuko, black hair, two side up, brown eyes"
-            if positivePrompt.localizedCaseInsensitiveContains("mizuhara chizuru") {
-                positivePrompt = positivePrompt.replacingOccurrences(of: oldDefaultPrompt, with: newDefaultPrompt, options: [.caseInsensitive])
-                positivePrompt = positivePrompt.replacingOccurrences(of: "mizuhara chizuru", with: RecommendedAnimeLoRAInstaller.triggerWord, options: [.caseInsensitive])
-            }
+            migrateLegacyCharacterPrompt()
             try settings.save()
             saveGenerationDraft()
             recommendedLoRAStatus = "Installed and selected: Mayuzumi Fuyuko. Trigger word: mayuzumi fuyuko."
