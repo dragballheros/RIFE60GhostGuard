@@ -178,7 +178,7 @@ enum OnDeviceImageGenerator {
         // A successful model load does not guarantee headroom for the first UNet activation.
         // On this 6 GiB iPhone, keep inference conservative whenever less than 4 GiB is free.
         let lowMemoryInferenceMode = recoveringAfterInterruption || currentRenderPerformanceSnapshot().availableMemoryMB < 4_096
-        let effectiveSteps = lowMemoryInferenceMode ? max(1, min(4, steps)) : max(1, min(60, steps))
+        let effectiveSteps = lowMemoryInferenceMode ? max(1, min(recoveringAfterInterruption ? 2 : 4, steps)) : max(1, min(60, steps))
 
         // Diffusion inference competes with the rest of iOS for unified memory.
         // Pick a conservative working size before loading SDXL, then enable the
@@ -278,7 +278,7 @@ enum OnDeviceImageGenerator {
             DiagnosticsLogger.shared.log("AI Image Studio model-load headroom is low • continuing with on-demand weights and tiled inference • available=\(Int(memory.availableMemoryMB)) MB")
         }
         if recoveringAfterInterruption {
-            let scale = min(1.0, 256.0 / Double(max(requestedWidth, requestedHeight)))
+            let scale = min(1.0, 128.0 / Double(max(requestedWidth, requestedHeight)))
             outputWidth = multipleOf64(Int(Double(requestedWidth) * scale))
             outputHeight = multipleOf64(Int(Double(requestedHeight) * scale))
         } else if memory.availableMemoryMB < 1_400 {
