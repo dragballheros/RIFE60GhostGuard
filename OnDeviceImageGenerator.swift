@@ -167,7 +167,7 @@ enum OnDeviceImageGenerator {
         let benchmarkStartedAt = Date()
         if benchmarkMode {
             AIImageGenerationMemoryJournal.shared.record("benchmark-start")
-            DiagnosticsLogger.shared.log("AI Image Studio benchmark started • stages=model resolution, model load, text encoding, input encoding, denoising, decoding, PNG write • profile=128x128/4 steps")
+            DiagnosticsLogger.shared.log("AI Image Studio benchmark started • stages=model resolution, model load, text encoding, input encoding, denoising, decoding, PNG write • smoke profile=128x128/1 step to isolate the first sampler-to-decoder transition")
         }
         guard !positivePrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw AIImageStudioError("The positive prompt cannot be empty.")
@@ -373,10 +373,10 @@ enum OnDeviceImageGenerator {
             // This validates stages and resource lifecycle, not full-resolution throughput.
             outputWidth = 128
             outputHeight = 128
-            effectiveSteps = 4
+            effectiveSteps = 1
             useTiledDiffusion = false
             useTiledDecoding = true
-            AIImageGenerationMemoryJournal.shared.record("benchmark-configured-128x128-4steps")
+            AIImageGenerationMemoryJournal.shared.record("benchmark-configured-128x128-1step")
         }
         // Recovery/small-canvas mode must not use tiled diffusion. At 128px output,
         // one-unit tiles can fragment the Metal inference path without reducing the
@@ -520,7 +520,12 @@ enum OnDeviceImageGenerator {
             case .completed:
                 message = "Generation complete."
                 AIImageGenerationMemoryJournal.shared.record("sampler-complete")
-                if benchmarkMode { AIImageGenerationMemoryJournal.shared.record("benchmark-sampler-complete") }
+                if benchmarkMode {
+                    let completedMemory = currentRenderPerformanceSnapshot()
+                    AIImageGenerationMemoryJournal.shared.record("benchmark-engine-state-completed")
+                    DiagnosticsLogger.shared.log("AI Image Studio benchmark engine state completed • available=\(Int(completedMemory.availableMemoryMB)) MB • physical=\(Int(completedMemory.physicalMemoryMB)) MB")
+                    AIImageGenerationMemoryJournal.shared.record("benchmark-sampler-complete")
+                }
             case .cancelled:
                 message = "Generation cancelled."
                 AIImageGenerationMemoryJournal.shared.record("generation-cancelled")
@@ -564,7 +569,15 @@ enum OnDeviceImageGenerator {
             DiagnosticsLogger.shared.log("AI Image Studio engine generation failed • error=\(error.localizedDescription) • available=\(Int(failureMemory.availableMemoryMB)) MB • physical=\(Int(failureMemory.physicalMemoryMB)) MB")
             AIImageGenerationMemoryJournal.shared.record("engine-generation-error")
         }
+        if benchmarkMode {
+            let returnedMemory = currentRenderPerformanceSnapshot()
+            AIImageGenerationMemoryJournal.shared.record("benchmark-engine-returned")
+            DiagnosticsLogger.shared.log("AI Image Studio benchmark engine returned • available=\(Int(returnedMemory.availableMemoryMB)) MB • physical=\(Int(returnedMemory.physicalMemoryMB)) MB")
+        }
         var results = try generationResult.get()
+        if benchmarkMode {
+            AIImageGenerationMemoryJournal.shared.record("benchmark-results-received")
+        }
         guard let result = results.first else {
             pipeline = nil
             throw AIImageStudioError("The local image engine returned no image.")
@@ -591,6 +604,9 @@ enum OnDeviceImageGenerator {
         try FileManager.default.createDirectory(at: outputDirectory, withIntermediateDirectories: true)
         let outputURL = outputDirectory.appendingPathComponent("RIFE60_AI_\(UUID().uuidString).png")
         do {
+            if benchmarkMode {
+                AIImageGenerationMemoryJournal.shared.record("benchmark-png-write-start")
+            }
             try result.write(to: outputURL, type: .png)
             AIImageGenerationMemoryJournal.shared.record("image-output-saved")
             if benchmarkMode {
