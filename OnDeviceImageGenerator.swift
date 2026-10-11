@@ -410,7 +410,7 @@ enum OnDeviceImageGenerator {
         pipeline!.configuration.seed = UInt32(truncatingIfNeeded: max(0, seed))
         pipeline!.configuration.clipSkip = max(1, min(2, clipSkip))
 
-        if hiresEnabled {
+        if hiresEnabled && !benchmarkMode {
             // Hires diffusion multiplies the latent working surface. Keep it disabled
             // for this device profile; use the app's separate Real-CUGAN stage instead.
             if memory.availableMemoryMB >= 4_096 && !recoveringAfterInterruption {
@@ -433,7 +433,7 @@ enum OnDeviceImageGenerator {
             pipeline!.configuration.hiresFix = false
         }
 
-        if memory.availableMemoryMB >= 4_096 && !recoveringAfterInterruption && enableLoRA && !settings.localLoraFile.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        if memory.availableMemoryMB >= 4_096 && !recoveringAfterInterruption && !benchmarkMode && enableLoRA && !settings.localLoraFile.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             pipeline!.configuration.loras = [
                 DataModels.LoRA(file: settings.localLoraFile, weight: Float(loraWeight), mode: .all)
             ]
