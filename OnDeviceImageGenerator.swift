@@ -161,8 +161,14 @@ enum OnDeviceImageGenerator {
         hiresSteps: Int,
         hiresDenoise: Double,
         clipSkip: Int,
+        benchmarkMode: Bool = false,
         progress: @escaping @MainActor @Sendable (String) -> Void
     ) async throws -> URL {
+        let benchmarkStartedAt = Date()
+        if benchmarkMode {
+            AIImageGenerationMemoryJournal.shared.record("benchmark-start")
+            DiagnosticsLogger.shared.log("AI Image Studio benchmark started • stages=model resolution, model load, text encoding, input encoding, denoising, decoding, PNG write • profile=128x128/4 steps")
+        }
         guard !positivePrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw AIImageStudioError("The positive prompt cannot be empty.")
         }
@@ -174,11 +180,11 @@ enum OnDeviceImageGenerator {
         // If a prior attempt ended without a terminal journal marker, treat this
         // run as a recovery retry. Favor small activations over preserving requested
         // output dimensions; the user can upscale after the diffusion pipeline exits.
-        let recoveringAfterInterruption = previousGenerationWarning() != nil
+        let recoveringAfterInterruption = previousGenerationWarning() != nil && !benchmarkMode
         // A successful model load does not guarantee headroom for the first UNet activation.
         // On this 6 GiB iPhone, keep inference conservative whenever less than 4 GiB is free.
         let lowMemoryInferenceMode = recoveringAfterInterruption || currentRenderPerformanceSnapshot().availableMemoryMB < 4_096
-        let effectiveSteps = lowMemoryInferenceMode ? max(1, min(recoveringAfterInterruption ? 2 : 4, steps)) : max(1, min(60, steps))
+        var effectiveSteps = lowMemoryInferenceMode ? max(1, min(recoveringAfterInterruption ? 2 : 4, steps)) : max(1, min(60, steps))
 
         // Diffusion inference competes with the rest of iOS for unified memory.
         // Pick a conservative working size before loading SDXL, then enable the
@@ -305,12 +311,14 @@ enum OnDeviceImageGenerator {
             progress: progress
         )
         AIImageGenerationMemoryJournal.shared.record("model-load-start")
+        if benchmarkMode { AIImageGenerationMemoryJournal.shared.record("benchmark-model-load-start") }
         var pipeline: MediaGenerationPipeline? = try await MediaGenerationPipeline.fromPretrained(
             resolvedModel.file,
             backend: .local
         )
         memory = currentRenderPerformanceSnapshot()
         AIImageGenerationMemoryJournal.shared.record("model-load-complete")
+        if benchmarkMode { AIImageGenerationMemoryJournal.shared.record("benchmark-model-load-complete") }
         DiagnosticsLogger.shared.log(
             "AI Image Studio model loaded • available=\(Int(memory.availableMemoryMB)) MB • physical=\(Int(memory.physicalMemoryMB)) MB • thermal=\(memory.thermalAndMode)"
         )
@@ -345,6 +353,16 @@ enum OnDeviceImageGenerator {
             outputWidth = multipleOf64(Int(Double(requestedWidth) * scale))
             outputHeight = multipleOf64(Int(Double(requestedHeight) * scale))
             DiagnosticsLogger.shared.log("AI Image Studio Recovery Safe Mode • capped output to \(outputWidth)x\(outputHeight) • steps=\(effectiveSteps) • Hires/LoRA disabled")
+        }
+        if benchmarkMode {
+            // Exercise the actual local pipeline with a deliberately small workload.
+            // This validates stages and resource lifecycle, not full-resolution throughput.
+            outputWidth = 128
+            outputHeight = 128
+            effectiveSteps = 4
+            useTiledDiffusion = false
+            useTiledDecoding = true
+            AIImageGenerationMemoryJournal.shared.record("benchmark-configured-128x128-4steps")
         }
         // Recovery/small-canvas mode must not use tiled diffusion. At 128px output,
         // one-unit tiles can fragment the Metal inference path without reducing the
@@ -454,9 +472,11 @@ enum OnDeviceImageGenerator {
             case .encodingText:
                 message = "Encoding prompt on device…"
                 AIImageGenerationMemoryJournal.shared.record("engine-encoding-text")
+                if benchmarkMode { AIImageGenerationMemoryJournal.shared.record("benchmark-text-encoding") }
             case .encodingInputs:
                 message = "Preparing generation inputs…"
                 AIImageGenerationMemoryJournal.shared.record("engine-encoding-inputs")
+                if benchmarkMode { AIImageGenerationMemoryJournal.shared.record("benchmark-input-encoding") }
             case .generating(let step, let total):
                 let currentMemory = currentRenderPerformanceSnapshot()
                 message = "Local GPU generation: step \(step)/\(total) • \(Int(currentMemory.availableMemoryMB)) MB free"
@@ -468,11 +488,15 @@ enum OnDeviceImageGenerator {
                 if step == 1 || step == total || step.isMultiple(of: 2) {
                     AIImageGenerationMemoryJournal.shared.record("denoising", step: step)
                 }
+                if benchmarkMode {
+                    AIImageGenerationMemoryJournal.shared.record("benchmark-denoising", step: step)
+                }
             case .decoding:
                 message = "Decoding image…"
                 let decodeMemory = currentRenderPerformanceSnapshot()
                 DiagnosticsLogger.shared.log("AI Image Studio decoder entry • available=\(Int(decodeMemory.availableMemoryMB)) MB • physical=\(Int(decodeMemory.physicalMemoryMB)) MB")
                 AIImageGenerationMemoryJournal.shared.record("decoder-start")
+                if benchmarkMode { AIImageGenerationMemoryJournal.shared.record("benchmark-decoder-start") }
             case .postprocessing:
                 message = "Running local high-resolution pass…"
             case .cancelling:
@@ -518,6 +542,7 @@ enum OnDeviceImageGenerator {
         defer { memoryMonitorTask.cancel() }
         let generationResult = await generationTask.result
         if case .failure(let error) = generationResult {
+            if benchmarkMode { AIImageGenerationMemoryJournal.shared.record("benchmark-engine-error") }
             let failureMemory = currentRenderPerformanceSnapshot()
             DiagnosticsLogger.shared.log("AI Image Studio engine generation failed • error=\(error.localizedDescription) • available=\(Int(failureMemory.availableMemoryMB)) MB • physical=\(Int(failureMemory.physicalMemoryMB)) MB")
             AIImageGenerationMemoryJournal.shared.record("engine-generation-error")
@@ -551,6 +576,11 @@ enum OnDeviceImageGenerator {
         do {
             try result.write(to: outputURL, type: .png)
             AIImageGenerationMemoryJournal.shared.record("image-output-saved")
+            if benchmarkMode {
+                AIImageGenerationMemoryJournal.shared.record("benchmark-png-write-complete")
+                AIImageGenerationMemoryJournal.shared.record("benchmark-complete-\(Int(Date().timeIntervalSince(benchmarkStartedAt) * 1000))ms")
+                DiagnosticsLogger.shared.log("AI Image Studio benchmark completed • elapsedMs=\(Int(Date().timeIntervalSince(benchmarkStartedAt) * 1000)) • output=\(outputWidth)x\(outputHeight) • steps=\(effectiveSteps)")
+            }
         } catch {
             results.removeAll(keepingCapacity: false)
             throw error
