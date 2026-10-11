@@ -181,10 +181,12 @@ enum OnDeviceImageGenerator {
         // run as a recovery retry. Favor small activations over preserving requested
         // output dimensions; the user can upscale after the diffusion pipeline exits.
         let recoveringAfterInterruption = previousGenerationWarning() != nil && !benchmarkMode
-        // A successful model load does not guarantee headroom for the first UNet activation.
-        // On this 6 GiB iPhone, keep inference conservative whenever less than 4 GiB is free.
+        // Memory pressure should reduce the latent canvas and optional extra passes,
+        // not silently collapse the user's requested diffusion quality to 2-4 steps.
+        // Denoising steps are sequential; the main peak-memory controls are canvas size,
+        // tiled decode, on-demand weights, and disabling memory-heavy Hires/LoRA paths.
         let lowMemoryInferenceMode = recoveringAfterInterruption || currentRenderPerformanceSnapshot().availableMemoryMB < 4_096
-        var effectiveSteps = lowMemoryInferenceMode ? max(1, min(recoveringAfterInterruption ? 2 : 4, steps)) : max(1, min(60, steps))
+        let effectiveSteps = max(1, min(60, steps))
 
         // Diffusion inference competes with the rest of iOS for unified memory.
         // Pick a conservative working size before loading SDXL, then enable the
@@ -351,11 +353,11 @@ enum OnDeviceImageGenerator {
             outputWidth = multipleOf64(Int(Double(requestedWidth) * scale))
             outputHeight = multipleOf64(Int(Double(requestedHeight) * scale))
         } else if memory.availableMemoryMB < 4_096 {
-            // The final denoising transition can allocate transient Metal/sampler buffers
-            // before decoding begins. On this 6 GiB device, cap the diffusion surface
-            // at 128 px and upscale only after the pipeline is released. Apply this
-            // after model load, when actual remaining headroom is known.
-            let scale = min(1.0, 128.0 / Double(max(requestedWidth, requestedHeight)))
+            // This iPhone normally has less than 4 GiB available after loading SDXL.
+            // A 128 px cap produces a thumbnail rather than a useful generated image.
+            // Keep a practical SDXL canvas while using tiled decode and on-demand weights.
+            let safeLongEdge = memory.availableMemoryMB < 2_200 ? 768.0 : 1_024.0
+            let scale = min(1.0, safeLongEdge / Double(max(requestedWidth, requestedHeight)))
             outputWidth = multipleOf64(Int(Double(requestedWidth) * scale))
             outputHeight = multipleOf64(Int(Double(requestedHeight) * scale))
         }
