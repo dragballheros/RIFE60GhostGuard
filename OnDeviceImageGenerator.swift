@@ -58,9 +58,18 @@ private final class AIImageGenerationMemoryJournal: @unchecked Sendable {
             defer { try? handle.close() }
             try handle.seekToEnd()
             try handle.write(contentsOf: data)
-            // Flush at stage boundaries/low-memory events so a watchdog termination
-            // does not lose the final useful memory sample.
-            try handle.synchronize()
+            // Keep the journal bounded: repeated generations must not create an
+            // unbounded append-only file. Avoid fsync for every sampler callback;
+            // closing this short-lived handle persists the small record without
+            // forcing a synchronous storage flush on every denoising step.
+            let attributes = try? FileManager.default.attributesOfItem(atPath: url.path)
+            let size = (attributes?[.size] as? NSNumber)?.intValue ?? 0
+            if size > 256 * 1024 {
+                try handle.close()
+                let existing = (try? Data(contentsOf: url)) ?? Data()
+                let tail = existing.suffix(128 * 1024)
+                try Data(tail).write(to: url, options: .atomic)
+            }
         } catch {
             DiagnosticsLogger.shared.log("AI Image Studio memory journal write failed: \(error.localizedDescription)")
         }
@@ -365,12 +374,12 @@ enum OnDeviceImageGenerator {
             useTiledDecoding = false
             AIImageGenerationMemoryJournal.shared.record("benchmark-configured-128x128-1step")
         }
-        // Recovery/small-canvas mode must not use tiled diffusion. At <=384px,
-        // the complete latent canvas is already small enough to avoid diffusion tiles.
-        // Use a single VAE decode surface at these sizes too: 64px tiles add extra
-        // decoder invocations/stitching at the sampler-to-decoder transition and
-        // do not provide a useful memory reduction. Keep tiled decode for larger images.
-        useTiledDiffusion = max(outputWidth, outputHeight) > 384
+        // Disable tiled diffusion on this iPhone profile. The 1-unit diffusion
+        // tiles (64 px) used by the previous policy can force an unsupported tiny
+        // UNet compilation shape in Draw Things and trigger SIGTRAP in
+        // UNetFromNNC.compileModel. Bound the canvas through live-memory sizing
+        // instead; keep tiled VAE decoding for larger canvases, where it is useful.
+        useTiledDiffusion = false
         useTiledDecoding = max(outputWidth, outputHeight) > 384
         diffusionTileSize = 64
         decodingTileSize = 64
@@ -388,12 +397,9 @@ enum OnDeviceImageGenerator {
             pipeline!.configuration.decodingTileHeight = decodingTileSize / 64
             pipeline!.configuration.decodingTileOverlap = tileOverlapPixels / 64
         }
-        pipeline!.configuration.tiledDiffusion = useTiledDiffusion
-        if useTiledDiffusion {
-            pipeline!.configuration.diffusionTileWidth = diffusionTileSize / 64
-            pipeline!.configuration.diffusionTileHeight = diffusionTileSize / 64
-            pipeline!.configuration.diffusionTileOverlap = tileOverlapPixels / 64
-        }
+        // Keep diffusion tiling disabled for this device until the bundled
+        // engine's tiled UNet compilation path is validated on-device.
+        pipeline!.configuration.tiledDiffusion = false
         pipeline!.configuration.guidanceScale = Float(max(0, min(20, cfg)))
         pipeline!.configuration.seed = UInt32(truncatingIfNeeded: max(0, seed))
         pipeline!.configuration.clipSkip = max(1, min(2, clipSkip))
