@@ -234,14 +234,60 @@ worst quality, bad quality, low quality, lowres, scan artifacts, jpeg artifacts,
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section("Positive Prompt") {
-                StablePromptTextView(text: $positivePrompt, accessibilityLabel: "Positive prompt")
-                    .frame(minHeight: 120, maxHeight: 240)
-                Text("The prompt from the supplied PNG is loaded by default. Edit it freely before generating.")
+                ScrollView {
+                    Text(positivePrompt)
+                        .frame(maxWidth: .infinity, alignment: .topLeading)
+                        .textSelection(.disabled)
+                        .padding(10)
+                }
+                .frame(minHeight: 120, maxHeight: 240)
+                .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 10))
+                .accessibilityLabel("Positive prompt, read only")
+                HStack(spacing: 12) {
+                    Button {
+                        UIPasteboard.general.string = positivePrompt
+                    } label: {
+                        Label("Copy", systemImage: "doc.on.doc")
+                    }
+                    .buttonStyle(.bordered)
+                    Button {
+                        guard let clipboardText = UIPasteboard.general.string else { return }
+                        positivePrompt = clipboardText
+                    } label: {
+                        Label("Paste", systemImage: "clipboard")
+                    }
+                    .buttonStyle(.bordered)
+                }
+                Text("Read-only preview. Copy to Notes to edit, then copy your changes and tap Paste to replace this prompt.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section("Negative Prompt") {
-                StablePromptTextView(text: $negativePrompt, accessibilityLabel: "Negative prompt")
-                    .frame(minHeight: 96, maxHeight: 200)
+                ScrollView {
+                    Text(negativePrompt)
+                        .frame(maxWidth: .infinity, alignment: .topLeading)
+                        .textSelection(.disabled)
+                        .padding(10)
+                }
+                .frame(minHeight: 96, maxHeight: 200)
+                .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 10))
+                .accessibilityLabel("Negative prompt, read only")
+                HStack(spacing: 12) {
+                    Button {
+                        UIPasteboard.general.string = negativePrompt
+                    } label: {
+                        Label("Copy", systemImage: "doc.on.doc")
+                    }
+                    .buttonStyle(.bordered)
+                    Button {
+                        guard let clipboardText = UIPasteboard.general.string else { return }
+                        negativePrompt = clipboardText
+                    } label: {
+                        Label("Paste", systemImage: "clipboard")
+                    }
+                    .buttonStyle(.bordered)
+                }
+                Text("Read-only preview. Copy to Notes to edit, then copy your changes and tap Paste to replace this prompt.")
+                    .font(.caption).foregroundStyle(.secondary)
             }
             Section("On-device Model") {
                 TextField("Supported local model catalog ID", text: $settings.localModelID)
