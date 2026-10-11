@@ -112,7 +112,7 @@ enum OnDeviceImageGenerator {
                 "generation-cancelled", "ui-generation-failure"
             ]
             guard !terminalStages.contains(stage), !stage.hasPrefix("benchmark-complete-") else { return nil }
-            return "The previous AI generation may have stopped before its output was safely saved. The next attempt will use Recovery Safe Mode (maximum 128 px, 4 steps, Hires/LoRA off). Export memory diagnostics below to inspect the last recorded stage."
+            return "The previous AI generation may have stopped before its output was safely saved. The next attempt will use Recovery Safe Mode (maximum 128 px, requested denoising steps preserved, Hires/LoRA off). Export memory diagnostics below to inspect the last recorded stage."
         } catch {
             return nil
         }
@@ -181,11 +181,10 @@ enum OnDeviceImageGenerator {
         // run as a recovery retry. Favor small activations over preserving requested
         // output dimensions; the user can upscale after the diffusion pipeline exits.
         let recoveringAfterInterruption = previousGenerationWarning() != nil && !benchmarkMode
-        // Memory pressure should reduce the latent canvas and optional extra passes,
-        // not silently collapse the user's requested diffusion quality to 2-4 steps.
-        // Denoising steps are sequential; the main peak-memory controls are canvas size,
-        // tiled decode, on-demand weights, and disabling memory-heavy Hires/LoRA paths.
-        let lowMemoryInferenceMode = recoveringAfterInterruption || currentRenderPerformanceSnapshot().availableMemoryMB < 4_096
+        // Preserve the requested diffusion step count in normal and recovery runs.
+        // Step count is a quality/runtime control, not the primary peak-memory control;
+        // memory pressure is handled through canvas size, decode strategy, on-demand
+        // weights, partial offload, and disabling memory-heavy Hires/LoRA paths.
         var effectiveSteps = max(1, min(60, steps))
 
         // Diffusion inference competes with the rest of iOS for unified memory.
@@ -377,15 +376,16 @@ enum OnDeviceImageGenerator {
             outputHeight = 128
             effectiveSteps = 1
             useTiledDiffusion = false
-            useTiledDecoding = true
+            useTiledDecoding = false
             AIImageGenerationMemoryJournal.shared.record("benchmark-configured-128x128-1step")
         }
-        // Recovery/small-canvas mode must not use tiled diffusion. At 128px output,
-        // one-unit tiles can fragment the Metal inference path without reducing the
-        // already-small latent surface. Run one small latent surface; keep tiled
-        // decoding enabled to bound VAE decode allocations.
+        // Recovery/small-canvas mode must not use tiled diffusion. At <=384px,
+        // the complete latent canvas is already small enough to avoid diffusion tiles.
+        // Use a single VAE decode surface at these sizes too: 64px tiles add extra
+        // decoder invocations/stitching at the sampler-to-decoder transition and
+        // do not provide a useful memory reduction. Keep tiled decode for larger images.
         useTiledDiffusion = !(recoveringAfterInterruption || max(outputWidth, outputHeight) <= 384)
-        useTiledDecoding = true
+        useTiledDecoding = max(outputWidth, outputHeight) > 384
         diffusionTileSize = 64
         decodingTileSize = 64
         DiagnosticsLogger.shared.log(
