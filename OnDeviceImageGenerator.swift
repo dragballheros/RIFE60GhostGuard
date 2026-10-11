@@ -186,7 +186,7 @@ enum OnDeviceImageGenerator {
         // Denoising steps are sequential; the main peak-memory controls are canvas size,
         // tiled decode, on-demand weights, and disabling memory-heavy Hires/LoRA paths.
         let lowMemoryInferenceMode = recoveringAfterInterruption || currentRenderPerformanceSnapshot().availableMemoryMB < 4_096
-        let effectiveSteps = max(1, min(60, steps))
+        var effectiveSteps = max(1, min(60, steps))
 
         // Diffusion inference competes with the rest of iOS for unified memory.
         // Pick a conservative working size before loading SDXL, then enable the
