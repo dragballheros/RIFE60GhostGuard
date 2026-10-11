@@ -375,7 +375,11 @@ enum OnDeviceImageGenerator {
             outputHeight = 128
             effectiveSteps = 1
             useTiledDiffusion = false
-            useTiledDecoding = true
+            // A 128px smoke/recovery canvas is already below the point where
+            // VAE tiling reduces meaningful memory. Tiny 64px decoder tiles add
+            // extra stitching and allocation transitions exactly at the sampler
+            // -> VAE handoff. Keep the decoder on one small surface instead.
+            useTiledDecoding = false
             AIImageGenerationMemoryJournal.shared.record("benchmark-configured-128x128-1step")
         }
         // Recovery/small-canvas mode must not use tiled diffusion. At 128px output,
@@ -383,7 +387,12 @@ enum OnDeviceImageGenerator {
         // already-small latent surface. Run one small latent surface; keep tiled
         // decoding enabled to bound VAE decode allocations.
         useTiledDiffusion = !(recoveringAfterInterruption || max(outputWidth, outputHeight) <= 384)
-        useTiledDecoding = true
+        // Avoid tiled VAE decoding for small/recovery images. At <=384px, the
+        // full decoded surface is small; 64px tiles add decoder invocations and
+        // stitching overhead without a useful memory reduction. This also makes
+        // the 128px diagnostic benchmark exercise the simplest sampler->decoder
+        // path rather than the tiled-decoder path.
+        useTiledDecoding = max(outputWidth, outputHeight) > 384
         diffusionTileSize = 64
         decodingTileSize = 64
         DiagnosticsLogger.shared.log(
