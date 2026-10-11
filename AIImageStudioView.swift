@@ -234,6 +234,14 @@ worst quality, bad quality, low quality, lowres, scan artifacts, jpeg artifacts,
                         Label("Generate Anime Image", systemImage: "sparkles")
                     }
                     .buttonStyle(.borderedProminent)
+                    Button {
+                        Task { await generateImage(isBenchmark: true) }
+                    } label: {
+                        Label("Run Full Pipeline Benchmark", systemImage: "speedometer")
+                    }
+                    .buttonStyle(.bordered)
+                    Text("Runs a safe 128×128, 4-step on-device test through model resolution/loading, prompt and input encoding, denoising, decoding, and PNG saving. Export diagnostics for stage markers and memory snapshots. This is a diagnostic run, not a full-resolution speed test.")
+                        .font(.caption).foregroundStyle(.secondary)
                 }
                 if !generationStatus.isEmpty { Text(generationStatus).font(.caption).foregroundStyle(.secondary) }
                 if let journalURL = OnDeviceImageGenerator.memoryJournalURL(),
@@ -432,7 +440,7 @@ worst quality, bad quality, low quality, lowres, scan artifacts, jpeg artifacts,
         showSaveAlert = true
     }
 
-    private func generateImage() async {
+    private func generateImage(isBenchmark: Bool = false) async {
         isGenerating = true
         errorText = ""
         generatedImage = nil
@@ -445,14 +453,16 @@ worst quality, bad quality, low quality, lowres, scan artifacts, jpeg artifacts,
             if randomSeed { resolvedSeed = Int64.random(in: 0...Int64.max / 2) }
             else if let value = Int64(seedText), value >= 0 { resolvedSeed = value }
             else { throw AIImageStudioError("Enter a non-negative integer seed or enable Random seed.") }
-            generationStatus = "Preparing local GPU/Metal generation…"
+            let generationPrompt = isBenchmark ? "anime landscape, simple composition, clean colors" : positivePrompt
+            let generationNegativePrompt = isBenchmark ? "blurry, distorted, low quality" : negativePrompt
+            generationStatus = isBenchmark ? "Benchmark: preparing full on-device pipeline…" : "Preparing local GPU/Metal generation…"
             let url = try await OnDeviceImageGenerator.generate(
                 settings: settings,
-                positivePrompt: positivePrompt,
-                negativePrompt: negativePrompt,
-                width: Int(width),
-                height: Int(height),
-                steps: Int(steps),
+                positivePrompt: generationPrompt,
+                negativePrompt: generationNegativePrompt,
+                width: isBenchmark ? 128 : Int(width),
+                height: isBenchmark ? 128 : Int(height),
+                steps: isBenchmark ? 4 : Int(steps),
                 cfg: cfg,
                 seed: resolvedSeed,
                 enableLoRA: enableCharacterLora,
@@ -462,6 +472,7 @@ worst quality, bad quality, low quality, lowres, scan artifacts, jpeg artifacts,
                 hiresSteps: Int(hiresSteps),
                 hiresDenoise: hiresDenoise,
                 clipSkip: Int(clipSkip),
+                benchmarkMode: isBenchmark,
                 progress: { generationStatus = $0 }
             )
             guard let image = UIImage(contentsOfFile: url.path) else {
@@ -470,11 +481,13 @@ worst quality, bad quality, low quality, lowres, scan artifacts, jpeg artifacts,
             }
             generatedImage = image
             generatedURL = url
-            generationStatus = "Generation complete • \(image.size.width.rounded()) × \(image.size.height.rounded())"
+            generationStatus = isBenchmark
+                ? "Benchmark complete • 128×128 • 4 steps • export diagnostics for stage-by-stage results"
+                : "Generation complete • \(image.size.width.rounded()) × \(image.size.height.rounded())"
         } catch {
             OnDeviceImageGenerator.recordGenerationFailure()
             errorText = error.localizedDescription
-            generationStatus = "Generation failed"
+            generationStatus = isBenchmark ? "Benchmark failed • export diagnostics for the last stage" : "Generation failed"
         }
     }
 
