@@ -153,16 +153,16 @@ worst quality, bad quality, low quality, lowres, scan artifacts, jpeg artifacts,
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section("Positive Prompt") {
-                TextEditor(text: $positivePrompt)
-                    .frame(minHeight: 130, maxHeight: 240)
+                TextField("Positive prompt", text: $positivePrompt, axis: .vertical)
+                    .lineLimit(5...10)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
                 Text("The prompt from the supplied PNG is loaded by default. Edit it freely before generating.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section("Negative Prompt") {
-                TextEditor(text: $negativePrompt)
-                    .frame(minHeight: 100, maxHeight: 200)
+                TextField("Negative prompt", text: $negativePrompt, axis: .vertical)
+                    .lineLimit(4...8)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
             }
@@ -308,7 +308,10 @@ worst quality, bad quality, low quality, lowres, scan artifacts, jpeg artifacts,
                 TextField("Trigger word", text: $triggerWord)
                     .textInputAutocapitalization(.never).autocorrectionDisabled()
                 Text("Shared caption or style description")
-                TextEditor(text: $trainingCaption).frame(minHeight: 80)
+                TextField("Shared caption or style description", text: $trainingCaption, axis: .vertical)
+                    .lineLimit(3...6)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
                 Text("For a character LoRA, use clear varied images of the same subject, consistent captions, and a unique trigger word. Only upload images you have permission to use.")
                     .font(.caption).foregroundStyle(.secondary)
             }
@@ -397,20 +400,26 @@ worst quality, bad quality, low quality, lowres, scan artifacts, jpeg artifacts,
     private func restoreGenerationDraft() {
         guard !didRestoreDraft else { return }
         didRestoreDraft = true
+
+        // The previous bundled character LoRA is no longer supported. Remove it
+        // from persisted settings as well as any old prompt tags so it cannot be
+        // silently re-selected or injected into a new generation.
+        if settings.localLoraFile.localizedCaseInsensitiveContains("chizuru") {
+            settings.localLoraFile = ""
+            enableCharacterLora = false
+        }
+        positivePrompt = removingLegacyCharacterTrigger(from: positivePrompt)
+
         guard let data = UserDefaults.standard.data(forKey: AIImageStudioDraft.key),
               let draft = try? JSONDecoder().decode(AIImageStudioDraft.self, from: data) else {
             applyModelProfile("Animagine XL v3.1 (Local)")
+            positivePrompt = removingLegacyCharacterTrigger(from: positivePrompt)
+            saveGenerationDraft()
+            try? settings.save()
             return
         }
         modelProfile = "Animagine XL v3.1 (Local)"
-        positivePrompt = draft.positivePrompt
-        // Remove the former bundled LoRA's trigger from persisted drafts.
-        positivePrompt = positivePrompt.replacingOccurrences(
-            of: "mayuzumi fuyuko",
-            with: "",
-            options: [.caseInsensitive]
-        )
-        positivePrompt = positivePrompt.replacingOccurrences(of: ", ,", with: ",")
+        positivePrompt = removingLegacyCharacterTrigger(from: draft.positivePrompt)
         negativePrompt = draft.negativePrompt
         // Migrate the old remote ANIMA/Illustrious controls to valid local SDXL defaults.
         width = 832
@@ -437,7 +446,25 @@ worst quality, bad quality, low quality, lowres, scan artifacts, jpeg artifacts,
         UserDefaults.standard.set(modelProfile, forKey: "RIFE60.AIImageStudio.SelectedProfile")
     }
 
+    private func removingLegacyCharacterTrigger(from prompt: String) -> String {
+        var cleaned = prompt
+        let legacyPatterns = [
+            #"(?i)<lora:\\s*ichinose[_ -]*chizuru\\s*:\\s*[-+]?\\d*\\.?\\d+>"#,
+            #"(?i)\\bichinose[_ -]+chizuru\\b"#,
+            #"(?i)\\bchizuru\\b"#,
+            #"(?i)\\bmayuzumi\\s+fuyuko\\b"#
+        ]
+        for pattern in legacyPatterns {
+            cleaned = cleaned.replacingOccurrences(of: pattern, with: "", options: .regularExpression)
+        }
+        cleaned = cleaned.replacingOccurrences(of: #",\\s*,+"#, with: ",", options: .regularExpression)
+        cleaned = cleaned.replacingOccurrences(of: #"^\\s*,+|,+\\s*$"#, with: "", options: .regularExpression)
+        cleaned = cleaned.replacingOccurrences(of: #"\\s{2,}"#, with: " ", options: .regularExpression)
+        return cleaned.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     private func saveGenerationDraft() {
+        positivePrompt = removingLegacyCharacterTrigger(from: positivePrompt)
         let draft = AIImageStudioDraft(
             modelProfile: modelProfile,
             positivePrompt: positivePrompt,
@@ -546,7 +573,9 @@ worst quality, bad quality, low quality, lowres, scan artifacts, jpeg artifacts,
             if randomSeed { resolvedSeed = Int64.random(in: 0...Int64.max / 2) }
             else if let value = Int64(seedText), value >= 0 { resolvedSeed = value }
             else { throw AIImageStudioError("Enter a non-negative integer seed or enable Random seed.") }
-            let generationPrompt = isBenchmark ? "anime landscape, simple composition, clean colors" : positivePrompt
+            let generationPrompt = isBenchmark
+                ? "anime landscape, simple composition, clean colors"
+                : removingLegacyCharacterTrigger(from: positivePrompt)
             let generationNegativePrompt = isBenchmark ? "blurry, distorted, low quality" : negativePrompt
             generationStatus = isBenchmark ? "Benchmark: preparing full on-device pipeline…" : "Preparing local GPU/Metal generation…"
             let url = try await OnDeviceImageGenerator.generate(
