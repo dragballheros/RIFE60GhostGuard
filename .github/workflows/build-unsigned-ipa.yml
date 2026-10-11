@@ -459,6 +459,15 @@ jobs:
           zip -qry RIFE60GhostGuard-verified-unsigned.ipa Payload
           unzip -t RIFE60GhostGuard-verified-unsigned.ipa >/dev/null
 
+      # Keep the normal Actions artifact ZIP as well as publishing the raw .ipa to Releases.
+      - name: Upload verified IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: verified-unsigned-ipa
+          path: RIFE60GhostGuard-verified-unsigned.ipa
+          if-no-files-found: error
+          retention-days: 30
+
       # DELIVERY SAFEGUARD: the IPA is delivered only through the temporary GitHub Release below.
       # Do not upload the IPA as an Actions artifact or to ChatGPT Library/chat attachments.
       - name: Publish temporary GitHub Release with IPA
