@@ -417,7 +417,7 @@ enum OnDeviceImageGenerator {
         // task completes, its operation can release that capture before PNG encoding.
         let preDenoisingMemory = currentRenderPerformanceSnapshot()
         DiagnosticsLogger.shared.log(
-            "AI Image Studio pre-denoising checkpoint • available=\\(Int(preDenoisingMemory.availableMemoryMB)) MB • physical=\\(Int(preDenoisingMemory.physicalMemoryMB)) MB • size=\\(outputWidth)x\\(outputHeight) • steps=\\(effectiveSteps) • tiled=\\(useTiledDiffusion) • partialOffload=true"
+            "AI Image Studio pre-denoising checkpoint • available=\(Int(preDenoisingMemory.availableMemoryMB)) MB • physical=\(Int(preDenoisingMemory.physicalMemoryMB)) MB • size=\(outputWidth)x\(outputHeight) • steps=\(effectiveSteps) • tiled=\(useTiledDiffusion) • partialOffload=true"
         )
         AIImageGenerationMemoryJournal.shared.record("pre-denoising-allocation")
         AIImageGenerationMemoryJournal.shared.record("pipeline-configured")
