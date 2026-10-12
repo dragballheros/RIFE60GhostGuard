@@ -292,25 +292,38 @@ enum OnDeviceImageGenerator {
             // conversion does not compete with model weights and Metal allocations.
             preparedLoRAFile = try Self.prepareLoRAForGeneration(settings.localLoraFile)
         }
-        // Prioritize inference throughput on this device. Forced CPU partial-offload,
-        // the lowest capability tier, and a zero-byte weights cache can add repeated
-        // weight transfers during every denoising step. Preserve the process defaults
-        // and restore all shared settings when this generation call exits.
+        // The throughput-only policy introduced for recent builds disables partial
+        // offload and keeps the medium capability tier even when a character LoRA is
+        // active. That increases resident Metal/model memory and is unsafe on this
+        // 6 GiB iPhone during later denoising steps. Use the conservative engine path
+        // for LoRA generations and whenever initial headroom is below 2.5 GiB; retain
+        // the faster defaults for ordinary generations with adequate headroom.
         let previousMemoryCapacity = DeviceCapability.memoryCapacity
         let previousPartialOffload = DeviceCapability.isPartialOffloadPreferred.load(ordering: .acquiring)
         let previousEnvironment = MediaGenerationEnvironment.default
-        DeviceCapability.memoryCapacity = .medium
-        DeviceCapability.isPartialOffloadPreferred.store(false, ordering: .releasing)
+        let useConservativeInference = (enableLoRA && hasSelectedLoRA)
+            || memory.availableMemoryMB < 2_560
+        DeviceCapability.memoryCapacity = useConservativeInference ? .low : .medium
+        DeviceCapability.isPartialOffloadPreferred.store(useConservativeInference, ordering: .releasing)
 
         var environment = previousEnvironment
         environment.externalUrls = [modelsDirectory]
+        if useConservativeInference {
+            // Avoid retaining cached model weights during LoRA inference on a
+            // memory-constrained device. This can reduce throughput, but lowers
+            // peak resident memory; output quality parameters remain unchanged.
+            environment.maxTotalWeightsCacheSize = 0
+        }
         MediaGenerationEnvironment.default = environment
         defer {
             MediaGenerationEnvironment.default = previousEnvironment
             DeviceCapability.memoryCapacity = previousMemoryCapacity
             DeviceCapability.isPartialOffloadPreferred.store(previousPartialOffload, ordering: .releasing)
         }
-        DiagnosticsLogger.shared.log("AI Image Studio performance policy • partial CPU offload disabled • capacity=medium • default weights cache retained")
+        DiagnosticsLogger.shared.log(
+            "AI Image Studio adaptive inference policy • conservative=\\(useConservativeInference) • partialCPUOffload=\\(useConservativeInference) • capacity=\\(useConservativeInference ? "low" : "medium") • weightsCache=\\(useConservativeInference ? "disabled" : "default") • LoRA=\\(enableLoRA && hasSelectedLoRA) • initialHeadroom=\\(Int(memory.availableMemoryMB)) MB"
+        )
+        AIImageGenerationMemoryJournal.shared.record(useConservativeInference ? "inference-policy-conservative" : "inference-policy-performance")
 
         notify(
             recoveringAfterInterruption
