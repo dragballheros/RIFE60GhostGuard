@@ -242,25 +242,25 @@ enum OnDeviceImageGenerator {
 
         AIImageGenerationMemoryJournal.shared.record("pre-model-policy")
         let modelsDirectory = try modelsDirectoryURL()
-        // Draw Things exposes a supported partial-offload policy in DataModels.
-        // Force its conservative capacity tier and CPU partial-offload path before
-        // constructing the pipeline. This trades speed for a smaller resident GPU
-        // working set on memory-constrained iPhones.
-        // Use Draw Things' lowest-memory execution tier for this SDXL workload.
-        // The medium tier can still retain more model state than this device can
-        // safely accommodate after pipeline construction. Restore the app's
-        // established medium tier when this generation call exits.
-        DeviceCapability.memoryCapacity = .low
-        defer { DeviceCapability.memoryCapacity = .medium }
-        DeviceCapability.isPartialOffloadPreferred.store(true, ordering: .releasing)
-        DiagnosticsLogger.shared.log("AI Image Studio memory policy • partial CPU offload enabled • capacity=low • weights cache disabled")
+        // Prioritize inference throughput on this device. Forced CPU partial-offload,
+        // the lowest capability tier, and a zero-byte weights cache can add repeated
+        // weight transfers during every denoising step. Preserve the process defaults
+        // and restore all shared settings when this generation call exits.
+        let previousMemoryCapacity = DeviceCapability.memoryCapacity
+        let previousPartialOffload = DeviceCapability.isPartialOffloadPreferred.load(ordering: .acquiring)
+        let previousEnvironment = MediaGenerationEnvironment.default
+        DeviceCapability.memoryCapacity = .medium
+        DeviceCapability.isPartialOffloadPreferred.store(false, ordering: .releasing)
 
-        var environment = MediaGenerationEnvironment.default
+        var environment = previousEnvironment
         environment.externalUrls = [modelsDirectory]
-        // This device is below Draw Things' 47 GiB weights-cache threshold.
-        // Keep the cache explicitly disabled on constrained devices.
-        environment.maxTotalWeightsCacheSize = 0
         MediaGenerationEnvironment.default = environment
+        defer {
+            MediaGenerationEnvironment.default = previousEnvironment
+            DeviceCapability.memoryCapacity = previousMemoryCapacity
+            DeviceCapability.isPartialOffloadPreferred.store(previousPartialOffload, ordering: .releasing)
+        }
+        DiagnosticsLogger.shared.log("AI Image Studio performance policy • partial CPU offload disabled • capacity=medium • default weights cache retained")
 
         notify(
             recoveringAfterInterruption
@@ -490,7 +490,7 @@ enum OnDeviceImageGenerator {
         // task completes, its operation can release that capture before PNG encoding.
         let preDenoisingMemory = currentRenderPerformanceSnapshot()
         DiagnosticsLogger.shared.log(
-            "AI Image Studio immediately before generate() • available=\(Int(preDenoisingMemory.availableMemoryMB)) MB • physical=\(Int(preDenoisingMemory.physicalMemoryMB)) MB • size=\(outputWidth)x\(outputHeight) • steps=\(effectiveSteps) • tiledDiffusion=\(useTiledDiffusion) • tiledDecode=\(useTiledDecoding) • partialOffload=true"
+            "AI Image Studio immediately before generate() • available=\(Int(preDenoisingMemory.availableMemoryMB)) MB • physical=\(Int(preDenoisingMemory.physicalMemoryMB)) MB • size=\(outputWidth)x\(outputHeight) • steps=\(effectiveSteps) • tiledDiffusion=\(useTiledDiffusion) • tiledDecode=\(useTiledDecoding) • partialOffload=false"
         )
         AIImageGenerationMemoryJournal.shared.record("pre-denoising-allocation")
         AIImageGenerationMemoryJournal.shared.record("pipeline-configured")
