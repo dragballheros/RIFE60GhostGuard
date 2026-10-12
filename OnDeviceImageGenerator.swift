@@ -164,6 +164,7 @@ enum OnDeviceImageGenerator {
         steps: Int,
         cfg: Double,
         seed: Int64,
+        samplerName: String,
         enableLoRA: Bool,
         loraWeight: Double,
         hiresEnabled: Bool,
@@ -407,6 +408,20 @@ enum OnDeviceImageGenerator {
         pipeline!.configuration.tiledDiffusion = false
         pipeline!.configuration.guidanceScale = Float(max(0, min(20, cfg)))
         pipeline!.configuration.seed = UInt32(truncatingIfNeeded: max(0, seed))
+        switch samplerName {
+        case "Euler a":
+            pipeline!.configuration.sampler = DataModels.SamplerType.eulerA
+        case "DPM++ SDE Karras (closest to Civitai GPU sampler)":
+            pipeline!.configuration.sampler = DataModels.SamplerType.dPMPPSDEKarras
+        case "DPM++ 2M Karras":
+            pipeline!.configuration.sampler = DataModels.SamplerType.dPMPP2MKarras
+        case "DDIM":
+            pipeline!.configuration.sampler = DataModels.SamplerType.DDIM
+        case "UniPC":
+            pipeline!.configuration.sampler = DataModels.SamplerType.uniPC
+        default:
+            break
+        }
         pipeline!.configuration.clipSkip = max(1, min(2, clipSkip))
 
         if hiresEnabled && !benchmarkMode {

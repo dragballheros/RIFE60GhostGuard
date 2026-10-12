@@ -360,8 +360,16 @@ worst quality, bad quality, low quality, lowres, scan artifacts, jpeg artifacts,
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section("Generation Settings") {
-                Text("The local engine uses the model's recommended sampler and schedule. Steps, CFG, resolution, seed, optional high-resolution diffusion, and your selected local LoRA are applied directly.")
+                Text("Sampler selection is passed to the local engine. DPM++ SDE Karras is the closest available engine sampler to the Civitai GPU sampler, but it is not guaranteed to be numerically identical.")
                     .font(.caption).foregroundStyle(.secondary)
+                Picker("Sampler", selection: $samplerName) {
+                    Text("Euler a").tag("Euler a")
+                    Text("DPM++ SDE Karras (closest)").tag("DPM++ SDE Karras (closest to Civitai GPU sampler)")
+                    Text("DPM++ 2M Karras").tag("DPM++ 2M Karras")
+                    Text("DDIM").tag("DDIM")
+                    Text("UniPC").tag("UniPC")
+                }
+                .onChange(of: samplerName) { _ in saveGenerationDraft() }
                 HStack { Text("Steps"); Spacer(); Text("\(Int(steps))").monospacedDigit() }
                 Slider(value: $steps, in: 4...40, step: 1)
                 HStack { Text("CFG scale"); Spacer(); Text(String(format: "%.1f", cfg)).monospacedDigit() }
@@ -371,6 +379,8 @@ worst quality, bad quality, low quality, lowres, scan artifacts, jpeg artifacts,
                 HStack { Text("Height"); Spacer(); Text("\(Int(height)) px").monospacedDigit() }
                 Slider(value: $height, in: 512...1536, step: 64)
                 TextField("Seed", text: $seedText).keyboardType(.numberPad)
+                Text("This engine accepts a 32-bit seed. Larger Civitai seeds are reduced modulo 2³² and will not reproduce the same image exactly.")
+                    .font(.caption).foregroundStyle(.secondary)
                 Toggle("Random seed", isOn: $randomSeed)
                 Toggle("Enable high-resolution diffusion pass", isOn: $hiresEnabled)
                 if hiresEnabled {
@@ -911,6 +921,7 @@ worst quality, bad quality, low quality, lowres, scan artifacts, jpeg artifacts,
                 steps: isBenchmark ? 1 : Int(steps),
                 cfg: cfg,
                 seed: resolvedSeed,
+                samplerName: samplerName,
                 enableLoRA: enableCharacterLora,
                 loraWeight: characterWeight,
                 hiresEnabled: hiresEnabled,
