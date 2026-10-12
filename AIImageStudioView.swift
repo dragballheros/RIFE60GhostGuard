@@ -536,13 +536,22 @@ worst quality, low quality, score_1, score_2, artist name, blurry, jpeg artifact
             Section("Train LoRA") {
                 if isTraining {
                     ProgressView(value: trainerProgress)
-                    Text(trainingStatus).font(.caption)
+                    Text(trainingStatus.isEmpty ? "Starting on-device training…" : trainingStatus)
+                        .font(.caption)
+                    Button("Cancel training") {
+                        trainingStatus = "Cancellation requested. The active training operation may finish its current step before stopping."
+                    }
+                    .disabled(true)
+                    .font(.caption)
                 } else {
                     Button {
                         guard trainingItems.count >= 3 else {
-                            showAlert("Select at least three training images before starting.")
+                            errorText = "Select at least three training images before starting."
                             return
                         }
+                        errorText = ""
+                        trainingStatus = "Starting on-device LoRA training…"
+                        trainerProgress = 0
                         if settings.localModelID != OnDeviceImageGenerator.defaultModelID {
                             // The embedded trainer currently supports SDXL/Animagine only.
                             // Keep the selected PhotosPicker items and switch the training
@@ -552,19 +561,27 @@ worst quality, low quality, score_1, score_2, artist name, blurry, jpeg artifact
                                 try settings.save()
                             } catch {
                                 errorText = "Could not switch to the supported Animagine XL training base: " + error.localizedDescription
+                                trainingStatus = "Training did not start because the model could not be saved."
                                 return
                             }
-                            trainingStatus = "Switched to Animagine XL v3.1 for SDXL LoRA training. Your selected images are preserved."
+                            trainingStatus = "Switched to Animagine XL v3.1. Preparing your selected images…"
                         }
                         Task { await trainLoRA() }
                     } label: { Label("Train LoRA on this iPhone", systemImage: "cpu") }
                     .disabled(trainingItems.count < 3 || isTraining)
+                    Text(trainingItems.count < 3
+                         ? "Select at least 3 images to enable training. Current selection: \(trainingItems.count)."
+                         : "\(trainingItems.count) images selected. Tap Train to stage them and start local SDXL training.")
+                        .font(.caption).foregroundStyle(.secondary)
                     if settings.localModelID != OnDeviceImageGenerator.defaultModelID {
                         Text("Tapping Train will switch to Animagine XL v3.1, the SDXL base supported by this trainer. Your selected images will be preserved. ANIMA-native LoRA training is not supported in this build.")
                             .font(.caption).foregroundStyle(.secondary)
                     }
-                    Text("Select at least three images. Training uses the same local model folder as generation and does not upload the dataset.")
-                        .font(.caption).foregroundStyle(.secondary)
+                }
+                if !trainingStatus.isEmpty && !isTraining {
+                    Text(trainingStatus)
+                        .font(.caption)
+                        .foregroundStyle(trainingStatus.localizedCaseInsensitiveContains("failed") ? .red : .secondary)
                 }
                 if let url = trainedLoRAURL {
                     ShareLink(item: url) { Label("Export trained local LoRA checkpoint", systemImage: "square.and.arrow.down") }
@@ -1086,9 +1103,16 @@ worst quality, low quality, score_1, score_2, artist name, blurry, jpeg artifact
     }
 
     private func trainLoRA() async {
+        guard !isTraining else { return }
+        guard trainingItems.count >= 3 else {
+            errorText = "Select at least three training images before starting."
+            trainingStatus = "Training not started: fewer than three images are selected."
+            return
+        }
         isTraining = true
         trainerProgress = 0
         errorText = ""
+        trainingStatus = "Preparing selected images…"
         trainedLoRAURL = nil
         defer { isTraining = false }
         do {
@@ -1099,7 +1123,7 @@ worst quality, low quality, score_1, score_2, artist name, blurry, jpeg artifact
 
             var images: [LocalTrainingImage] = []
             for (index, item) in trainingItems.enumerated() {
-                trainingStatus = "Staging image \(index + 1) of \(trainingItems.count)…"
+                trainingStatus = "Loading selected image \(index + 1) of \(trainingItems.count)…"
                 guard let source = try await item.loadTransferable(type: Data.self),
                       let image = UIImage(data: source),
                       let png = image.pngData() else {
@@ -1137,8 +1161,8 @@ worst quality, low quality, score_1, score_2, artist name, blurry, jpeg artifact
             trainerProgress = 1
             trainingStatus = "Training complete locally. The new LoRA is selected for local generation."
         } catch {
-            errorText = error.localizedDescription
-            trainingStatus = "Local training failed or was stopped by iOS."
+            errorText = "LoRA training failed: " + error.localizedDescription
+            trainingStatus = "Training failed. Review the error above; your selected images remain available to retry."
         }
     }
 
