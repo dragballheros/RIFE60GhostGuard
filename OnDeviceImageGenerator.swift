@@ -179,8 +179,8 @@ enum OnDeviceImageGenerator {
             return outputName
         }
 
+        var importer = LoRAImporter(file: sourceURL)
         do {
-            var importer = LoRAImporter(file: sourceURL)
             try importer.import(to: outputURL)
         } catch {
             throw AIImageStudioError(
