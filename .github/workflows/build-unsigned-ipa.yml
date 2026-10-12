@@ -53,7 +53,7 @@ jobs:
         run: |
           set -euo pipefail
           grep -q 'animagine_xl_v3.1_q6p_q8p.ckpt' OnDeviceImageGenerator.swift
-          grep -q 'anima-aesthetic-1.1' OnDeviceImageGenerator.swift
+          grep -q 'anima_aesthetic_1.1_q8p.ckpt' OnDeviceImageGenerator.swift
           test -f Vendor/draw-things-community/Package.swift
           grep -q 'RIFE60GhostGuard runs alongside other GPU/video features' Vendor/draw-things-community/Libraries/LocalImageGenerator/Sources/ModelPreloader.swift
           grep -Fq 'case .unet, .textEncoder, .diffusionMapping, .autoencoder:' Scripts/patch_draw_things_memory.py
