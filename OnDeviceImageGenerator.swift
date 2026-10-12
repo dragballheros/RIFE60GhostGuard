@@ -670,12 +670,39 @@ enum OnDeviceLoRATrainer {
             throw AIImageStudioError("Enter a trigger word before training.")
         }
 
+        // LoRA training invokes the native Draw Things model compiler. Native
+        // Metal/Core ML compilation traps cannot be caught by Swift do/catch, so
+        // refuse to enter that code path unless the phone has a meaningful memory
+        // reserve. Build 187's crash trace showed only ~3.0 GiB available before
+        // loading the model, which is not enough headroom for the trainer's compile
+        // and optimizer allocations alongside the app's video/Metal subsystems.
+        let preflight = currentRenderPerformanceSnapshot()
+        DiagnosticsLogger.shared.log(
+            "Local LoRA training preflight • available=\(Int(preflight.availableMemoryMB)) MB • physical=\(Int(preflight.physicalMemoryMB)) MB • tier=\(preflight.tier.rawValue) • thermal=\(preflight.thermalAndMode)"
+        )
+        guard preflight.availableMemoryMB >= 3_200 else {
+            throw AIImageStudioError(
+                "Training was stopped before loading the model because only \(Int(preflight.availableMemoryMB)) MB of memory is available. Close other GPU/video tasks, let iOS recover memory, then retry when at least 3.2 GB is available. This prevents the native model compiler from being entered under known unsafe memory pressure."
+            )
+        }
+
+        // Match the inference path's constrained-device policy before invoking
+        // the CLI trainer. Keep weights file-backed and avoid a resident model cache.
+        DeviceCapability.memoryCapacity = .low
+        DeviceCapability.isPartialOffloadPreferred.store(true, ordering: .releasing)
+        var trainingEnvironment = MediaGenerationEnvironment.default
+        trainingEnvironment.maxTotalWeightsCacheSize = 0
+        MediaGenerationEnvironment.default = trainingEnvironment
+
         let modelsDirectory = try OnDeviceImageGenerator.modelsDirectoryURL()
         let datasetDirectory = modelsDirectory
             .appendingPathComponent("LocalTrainingData", isDirectory: true)
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: datasetDirectory, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: datasetDirectory) }
+        defer {
+            try? FileManager.default.removeItem(at: datasetDirectory)
+            DeviceCapability.memoryCapacity = .medium
+        }
 
         for (index, image) in images.enumerated() {
             try Task.checkCancellation()
@@ -692,7 +719,10 @@ enum OnDeviceLoRATrainer {
                    fraction: Double(index + 1) / Double(images.count) * 0.1)
         }
 
-        let steps = max(100, min(1000, images.count * max(1, epochs)))
+        // A short, bounded first run is materially safer on a 6 GiB iPhone.
+        // The UI's epoch/rank controls remain meaningful, but never let the CLI
+        // expand this single in-process training session beyond 300 optimizer steps.
+        let steps = max(100, min(300, images.count * max(1, epochs)))
         let prefix = "rife_local_lora_\(UUID().uuidString.replacingOccurrences(of: "-", with: "").prefix(10))"
         let arguments = [
             "train", "lora",
