@@ -233,6 +233,20 @@ worst quality, bad quality, low quality, lowres, scan artifacts, jpeg artifacts,
                 Text("Animagine XL v3.1 runs locally on the iPhone GPU/Metal. The first generation downloads the model and required files; allow several GB of free storage.")
                     .font(.caption).foregroundStyle(.secondary)
             }
+            if !settings.localLoraFile.isEmpty && !selectedLoRATrigger.isEmpty {
+                Section("Selected LoRA Trigger") {
+                    Text(weightedLoRATrigger)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .textSelection(.disabled)
+                        .padding(10)
+                        .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 10))
+                        .accessibilityLabel("LoRA trigger phrase and weight, read only")
+                    Text(enableCharacterLora
+                         ? "This trigger is automatically included at the start of the positive prompt. Its displayed weight follows LoRA strength."
+                         : "The trigger is identified, but the LoRA is currently turned off.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
             Section("Positive Prompt") {
                 ScrollView {
                     Text(positivePrompt)
@@ -245,14 +259,14 @@ worst quality, bad quality, low quality, lowres, scan artifacts, jpeg artifacts,
                 .accessibilityLabel("Positive prompt, read only")
                 HStack(spacing: 12) {
                     Button {
-                        UIPasteboard.general.string = positivePrompt
+                        UIPasteboard.general.string = effectivePositivePrompt
                     } label: {
                         Label("Copy", systemImage: "doc.on.doc")
                     }
                     .buttonStyle(.bordered)
                     Button {
                         guard let clipboardText = UIPasteboard.general.string else { return }
-                        positivePrompt = clipboardText
+                        positivePrompt = promptBody(fromClipboard: clipboardText)
                     } label: {
                         Label("Paste", systemImage: "clipboard")
                     }
@@ -318,14 +332,6 @@ worst quality, bad quality, low quality, lowres, scan artifacts, jpeg artifacts,
                 if !selectedLoRAStatus.isEmpty {
                     Text(selectedLoRAStatus).font(.caption).foregroundStyle(.secondary)
                 }
-                TextField("LoRA trigger word or phrase", text: $selectedLoRATrigger)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                    .disabled(settings.localLoraFile.isEmpty)
-                Button("Add trigger word to positive prompt") {
-                    appendSelectedLoRATriggerToPrompt()
-                }
-                .disabled(settings.localLoraFile.isEmpty || selectedLoRATrigger.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 Toggle("Apply selected local LoRA", isOn: $enableCharacterLora)
                     .disabled(settings.localLoraFile.isEmpty)
                 HStack {
@@ -335,7 +341,7 @@ worst quality, bad quality, low quality, lowres, scan artifacts, jpeg artifacts,
                 }
                 Slider(value: $characterWeight, in: 0...1.5, step: 0.05)
                     .disabled(!enableCharacterLora || settings.localLoraFile.isEmpty)
-                Text("Selecting a LoRA copies it into the app's Models folder and enables it for generation. The file name is also added to the positive prompt. If your LoRA requires a specific trigger word, edit the prompt to use that word.")
+                Text("Selecting a LoRA copies it into the app's Models folder, reads embedded trigger metadata when available, and enables it for generation. The trigger preview above the positive prompt is read-only; its weight follows LoRA strength.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section("Generation Settings") {
@@ -521,14 +527,19 @@ worst quality, bad quality, low quality, lowres, scan artifacts, jpeg artifacts,
         guard !didRestoreDraft else { return }
         didRestoreDraft = true
 
-        // The previous bundled character LoRA is no longer supported. Remove it
-        // from persisted settings as well as any old prompt tags so it cannot be
-        // silently re-selected or injected into a new generation.
-        if settings.localLoraFile.localizedCaseInsensitiveContains("chizuru") {
-            settings.localLoraFile = ""
-            enableCharacterLora = false
-        }
+        // Preserve user-imported character LoRAs, including Chizuru models.
+        // Remove obsolete markup, never the character's plain trigger text.
         positivePrompt = removingLegacyCharacterTrigger(from: positivePrompt)
+        if !settings.localLoraFile.isEmpty,
+           let directory = try? OnDeviceImageGenerator.modelsDirectoryURL() {
+            let loraURL = directory.appendingPathComponent(settings.localLoraFile)
+            if FileManager.default.fileExists(atPath: loraURL.path) {
+                let fallback = loraURL.deletingPathExtension().lastPathComponent
+                    .replacingOccurrences(of: "_", with: " ")
+                    .replacingOccurrences(of: "-", with: " ")
+                selectedLoRATrigger = extractLoRATrigger(from: loraURL)?.trigger ?? fallback
+            }
+        }
 
         guard let data = UserDefaults.standard.data(forKey: AIImageStudioDraft.key),
               let draft = try? JSONDecoder().decode(AIImageStudioDraft.self, from: data) else {
@@ -570,8 +581,6 @@ worst quality, bad quality, low quality, lowres, scan artifacts, jpeg artifacts,
         var cleaned = prompt
         let legacyPatterns = [
             #"(?i)<lora:\s*ichinose[_ -]*chizuru\s*:\s*[-+]?\d*\.?\d+>"#,
-            #"(?i)\bichinose[_ -]+chizuru\b"#,
-            #"(?i)\bchizuru\b"#,
             #"(?i)\bmayuzumi\s+fuyuko\b"#
         ]
         for pattern in legacyPatterns {
@@ -618,13 +627,108 @@ worst quality, bad quality, low quality, lowres, scan artifacts, jpeg artifacts,
         try? settings.save()
     }
 
-    private func appendSelectedLoRATriggerToPrompt() {
+    private var weightedLoRATrigger: String {
         let trigger = selectedLoRATrigger.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trigger.isEmpty else { return }
-        let existing = positivePrompt.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !existing.localizedCaseInsensitiveContains(trigger) else { return }
-        positivePrompt = existing.isEmpty ? trigger : existing + ", " + trigger
-        saveGenerationDraft()
+        guard !trigger.isEmpty else { return "" }
+        return "(\(trigger):\(String(format: "%.2f", characterWeight)))"
+    }
+
+    /// Keep the trigger as a separate read-only visual row while composing it
+    /// into the positive prompt sent to the local generation engine.
+    private var effectivePositivePrompt: String {
+        let body = promptBodyWithoutSelectedTrigger(positivePrompt)
+        guard enableCharacterLora,
+              !settings.localLoraFile.isEmpty,
+              !selectedLoRATrigger.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return body
+        }
+        return body.isEmpty ? weightedLoRATrigger : weightedLoRATrigger + ", " + body
+    }
+
+    private func promptBodyWithoutSelectedTrigger(_ prompt: String) -> String {
+        var body = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trigger = selectedLoRATrigger.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trigger.isEmpty else { return body }
+        let escaped = NSRegularExpression.escapedPattern(for: trigger)
+        body = body.replacingOccurrences(
+            of: #"(?i)^\s*\(\s*"# + escaped + #":\s*[-+]?\d*\.?\d+\s*\)\s*,?\s*"#,
+            with: "", options: .regularExpression
+        )
+        body = body.replacingOccurrences(of: #"(?i)"# + escaped, with: "", options: .regularExpression)
+        body = body.replacingOccurrences(of: #",\s*,+"#, with: ",", options: .regularExpression)
+        body = body.replacingOccurrences(of: #"^\s*,+|,+\s*$"#, with: "", options: .regularExpression)
+        return body.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func promptBody(fromClipboard clipboard: String) -> String {
+        var body = clipboard.trimmingCharacters(in: .whitespacesAndNewlines)
+        let weighted = weightedLoRATrigger
+        if !weighted.isEmpty && body.hasPrefix(weighted) {
+            body = String(body.dropFirst(weighted.count))
+                .trimmingCharacters(in: CharacterSet(charactersIn: " ,\n\t"))
+        }
+        return promptBodyWithoutSelectedTrigger(body)
+    }
+
+    /// Read only the small JSON header of a safetensors file, not its tensor data.
+    private func extractLoRATrigger(from url: URL) -> (trigger: String, source: String)? {
+        guard url.pathExtension.lowercased() == "safetensors",
+              let handle = try? FileHandle(forReadingFrom: url) else { return nil }
+        defer { try? handle.close() }
+
+        do {
+            let prefix = try handle.read(upToCount: 8) ?? Data()
+            guard prefix.count == 8 else { return nil }
+            let headerLength = prefix.enumerated().reduce(UInt64(0)) { partial, item in
+                partial | (UInt64(item.element) << (item.offset * 8))
+            }
+            guard headerLength > 0, headerLength <= 16 * 1024 * 1024 else { return nil }
+            let header = try handle.read(upToCount: Int(headerLength)) ?? Data()
+            guard header.count == Int(headerLength),
+                  let root = try JSONSerialization.jsonObject(with: header) as? [String: Any],
+                  let metadata = root["__metadata__"] as? [String: Any] else { return nil }
+
+            let keys = [
+                "modelspec.trigger_phrase", "ss_trigger_words", "ss_trigger_word",
+                "trigger_words", "trigger_word", "trigger", "trained_words"
+            ]
+            for key in keys {
+                if let raw = metadata[key] as? String, let value = normalizedTrigger(raw) {
+                    return (value, "embedded \(key) metadata")
+                }
+            }
+            for (key, rawValue) in metadata where key.localizedCaseInsensitiveContains("trigger") {
+                if let raw = rawValue as? String, let value = normalizedTrigger(raw) {
+                    return (value, "embedded \(key) metadata")
+                }
+            }
+            if let rawTags = metadata["modelspec.tags"] as? String {
+                let firstTag = rawTags.split(whereSeparator: { $0 == "," || $0 == "\n" })
+                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                    .first(where: { !$0.isEmpty })
+                if let firstTag, firstTag.count <= 120 {
+                    return (firstTag, "embedded model tags")
+                }
+            }
+        } catch {
+            DiagnosticsLogger.shared.log("LoRA trigger metadata could not be read: \(error.localizedDescription)")
+        }
+        return nil
+    }
+
+    private func normalizedTrigger(_ raw: String) -> String? {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        if let data = trimmed.data(using: .utf8),
+           let array = try? JSONSerialization.jsonObject(with: data) as? [String] {
+            let value = array.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+                .joined(separator: ", ")
+            return value.isEmpty ? nil : value
+        }
+        let firstLine = trimmed.components(separatedBy: .newlines).first?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? trimmed
+        return firstLine.isEmpty ? nil : firstLine
     }
 
     private func importSelectedLoRA(_ result: Result<[URL], Error>) {
@@ -653,11 +757,15 @@ worst quality, bad quality, low quality, lowres, scan artifacts, jpeg artifacts,
                 .replacingOccurrences(of: "_", with: " ")
                 .replacingOccurrences(of: "-", with: " ")
                 .trimmingCharacters(in: .whitespacesAndNewlines)
-            selectedLoRATrigger = stem
-            appendSelectedLoRATriggerToPrompt()
+            let extracted = extractLoRATrigger(from: destinationURL)
+            selectedLoRATrigger = extracted?.trigger ?? stem
             try settings.save()
             saveGenerationDraft()
-            selectedLoRAStatus = "Imported and selected: " + safeName + ". Review the prompt for the LoRA's actual trigger word."
+            if let extracted {
+                selectedLoRAStatus = "Imported and selected: " + safeName + ". Trigger auto-detected from " + extracted.source + "."
+            } else {
+                selectedLoRAStatus = "Imported and selected: " + safeName + ". No trigger metadata was embedded; using the filename as a fallback guess."
+            }
             errorText = ""
         } catch {
             errorText = "Could not import LoRA: " + error.localizedDescription
@@ -695,7 +803,7 @@ worst quality, bad quality, low quality, lowres, scan artifacts, jpeg artifacts,
             else { throw AIImageStudioError("Enter a non-negative integer seed or enable Random seed.") }
             let generationPrompt = isBenchmark
                 ? "anime landscape, simple composition, clean colors"
-                : removingLegacyCharacterTrigger(from: positivePrompt)
+                : removingLegacyCharacterTrigger(from: effectivePositivePrompt)
             let generationNegativePrompt = isBenchmark ? "blurry, distorted, low quality" : negativePrompt
             generationStatus = isBenchmark ? "Benchmark: preparing full on-device pipeline…" : "Preparing local GPU/Metal generation…"
             let url = try await OnDeviceImageGenerator.generate(
