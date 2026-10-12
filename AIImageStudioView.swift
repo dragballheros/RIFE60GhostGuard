@@ -392,7 +392,9 @@ worst quality, low quality, score_1, score_2, artist name, blurry, jpeg artifact
                 Slider(value: $width, in: 512...1024, step: 64)
                 HStack { Text("Height"); Spacer(); Text("\(Int(height)) px").monospacedDigit() }
                 Slider(value: $height, in: 512...1536, step: 64)
-                TextField("Seed", text: $seedText).keyboardType(.numberPad)
+                TextField("Seed", text: $seedText).keyboardType(.numberPad).onChange(of: seedText) { newValue in
+                    randomSeed = newValue.isEmpty
+                }
                 Text("This engine accepts a 32-bit seed. Larger Civitai seeds are reduced modulo 2³² and will not reproduce the same image exactly.")
                     .font(.caption).foregroundStyle(.secondary)
                 Toggle("Random seed", isOn: $randomSeed)
