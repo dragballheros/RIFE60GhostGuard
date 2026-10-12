@@ -489,7 +489,15 @@ enum OnDeviceImageGenerator {
         case "DPM++ 2M Karras":
             pipeline!.configuration.sampler = DataModels.SamplerType.dPMPP2MKarras
         case "DDIM":
-            pipeline!.configuration.sampler = DataModels.SamplerType.DDIM
+            // The device crash report for build 192 shows EXC_BREAKPOINT in
+            // Denoiser.LinearDiscretization.alphasCumprod -> DDIMSampler.timestep.
+            // Until the bundled engine's DDIM/shift interaction is validated on-device,
+            // never enter that native crash path. Preserve the user's saved setting in
+            // the UI, but execute the known-supported DPM++ 2M Karras path instead.
+            pipeline!.configuration.sampler = DataModels.SamplerType.dPMPP2MKarras
+            DiagnosticsLogger.shared.log(
+                "AI Image Studio sampler safety fallback • requested=DDIM • applied=DPM++ 2M Karras • reason=guard against DDIM LinearDiscretization SIGTRAP seen in build 192"
+            )
         case "UniPC":
             pipeline!.configuration.sampler = DataModels.SamplerType.uniPC
         default:
