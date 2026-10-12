@@ -431,16 +431,31 @@ enum OnDeviceImageGenerator {
             pipeline!.configuration.hiresFix = false
         }
 
-        if memory.availableMemoryMB >= 4_096 && !recoveringAfterInterruption && !benchmarkMode && enableLoRA && !settings.localLoraFile.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        // Match the regular generation memory policy instead of requiring 4 GiB
+        // of free memory after model load. The canvas has already been reduced at
+        // low headroom (384px below 1.2 GiB, 512px below 1.8 GiB, and at most
+        // 768px below 4 GiB). Permit LoRA from 1.2 GiB free upward, where the
+        // minimum canvas policy is active, while retaining the recovery retry
+        // safeguard because a prior attempt may have been terminated by iOS.
+        let hasSelectedLoRA = !settings.localLoraFile.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let canApplyLoRA = !benchmarkMode
+            && !recoveringAfterInterruption
+            && enableLoRA
+            && hasSelectedLoRA
+            && memory.availableMemoryMB >= 1_200
+        if canApplyLoRA {
             pipeline!.configuration.loras = [
                 DataModels.LoRA(file: settings.localLoraFile, weight: Float(loraWeight), mode: .all)
             ]
+            DiagnosticsLogger.shared.log(
+                "AI Image Studio LoRA enabled • available=\(Int(memory.availableMemoryMB)) MB • output=\(outputWidth)x\(outputHeight) • adaptive low-memory canvas policy active"
+            )
         } else {
             pipeline!.configuration.loras = []
             if enableLoRA && recoveringAfterInterruption {
-                notify("Recovery Safe Mode: local LoRA is disabled for this retry.", progress: progress)
-            } else if enableLoRA && memory.availableMemoryMB < 4_096 {
-                notify("Memory Safe Mode: local LoRA disabled for this run to reduce model residency.", progress: progress)
+                notify("Recovery Safe Mode: local LoRA is disabled for this retry; the next normal run can try it again.", progress: progress)
+            } else if enableLoRA && hasSelectedLoRA && memory.availableMemoryMB < 1_200 && !benchmarkMode {
+                notify("Memory Safe Mode: LoRA needs at least 1.2 GB free after model load; generation will continue at the reduced canvas size.", progress: progress)
             }
         }
 
