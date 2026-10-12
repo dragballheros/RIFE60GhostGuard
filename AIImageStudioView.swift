@@ -225,12 +225,18 @@ worst quality, bad quality, low quality, lowres, scan artifacts, jpeg artifacts,
     private var generationSections: some View {
         Group {
             Section("Generation Preset") {
-                // Only one local model profile is currently supported. A Picker
-                // with a single option adds no choice and triggers a multi-state
-                // reset on selection, which has been crashing on-device. Show the
-                // active profile as a static row instead.
-                LabeledContent("Model profile", value: "Animagine XL v3.1 (Local)")
-                Text("Animagine XL v3.1 runs locally on the iPhone GPU/Metal. The first generation downloads the model and required files; allow several GB of free storage.")
+                Picker("Model", selection: $settings.localModelID) {
+                    Text("Animagine XL v3.1").tag(OnDeviceImageGenerator.defaultModelID)
+                    Text("Anima Aesthetic 1.1").tag(OnDeviceImageGenerator.animaModelID)
+                }
+                .onChange(of: settings.localModelID) { _, selectedID in
+                    applyModelProfile(selectedID)
+                    try? settings.save()
+                    saveGenerationDraft()
+                }
+                Text(settings.localModelID == OnDeviceImageGenerator.animaModelID
+                     ? "Anima Aesthetic 1.1 is a separate 2B anime/illustration model. First use downloads its model files; start around 896 × 1152, 32 steps, CFG 4.5. It is licensed for non-commercial use."
+                     : "Animagine XL v3.1 is the SDXL-based anime model. First use downloads the model files. The app adapts render size to available memory.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             if !settings.localLoraFile.isEmpty && !selectedLoRATrigger.isEmpty {
@@ -304,12 +310,13 @@ worst quality, bad quality, low quality, lowres, scan artifacts, jpeg artifacts,
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section("On-device Model") {
-                TextField("Supported local model catalog ID", text: $settings.localModelID)
-                    .textInputAutocapitalization(.never).autocorrectionDisabled()
-                Text("Default: Animagine XL v3.1 (8-bit). Model weights are downloaded into this app's local Models folder, then inference runs on the iPhone.")
+                LabeledContent("Model catalog ID", value: settings.localModelID)
+                Text("Model weights are downloaded into this app's local Models folder and inference runs on the iPhone GPU/Metal. The original screenChantvMerge_v20 checkpoint is not the same file as the catalog Anima Aesthetic 1.1 model.")
                     .font(.caption).foregroundStyle(.secondary)
-                Text("The supplied screenChantvMerge_v20 ANIMA checkpoint and Turbo-ANIMA-v2.9 LoRA are not directly compatible with this engine as-is. This local profile uses a supported SDXL anime model instead of sending work to a remote endpoint.")
-                    .font(.caption).foregroundStyle(.secondary)
+                if settings.localModelID == OnDeviceImageGenerator.animaModelID {
+                    Text("ANIMA-family LoRAs must match the selected ANIMA architecture. An SDXL/Animagine character LoRA such as a Chizuru XL LoRA should be used with Animagine instead.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
             }
             Section("Local LoRA") {
                 Button {
@@ -480,14 +487,15 @@ worst quality, bad quality, low quality, lowres, scan artifacts, jpeg artifacts,
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section("Model Compatibility") {
-                Text("The default model is Animagine XL v3.1 (8-bit), exposed by the embedded local engine. The original screenChantvMerge_v20 ANIMA checkpoint, Turbo-ANIMA-v2.9 LoRA, and WAI Illustrious checkpoint are not assumed compatible. Exact ANIMA support needs a native model-import or architecture path.")
+                Text("The picker exposes Animagine XL v3.1 and the distinct catalog model Anima Aesthetic 1.1. The latter is a native ANIMA-family model, not a conversion of screenChantvMerge_v20. LoRAs must match the selected model architecture; Turbo-ANIMA and WAI Illustrious files are not automatically interchangeable with SDXL LoRAs.")
                     .font(.caption).foregroundStyle(.secondary)
                 Link("Embedded local engine source and license", destination: URL(string: "https://github.com/drawthingsai/draw-things-community/tree/4f288803ac898525012c0fe8d998c85bcb920b70")!)
             }
             Section {
                 Button("Reset model to Animagine XL v3.1 (8-bit)") {
-                    settings.localModelID = OnDeviceImageGenerator.defaultModelID
+                    applyModelProfile(OnDeviceImageGenerator.defaultModelID)
                     try? settings.save()
+                    saveGenerationDraft()
                     showAlert("The local model selection was reset.")
                 }
                 Button("Clear selected local LoRA", role: .destructive) {
@@ -502,17 +510,21 @@ worst quality, bad quality, low quality, lowres, scan artifacts, jpeg artifacts,
     }
 
     private func applyModelProfile(_ profile: String) {
-        modelProfile = "Animagine XL v3.1 (Local)"
+        let useAnima = profile == OnDeviceImageGenerator.animaModelID
+            || profile.localizedCaseInsensitiveContains("Anima Aesthetic")
+        settings.localModelID = useAnima
+            ? OnDeviceImageGenerator.animaModelID
+            : OnDeviceImageGenerator.defaultModelID
+        modelProfile = useAnima ? "Anima Aesthetic 1.1 (Local)" : "Animagine XL v3.1 (Local)"
         UserDefaults.standard.set(modelProfile, forKey: "RIFE60.AIImageStudio.SelectedProfile")
-        settings.localModelID = OnDeviceImageGenerator.defaultModelID
         errorText = ""
         generationStatus = ""
         generatedImage = nil
         generatedURL = nil
-        width = 832
-        height = 1216
-        steps = 28
-        cfg = 5.5
+        width = useAnima ? 896 : 832
+        height = useAnima ? 1152 : 1216
+        steps = useAnima ? 32 : 28
+        cfg = useAnima ? 4.5 : 5.5
         shift = 0
         hiresEnabled = false
         hiresScale = 1.5
@@ -529,6 +541,13 @@ worst quality, bad quality, low quality, lowres, scan artifacts, jpeg artifacts,
 
         // Preserve user-imported character LoRAs, including Chizuru models.
         // Remove obsolete markup, never the character's plain trigger text.
+        if settings.localModelID != OnDeviceImageGenerator.defaultModelID
+            && settings.localModelID != OnDeviceImageGenerator.animaModelID {
+            settings.localModelID = OnDeviceImageGenerator.defaultModelID
+        }
+        modelProfile = settings.localModelID == OnDeviceImageGenerator.animaModelID
+            ? "Anima Aesthetic 1.1 (Local)"
+            : "Animagine XL v3.1 (Local)"
         positivePrompt = removingLegacyCharacterTrigger(from: positivePrompt)
         if !settings.localLoraFile.isEmpty,
            let directory = try? OnDeviceImageGenerator.modelsDirectoryURL() {
@@ -543,20 +562,23 @@ worst quality, bad quality, low quality, lowres, scan artifacts, jpeg artifacts,
 
         guard let data = UserDefaults.standard.data(forKey: AIImageStudioDraft.key),
               let draft = try? JSONDecoder().decode(AIImageStudioDraft.self, from: data) else {
-            applyModelProfile("Animagine XL v3.1 (Local)")
+            applyModelProfile(settings.localModelID)
             positivePrompt = removingLegacyCharacterTrigger(from: positivePrompt)
             saveGenerationDraft()
             try? settings.save()
             return
         }
-        modelProfile = "Animagine XL v3.1 (Local)"
+        modelProfile = settings.localModelID == OnDeviceImageGenerator.animaModelID
+            ? "Anima Aesthetic 1.1 (Local)"
+            : "Animagine XL v3.1 (Local)"
         positivePrompt = removingLegacyCharacterTrigger(from: draft.positivePrompt)
         negativePrompt = draft.negativePrompt
-        // Migrate the old remote ANIMA/Illustrious controls to valid local SDXL defaults.
-        width = 832
-        height = 1216
-        steps = 28
-        cfg = 5.5
+        // Keep conservative defaults for each native model family.
+        let useAnima = settings.localModelID == OnDeviceImageGenerator.animaModelID
+        width = useAnima ? 896 : 832
+        height = useAnima ? 1152 : 1216
+        steps = useAnima ? 32 : 28
+        cfg = useAnima ? 4.5 : 5.5
         shift = 0
         hiresEnabled = false
         hiresScale = 1.5
