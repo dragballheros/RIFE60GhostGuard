@@ -78,7 +78,7 @@ private final class AIImageGenerationMemoryJournal: @unchecked Sendable {
 
 enum OnDeviceImageGenerator {
     static let defaultModelID = "animagine_xl_v3.1_q6p_q8p.ckpt"
-    static let animaModelID = "anima_aesthetic_1.1_q8p.ckpt"
+    static let animaModelID = "anima_base_1.0_q8p.ckpt"
 
     static func memoryJournalURL() -> URL? {
         guard let base = try? FileManager.default.url(

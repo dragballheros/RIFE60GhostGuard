@@ -127,15 +127,15 @@ struct AIImageStudioView: View {
     @State private var selectedLoRAStatus = ""
 
     @State private var positivePrompt = """
-newest, very awa, masterpiece, high quality, high resolution, amazing quality, best quality, good lighting, detailed eyes, anime coloring, anime screencap, looking at viewer, 1girl, solo, parted lips, blush, standing, detailed background, beach, night
+masterpiece, best quality, score_7, safe, 1girl, sysdeep_chizuru, beautiful young woman, long brown hair, expressive brown eyes, delicate facial features, fair skin, gentle smile, soft blush, natural proportions, detailed eyes, glossy hair, clean lineart, detailed shading, vibrant colors, soft natural lighting
 """
     @State private var negativePrompt = """
-worst quality, bad quality, low quality, lowres, scan artifacts, jpeg artifacts, sketch, bad quality, jpeg, artifacts, signature, username, text, logo, bad anatomy, artist name, artist logo, extra limbs, extra digit, extra legs, extra arms, blurry background, simple background, huge breasts, puckered anus
+worst quality, low quality, score_1, score_2, artist name, blurry, jpeg artifacts, chromatic aberration, bad anatomy, extra limbs, extra digits, signature, watermark, text, logo
 """
     @State private var width = 832.0
     @State private var height = 1216.0
-    @State private var steps = 28.0
-    @State private var cfg = 5.5
+    @State private var steps = 30.0
+    @State private var cfg = 4.0
     @State private var shift = 3.0
     @State private var hiresEnabled = false
     @State private var hiresScale = 2.0
@@ -146,9 +146,9 @@ worst quality, bad quality, low quality, lowres, scan artifacts, jpeg artifacts,
     @State private var ensd = 31337.0
     @State private var tokenMergingRatio = 0.1
     @State private var tokenMergingHiresRatio = 0.1
-    @State private var samplerName = "Euler a"
+    @State private var samplerName = "DPM++ SDE Karras (closest to Civitai GPU sampler)"
     @State private var schedulerName = "Normal"
-    @State private var seedText = "1647498191"
+    @State private var seedText = "943875898392407"
     @State private var randomSeed = false
     @State private var turboWeight = 1.0
     @State private var characterWeight = 0.7
@@ -235,15 +235,15 @@ worst quality, bad quality, low quality, lowres, scan artifacts, jpeg artifacts,
                     modelID: OnDeviceImageGenerator.defaultModelID
                 )
                 modelSelectionRow(
-                    title: "Anima Aesthetic 1.1",
-                    subtitle: "Separate 2B anime and illustration model",
+                    title: "Anima Base v1.0",
+                    subtitle: "Exact base architecture for SysDeep Chizuru Anima v1",
                     modelID: OnDeviceImageGenerator.animaModelID
                 )
 
                 LabeledContent("Active model ID", value: settings.localModelID)
                 Text(settings.localModelID == OnDeviceImageGenerator.animaModelID
-                     ? "Anima Aesthetic 1.1 uses its own architecture. Use a matching ANIMA LoRA."
-                     : "Animagine XL v3.1 uses SDXL architecture. Use SDXL-compatible LoRAs, including compatible character LoRAs.")
+                     ? "Anima Base v1.0 is the exact model family used to train SysDeep Chizuru Anima v1. The character LoRA is separate and must be imported or already installed."
+                     : "Animagine XL v3.1 uses SDXL architecture. Use SDXL-compatible LoRAs, not ANIMA-family LoRAs.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -319,7 +319,7 @@ worst quality, bad quality, low quality, lowres, scan artifacts, jpeg artifacts,
             }
             Section("On-device Model") {
                 LabeledContent("Model catalog ID", value: settings.localModelID)
-                Text("Model weights are downloaded into this app's local Models folder and inference runs on the iPhone GPU/Metal. The original screenChantvMerge_v20 checkpoint is not the same file as the catalog Anima Aesthetic 1.1 model.")
+                Text("Anima Base v1.0 is downloaded from the Draw Things model catalog on first generation, along with required companion components. This is the same base family named by the SysDeep Chizuru Anima v1 creator.")
                     .font(.caption).foregroundStyle(.secondary)
                 if settings.localModelID == OnDeviceImageGenerator.animaModelID {
                     Text("ANIMA-family LoRAs must match the selected ANIMA architecture. An SDXL/Animagine character LoRA such as a Chizuru XL LoRA should be used with Animagine instead.")
@@ -343,6 +343,13 @@ worst quality, bad quality, low quality, lowres, scan artifacts, jpeg artifacts,
                         saveGenerationDraft()
                         selectedLoRAStatus = "No LoRA selected."
                     }
+                }
+                if settings.localModelID == OnDeviceImageGenerator.animaModelID
+                    && (settings.localLoraFile.isEmpty || !settings.localLoraFile.localizedCaseInsensitiveContains("chizuru")) {
+                    Link("Open SysDeep Chizuru Anima LoRA page (access approval required)",
+                         destination: URL(string: "https://huggingface.co/oxyllina/SysDeep/tree/main")!)
+                    Text("Hugging Face requires accepting the repository's access terms before the file can be downloaded. After downloading the exact Anima v1 .safetensors file, import it here; the app will select it by default.")
+                        .font(.caption).foregroundStyle(.secondary)
                 }
                 if !selectedLoRAStatus.isEmpty {
                     Text(selectedLoRAStatus).font(.caption).foregroundStyle(.secondary)
@@ -509,7 +516,7 @@ worst quality, bad quality, low quality, lowres, scan artifacts, jpeg artifacts,
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section("Model Compatibility") {
-                Text("The picker exposes Animagine XL v3.1 and the distinct catalog model Anima Aesthetic 1.1. The latter is a native ANIMA-family model, not a conversion of screenChantvMerge_v20. LoRAs must match the selected model architecture; Turbo-ANIMA and WAI Illustrious files are not automatically interchangeable with SDXL LoRAs.")
+                Text("The picker exposes Animagine XL v3.1 and the exact Anima Base v1.0 family. ANIMA LoRAs and SDXL/Illustrious LoRAs are not interchangeable. The SysDeep Chizuru Anima v1 file is hosted in a gated Hugging Face repository, so this app cannot silently fetch it without the repository owner's access terms being accepted.")
                     .font(.caption).foregroundStyle(.secondary)
                 Link("Embedded local engine source and license", destination: URL(string: "https://github.com/drawthingsai/draw-things-community/tree/4f288803ac898525012c0fe8d998c85bcb920b70")!)
             }
@@ -595,28 +602,37 @@ worst quality, bad quality, low quality, lowres, scan artifacts, jpeg artifacts,
 
     private func applyModelProfile(_ profile: String) {
         let useAnima = profile == OnDeviceImageGenerator.animaModelID
-            || profile.localizedCaseInsensitiveContains("Anima Aesthetic")
+            || profile.localizedCaseInsensitiveContains("Anima Base")
         settings.localModelID = useAnima
             ? OnDeviceImageGenerator.animaModelID
             : OnDeviceImageGenerator.defaultModelID
-        modelProfile = useAnima ? "Anima Aesthetic 1.1 (Local)" : "Animagine XL v3.1 (Local)"
+        modelProfile = useAnima ? "Anima Base v1.0 (Local)" : "Animagine XL v3.1 (Local)"
         UserDefaults.standard.set(modelProfile, forKey: "RIFE60.AIImageStudio.SelectedProfile")
         errorText = ""
         generationStatus = ""
         generatedImage = nil
         generatedURL = nil
-        width = useAnima ? 896 : 832
-        height = useAnima ? 1152 : 1216
-        steps = useAnima ? 32 : 28
-        cfg = useAnima ? 4.5 : 5.5
+        width = useAnima ? 832 : 832
+        height = useAnima ? 1216 : 1216
+        steps = useAnima ? 30 : 28
+        cfg = useAnima ? 4.0 : 5.5
         shift = 0
         hiresEnabled = false
         hiresScale = 1.5
         hiresSteps = 12
         hiresDenoise = 0.35
-        clipSkip = 2
-        samplerName = "Model recommended"
+        clipSkip = useAnima ? 1 : 2
+        samplerName = useAnima
+            ? "DPM++ SDE Karras (closest to Civitai GPU sampler)"
+            : "Euler a"
         schedulerName = "Model recommended"
+        if useAnima {
+            seedText = "943875898392407"
+            randomSeed = false
+            if !positivePrompt.localizedCaseInsensitiveContains("sysdeep_chizuru") {
+                positivePrompt = "masterpiece, best quality, score_7, safe, sysdeep_chizuru, " + positivePrompt
+            }
+        }
     }
 
     private func restoreGenerationDraft() {
@@ -630,17 +646,35 @@ worst quality, bad quality, low quality, lowres, scan artifacts, jpeg artifacts,
             settings.localModelID = OnDeviceImageGenerator.defaultModelID
         }
         modelProfile = settings.localModelID == OnDeviceImageGenerator.animaModelID
-            ? "Anima Aesthetic 1.1 (Local)"
+            ? "Anima Base v1.0 (Local)"
             : "Animagine XL v3.1 (Local)"
         positivePrompt = removingLegacyCharacterTrigger(from: positivePrompt)
-        if !settings.localLoraFile.isEmpty,
-           let directory = try? OnDeviceImageGenerator.modelsDirectoryURL() {
-            let loraURL = directory.appendingPathComponent(settings.localLoraFile)
-            if FileManager.default.fileExists(atPath: loraURL.path) {
-                let fallback = loraURL.deletingPathExtension().lastPathComponent
-                    .replacingOccurrences(of: "_", with: " ")
-                    .replacingOccurrences(of: "-", with: " ")
-                selectedLoRATrigger = extractLoRATrigger(from: loraURL)?.trigger ?? fallback
+        if let directory = try? OnDeviceImageGenerator.modelsDirectoryURL() {
+            if settings.localModelID == OnDeviceImageGenerator.animaModelID,
+               settings.localLoraFile.isEmpty {
+                let exactName = "Sysdeep Chizuru - Anima v1.safetensors"
+                if FileManager.default.fileExists(atPath: directory.appendingPathComponent(exactName).path) {
+                    settings.localLoraFile = exactName
+                    enableCharacterLora = true
+                    characterWeight = 0.7
+                    selectedLoRATrigger = "sysdeep_chizuru"
+                    selectedLoRAStatus = "Found the compatible Chizuru Anima LoRA already installed; selected it automatically."
+                    try? settings.save()
+                }
+            }
+            if !settings.localLoraFile.isEmpty {
+                let loraURL = directory.appendingPathComponent(settings.localLoraFile)
+                if FileManager.default.fileExists(atPath: loraURL.path) {
+                    let fallback = loraURL.deletingPathExtension().lastPathComponent
+                        .replacingOccurrences(of: "_", with: " ")
+                        .replacingOccurrences(of: "-", with: " ")
+                    let detected = extractLoRATrigger(from: loraURL)?.trigger
+                    let isChizuruAnima = settings.localModelID == OnDeviceImageGenerator.animaModelID
+                        && loraURL.lastPathComponent.localizedCaseInsensitiveContains("chizuru")
+                        && loraURL.lastPathComponent.localizedCaseInsensitiveContains("anima")
+                    selectedLoRATrigger = detected ?? (isChizuruAnima ? "sysdeep_chizuru" : fallback)
+                    if isChizuruAnima { enableCharacterLora = true; characterWeight = 0.7 }
+                }
             }
         }
 
@@ -653,16 +687,16 @@ worst quality, bad quality, low quality, lowres, scan artifacts, jpeg artifacts,
             return
         }
         modelProfile = settings.localModelID == OnDeviceImageGenerator.animaModelID
-            ? "Anima Aesthetic 1.1 (Local)"
+            ? "Anima Base v1.0 (Local)"
             : "Animagine XL v3.1 (Local)"
         positivePrompt = removingLegacyCharacterTrigger(from: draft.positivePrompt)
         negativePrompt = draft.negativePrompt
         // Keep conservative defaults for each native model family.
         let useAnima = settings.localModelID == OnDeviceImageGenerator.animaModelID
-        width = useAnima ? 896 : 832
-        height = useAnima ? 1152 : 1216
-        steps = useAnima ? 32 : 28
-        cfg = useAnima ? 4.5 : 5.5
+        width = useAnima ? 832 : 832
+        height = useAnima ? 1216 : 1216
+        steps = useAnima ? 30 : 28
+        cfg = useAnima ? 4.0 : 5.5
         shift = 0
         hiresEnabled = false
         hiresScale = 1.5
@@ -673,13 +707,17 @@ worst quality, bad quality, low quality, lowres, scan artifacts, jpeg artifacts,
         ensd = draft.ensd
         tokenMergingRatio = draft.tokenMergingRatio
         tokenMergingHiresRatio = draft.tokenMergingHiresRatio
-        samplerName = "Model recommended"
+        samplerName = useAnima
+            ? "DPM++ SDE Karras (closest to Civitai GPU sampler)"
+            : (draft.samplerName == "Model recommended" ? "Euler a" : draft.samplerName)
         schedulerName = "Model recommended"
-        seedText = draft.seedText
+        seedText = useAnima ? "943875898392407" : draft.seedText
         randomSeed = draft.randomSeed
         turboWeight = draft.turboWeight
         characterWeight = draft.characterWeight
-        enableCharacterLora = draft.enableCharacterLora && !settings.localLoraFile.isEmpty
+        enableCharacterLora = useAnima && selectedLoRATrigger == "sysdeep_chizuru"
+            ? true
+            : (draft.enableCharacterLora && !settings.localLoraFile.isEmpty)
         UserDefaults.standard.set(modelProfile, forKey: "RIFE60.AIImageStudio.SelectedProfile")
     }
 
