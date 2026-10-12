@@ -2,7 +2,7 @@ import Foundation
 import CryptoKit
 
 struct AIImageStudioSettings: Codable {
-    var localModelID = "animagine_xl_v3.1_q6p_q8p.ckpt"
+    var localModelID = "anima_base_1.0_q8p.ckpt"
     var localLoraFile = ""
 
     static let storageKey = "RIFE60.AIImageStudio.Settings.Local.v2"
