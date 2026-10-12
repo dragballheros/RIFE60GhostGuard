@@ -719,7 +719,7 @@ worst quality, low quality, score_1, score_2, artist name, blurry, jpeg artifact
         hiresSteps = 12
         hiresDenoise = 0.35
         upscalerName = draft.upscalerName
-        clipSkip = 2
+        clipSkip = useAnima ? 1 : 2
         ensd = draft.ensd
         tokenMergingRatio = draft.tokenMergingRatio
         tokenMergingHiresRatio = draft.tokenMergingHiresRatio
@@ -790,19 +790,24 @@ worst quality, low quality, score_1, score_2, artist name, blurry, jpeg artifact
     private var weightedLoRATrigger: String {
         let trigger = selectedLoRATrigger.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trigger.isEmpty else { return "" }
-        return "(\(trigger):\(String(format: "%.2f", characterWeight)))"
+        // This is a UI label, not prompt-weight syntax. LoRA strength is applied
+        // separately to DataModels.LoRA.weight; attenuating the trigger token too
+        // would weaken character activation a second time.
+        return "\(trigger) • LoRA strength \(String(format: "%.2f", characterWeight))"
     }
 
-    /// Keep the trigger as a separate read-only visual row while composing it
-    /// into the positive prompt sent to the local generation engine.
+    /// Keep the trigger as a separate read-only visual row while composing the
+    /// plain trigger token into the positive prompt. Adapter strength is controlled
+    /// only by the LoRA weight passed to the generation pipeline.
     private var effectivePositivePrompt: String {
         let body = promptBodyWithoutSelectedTrigger(positivePrompt)
+        let trigger = selectedLoRATrigger.trimmingCharacters(in: .whitespacesAndNewlines)
         guard enableCharacterLora,
               !settings.localLoraFile.isEmpty,
-              !selectedLoRATrigger.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+              !trigger.isEmpty else {
             return body
         }
-        return body.isEmpty ? weightedLoRATrigger : weightedLoRATrigger + ", " + body
+        return body.isEmpty ? trigger : trigger + ", " + body
     }
 
     private func promptBodyWithoutSelectedTrigger(_ prompt: String) -> String {
