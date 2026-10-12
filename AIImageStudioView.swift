@@ -148,8 +148,8 @@ worst quality, low quality, score_1, score_2, artist name, blurry, jpeg artifact
     @State private var tokenMergingHiresRatio = 0.1
     @State private var samplerName = "DPM++ SDE Karras (closest to Civitai GPU sampler)"
     @State private var schedulerName = "Normal"
-    @State private var seedText = "943875898392407"
-    @State private var randomSeed = false
+    @State private var seedText = ""
+    @State private var randomSeed = true
     @State private var turboWeight = 1.0
     @State private var characterWeight = 0.7
     @State private var enableCharacterLora = false
@@ -706,8 +706,6 @@ worst quality, low quality, score_1, score_2, artist name, blurry, jpeg artifact
             : "Euler a"
         schedulerName = "Model recommended"
         if useAnima {
-            seedText = "943875898392407"
-            randomSeed = false
             if !positivePrompt.localizedCaseInsensitiveContains("sysdeep_chizuru") {
                 positivePrompt = "masterpiece, best quality, score_7, safe, sysdeep_chizuru, " + positivePrompt
             }
@@ -799,8 +797,8 @@ worst quality, low quality, score_1, score_2, artist name, blurry, jpeg artifact
             ? "DPM++ SDE Karras (closest to Civitai GPU sampler)"
             : (draft.samplerName == "Model recommended" ? "Euler a" : draft.samplerName)
         schedulerName = "Model recommended"
-        seedText = useAnima ? "943875898392407" : draft.seedText
-        randomSeed = draft.randomSeed
+        seedText = ""
+        randomSeed = true
         turboWeight = draft.turboWeight
         characterWeight = draft.characterWeight
         enableCharacterLora = useAnima && selectedLoRATrigger == "sysdeep_chizuru"
