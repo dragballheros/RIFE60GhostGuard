@@ -155,6 +155,48 @@ enum OnDeviceImageGenerator {
         max(64, Int((Double(max(64, value)) / 64.0).rounded()) * 64)
     }
 
+    /// Convert imported third-party adapters into Draw Things' native LoRA format.
+    /// Raw A1111/ComfyUI safetensors must not be passed directly as DataModels.LoRA:
+    /// the engine expects a mapped *_lora_f16.ckpt file. The pinned importer can
+    /// identify Cosmos ANIMA 2.5 2B LoRAs and map their tensor names correctly.
+    static func prepareLoRAForGeneration(_ fileName: String) throws -> String {
+        let directory = try modelsDirectoryURL()
+        let sourceURL = directory.appendingPathComponent(fileName)
+        guard FileManager.default.fileExists(atPath: sourceURL.path) else {
+            throw AIImageStudioError("The selected LoRA file is missing from the local Models folder: \\(fileName)")
+        }
+
+        let ext = sourceURL.pathExtension.lowercased()
+        let stem = sourceURL.deletingPathExtension().lastPathComponent
+        let isNativeDrawThingsCheckpoint = ext == "ckpt"
+            && (stem.hasSuffix("_lora_f16") || stem.hasSuffix("_lora_f32"))
+        if isNativeDrawThingsCheckpoint { return sourceURL.lastPathComponent }
+
+        let outputName = stem + "_lora_f16.ckpt"
+        let outputURL = directory.appendingPathComponent(outputName)
+        if let attributes = try? FileManager.default.attributesOfItem(atPath: outputURL.path),
+           let size = attributes[.size] as? NSNumber, size.int64Value > 0 {
+            return outputName
+        }
+
+        do {
+            var importer = LoRAImporter(file: sourceURL)
+            try importer.import(to: outputURL)
+        } catch {
+            throw AIImageStudioError(
+                "Could not convert the selected LoRA into Draw Things format. Confirm it is a valid LoRA for the selected model. Details: \\(error.localizedDescription)"
+            )
+        }
+        guard let attributes = try? FileManager.default.attributesOfItem(atPath: outputURL.path),
+              let size = attributes[.size] as? NSNumber, size.int64Value > 0 else {
+            throw AIImageStudioError("LoRA conversion finished without creating a valid native checkpoint.")
+        }
+        DiagnosticsLogger.shared.log(
+            "LoRA import converted to Draw Things format • source=\\(sourceURL.lastPathComponent) • native=\\(outputName) • detectedModelVersion=\\(String(describing: importer.version))"
+        )
+        return outputName
+    }
+
     static func generate(
         settings: AIImageStudioSettings,
         positivePrompt: String,
@@ -242,6 +284,14 @@ enum OnDeviceImageGenerator {
 
         AIImageGenerationMemoryJournal.shared.record("pre-model-policy")
         let modelsDirectory = try modelsDirectoryURL()
+        let hasSelectedLoRA = !settings.localLoraFile.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        var preparedLoRAFile: String?
+        if !benchmarkMode && !recoveringAfterInterruption && enableLoRA && hasSelectedLoRA
+            && memory.availableMemoryMB >= 1_200 {
+            // Convert/import before loading the large diffusion pipeline so the
+            // conversion does not compete with model weights and Metal allocations.
+            preparedLoRAFile = try Self.prepareLoRAForGeneration(settings.localLoraFile)
+        }
         // Prioritize inference throughput on this device. Forced CPU partial-offload,
         // the lowest capability tier, and a zero-byte weights cache can add repeated
         // weight transfers during every denoising step. Preserve the process defaults
@@ -455,15 +505,14 @@ enum OnDeviceImageGenerator {
         // 768px below 4 GiB). Permit LoRA from 1.2 GiB free upward, where the
         // minimum canvas policy is active, while retaining the recovery retry
         // safeguard because a prior attempt may have been terminated by iOS.
-        let hasSelectedLoRA = !settings.localLoraFile.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         let canApplyLoRA = !benchmarkMode
             && !recoveringAfterInterruption
             && enableLoRA
-            && hasSelectedLoRA
+            && preparedLoRAFile != nil
             && memory.availableMemoryMB >= 1_200
-        if canApplyLoRA {
+        if canApplyLoRA, let preparedLoRAFile {
             pipeline!.configuration.loras = [
-                DataModels.LoRA(file: settings.localLoraFile, weight: Float(loraWeight), mode: .all)
+                DataModels.LoRA(file: preparedLoRAFile, weight: Float(loraWeight), mode: .all)
             ]
             DiagnosticsLogger.shared.log(
                 "AI Image Studio LoRA enabled • available=\(Int(memory.availableMemoryMB)) MB • output=\(outputWidth)x\(outputHeight) • adaptive low-memory canvas policy active"
