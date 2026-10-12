@@ -415,6 +415,29 @@ enum OnDeviceImageGenerator {
             outputWidth = multipleOf64(Int(Double(requestedWidth) * scale))
             outputHeight = multipleOf64(Int(Double(requestedHeight) * scale))
         }
+        // VAE decoding allocates a full-resolution activation/output working set after
+        // the denoising loop. On this 6 GiB iPhone, the observed run entered input
+        // encoding with ~2.7 GiB free, then fell to ~1.8 GiB during early steps and
+        // below 768 MB immediately after step 28. Keep LoRA enabled for image quality,
+        // but reserve decoder headroom by bounding the diffusion canvas when an adapter
+        // is selected and post-load free memory is below 3.2 GiB. Preserve aspect ratio;
+        // the existing post-generation upscale path can restore output dimensions.
+        let requestedLoRAForMemoryPolicy = enableLoRA
+            && !settings.localLoraFile.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && !recoveringAfterInterruption
+            && !benchmarkMode
+        if requestedLoRAForMemoryPolicy && memory.availableMemoryMB < 3_200 {
+            let currentLongEdge = Double(max(outputWidth, outputHeight))
+            let safeLongEdge = memory.availableMemoryMB < 2_000 ? 384.0 : 512.0
+            if currentLongEdge > safeLongEdge {
+                let scale = safeLongEdge / currentLongEdge
+                outputWidth = multipleOf64(Int(Double(outputWidth) * scale))
+                outputHeight = multipleOf64(Int(Double(outputHeight) * scale))
+                DiagnosticsLogger.shared.log(
+                    "AI Image Studio LoRA decoder reserve • available=\(Int(memory.availableMemoryMB)) MB • canvas capped to \(outputWidth)x\(outputHeight) • LoRA remains enabled • upscale after model release"
+                )
+            }
+        }
         if recoveringAfterInterruption {
             DiagnosticsLogger.shared.log("AI Image Studio Recovery Safe Mode • preserving memory-policy output size \(outputWidth)x\(outputHeight) • steps=\(effectiveSteps) • Hires/LoRA disabled")
         }
