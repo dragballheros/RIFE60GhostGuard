@@ -397,23 +397,16 @@ enum OnDeviceImageGenerator {
         if memory.availableMemoryMB < 1_024 {
             DiagnosticsLogger.shared.log("AI Image Studio continuing below former inference reserve • available=\(Int(memory.availableMemoryMB)) MB • using minimum tiles and reduced dimensions")
         }
-        // If model loading leaves less than 3 GiB, reduce latent dimensions while
-        // preserving the requested aspect ratio. Upscaling can happen afterward via
-        // the existing Real-CUGAN stage, which runs after this pipeline is released.
+        // Preserve the requested canvas whenever at least 1.8 GiB remains after model
+        // load. The former <4 GiB branch silently clamped normal 832x1216 requests to
+        // 512px on the long edge even when the device was stable, producing visibly
+        // pixelated results. Retain the conservative fallback only under 1.8 GiB.
         if memory.availableMemoryMB < 1_200 {
             let scale = min(1.0, 384.0 / Double(max(requestedWidth, requestedHeight)))
             outputWidth = multipleOf64(Int(Double(requestedWidth) * scale))
             outputHeight = multipleOf64(Int(Double(requestedHeight) * scale))
         } else if memory.availableMemoryMB < 1_800 {
             let scale = min(1.0, 512.0 / Double(max(requestedWidth, requestedHeight)))
-            outputWidth = multipleOf64(Int(Double(requestedWidth) * scale))
-            outputHeight = multipleOf64(Int(Double(requestedHeight) * scale))
-        } else if memory.availableMemoryMB < 4_096 {
-            // Diffusion tiling is disabled because the bundled engine's tiny-tile
-            // UNet compilation path can trap. Compensate with a conservative canvas
-            // cap while preserving the requested aspect ratio; upscale afterward.
-            let safeLongEdge = memory.availableMemoryMB < 2_200 ? 512.0 : 768.0
-            let scale = min(1.0, safeLongEdge / Double(max(requestedWidth, requestedHeight)))
             outputWidth = multipleOf64(Int(Double(requestedWidth) * scale))
             outputHeight = multipleOf64(Int(Double(requestedHeight) * scale))
         }
