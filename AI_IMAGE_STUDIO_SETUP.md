@@ -16,11 +16,20 @@ The LoRA Trainer invokes the Draw Things local trainer in-process. Selected imag
 
 Training defaults to low-memory settings, 512-pixel training resolution, and a bounded step count. This does not override iOS memory limits. Start with a small dataset and keep the app foregrounded with the phone cooler attached. iOS can still terminate training if model loading, GPU allocations, thermal pressure, or system memory demand exceeds the available budget. If it fails repeatedly, reduce dataset size, rank, and epochs, or use a smaller compatible base model.
 
-## Compatibility limits
+## Model selection and compatibility
 
-The supplied source PNGs used the screenChantvMerge_v20 ANIMA checkpoint and Turbo-ANIMA-v2.9 LoRA. Those files are not automatically compatible with the supported Draw Things inference pipeline. The local build intentionally does not pretend they have been loaded. It uses Animagine XL v3.1, a supported SDXL anime model, until a native ANIMA model-import or architecture path is implemented and validated.
+The Generate tab exposes two native catalog profiles:
 
-The WAI Illustrious checkpoint and its LoRA are also not assumed importable merely because they are SDXL-format files. They need conversion or registration through the embedded engine's supported import path before use.
+- **Animagine XL v3.1 (8-bit)** — the SDXL-based default. Use SDXL/Animagine character LoRAs, including compatible XL character LoRAs.
+- **Anima Aesthetic 1.1** — a distinct 2B ANIMA-family model from CircleStone Labs and Comfy Org. It uses the Cosmos 2.5 2B architecture, Qwen 3 0.6B text encoder, and Qwen Image VAE. The catalog model is not a conversion of the supplied screenChantvMerge_v20 checkpoint. The upstream model is licensed for non-commercial use.
+
+The original screenChantvMerge_v20 ANIMA checkpoint and Turbo-ANIMA-v2.9 LoRA are not assumed to be the same files as the catalog Anima model or a compatible adapter. LoRAs must match the selected model architecture. The built-in trainer is currently enabled only for the validated SDXL/Animagine path; ANIMA LoRA training is not enabled in this build.
+
+WAI Illustrious checkpoints and their LoRAs are also not assumed importable merely because they are SDXL-format files. They need to match the embedded engine's supported adapter path before use.
+
+## Low-memory LoRA behavior
+
+Generation uses adaptive canvas sizing, Draw Things low-memory capacity, partial CPU offload, and a disabled model-weights cache. LoRAs no longer require 4 GiB of free memory after the base model is loaded: a selected LoRA can be applied when at least 1.2 GiB remains, using the already-reduced canvas policy. If less than 1.2 GiB remains after model load, the app skips the LoRA for that run and explains why. A recovery retry after a previous interrupted generation still disables LoRA to reduce the chance of repeating a crash.
 
 ## Licensing
 
