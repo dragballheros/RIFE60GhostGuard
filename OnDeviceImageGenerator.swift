@@ -701,27 +701,26 @@ enum OnDeviceLoRATrainer {
             )
         }
 
-        // Match the inference path's constrained-device policy before invoking
-        // the CLI trainer. Keep weights file-backed and avoid a resident model cache.
-        // Restore the shared environment after training so later inference is not
-        // accidentally left on the trainer's no-cache policy.
-        DeviceCapability.memoryCapacity = .low
-        DeviceCapability.isPartialOffloadPreferred.store(true, ordering: .releasing)
-        let previousEnvironment = MediaGenerationEnvironment.default
-        var trainingEnvironment = previousEnvironment
-        trainingEnvironment.maxTotalWeightsCacheSize = 0
-        MediaGenerationEnvironment.default = trainingEnvironment
-
         let modelsDirectory = try OnDeviceImageGenerator.modelsDirectoryURL()
         let datasetDirectory = modelsDirectory
             .appendingPathComponent("LocalTrainingData", isDirectory: true)
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
-        try FileManager.default.createDirectory(at: datasetDirectory, withIntermediateDirectories: true)
+
+        // Match the inference path's constrained-device policy before invoking
+        // the CLI trainer. Keep weights file-backed and avoid a resident model cache.
+        // Restore the shared environment even if dataset setup or training throws.
+        let previousEnvironment = MediaGenerationEnvironment.default
+        DeviceCapability.memoryCapacity = .low
+        DeviceCapability.isPartialOffloadPreferred.store(true, ordering: .releasing)
+        var trainingEnvironment = previousEnvironment
+        trainingEnvironment.maxTotalWeightsCacheSize = 0
+        MediaGenerationEnvironment.default = trainingEnvironment
         defer {
             try? FileManager.default.removeItem(at: datasetDirectory)
             MediaGenerationEnvironment.default = previousEnvironment
             DeviceCapability.memoryCapacity = .medium
         }
+        try FileManager.default.createDirectory(at: datasetDirectory, withIntermediateDirectories: true)
 
         for (index, image) in images.enumerated() {
             try Task.checkCancellation()
@@ -820,8 +819,24 @@ enum OnDeviceLoRATrainer {
         }
 
         var logOffset: UInt64 = 0
+        var cancellationNoticeSent = false
         while !completion.isFinished {
-            try Task.checkCancellation()
+            if Task.isCancelled {
+                if !cancellationNoticeSent {
+                    cancellationNoticeSent = true
+                    notify(
+                        "Cancellation requested. Waiting for the native trainer to exit safely before cleaning up its dataset…",
+                        progress: progress,
+                        fraction: nil
+                    )
+                }
+                // DrawThingsCLI has no exposed cancellation handle. Do not unwind
+                // and delete its input files while native code is still using them.
+                await Task.detached(priority: .utility) {
+                    try? await Task.sleep(nanoseconds: 1_000_000_000)
+                }.value
+                continue
+            }
             try await Task.sleep(nanoseconds: 1_000_000_000)
             guard let handle = try? FileHandle(forReadingFrom: logURL) else { continue }
             defer { try? handle.close() }
@@ -850,6 +865,9 @@ enum OnDeviceLoRATrainer {
         }
 
         let exitCode = await task.value
+        if Task.isCancelled {
+            throw CancellationError()
+        }
         guard exitCode == 0 else {
             throw AIImageStudioError("Local LoRA training failed with exit code \(exitCode). Check available storage and memory; SDXL training may exceed this iPhone's limits.")
         }
