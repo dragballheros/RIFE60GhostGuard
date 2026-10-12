@@ -165,6 +165,7 @@ enum OnDeviceImageGenerator {
         cfg: Double,
         seed: Int64,
         samplerName: String,
+        shift: Double,
         enableLoRA: Bool,
         loraWeight: Double,
         hiresEnabled: Bool,
@@ -408,6 +409,7 @@ enum OnDeviceImageGenerator {
         pipeline!.configuration.tiledDiffusion = false
         pipeline!.configuration.guidanceScale = Float(max(0, min(20, cfg)))
         pipeline!.configuration.seed = UInt32(truncatingIfNeeded: max(0, seed))
+        pipeline!.configuration.shift = Float(max(0.1, min(12.0, shift)))
         switch samplerName {
         case "Euler a":
             pipeline!.configuration.sampler = DataModels.SamplerType.eulerA

@@ -377,6 +377,13 @@ worst quality, low quality, score_1, score_2, artist name, blurry, jpeg artifact
                     Text("UniPC").tag("UniPC")
                 }
                 .onChange(of: samplerName) { _ in saveGenerationDraft() }
+                if settings.localModelID == OnDeviceImageGenerator.animaModelID {
+                    HStack { Text("Shift"); Spacer(); Text(String(format: "%.1f", shift)).monospacedDigit() }
+                    Slider(value: $shift, in: 0.1...12, step: 0.1)
+                        .onChange(of: shift) { _ in saveGenerationDraft() }
+                    Text("Anima Base metadata uses Shift 3.0. The selected value is passed into the diffusion configuration.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
                 HStack { Text("Steps"); Spacer(); Text("\(Int(steps))").monospacedDigit() }
                 Slider(value: $steps, in: 4...40, step: 1)
                 HStack { Text("CFG scale"); Spacer(); Text(String(format: "%.1f", cfg)).monospacedDigit() }
@@ -616,7 +623,7 @@ worst quality, low quality, score_1, score_2, artist name, blurry, jpeg artifact
         height = useAnima ? 1216 : 1216
         steps = useAnima ? 30 : 28
         cfg = useAnima ? 4.0 : 5.5
-        shift = 0
+        shift = useAnima ? 3.0 : 1.0
         hiresEnabled = false
         hiresScale = 1.5
         hiresSteps = 12
@@ -697,7 +704,7 @@ worst quality, low quality, score_1, score_2, artist name, blurry, jpeg artifact
         height = useAnima ? 1216 : 1216
         steps = useAnima ? 30 : 28
         cfg = useAnima ? 4.0 : 5.5
-        shift = 0
+        shift = useAnima ? 3.0 : 1.0
         hiresEnabled = false
         hiresScale = 1.5
         hiresSteps = 12
@@ -960,6 +967,7 @@ worst quality, low quality, score_1, score_2, artist name, blurry, jpeg artifact
                 cfg: cfg,
                 seed: resolvedSeed,
                 samplerName: samplerName,
+                shift: shift,
                 enableLoRA: enableCharacterLora,
                 loraWeight: characterWeight,
                 hiresEnabled: hiresEnabled,
