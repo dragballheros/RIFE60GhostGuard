@@ -229,7 +229,7 @@ worst quality, bad quality, low quality, lowres, scan artifacts, jpeg artifacts,
                     Text("Animagine XL v3.1").tag(OnDeviceImageGenerator.defaultModelID)
                     Text("Anima Aesthetic 1.1").tag(OnDeviceImageGenerator.animaModelID)
                 }
-                .onChange(of: settings.localModelID) { _, selectedID in
+                .onChange(of: settings.localModelID) { selectedID in
                     applyModelProfile(selectedID)
                     try? settings.save()
                     saveGenerationDraft()
@@ -466,7 +466,11 @@ worst quality, bad quality, low quality, lowres, scan artifacts, jpeg artifacts,
                     Button {
                         Task { await trainLoRA() }
                     } label: { Label("Train LoRA on this iPhone", systemImage: "cpu") }
-                    .disabled(trainingItems.count < 3)
+                    .disabled(trainingItems.count < 3 || settings.localModelID != OnDeviceImageGenerator.defaultModelID)
+                    if settings.localModelID != OnDeviceImageGenerator.defaultModelID {
+                        Text("The current in-app trainer is validated for SDXL/Animagine LoRAs. Switch to Animagine XL v3.1 before training; ANIMA LoRA training is not enabled in this build.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
                     Text("Select at least three images. Training uses the same local model folder as generation and does not upload the dataset.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
