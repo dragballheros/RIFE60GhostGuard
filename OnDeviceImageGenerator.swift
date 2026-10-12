@@ -739,21 +739,28 @@ enum OnDeviceLoRATrainer {
         DiagnosticsLogger.shared.log(
             "Local LoRA training preflight • available=\(Int(preflight.availableMemoryMB)) MB • physical=\(Int(preflight.physicalMemoryMB)) MB • tier=\(preflight.tier.rawValue) • thermal=\(preflight.thermalAndMode)"
         )
-        guard preflight.availableMemoryMB >= 3_200 else {
+        // A 3.2 GB hard gate made the button appear broken on this 6 GB iPhone,
+        // where normal free memory is often around 2.1 GB. Use Draw Things' explicit
+        // memory-saver/JIT mode below in the 1.8–3.2 GB band; refuse only when even
+        // that mode is unlikely to leave enough room for native compiler allocations.
+        guard preflight.availableMemoryMB >= 1_800 else {
             throw AIImageStudioError(
-                "Training was stopped before loading the model because only \(Int(preflight.availableMemoryMB)) MB of memory is available. Close other GPU/video tasks, let iOS recover memory, then retry when at least 3.2 GB is available. This prevents the native model compiler from being entered under known unsafe memory pressure."
+                "Training could not start safely: only \(Int(preflight.availableMemoryMB)) MB is available. Close generation/video tasks, wait for iOS to recover memory, and retry when at least 1.8 GB is available."
             )
         }
+        let lowMemoryTraining = preflight.availableMemoryMB < 3_200
 
-        // Prioritize training throughput: the user has reported normal thermal
-        // state and no crash, so do not force the lowest memory tier, partial
-        // offloading, or a zero-byte model-weight cache for every training run.
-        // Restore shared process settings when the native trainer exits.
+        // Restore all shared process settings when the native trainer exits.
         let previousMemoryCapacity = DeviceCapability.memoryCapacity
         let previousPartialOffload = DeviceCapability.isPartialOffloadPreferred.load(ordering: .acquiring)
         let previousEnvironment = MediaGenerationEnvironment.default
-        DeviceCapability.memoryCapacity = .medium
-        DeviceCapability.isPartialOffloadPreferred.store(false, ordering: .releasing)
+        DeviceCapability.memoryCapacity = lowMemoryTraining ? .low : .medium
+        DeviceCapability.isPartialOffloadPreferred.store(lowMemoryTraining, ordering: .releasing)
+        var trainingEnvironment = previousEnvironment
+        if lowMemoryTraining {
+            trainingEnvironment.maxTotalWeightsCacheSize = 0
+        }
+        MediaGenerationEnvironment.default = trainingEnvironment
 
         let modelsDirectory = try OnDeviceImageGenerator.modelsDirectoryURL()
         let datasetDirectory = modelsDirectory
@@ -782,12 +789,15 @@ enum OnDeviceLoRATrainer {
                    fraction: Double(index + 1) / Double(images.count) * 0.1)
         }
 
-        // A short, bounded first run is materially safer on a 6 GiB iPhone.
-        // The UI's epoch/rank controls remain meaningful, but never let the CLI
-        // expand this single in-process training session beyond 300 optimizer steps.
-        let steps = max(100, min(300, images.count * max(1, epochs)))
+        // Bound optimizer work on this 6 GB phone. Under memory pressure,
+        // use a shorter first run and explicit native memory-saving flags rather
+        // than letting a normal configuration attempt a high-memory compile.
+        let requestedSteps = images.count * max(1, epochs)
+        let steps = lowMemoryTraining
+            ? max(60, min(120, requestedSteps))
+            : max(100, min(300, requestedSteps))
         let prefix = "rife_local_lora_\(UUID().uuidString.replacingOccurrences(of: "-", with: "").prefix(10))"
-        let arguments = [
+        var arguments = [
             "train", "lora",
             "--models-dir", modelsDirectory.path,
             "--model", settings.localModelID,
@@ -800,11 +810,16 @@ enum OnDeviceLoRATrainer {
             "--resolution", "512",
             "--save-every", "0",
             "--seed", "1647498191",
-            // Leave the trainer's default weight-memory strategy enabled. The
-            // just-in-time strategy repeatedly moves weights and is throughput-
-            // unfriendly for a long training run on a thermally nominal device.
             "--no-cotrain-text-model"
         ]
+        if lowMemoryTraining {
+            arguments += ["--memory-saver", "minimal", "--weights-memory", "justInTime"]
+            notify(
+                "Low-memory training mode • memory saver enabled • \(steps) optimizer steps. Training may be slower, but this avoids the normal high-memory path.",
+                progress: progress,
+                fraction: 0.1
+            )
+        }
 
         let logURL = modelsDirectory.appendingPathComponent("\(prefix).training.log")
         guard let stream = fopen(logURL.path, "w+") else {
