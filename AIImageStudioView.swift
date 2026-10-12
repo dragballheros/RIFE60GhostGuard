@@ -646,6 +646,12 @@ worst quality, low quality, score_1, score_2, artist name, blurry, jpeg artifact
         guard !didRestoreDraft else { return }
         didRestoreDraft = true
 
+        // Migrate users from the old Aesthetic model selection to the actual Base
+        // checkpoint required by the SysDeep Chizuru Anima v1 LoRA.
+        if settings.localModelID == "anima_aesthetic_1.1_q8p.ckpt" {
+            settings.localModelID = OnDeviceImageGenerator.animaModelID
+            try? settings.save()
+        }
         // Preserve user-imported character LoRAs, including Chizuru models.
         // Remove obsolete markup, never the character's plain trigger text.
         if settings.localModelID != OnDeviceImageGenerator.defaultModelID
@@ -700,6 +706,9 @@ worst quality, low quality, score_1, score_2, artist name, blurry, jpeg artifact
         negativePrompt = draft.negativePrompt
         // Keep conservative defaults for each native model family.
         let useAnima = settings.localModelID == OnDeviceImageGenerator.animaModelID
+        if useAnima && !positivePrompt.localizedCaseInsensitiveContains("sysdeep_chizuru") {
+            positivePrompt = "masterpiece, best quality, score_7, safe, sysdeep_chizuru, " + positivePrompt
+        }
         width = useAnima ? 832 : 832
         height = useAnima ? 1216 : 1216
         steps = useAnima ? 30 : 28
