@@ -473,10 +473,53 @@ worst quality, low quality, score_1, score_2, artist name, blurry, jpeg artifact
                 }
                 Text("\(trainingItems.count) images selected")
                     .font(.caption).foregroundStyle(.secondary)
-                TextField("Trigger word", text: $triggerWord)
-                    .textInputAutocapitalization(.never).autocorrectionDisabled()
-                StablePromptTextView(text: $trainingCaption, accessibilityLabel: "Shared caption or style description")
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Trigger word")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                    Text(triggerWord.isEmpty ? "No trigger word pasted yet." : triggerWord)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .textSelection(.disabled)
+                    HStack {
+                        Button {
+                            UIPasteboard.general.string = triggerWord
+                            showAlert("Trigger word copied.")
+                        } label: { Label("Copy trigger", systemImage: "doc.on.doc") }
+                        Button {
+                            guard let clipboard = UIPasteboard.general.string, !clipboard.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                                showAlert("The clipboard is empty. Copy a trigger word first, then tap Paste trigger.")
+                                return
+                            }
+                            triggerWord = clipboard.trimmingCharacters(in: .whitespacesAndNewlines)
+                            showAlert("Trigger word pasted.")
+                        } label: { Label("Paste trigger", systemImage: "doc.on.clipboard") }
+                    }
+                }
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Shared caption / tags")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                    ScrollView {
+                        Text(trainingCaption.isEmpty ? "No caption pasted yet." : trainingCaption)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .textSelection(.disabled)
+                    }
                     .frame(minHeight: 72, maxHeight: 160)
+                    HStack {
+                        Button {
+                            UIPasteboard.general.string = trainingCaption
+                            showAlert("Training caption copied.")
+                        } label: { Label("Copy caption", systemImage: "doc.on.doc") }
+                        Button {
+                            guard let clipboard = UIPasteboard.general.string, !clipboard.isEmpty else {
+                                showAlert("The clipboard is empty. Copy caption text first, then tap Paste caption.")
+                                return
+                            }
+                            trainingCaption = clipboard
+                            showAlert("Training caption pasted. The field is read-only; use Paste caption to replace its full contents.")
+                        } label: { Label("Paste caption", systemImage: "doc.on.clipboard") }
+                    }
+                }
                 Text("For a character LoRA, use clear varied images of the same subject, consistent captions, and a unique trigger word. Only upload images you have permission to use.")
                     .font(.caption).foregroundStyle(.secondary)
             }
@@ -496,11 +539,28 @@ worst quality, low quality, score_1, score_2, artist name, blurry, jpeg artifact
                     Text(trainingStatus).font(.caption)
                 } else {
                     Button {
+                        guard trainingItems.count >= 3 else {
+                            showAlert("Select at least three training images before starting.")
+                            return
+                        }
+                        if settings.localModelID != OnDeviceImageGenerator.defaultModelID {
+                            // The embedded trainer currently supports SDXL/Animagine only.
+                            // Keep the selected PhotosPicker items and switch the training
+                            // base before starting, rather than silently disabling the button.
+                            applyModelProfile(OnDeviceImageGenerator.defaultModelID)
+                            do {
+                                try settings.save()
+                            } catch {
+                                errorText = "Could not switch to the supported Animagine XL training base: " + error.localizedDescription
+                                return
+                            }
+                            trainingStatus = "Switched to Animagine XL v3.1 for SDXL LoRA training. Your selected images are preserved."
+                        }
                         Task { await trainLoRA() }
                     } label: { Label("Train LoRA on this iPhone", systemImage: "cpu") }
-                    .disabled(trainingItems.count < 3 || settings.localModelID != OnDeviceImageGenerator.defaultModelID)
+                    .disabled(trainingItems.count < 3 || isTraining)
                     if settings.localModelID != OnDeviceImageGenerator.defaultModelID {
-                        Text("The current in-app trainer is validated for SDXL/Animagine LoRAs. Switch to Animagine XL v3.1 before training; ANIMA LoRA training is not enabled in this build.")
+                        Text("Tapping Train will switch to Animagine XL v3.1, the SDXL base supported by this trainer. Your selected images will be preserved. ANIMA-native LoRA training is not supported in this build.")
                             .font(.caption).foregroundStyle(.secondary)
                     }
                     Text("Select at least three images. Training uses the same local model folder as generation and does not upload the dataset.")
