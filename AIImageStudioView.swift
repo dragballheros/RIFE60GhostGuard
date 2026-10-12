@@ -538,11 +538,6 @@ worst quality, low quality, score_1, score_2, artist name, blurry, jpeg artifact
                     ProgressView(value: trainerProgress)
                     Text(trainingStatus.isEmpty ? "Starting on-device training…" : trainingStatus)
                         .font(.caption)
-                    Button("Cancel training") {
-                        trainingStatus = "Cancellation requested. The active training operation may finish its current step before stopping."
-                    }
-                    .disabled(true)
-                    .font(.caption)
                 } else {
                     Button {
                         guard trainingItems.count >= 3 else {
@@ -581,7 +576,7 @@ worst quality, low quality, score_1, score_2, artist name, blurry, jpeg artifact
                 if !trainingStatus.isEmpty && !isTraining {
                     Text(trainingStatus)
                         .font(.caption)
-                        .foregroundStyle(trainingStatus.localizedCaseInsensitiveContains("failed") ? .red : .secondary)
+                        .foregroundStyle(trainingStatus.localizedCaseInsensitiveContains("failed") ? Color.red : Color.secondary)
                 }
                 if let url = trainedLoRAURL {
                     ShareLink(item: url) { Label("Export trained local LoRA checkpoint", systemImage: "square.and.arrow.down") }
