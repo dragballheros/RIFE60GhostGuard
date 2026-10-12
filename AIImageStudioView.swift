@@ -224,20 +224,28 @@ worst quality, bad quality, low quality, lowres, scan artifacts, jpeg artifacts,
 
     private var generationSections: some View {
         Group {
-            Section("Generation Preset") {
-                Picker("Model", selection: $settings.localModelID) {
-                    Text("Animagine XL v3.1").tag(OnDeviceImageGenerator.defaultModelID)
-                    Text("Anima Aesthetic 1.1").tag(OnDeviceImageGenerator.animaModelID)
-                }
-                .onChange(of: settings.localModelID) { selectedID in
-                    applyModelProfile(selectedID)
-                    try? settings.save()
-                    saveGenerationDraft()
-                }
+            Section("Available Models") {
+                Text("Choose one installed or supported catalog model. Changing this selection only updates the active model ID; model weights are loaded later when you tap Generate. If loading fails, your current selection remains unchanged.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                modelSelectionRow(
+                    title: "Animagine XL v3.1",
+                    subtitle: "SDXL anime model",
+                    modelID: OnDeviceImageGenerator.defaultModelID
+                )
+                modelSelectionRow(
+                    title: "Anima Aesthetic 1.1",
+                    subtitle: "Separate 2B anime and illustration model",
+                    modelID: OnDeviceImageGenerator.animaModelID
+                )
+
+                LabeledContent("Active model ID", value: settings.localModelID)
                 Text(settings.localModelID == OnDeviceImageGenerator.animaModelID
-                     ? "Anima Aesthetic 1.1 is a separate 2B anime/illustration model. First use downloads its model files; start around 896 × 1152, 32 steps, CFG 4.5. It is licensed for non-commercial use."
-                     : "Animagine XL v3.1 is the SDXL-based anime model. First use downloads the model files. The app adapts render size to available memory.")
-                    .font(.caption).foregroundStyle(.secondary)
+                     ? "Anima Aesthetic 1.1 uses its own architecture. Use a matching ANIMA LoRA."
+                     : "Animagine XL v3.1 uses SDXL architecture. Use SDXL-compatible LoRAs, including compatible character LoRAs.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
             if !settings.localLoraFile.isEmpty && !selectedLoRATrigger.isEmpty {
                 Section("Selected LoRA Trigger") {
@@ -510,6 +518,68 @@ worst quality, bad quality, low quality, lowres, scan artifacts, jpeg artifacts,
                 }
                 Button("Save Local Settings", action: saveSettings)
             }
+        }
+    }
+
+    @ViewBuilder
+    private func modelSelectionRow(title: String, subtitle: String, modelID: String) -> some View {
+        let isSelected = settings.localModelID == modelID
+        Button {
+            selectModelSafely(modelID)
+        } label: {
+            HStack(spacing: 12) {
+                Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                    .font(.title3)
+                    .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(title)
+                        .foregroundStyle(.primary)
+                    Text(subtitle)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 8)
+                if isSelected {
+                    Text("Selected")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(Color.accentColor)
+                }
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
+    }
+
+    private func selectModelSafely(_ modelID: String) {
+        guard !isGenerating, !isTraining else {
+            errorText = "Wait for the current AI task to finish before changing models."
+            return
+        }
+        guard modelID == OnDeviceImageGenerator.defaultModelID
+                || modelID == OnDeviceImageGenerator.animaModelID else {
+            errorText = "That model is not in the supported local model catalog."
+            return
+        }
+        guard settings.localModelID != modelID else { return }
+
+        // Save the old selection first. The selection action must never load model
+        // weights, construct a pipeline, or touch Metal. Commit the new catalog ID
+        // only after its settings snapshot has been persisted.
+        let previousSettings = settings
+        settings.localModelID = modelID
+        do {
+            try settings.save()
+            applyModelProfile(modelID)
+            saveGenerationDraft()
+            errorText = ""
+            generationStatus = "Selected \(modelProfile). Model weights will load only when Generate is tapped."
+        } catch {
+            settings = previousSettings
+            try? previousSettings.save()
+            errorText = "Could not save the model selection. The previous model remains selected. " + error.localizedDescription
         }
     }
 
