@@ -687,40 +687,43 @@ enum OnDeviceLoRATrainer {
             throw AIImageStudioError("Enter a trigger word before training.")
         }
 
-        // Native Metal/Core ML compiler failures can terminate the process, so
-        // use adaptive training profiles instead of a blanket 3.2 GB free-memory
-        // cutoff. The smallest profile is intentionally conservative for this
-        // 5.6 GiB iPhone; below 1.8 GB, defer before native compilation.
+        // LoRA training invokes the native Draw Things model compiler. Native
+        // Metal/Core ML compilation traps cannot be caught by Swift do/catch, so
+        // refuse to enter that code path unless the phone has a meaningful memory
+        // reserve. Build 187's crash trace showed only ~3.0 GiB available before
+        // loading the model, which is not enough headroom for the trainer's compile
+        // and optimizer allocations alongside the app's video/Metal subsystems.
         let preflight = currentRenderPerformanceSnapshot()
         DiagnosticsLogger.shared.log(
             "Local LoRA training preflight • available=\(Int(preflight.availableMemoryMB)) MB • physical=\(Int(preflight.physicalMemoryMB)) MB • tier=\(preflight.tier.rawValue) • thermal=\(preflight.thermalAndMode)"
         )
-        guard preflight.availableMemoryMB >= 1_800 else {
+        guard preflight.availableMemoryMB >= 3_200 else {
             throw AIImageStudioError(
-                "Training is paused because only \(Int(preflight.availableMemoryMB)) MB of memory is available. Close other GPU/video tasks and retry when at least 1.8 GB is free. The trainer will automatically use a smaller resolution and rank when memory is limited."
+                "Training was stopped before loading the model because only \(Int(preflight.availableMemoryMB)) MB of memory is available. Close other GPU/video tasks, let iOS recover memory, then retry when at least 3.2 GB is available. This prevents the native model compiler from being entered under known unsafe memory pressure."
             )
         }
+
+        // Prioritize training throughput: the user has reported normal thermal
+        // state and no crash, so do not force the lowest memory tier, partial
+        // offloading, or a zero-byte model-weight cache for every training run.
+        // Restore shared process settings when the native trainer exits.
+        let previousMemoryCapacity = DeviceCapability.memoryCapacity
+        let previousPartialOffload = DeviceCapability.isPartialOffloadPreferred.load(ordering: .acquiring)
+        let previousEnvironment = MediaGenerationEnvironment.default
+        DeviceCapability.memoryCapacity = .medium
+        DeviceCapability.isPartialOffloadPreferred.store(false, ordering: .releasing)
 
         let modelsDirectory = try OnDeviceImageGenerator.modelsDirectoryURL()
         let datasetDirectory = modelsDirectory
             .appendingPathComponent("LocalTrainingData", isDirectory: true)
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
-
-        // Match the inference path's constrained-device policy before invoking
-        // the CLI trainer. Keep weights file-backed and avoid a resident model cache.
-        // Restore the shared environment even if dataset setup or training throws.
-        let previousEnvironment = MediaGenerationEnvironment.default
-        DeviceCapability.memoryCapacity = .low
-        DeviceCapability.isPartialOffloadPreferred.store(true, ordering: .releasing)
-        var trainingEnvironment = previousEnvironment
-        trainingEnvironment.maxTotalWeightsCacheSize = 0
-        MediaGenerationEnvironment.default = trainingEnvironment
+        try FileManager.default.createDirectory(at: datasetDirectory, withIntermediateDirectories: true)
         defer {
             try? FileManager.default.removeItem(at: datasetDirectory)
             MediaGenerationEnvironment.default = previousEnvironment
-            DeviceCapability.memoryCapacity = .medium
+            DeviceCapability.memoryCapacity = previousMemoryCapacity
+            DeviceCapability.isPartialOffloadPreferred.store(previousPartialOffload, ordering: .releasing)
         }
-        try FileManager.default.createDirectory(at: datasetDirectory, withIntermediateDirectories: true)
 
         for (index, image) in images.enumerated() {
             try Task.checkCancellation()
@@ -737,39 +740,10 @@ enum OnDeviceLoRATrainer {
                    fraction: Double(index + 1) / Double(images.count) * 0.1)
         }
 
-        // Recheck after dataset staging because image copying may have consumed
-        // headroom since the initial preflight. Adapt resolution, rank, and total
-        // steps to the memory available immediately before native compilation.
-        let trainingMemory = currentRenderPerformanceSnapshot()
-        DiagnosticsLogger.shared.log(
-            "Local LoRA training profile check • available=\(Int(trainingMemory.availableMemoryMB)) MB • physical=\(Int(trainingMemory.physicalMemoryMB)) MB • thermal=\(trainingMemory.thermalAndMode)"
-        )
-        guard trainingMemory.availableMemoryMB >= 1_800 else {
-            throw AIImageStudioError(
-                "Training was paused before native model compilation because available memory fell to \(Int(trainingMemory.availableMemoryMB)) MB while preparing the dataset. Close other GPU/video tasks and retry."
-            )
-        }
-        let trainingResolution: Int
-        let rankLimit: Int
-        let stepLimit: Int
-        if trainingMemory.availableMemoryMB >= 3_200 {
-            trainingResolution = 512
-            rankLimit = 16
-            stepLimit = 300
-        } else if trainingMemory.availableMemoryMB >= 2_400 {
-            trainingResolution = 384
-            rankLimit = 8
-            stepLimit = 150
-        } else {
-            trainingResolution = 256
-            rankLimit = 4
-            stepLimit = 100
-        }
-        let effectiveRank = max(4, min(rankLimit, rank))
-        let steps = max(100, min(stepLimit, images.count * max(1, epochs)))
-        DiagnosticsLogger.shared.log(
-            "Local LoRA adaptive profile selected • resolution=\(trainingResolution) • rank=\(effectiveRank) • steps=\(steps) • available=\(Int(trainingMemory.availableMemoryMB)) MB"
-        )
+        // A short, bounded first run is materially safer on a 6 GiB iPhone.
+        // The UI's epoch/rank controls remain meaningful, but never let the CLI
+        // expand this single in-process training session beyond 300 optimizer steps.
+        let steps = max(100, min(300, images.count * max(1, epochs)))
         let prefix = "rife_local_lora_\(UUID().uuidString.replacingOccurrences(of: "-", with: "").prefix(10))"
         let arguments = [
             "train", "lora",
@@ -779,13 +753,14 @@ enum OnDeviceLoRATrainer {
             "--output", prefix,
             "--name", triggerWord,
             "--steps", String(steps),
-            "--rank", String(effectiveRank),
+            "--rank", String(max(4, min(64, rank))),
             "--learning-rate", String(format: "%.7g", max(0.000001, min(0.001, learningRate))),
-            "--resolution", String(trainingResolution),
+            "--resolution", "512",
             "--save-every", "0",
             "--seed", "1647498191",
-            "--memory-saver", "minimal",
-            "--weights-memory", "justInTime",
+            // Leave the trainer's default weight-memory strategy enabled. The
+            // just-in-time strategy repeatedly moves weights and is throughput-
+            // unfriendly for a long training run on a thermally nominal device.
             "--no-cotrain-text-model"
         ]
 
@@ -819,31 +794,9 @@ enum OnDeviceLoRATrainer {
         }
 
         var logOffset: UInt64 = 0
-        var cancellationNoticeSent = false
         while !completion.isFinished {
-            if Task.isCancelled {
-                if !cancellationNoticeSent {
-                    cancellationNoticeSent = true
-                    notify(
-                        "Cancellation requested. Waiting for the native trainer to exit safely before cleaning up its dataset…",
-                        progress: progress,
-                        fraction: nil
-                    )
-                }
-                // DrawThingsCLI has no exposed cancellation handle. Do not unwind
-                // and delete its input files while native code is still using them.
-                await Task.detached(priority: .utility) {
-                    try? await Task.sleep(nanoseconds: 1_000_000_000)
-                }.value
-                continue
-            }
-            do {
-                try await Task.sleep(nanoseconds: 1_000_000_000)
-            } catch {
-                // Re-enter the loop so cancellation waits for the native trainer
-                // instead of unwinding and deleting files still in use.
-                continue
-            }
+            try Task.checkCancellation()
+            try await Task.sleep(nanoseconds: 1_000_000_000)
             guard let handle = try? FileHandle(forReadingFrom: logURL) else { continue }
             defer { try? handle.close() }
             do {
@@ -871,9 +824,6 @@ enum OnDeviceLoRATrainer {
         }
 
         let exitCode = await task.value
-        if Task.isCancelled {
-            throw CancellationError()
-        }
         guard exitCode == 0 else {
             throw AIImageStudioError("Local LoRA training failed with exit code \(exitCode). Check available storage and memory; SDXL training may exceed this iPhone's limits.")
         }
