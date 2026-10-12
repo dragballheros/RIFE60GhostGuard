@@ -837,7 +837,13 @@ enum OnDeviceLoRATrainer {
                 }.value
                 continue
             }
-            try await Task.sleep(nanoseconds: 1_000_000_000)
+            do {
+                try await Task.sleep(nanoseconds: 1_000_000_000)
+            } catch {
+                // Re-enter the loop so cancellation waits for the native trainer
+                // instead of unwinding and deleting files still in use.
+                continue
+            }
             guard let handle = try? FileHandle(forReadingFrom: logURL) else { continue }
             defer { try? handle.close() }
             do {
