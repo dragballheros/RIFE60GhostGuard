@@ -163,7 +163,7 @@ enum OnDeviceImageGenerator {
         let directory = try modelsDirectoryURL()
         let sourceURL = directory.appendingPathComponent(fileName)
         guard FileManager.default.fileExists(atPath: sourceURL.path) else {
-            throw AIImageStudioError("The selected LoRA file is missing from the local Models folder: \\(fileName)")
+            throw AIImageStudioError("The selected LoRA file is missing from the local Models folder: \(fileName)")
         }
 
         let ext = sourceURL.pathExtension.lowercased()
@@ -184,7 +184,7 @@ enum OnDeviceImageGenerator {
             try importer.import(to: outputURL)
         } catch {
             throw AIImageStudioError(
-                "Could not convert the selected LoRA into Draw Things format. Confirm it is a valid LoRA for the selected model. Details: \\(error.localizedDescription)"
+                "Could not convert the selected LoRA into Draw Things format. Confirm it is a valid LoRA for the selected model. Details: \(error.localizedDescription)"
             )
         }
         guard let attributes = try? FileManager.default.attributesOfItem(atPath: outputURL.path),
@@ -192,7 +192,7 @@ enum OnDeviceImageGenerator {
             throw AIImageStudioError("LoRA conversion finished without creating a valid native checkpoint.")
         }
         DiagnosticsLogger.shared.log(
-            "LoRA import converted to Draw Things format • source=\\(sourceURL.lastPathComponent) • native=\\(outputName) • detectedModelVersion=\\(String(describing: importer.version))"
+            "LoRA import converted to Draw Things format • source=\(sourceURL.lastPathComponent) • native=\(outputName) • detectedModelVersion=\(String(describing: importer.version))"
         )
         return outputName
     }
@@ -321,7 +321,7 @@ enum OnDeviceImageGenerator {
             DeviceCapability.isPartialOffloadPreferred.store(previousPartialOffload, ordering: .releasing)
         }
         DiagnosticsLogger.shared.log(
-            "AI Image Studio adaptive inference policy • conservative=\\(useConservativeInference) • partialCPUOffload=\\(useConservativeInference) • capacity=\\(useConservativeInference ? "low" : "medium") • weightsCache=\\(useConservativeInference ? "disabled" : "default") • LoRA=\\(enableLoRA && hasSelectedLoRA) • initialHeadroom=\\(Int(memory.availableMemoryMB)) MB"
+            "AI Image Studio adaptive inference policy • conservative=\(useConservativeInference) • partialCPUOffload=\(useConservativeInference) • capacity=\(useConservativeInference ? "low" : "medium") • weightsCache=\(useConservativeInference ? "disabled" : "default") • LoRA=\(enableLoRA && hasSelectedLoRA) • initialHeadroom=\(Int(memory.availableMemoryMB)) MB"
         )
         AIImageGenerationMemoryJournal.shared.record(useConservativeInference ? "inference-policy-conservative" : "inference-policy-performance")
 
