@@ -794,7 +794,7 @@ enum OnDeviceLoRATrainer {
         // than letting a normal configuration attempt a high-memory compile.
         let requestedSteps = images.count * max(1, epochs)
         let steps = lowMemoryTraining
-            ? max(60, min(120, requestedSteps))
+            ? max(100, min(120, requestedSteps))
             : max(100, min(300, requestedSteps))
         let prefix = "rife_local_lora_\(UUID().uuidString.replacingOccurrences(of: "-", with: "").prefix(10))"
         var arguments = [
