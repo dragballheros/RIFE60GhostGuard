@@ -405,6 +405,25 @@ final class RIFEVideoProcessor {
                     }
                 }
 
+                // Final hand-off gate: validate the exact frame that will be encoded,
+                // after all retry/fallback decisions. This catches a transition artifact
+                // that survives the first-pass decision and prevents it entering the
+                // RIFE checkpoint consumed by CUGAN / the next stage.
+                if config.ghostProtection {
+                    let finalCheckStarted = CFAbsoluteTimeGetCurrent()
+                    let finalCheck = autoreleasepool {
+                        guarder.inspect(previous: prevPB, generated: chosen, current: currentPB)
+                    }
+                    ghostSeconds += CFAbsoluteTimeGetCurrent() - finalCheckStarted
+                    if finalCheck.reject {
+                        chosen = t < 0.5 ? prevPB : currentPB
+                        rejected += 1
+                        DiagnosticsLogger.shared.log(
+                            "Ghost Guard final pre-encode check rejected frame • reason=\(finalCheck.reason) • fallback=\(t < 0.5 ? "previous" : "current") source frame • t=\(String(format: "%.3f", t))"
+                        )
+                    }
+                }
+
                 let encodeStarted = CFAbsoluteTimeGetCurrent()
                 try await checkpoint.append10Bit(chosen, at: requestedTimes[index])
                 encodeSeconds += CFAbsoluteTimeGetCurrent() - encodeStarted
