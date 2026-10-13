@@ -1,4 +1,6 @@
 import Foundation
+import ImageIO
+import CoreGraphics
 import UniformTypeIdentifiers
 import Darwin
 import _MediaGenerationKit
@@ -155,6 +157,116 @@ enum OnDeviceImageGenerator {
         max(64, Int((Double(max(64, value)) / 64.0).rounded()) * 64)
     }
 
+    /// Convert imported third-party adapters into Draw Things' native LoRA format.
+    /// Raw A1111/ComfyUI safetensors must not be passed directly as DataModels.LoRA:
+    /// the engine expects a mapped *_lora_f16.ckpt file. The pinned importer can
+    /// identify Cosmos ANIMA 2.5 2B LoRAs and map their tensor names correctly.
+    static func prepareLoRAForGeneration(_ fileName: String) throws -> String {
+        let directory = try modelsDirectoryURL()
+        let sourceURL = directory.appendingPathComponent(fileName)
+        guard FileManager.default.fileExists(atPath: sourceURL.path) else {
+            throw AIImageStudioError("The selected LoRA file is missing from the local Models folder: \(fileName)")
+        }
+
+        let ext = sourceURL.pathExtension.lowercased()
+        let stem = sourceURL.deletingPathExtension().lastPathComponent
+        let isNativeDrawThingsCheckpoint = ext == "ckpt"
+            && (stem.hasSuffix("_lora_f16") || stem.hasSuffix("_lora_f32"))
+        if isNativeDrawThingsCheckpoint { return sourceURL.lastPathComponent }
+
+        let outputName = stem + "_lora_f16.ckpt"
+        let outputURL = directory.appendingPathComponent(outputName)
+        if let attributes = try? FileManager.default.attributesOfItem(atPath: outputURL.path),
+           let size = attributes[.size] as? NSNumber, size.int64Value > 0 {
+            return outputName
+        }
+
+        var importer = LoRAImporter(file: sourceURL)
+        do {
+            try importer.import(to: outputURL)
+        } catch {
+            throw AIImageStudioError(
+                "Could not convert the selected LoRA into Draw Things format. Confirm it is a valid LoRA for the selected model. Details: \(error.localizedDescription)"
+            )
+        }
+        guard let attributes = try? FileManager.default.attributesOfItem(atPath: outputURL.path),
+              let size = attributes[.size] as? NSNumber, size.int64Value > 0 else {
+            throw AIImageStudioError("LoRA conversion finished without creating a valid native checkpoint.")
+        }
+        DiagnosticsLogger.shared.log(
+            "LoRA import converted to Draw Things format • source=\(sourceURL.lastPathComponent) • native=\(outputName) • detectedModelVersion=\(String(describing: importer.version))"
+        )
+        return outputName
+    }
+
+    /// Inspect the actual PNG bytes after encoding. This distinguishes a valid, varied
+    /// decoded image from a near-uniform gray output without relying on the preview UI.
+    /// The check is diagnostic only: unusual artwork is never rejected automatically.
+    private static func logPNGOutputStatistics(at url: URL) {
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+              let image = CGImageSourceCreateImageAtIndex(source, 0, nil),
+              image.width > 0, image.height > 0 else {
+            DiagnosticsLogger.shared.log("AI Image Studio output validation • PNG could not be decoded after write • path=\(url.lastPathComponent)")
+            AIImageGenerationMemoryJournal.shared.record("output-png-validation-decode-failed")
+            return
+        }
+        let width = min(image.width, 96)
+        let height = min(image.height, 96)
+        var pixels = [UInt8](repeating: 0, count: width * height * 4)
+        let rendered = pixels.withUnsafeMutableBytes { rawBuffer -> Bool in
+            guard let base = rawBuffer.baseAddress,
+                  let context = CGContext(
+                    data: base,
+                    width: width,
+                    height: height,
+                    bitsPerComponent: 8,
+                    bytesPerRow: width * 4,
+                    space: CGColorSpaceCreateDeviceRGB(),
+                    bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+                  ) else { return false }
+            context.interpolationQuality = .low
+            context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+            return true
+        }
+        guard rendered else {
+            DiagnosticsLogger.shared.log("AI Image Studio output validation • could not render PNG for pixel statistics")
+            AIImageGenerationMemoryJournal.shared.record("output-png-validation-render-failed")
+            return
+        }
+        var minLuma = 255.0
+        var maxLuma = 0.0
+        var sum = 0.0
+        var sumSquares = 0.0
+        var redSum = 0.0
+        var greenSum = 0.0
+        var blueSum = 0.0
+        let count = width * height
+        for index in 0..<count {
+            let offset = index * 4
+            let red = Double(pixels[offset])
+            let green = Double(pixels[offset + 1])
+            let blue = Double(pixels[offset + 2])
+            let luma = 0.2126 * red + 0.7152 * green + 0.0722 * blue
+            minLuma = min(minLuma, luma)
+            maxLuma = max(maxLuma, luma)
+            sum += luma
+            sumSquares += luma * luma
+            redSum += red
+            greenSum += green
+            blueSum += blue
+        }
+        let mean = sum / Double(count)
+        let variance = max(0, sumSquares / Double(count) - mean * mean)
+        let standardDeviation = sqrt(variance)
+        let range = maxLuma - minLuma
+        let nearUniform = range < 8.0 && standardDeviation < 2.0
+        let meanRGB = "\(Int(redSum / Double(count))),\(Int(greenSum / Double(count))),\(Int(blueSum / Double(count)))"
+        DiagnosticsLogger.shared.log(
+            "AI Image Studio output pixel audit • size=\(image.width)x\(image.height) • meanLuma=\(String(format: "%.2f", mean)) • lumaStdDev=\(String(format: "%.2f", standardDeviation)) • lumaRange=\(String(format: "%.2f", range)) • meanRGB=\(meanRGB) • nearUniform=\(nearUniform)"
+        )
+        AIImageGenerationMemoryJournal.shared.record(nearUniform ? "output-png-near-uniform-warning" : "output-png-pixel-audit-passed")
+    }
+
     static func generate(
         settings: AIImageStudioSettings,
         positivePrompt: String,
@@ -242,25 +354,38 @@ enum OnDeviceImageGenerator {
 
         AIImageGenerationMemoryJournal.shared.record("pre-model-policy")
         let modelsDirectory = try modelsDirectoryURL()
-        // Draw Things exposes a supported partial-offload policy in DataModels.
-        // Force its conservative capacity tier and CPU partial-offload path before
-        // constructing the pipeline. This trades speed for a smaller resident GPU
-        // working set on memory-constrained iPhones.
-        // Use Draw Things' lowest-memory execution tier for this SDXL workload.
-        // The medium tier can still retain more model state than this device can
-        // safely accommodate after pipeline construction. Restore the app's
-        // established medium tier when this generation call exits.
+        let hasSelectedLoRA = !settings.localLoraFile.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        var preparedLoRAFile: String?
+        if !benchmarkMode && !recoveringAfterInterruption && enableLoRA && hasSelectedLoRA
+            && memory.availableMemoryMB >= 1_200 {
+            // Convert/import before loading the large diffusion pipeline so the
+            // conversion does not compete with model weights and Metal allocations.
+            preparedLoRAFile = try Self.prepareLoRAForGeneration(settings.localLoraFile)
+        }
+        // Use the previously stable constrained-device inference policy for every
+        // generation and benchmark. The adaptive medium-tier path can retain more
+        // model/Metal state and makes the benchmark itself crash on this 6 GiB iPhone.
+        // Keep the same conservative engine settings regardless of whether LoRA is
+        // selected; only attach the adapter below when the request is eligible.
+        let previousMemoryCapacity = DeviceCapability.memoryCapacity
+        let previousPartialOffload = DeviceCapability.isPartialOffloadPreferred.load(ordering: .acquiring)
+        let previousEnvironment = MediaGenerationEnvironment.default
         DeviceCapability.memoryCapacity = .low
-        defer { DeviceCapability.memoryCapacity = .medium }
         DeviceCapability.isPartialOffloadPreferred.store(true, ordering: .releasing)
-        DiagnosticsLogger.shared.log("AI Image Studio memory policy • partial CPU offload enabled • capacity=low • weights cache disabled")
 
-        var environment = MediaGenerationEnvironment.default
+        var environment = previousEnvironment
         environment.externalUrls = [modelsDirectory]
-        // This device is below Draw Things' 47 GiB weights-cache threshold.
-        // Keep the cache explicitly disabled on constrained devices.
         environment.maxTotalWeightsCacheSize = 0
         MediaGenerationEnvironment.default = environment
+        defer {
+            MediaGenerationEnvironment.default = previousEnvironment
+            DeviceCapability.memoryCapacity = previousMemoryCapacity
+            DeviceCapability.isPartialOffloadPreferred.store(previousPartialOffload, ordering: .releasing)
+        }
+        DiagnosticsLogger.shared.log(
+            "AI Image Studio stable low-memory inference policy • partialCPUOffload=true • capacity=low • weightsCache=disabled • LoRA=\(enableLoRA && hasSelectedLoRA) • initialHeadroom=\(Int(memory.availableMemoryMB)) MB"
+        )
+        AIImageGenerationMemoryJournal.shared.record("inference-policy-stable-low-memory")
 
         notify(
             recoveringAfterInterruption
@@ -347,9 +472,10 @@ enum OnDeviceImageGenerator {
         if memory.availableMemoryMB < 1_024 {
             DiagnosticsLogger.shared.log("AI Image Studio continuing below former inference reserve • available=\(Int(memory.availableMemoryMB)) MB • using minimum tiles and reduced dimensions")
         }
-        // If model loading leaves less than 3 GiB, reduce latent dimensions while
-        // preserving the requested aspect ratio. Upscaling can happen afterward via
-        // the existing Real-CUGAN stage, which runs after this pipeline is released.
+        // Preserve the requested canvas whenever at least 1.8 GiB remains after model
+        // load. The former <4 GiB branch silently clamped normal 832x1216 requests to
+        // 512px on the long edge even when the device was stable, producing visibly
+        // pixelated results. Retain the conservative fallback only under 1.8 GiB.
         if memory.availableMemoryMB < 1_200 {
             let scale = min(1.0, 384.0 / Double(max(requestedWidth, requestedHeight)))
             outputWidth = multipleOf64(Int(Double(requestedWidth) * scale))
@@ -358,14 +484,29 @@ enum OnDeviceImageGenerator {
             let scale = min(1.0, 512.0 / Double(max(requestedWidth, requestedHeight)))
             outputWidth = multipleOf64(Int(Double(requestedWidth) * scale))
             outputHeight = multipleOf64(Int(Double(requestedHeight) * scale))
-        } else if memory.availableMemoryMB < 4_096 {
-            // Diffusion tiling is disabled because the bundled engine's tiny-tile
-            // UNet compilation path can trap. Compensate with a conservative canvas
-            // cap while preserving the requested aspect ratio; upscale afterward.
-            let safeLongEdge = memory.availableMemoryMB < 2_200 ? 512.0 : 768.0
-            let scale = min(1.0, safeLongEdge / Double(max(requestedWidth, requestedHeight)))
-            outputWidth = multipleOf64(Int(Double(requestedWidth) * scale))
-            outputHeight = multipleOf64(Int(Double(requestedHeight) * scale))
+        }
+        // VAE decoding allocates a full-resolution activation/output working set after
+        // the denoising loop. On this 6 GiB iPhone, the observed run entered input
+        // encoding with ~2.7 GiB free, then fell to ~1.8 GiB during early steps and
+        // below 768 MB immediately after step 28. Keep LoRA enabled for image quality,
+        // but reserve decoder headroom by bounding the diffusion canvas when an adapter
+        // is selected and post-load free memory is below 3.2 GiB. Preserve aspect ratio;
+        // the existing post-generation upscale path can restore output dimensions.
+        let requestedLoRAForMemoryPolicy = enableLoRA
+            && !settings.localLoraFile.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && !recoveringAfterInterruption
+            && !benchmarkMode
+        if requestedLoRAForMemoryPolicy && memory.availableMemoryMB < 3_200 {
+            let currentLongEdge = Double(max(outputWidth, outputHeight))
+            let safeLongEdge = memory.availableMemoryMB < 2_000 ? 384.0 : 512.0
+            if currentLongEdge > safeLongEdge {
+                let scale = safeLongEdge / currentLongEdge
+                outputWidth = multipleOf64(Int(Double(outputWidth) * scale))
+                outputHeight = multipleOf64(Int(Double(outputHeight) * scale))
+                DiagnosticsLogger.shared.log(
+                    "AI Image Studio LoRA decoder reserve • available=\(Int(memory.availableMemoryMB)) MB • canvas capped to \(outputWidth)x\(outputHeight) • LoRA remains enabled • upscale after model release"
+                )
+            }
         }
         if recoveringAfterInterruption {
             DiagnosticsLogger.shared.log("AI Image Studio Recovery Safe Mode • preserving memory-policy output size \(outputWidth)x\(outputHeight) • steps=\(effectiveSteps) • Hires/LoRA disabled")
@@ -418,7 +559,15 @@ enum OnDeviceImageGenerator {
         case "DPM++ 2M Karras":
             pipeline!.configuration.sampler = DataModels.SamplerType.dPMPP2MKarras
         case "DDIM":
-            pipeline!.configuration.sampler = DataModels.SamplerType.DDIM
+            // The device crash report for build 192 shows EXC_BREAKPOINT in
+            // Denoiser.LinearDiscretization.alphasCumprod -> DDIMSampler.timestep.
+            // Until the bundled engine's DDIM/shift interaction is validated on-device,
+            // never enter that native crash path. Preserve the user's saved setting in
+            // the UI, but execute the known-supported DPM++ 2M Karras path instead.
+            pipeline!.configuration.sampler = DataModels.SamplerType.dPMPP2MKarras
+            DiagnosticsLogger.shared.log(
+                "AI Image Studio sampler safety fallback • requested=DDIM • applied=DPM++ 2M Karras • reason=guard against DDIM LinearDiscretization SIGTRAP seen in build 192"
+            )
         case "UniPC":
             pipeline!.configuration.sampler = DataModels.SamplerType.uniPC
         default:
@@ -426,6 +575,14 @@ enum OnDeviceImageGenerator {
         }
         pipeline!.configuration.clipSkip = max(1, min(2, clipSkip))
 
+        let appliedSampler: String
+        switch pipeline!.configuration.sampler {
+        case .eulerA: appliedSampler = "Euler a"
+        case .dPMPPSDEKarras: appliedSampler = "DPM++ SDE Karras"
+        case .dPMPP2MKarras: appliedSampler = "DPM++ 2M Karras"
+        case .uniPC: appliedSampler = "UniPC"
+        default: appliedSampler = "other"
+        }
         if hiresEnabled && !benchmarkMode {
             // Hires diffusion multiplies the latent working surface. Keep it disabled
             // for this device profile; use the app's separate Real-CUGAN stage instead.
@@ -455,15 +612,20 @@ enum OnDeviceImageGenerator {
         // 768px below 4 GiB). Permit LoRA from 1.2 GiB free upward, where the
         // minimum canvas policy is active, while retaining the recovery retry
         // safeguard because a prior attempt may have been terminated by iOS.
-        let hasSelectedLoRA = !settings.localLoraFile.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         let canApplyLoRA = !benchmarkMode
             && !recoveringAfterInterruption
             && enableLoRA
-            && hasSelectedLoRA
+            && preparedLoRAFile != nil
             && memory.availableMemoryMB >= 1_200
-        if canApplyLoRA {
+
+        DiagnosticsLogger.shared.log(
+            "AI Image Studio effective config • model=\(modelID) • requestedSampler=\(samplerName) • appliedSampler=\(appliedSampler) • shift=\(String(format: "%.2f", shift)) • CFG=\(String(format: "%.2f", cfg)) • steps=\(effectiveSteps) • canvas=\(outputWidth)x\(outputHeight) • seed=\(pipeline!.configuration.seed) • LoRARequested=\(enableLoRA && hasSelectedLoRA) • LoRAApplied=\(canApplyLoRA) • benchmark=\(benchmarkMode)"
+        )
+        AIImageGenerationMemoryJournal.shared.record("effective-config-\(modelID)-\(appliedSampler.replacingOccurrences(of: " ", with: "_"))")
+
+        if canApplyLoRA, let preparedLoRAFile {
             pipeline!.configuration.loras = [
-                DataModels.LoRA(file: settings.localLoraFile, weight: Float(loraWeight), mode: .all)
+                DataModels.LoRA(file: preparedLoRAFile, weight: Float(loraWeight), mode: .all)
             ]
             DiagnosticsLogger.shared.log(
                 "AI Image Studio LoRA enabled • available=\(Int(memory.availableMemoryMB)) MB • output=\(outputWidth)x\(outputHeight) • adaptive low-memory canvas policy active"
@@ -490,7 +652,7 @@ enum OnDeviceImageGenerator {
         // task completes, its operation can release that capture before PNG encoding.
         let preDenoisingMemory = currentRenderPerformanceSnapshot()
         DiagnosticsLogger.shared.log(
-            "AI Image Studio immediately before generate() • available=\(Int(preDenoisingMemory.availableMemoryMB)) MB • physical=\(Int(preDenoisingMemory.physicalMemoryMB)) MB • size=\(outputWidth)x\(outputHeight) • steps=\(effectiveSteps) • tiledDiffusion=\(useTiledDiffusion) • tiledDecode=\(useTiledDecoding) • partialOffload=true"
+            "AI Image Studio immediately before generate() • available=\(Int(preDenoisingMemory.availableMemoryMB)) MB • physical=\(Int(preDenoisingMemory.physicalMemoryMB)) MB • size=\(outputWidth)x\(outputHeight) • steps=\(effectiveSteps) • tiledDiffusion=\(useTiledDiffusion) • tiledDecode=\(useTiledDecoding) • partialOffload=false"
         )
         AIImageGenerationMemoryJournal.shared.record("pre-denoising-allocation")
         AIImageGenerationMemoryJournal.shared.record("pipeline-configured")
@@ -639,6 +801,7 @@ enum OnDeviceImageGenerator {
                 AIImageGenerationMemoryJournal.shared.record("benchmark-png-write-start")
             }
             try result.write(to: outputURL, type: .png)
+            Self.logPNGOutputStatistics(at: outputURL)
             AIImageGenerationMemoryJournal.shared.record("image-output-saved")
             if benchmarkMode {
                 AIImageGenerationMemoryJournal.shared.record("benchmark-png-write-complete")
@@ -697,18 +860,27 @@ enum OnDeviceLoRATrainer {
         DiagnosticsLogger.shared.log(
             "Local LoRA training preflight • available=\(Int(preflight.availableMemoryMB)) MB • physical=\(Int(preflight.physicalMemoryMB)) MB • tier=\(preflight.tier.rawValue) • thermal=\(preflight.thermalAndMode)"
         )
-        guard preflight.availableMemoryMB >= 3_200 else {
+        // A 3.2 GB hard gate made the button appear broken on this 6 GB iPhone,
+        // where normal free memory is often around 2.1 GB. Use Draw Things' explicit
+        // memory-saver/JIT mode below in the 1.8–3.2 GB band; refuse only when even
+        // that mode is unlikely to leave enough room for native compiler allocations.
+        guard preflight.availableMemoryMB >= 1_800 else {
             throw AIImageStudioError(
-                "Training was stopped before loading the model because only \(Int(preflight.availableMemoryMB)) MB of memory is available. Close other GPU/video tasks, let iOS recover memory, then retry when at least 3.2 GB is available. This prevents the native model compiler from being entered under known unsafe memory pressure."
+                "Training could not start safely: only \(Int(preflight.availableMemoryMB)) MB is available. Close generation/video tasks, wait for iOS to recover memory, and retry when at least 1.8 GB is available."
             )
         }
+        let lowMemoryTraining = preflight.availableMemoryMB < 3_200
 
-        // Match the inference path's constrained-device policy before invoking
-        // the CLI trainer. Keep weights file-backed and avoid a resident model cache.
-        DeviceCapability.memoryCapacity = .low
-        DeviceCapability.isPartialOffloadPreferred.store(true, ordering: .releasing)
-        var trainingEnvironment = MediaGenerationEnvironment.default
-        trainingEnvironment.maxTotalWeightsCacheSize = 0
+        // Restore all shared process settings when the native trainer exits.
+        let previousMemoryCapacity = DeviceCapability.memoryCapacity
+        let previousPartialOffload = DeviceCapability.isPartialOffloadPreferred.load(ordering: .acquiring)
+        let previousEnvironment = MediaGenerationEnvironment.default
+        DeviceCapability.memoryCapacity = lowMemoryTraining ? .low : .medium
+        DeviceCapability.isPartialOffloadPreferred.store(lowMemoryTraining, ordering: .releasing)
+        var trainingEnvironment = previousEnvironment
+        if lowMemoryTraining {
+            trainingEnvironment.maxTotalWeightsCacheSize = 0
+        }
         MediaGenerationEnvironment.default = trainingEnvironment
 
         let modelsDirectory = try OnDeviceImageGenerator.modelsDirectoryURL()
@@ -718,7 +890,9 @@ enum OnDeviceLoRATrainer {
         try FileManager.default.createDirectory(at: datasetDirectory, withIntermediateDirectories: true)
         defer {
             try? FileManager.default.removeItem(at: datasetDirectory)
-            DeviceCapability.memoryCapacity = .medium
+            MediaGenerationEnvironment.default = previousEnvironment
+            DeviceCapability.memoryCapacity = previousMemoryCapacity
+            DeviceCapability.isPartialOffloadPreferred.store(previousPartialOffload, ordering: .releasing)
         }
 
         for (index, image) in images.enumerated() {
@@ -736,12 +910,15 @@ enum OnDeviceLoRATrainer {
                    fraction: Double(index + 1) / Double(images.count) * 0.1)
         }
 
-        // A short, bounded first run is materially safer on a 6 GiB iPhone.
-        // The UI's epoch/rank controls remain meaningful, but never let the CLI
-        // expand this single in-process training session beyond 300 optimizer steps.
-        let steps = max(100, min(300, images.count * max(1, epochs)))
+        // Bound optimizer work on this 6 GB phone. Under memory pressure,
+        // use a shorter first run and explicit native memory-saving flags rather
+        // than letting a normal configuration attempt a high-memory compile.
+        let requestedSteps = images.count * max(1, epochs)
+        let steps = lowMemoryTraining
+            ? max(100, min(120, requestedSteps))
+            : max(100, min(300, requestedSteps))
         let prefix = "rife_local_lora_\(UUID().uuidString.replacingOccurrences(of: "-", with: "").prefix(10))"
-        let arguments = [
+        var arguments = [
             "train", "lora",
             "--models-dir", modelsDirectory.path,
             "--model", settings.localModelID,
@@ -754,10 +931,16 @@ enum OnDeviceLoRATrainer {
             "--resolution", "512",
             "--save-every", "0",
             "--seed", "1647498191",
-            "--memory-saver", "minimal",
-            "--weights-memory", "justInTime",
             "--no-cotrain-text-model"
         ]
+        if lowMemoryTraining {
+            arguments += ["--memory-saver", "minimal", "--weights-memory", "justInTime"]
+            notify(
+                "Low-memory training mode • memory saver enabled • \(steps) optimizer steps. Training may be slower, but this avoids the normal high-memory path.",
+                progress: progress,
+                fraction: 0.1
+            )
+        }
 
         let logURL = modelsDirectory.appendingPathComponent("\(prefix).training.log")
         guard let stream = fopen(logURL.path, "w+") else {

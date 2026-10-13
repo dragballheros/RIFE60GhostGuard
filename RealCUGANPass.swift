@@ -66,7 +66,17 @@ final class RealCUGANPass {
         let targetWidth = width * 2
         let targetHeight = height * 2
 
-        let profile = (width >= 1600 || height >= 1600) ? fast1080Profile : fallbackProfile
+        // Wide tiles reduce Core ML prediction count on 1080p/4K sources, but
+        // only use them when the current thermal/memory policy says the device has
+        // enough headroom. The same Noise 3 weights, overlap, intensity and output
+        // dimensions are retained; this changes scheduling, not image quality.
+        let requestsWideProfile = width >= 1600 || height >= 1600
+        let performanceSnapshot = currentRenderPerformanceSnapshot()
+        let useWideProfile = requestsWideProfile && performanceSnapshot.allowsWideCUGANTiles
+        let profile = useWideProfile ? fast1080Profile : fallbackProfile
+        DiagnosticsLogger.shared.log(
+            "Real-CUGAN adaptive tile policy • requestedWide=\(requestsWideProfile) • selected=\(profile.width)x\(profile.height) • wideAllowed=\(performanceSnapshot.allowsWideCUGANTiles) • headroom=\(Int(performanceSnapshot.availableMemoryMB.rounded())) MB • thermal=\(performanceSnapshot.thermalAndMode)"
+        )
         let tilesAcross = Int(ceil(Double(width) / Double(profile.stepX)))
         let tilesDown = Int(ceil(Double(height) / Double(profile.stepY)))
         let tilesPerFrame = tilesAcross * tilesDown

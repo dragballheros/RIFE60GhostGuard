@@ -148,8 +148,8 @@ worst quality, low quality, score_1, score_2, artist name, blurry, jpeg artifact
     @State private var tokenMergingHiresRatio = 0.1
     @State private var samplerName = "DPM++ SDE Karras (closest to Civitai GPU sampler)"
     @State private var schedulerName = "Normal"
-    @State private var seedText = "943875898392407"
-    @State private var randomSeed = false
+    @State private var seedText = ""
+    @State private var randomSeed = true
     @State private var turboWeight = 1.0
     @State private var characterWeight = 0.7
     @State private var enableCharacterLora = false
@@ -392,7 +392,9 @@ worst quality, low quality, score_1, score_2, artist name, blurry, jpeg artifact
                 Slider(value: $width, in: 512...1024, step: 64)
                 HStack { Text("Height"); Spacer(); Text("\(Int(height)) px").monospacedDigit() }
                 Slider(value: $height, in: 512...1536, step: 64)
-                TextField("Seed", text: $seedText).keyboardType(.numberPad)
+                TextField("Seed", text: $seedText).keyboardType(.numberPad).onChange(of: seedText) { newValue in
+                    randomSeed = newValue.isEmpty
+                }
                 Text("This engine accepts a 32-bit seed. Larger Civitai seeds are reduced modulo 2³² and will not reproduce the same image exactly.")
                     .font(.caption).foregroundStyle(.secondary)
                 Toggle("Random seed", isOn: $randomSeed)
@@ -473,10 +475,53 @@ worst quality, low quality, score_1, score_2, artist name, blurry, jpeg artifact
                 }
                 Text("\(trainingItems.count) images selected")
                     .font(.caption).foregroundStyle(.secondary)
-                TextField("Trigger word", text: $triggerWord)
-                    .textInputAutocapitalization(.never).autocorrectionDisabled()
-                StablePromptTextView(text: $trainingCaption, accessibilityLabel: "Shared caption or style description")
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Trigger word")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                    Text(triggerWord.isEmpty ? "No trigger word pasted yet." : triggerWord)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .textSelection(.disabled)
+                    HStack {
+                        Button {
+                            UIPasteboard.general.string = triggerWord
+                            showAlert("Trigger word copied.")
+                        } label: { Label("Copy trigger", systemImage: "doc.on.doc") }
+                        Button {
+                            guard let clipboard = UIPasteboard.general.string, !clipboard.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                                showAlert("The clipboard is empty. Copy a trigger word first, then tap Paste trigger.")
+                                return
+                            }
+                            triggerWord = clipboard.trimmingCharacters(in: .whitespacesAndNewlines)
+                            showAlert("Trigger word pasted.")
+                        } label: { Label("Paste trigger", systemImage: "doc.on.clipboard") }
+                    }
+                }
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Shared caption / tags")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                    ScrollView {
+                        Text(trainingCaption.isEmpty ? "No caption pasted yet." : trainingCaption)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .textSelection(.disabled)
+                    }
                     .frame(minHeight: 72, maxHeight: 160)
+                    HStack {
+                        Button {
+                            UIPasteboard.general.string = trainingCaption
+                            showAlert("Training caption copied.")
+                        } label: { Label("Copy caption", systemImage: "doc.on.doc") }
+                        Button {
+                            guard let clipboard = UIPasteboard.general.string, !clipboard.isEmpty else {
+                                showAlert("The clipboard is empty. Copy caption text first, then tap Paste caption.")
+                                return
+                            }
+                            trainingCaption = clipboard
+                            showAlert("Training caption pasted. The field is read-only; use Paste caption to replace its full contents.")
+                        } label: { Label("Paste caption", systemImage: "doc.on.clipboard") }
+                    }
+                }
                 Text("For a character LoRA, use clear varied images of the same subject, consistent captions, and a unique trigger word. Only upload images you have permission to use.")
                     .font(.caption).foregroundStyle(.secondary)
             }
@@ -493,18 +538,47 @@ worst quality, low quality, score_1, score_2, artist name, blurry, jpeg artifact
             Section("Train LoRA") {
                 if isTraining {
                     ProgressView(value: trainerProgress)
-                    Text(trainingStatus).font(.caption)
+                    Text(trainingStatus.isEmpty ? "Starting on-device training…" : trainingStatus)
+                        .font(.caption)
                 } else {
                     Button {
+                        guard trainingItems.count >= 3 else {
+                            errorText = "Select at least three training images before starting."
+                            return
+                        }
+                        errorText = ""
+                        trainingStatus = "Starting on-device LoRA training…"
+                        trainerProgress = 0
+                        if settings.localModelID != OnDeviceImageGenerator.defaultModelID {
+                            // The embedded trainer currently supports SDXL/Animagine only.
+                            // Keep the selected PhotosPicker items and switch the training
+                            // base before starting, rather than silently disabling the button.
+                            applyModelProfile(OnDeviceImageGenerator.defaultModelID)
+                            do {
+                                try settings.save()
+                            } catch {
+                                errorText = "Could not switch to the supported Animagine XL training base: " + error.localizedDescription
+                                trainingStatus = "Training did not start because the model could not be saved."
+                                return
+                            }
+                            trainingStatus = "Switched to Animagine XL v3.1. Preparing your selected images…"
+                        }
                         Task { await trainLoRA() }
                     } label: { Label("Train LoRA on this iPhone", systemImage: "cpu") }
-                    .disabled(trainingItems.count < 3 || settings.localModelID != OnDeviceImageGenerator.defaultModelID)
+                    .disabled(trainingItems.count < 3 || isTraining)
+                    Text(trainingItems.count < 3
+                         ? "Select at least 3 images to enable training. Current selection: \(trainingItems.count)."
+                         : "\(trainingItems.count) images selected. Tap Train to stage them and start local SDXL training.")
+                        .font(.caption).foregroundStyle(.secondary)
                     if settings.localModelID != OnDeviceImageGenerator.defaultModelID {
-                        Text("The current in-app trainer is validated for SDXL/Animagine LoRAs. Switch to Animagine XL v3.1 before training; ANIMA LoRA training is not enabled in this build.")
+                        Text("Tapping Train will switch to Animagine XL v3.1, the SDXL base supported by this trainer. Your selected images will be preserved. ANIMA-native LoRA training is not supported in this build.")
                             .font(.caption).foregroundStyle(.secondary)
                     }
-                    Text("Select at least three images. Training uses the same local model folder as generation and does not upload the dataset.")
-                        .font(.caption).foregroundStyle(.secondary)
+                }
+                if !trainingStatus.isEmpty && !isTraining {
+                    Text(trainingStatus)
+                        .font(.caption)
+                        .foregroundStyle(trainingStatus.localizedCaseInsensitiveContains("failed") ? Color.red : Color.secondary)
                 }
                 if let url = trainedLoRAURL {
                     ShareLink(item: url) { Label("Export trained local LoRA checkpoint", systemImage: "square.and.arrow.down") }
@@ -634,8 +708,6 @@ worst quality, low quality, score_1, score_2, artist name, blurry, jpeg artifact
             : "Euler a"
         schedulerName = "Model recommended"
         if useAnima {
-            seedText = "943875898392407"
-            randomSeed = false
             if !positivePrompt.localizedCaseInsensitiveContains("sysdeep_chizuru") {
                 positivePrompt = "masterpiece, best quality, score_7, safe, sysdeep_chizuru, " + positivePrompt
             }
@@ -719,7 +791,7 @@ worst quality, low quality, score_1, score_2, artist name, blurry, jpeg artifact
         hiresSteps = 12
         hiresDenoise = 0.35
         upscalerName = draft.upscalerName
-        clipSkip = 2
+        clipSkip = useAnima ? 1 : 2
         ensd = draft.ensd
         tokenMergingRatio = draft.tokenMergingRatio
         tokenMergingHiresRatio = draft.tokenMergingHiresRatio
@@ -727,8 +799,8 @@ worst quality, low quality, score_1, score_2, artist name, blurry, jpeg artifact
             ? "DPM++ SDE Karras (closest to Civitai GPU sampler)"
             : (draft.samplerName == "Model recommended" ? "Euler a" : draft.samplerName)
         schedulerName = "Model recommended"
-        seedText = useAnima ? "943875898392407" : draft.seedText
-        randomSeed = draft.randomSeed
+        seedText = ""
+        randomSeed = true
         turboWeight = draft.turboWeight
         characterWeight = draft.characterWeight
         enableCharacterLora = useAnima && selectedLoRATrigger == "sysdeep_chizuru"
@@ -790,19 +862,24 @@ worst quality, low quality, score_1, score_2, artist name, blurry, jpeg artifact
     private var weightedLoRATrigger: String {
         let trigger = selectedLoRATrigger.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trigger.isEmpty else { return "" }
-        return "(\(trigger):\(String(format: "%.2f", characterWeight)))"
+        // This is a UI label, not prompt-weight syntax. LoRA strength is applied
+        // separately to DataModels.LoRA.weight; attenuating the trigger token too
+        // would weaken character activation a second time.
+        return "\(trigger) • LoRA strength \(String(format: "%.2f", characterWeight))"
     }
 
-    /// Keep the trigger as a separate read-only visual row while composing it
-    /// into the positive prompt sent to the local generation engine.
+    /// Keep the trigger as a separate read-only visual row while composing the
+    /// plain trigger token into the positive prompt. Adapter strength is controlled
+    /// only by the LoRA weight passed to the generation pipeline.
     private var effectivePositivePrompt: String {
         let body = promptBodyWithoutSelectedTrigger(positivePrompt)
+        let trigger = selectedLoRATrigger.trimmingCharacters(in: .whitespacesAndNewlines)
         guard enableCharacterLora,
               !settings.localLoraFile.isEmpty,
-              !selectedLoRATrigger.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+              !trigger.isEmpty else {
             return body
         }
-        return body.isEmpty ? weightedLoRATrigger : weightedLoRATrigger + ", " + body
+        return body.isEmpty ? trigger : trigger + ", " + body
     }
 
     private func promptBodyWithoutSelectedTrigger(_ prompt: String) -> String {
@@ -1021,9 +1098,16 @@ worst quality, low quality, score_1, score_2, artist name, blurry, jpeg artifact
     }
 
     private func trainLoRA() async {
+        guard !isTraining else { return }
+        guard trainingItems.count >= 3 else {
+            errorText = "Select at least three training images before starting."
+            trainingStatus = "Training not started: fewer than three images are selected."
+            return
+        }
         isTraining = true
         trainerProgress = 0
         errorText = ""
+        trainingStatus = "Preparing selected images…"
         trainedLoRAURL = nil
         defer { isTraining = false }
         do {
@@ -1034,7 +1118,7 @@ worst quality, low quality, score_1, score_2, artist name, blurry, jpeg artifact
 
             var images: [LocalTrainingImage] = []
             for (index, item) in trainingItems.enumerated() {
-                trainingStatus = "Staging image \(index + 1) of \(trainingItems.count)…"
+                trainingStatus = "Loading selected image \(index + 1) of \(trainingItems.count)…"
                 guard let source = try await item.loadTransferable(type: Data.self),
                       let image = UIImage(data: source),
                       let png = image.pngData() else {
@@ -1072,8 +1156,8 @@ worst quality, low quality, score_1, score_2, artist name, blurry, jpeg artifact
             trainerProgress = 1
             trainingStatus = "Training complete locally. The new LoRA is selected for local generation."
         } catch {
-            errorText = error.localizedDescription
-            trainingStatus = "Local training failed or was stopped by iOS."
+            errorText = "LoRA training failed: " + error.localizedDescription
+            trainingStatus = "Training failed. Review the error above; your selected images remain available to retry."
         }
     }
 

@@ -3,7 +3,8 @@ import CoreImage
 import CoreVideo
 import UIKit
 import Metal
-import avif
+import ImageIO
+import UniformTypeIdentifiers
 
 struct ImageStillResult: Sendable {
     let url: URL
@@ -114,35 +115,81 @@ final class ImageStillProcessor {
             try Task.checkCancellation()
         }
 
-        // Regular image mode uses AVIF directly. Unlike Reddit delivery mode,
-        // this is a single loss-controlled encode at the enhanced dimensions.
-        // There is no 20 MB search, no Reddit-specific resizing, and no delivery
-        // optimizer involved. The enhancement result itself is what gets exported.
-        progress(0.92, "Image • Encoding AVIF…")
+        // Export high-precision PNG (16-bit integer RGB; at least 10-bit precision)
+        // and enforce a strict 20 MiB cap. PNG is lossless; if the encoded image
+        // exceeds the cap, reduce dimensions in small steps and re-encode losslessly.
+        progress(0.92, "Image • Encoding high-bit-depth PNG…")
         let outputWidth = CVPixelBufferGetWidth(buffer)
         let outputHeight = CVPixelBufferGetHeight(buffer)
         let outputURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("RIFE60-IMAGE-\(UUID().uuidString).avif")
+            .appendingPathComponent("RIFE60-IMAGE-\(UUID().uuidString).png")
         try? FileManager.default.removeItem(at: outputURL)
         do {
             let image = CIImage(cvPixelBuffer: buffer)
             guard let cgImage = ciContext.createCGImage(image, from: image.extent) else {
-                throw ProcessorError.writer("could not create the AVIF source image")
+                throw ProcessorError.writer("could not create the PNG source image")
             }
-            let data = try AVIFEncoderGate.shared.encode(cgImage, quality: 95.0)
-            try data.write(to: outputURL, options: .atomic)
-
-            let writtenBytes = try FileManager.default.attributesOfItem(atPath: outputURL.path)[.size] as? NSNumber
-            guard let writtenBytes, writtenBytes.int64Value > 0 else {
-                throw ProcessorError.writer("AVIF output was empty after writing")
-            }
-            DiagnosticsLogger.shared.log("AVIF validation passed • bytes=\(writtenBytes.int64Value) • output=\(outputWidth)x\(outputHeight)")
+            let writtenBytes = try encodeHighBitDepthPNG(cgImage, to: outputURL, maxBytes: 20 * 1024 * 1024)
+            DiagnosticsLogger.shared.log("PNG validation passed • bytes=\(writtenBytes) • output=\(outputWidth)x\(outputHeight) • 16-bit integer RGB • max=20MiB")
         } catch {
-            throw ProcessorError.writer("could not encode the AVIF • \(error.localizedDescription)")
+            try? FileManager.default.removeItem(at: outputURL)
+            throw ProcessorError.writer("could not encode a high-bit-depth PNG under 20 MiB • \(error.localizedDescription)")
         }
         ciContext.clearCaches()
-        DiagnosticsLogger.shared.log("Image pipeline complete • output=\(outputWidth)x\(outputHeight) AVIF • quality=95")
+        DiagnosticsLogger.shared.log("Image pipeline complete • output=\(outputWidth)x\(outputHeight) high-bit-depth PNG • max=20MiB")
         return ImageStillResult(url: outputURL, width: outputWidth, height: outputHeight, notes: notes)
+    }
+
+    private func encodeHighBitDepthPNG(_ source: CGImage, to url: URL, maxBytes: Int) throws -> Int64 {
+        var width = source.width
+        var height = source.height
+        let colorSpace = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
+
+        for attempt in 0..<12 {
+            try Task.checkCancellation()
+            guard let context = CGContext(
+                data: nil,
+                width: width,
+                height: height,
+                bitsPerComponent: 16,
+                bytesPerRow: width * 8,
+                space: colorSpace,
+                bitmapInfo: CGBitmapInfo.byteOrder16Little.rawValue | CGImageAlphaInfo.noneSkipLast.rawValue
+            ) else {
+                throw ProcessorError.writer("could not allocate 16-bit PNG staging buffer")
+            }
+            context.interpolationQuality = .high
+            context.draw(source, in: CGRect(x: 0, y: 0, width: width, height: height))
+            guard let highBitDepthImage = context.makeImage() else {
+                throw ProcessorError.writer("could not create 16-bit PNG image")
+            }
+            try? FileManager.default.removeItem(at: url)
+            guard let destination = CGImageDestinationCreateWithURL(url as CFURL, UTType.png.identifier as CFString, 1, nil) else {
+                throw ProcessorError.writer("could not initialize PNG encoder")
+            }
+            CGImageDestinationAddImage(destination, highBitDepthImage, nil)
+            guard CGImageDestinationFinalize(destination) else {
+                throw ProcessorError.writer("PNG encoder could not finalize the image")
+            }
+            let bytes = try FileManager.default.attributesOfItem(atPath: url.path)[.size] as? NSNumber
+            guard let bytes, bytes.int64Value > 0 else {
+                throw ProcessorError.writer("PNG output was empty")
+            }
+            if bytes.intValue <= maxBytes { return bytes.int64Value }
+            guard attempt < 11 else {
+                throw ProcessorError.writer("image cannot fit below 20 MiB without excessive downscaling")
+            }
+            let scale = min(0.94, max(0.72, sqrt(Double(maxBytes) / Double(bytes.intValue)) * 0.94))
+            let nextWidth = max(1, Int(Double(width) * scale))
+            let nextHeight = max(1, Int(Double(height) * scale))
+            guard nextWidth < width, nextHeight < height else {
+                throw ProcessorError.writer("could not reduce image dimensions to meet the 20 MiB cap")
+            }
+            width = nextWidth
+            height = nextHeight
+            DiagnosticsLogger.shared.log("High-bit-depth PNG exceeds 20 MiB; lossless re-encode at reduced dimensions • attempt=\(attempt + 1) • size=\(width)x\(height)")
+        }
+        throw ProcessorError.writer("could not satisfy the 20 MiB PNG limit")
     }
 
     private func loadBGRABuffer(from url: URL) throws -> CVPixelBuffer {
