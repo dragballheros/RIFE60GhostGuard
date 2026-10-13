@@ -349,6 +349,7 @@ final class RIFEVideoProcessor {
                 let synth = synthesized[index]
                 let t = Double(requestedTimesteps[index])
                 var chosen: CVPixelBuffer = synth
+                var usedSourceFallback = false
                 var existingGuardRejected = false
                 var fastCheck: FastMotionGhostGuard.Result?
 
@@ -393,6 +394,7 @@ final class RIFEVideoProcessor {
                         } else {
                             rejected += 1
                             chosen = t < 0.5 ? prevPB : currentPB
+                            usedSourceFallback = true
                             DiagnosticsLogger.shared.log(
                                 "Fast-motion Ghost Guard final fallback • motion=\(String(format: "%.3f", fastCheck.motionScore)) • artifact=\(String(format: "%.3f", fastCheck.artifactScore)) • t=\(String(format: "%.3f", t))"
                             )
@@ -402,6 +404,7 @@ final class RIFEVideoProcessor {
                         // the last-resort path after recovery was unavailable.
                         rejected += 1
                         chosen = t < 0.5 ? prevPB : currentPB
+                        usedSourceFallback = true
                     }
                 }
 
@@ -409,7 +412,7 @@ final class RIFEVideoProcessor {
                 // after all retry/fallback decisions. This catches a transition artifact
                 // that survives the first-pass decision and prevents it entering the
                 // RIFE checkpoint consumed by CUGAN / the next stage.
-                if config.ghostProtection {
+                if config.ghostProtection && !usedSourceFallback {
                     let finalCheckStarted = CFAbsoluteTimeGetCurrent()
                     let finalCheck = autoreleasepool {
                         guarder.inspect(previous: prevPB, generated: chosen, current: currentPB)
@@ -417,6 +420,7 @@ final class RIFEVideoProcessor {
                     ghostSeconds += CFAbsoluteTimeGetCurrent() - finalCheckStarted
                     if finalCheck.reject {
                         chosen = t < 0.5 ? prevPB : currentPB
+                        usedSourceFallback = true
                         rejected += 1
                         DiagnosticsLogger.shared.log(
                             "Ghost Guard final pre-encode check rejected frame • reason=\(finalCheck.reason) • fallback=\(t < 0.5 ? "previous" : "current") source frame • t=\(String(format: "%.3f", t))"
