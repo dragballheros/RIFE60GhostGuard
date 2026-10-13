@@ -173,6 +173,7 @@ final class RIFEVideoProcessor {
         let frameStep = CMTime(value: 1, timescale: CMTimeScale(config.targetFPS.rounded()))
         var nextOutputTime = resumeTime > .zero ? CMTimeAdd(resumeTime, frameStep) : CMTime.zero
         var previousPB: CVPixelBuffer?
+        var previousPreviousPB: CVPixelBuffer?
         var previousTime = CMTime.zero
         var rejected = 0
         var generated = 0
@@ -355,7 +356,7 @@ final class RIFEVideoProcessor {
                 if config.ghostProtection {
                     let started = CFAbsoluteTimeGetCurrent()
                     let check = autoreleasepool {
-                        guarder.inspect(previous: prevPB, generated: synth, current: currentPB)
+                        guarder.inspect(previous: prevPB, generated: synth, current: currentPB, previousContext: previousPreviousPB)
                     }
                     ghostSeconds += CFAbsoluteTimeGetCurrent() - started
                     existingGuardRejected = check.reject
@@ -369,15 +370,22 @@ final class RIFEVideoProcessor {
                         fastCheck = result
                     }
 
-                    // A fast-motion failure gets a real interpolation retry,
-                    // not an immediate duplicate/source-frame fallback.
-                    if let fastMotionGuard,
+                    // Never recursively interpolate across a detected cut or an
+                    // isolated scene-end source frame. Midpoint recovery can recreate
+                    // the exact A/B warp that the scene guard rejected.
+                    let sceneBoundaryRejected = check.reason == "scene cut / transition discontinuity"
+                        || check.reason == "isolated scene-end frame"
+
+                    // A fast-motion failure gets a real interpolation retry only
+                    // when the pair is not a scene boundary.
+                    if !sceneBoundaryRejected,
+                       let fastMotionGuard,
                        let fastCheck,
                        fastCheck.fastMotion,
                        (existingGuardRejected || fastCheck.reject || fastCheck.recoveryRecommended),
                        let retry = try motionAwareRetry(t: t) {
                         let retryGuard = autoreleasepool {
-                            guarder.inspect(previous: prevPB, generated: retry, current: currentPB)
+                            guarder.inspect(previous: prevPB, generated: retry, current: currentPB, previousContext: previousPreviousPB)
                         }
                         let retryFastGuard = fastMotionGuard.inspect(
                             previous: prevPB,
@@ -398,10 +406,19 @@ final class RIFEVideoProcessor {
                             )
                         }
                     } else if existingGuardRejected || (fastCheck?.reject ?? false) {
-                        // Hard failures still preserve the timestamp. This is
-                        // the last-resort path after recovery was unavailable.
+                        // Hard failures preserve the timestamp without blending.
+                        // If the previous source frame is an isolated endpoint, use
+                        // the current frame, which matched the prior scene context.
                         rejected += 1
-                        chosen = t < 0.5 ? prevPB : currentPB
+                        if check.reason == "isolated scene-end frame" {
+                            chosen = currentPB
+                            DiagnosticsLogger.shared.log("Ghost Guard fallback • isolated scene-end source frame replaced • t=\(String(format: "%.3f", t))")
+                        } else {
+                            chosen = t < 0.5 ? prevPB : currentPB
+                            if sceneBoundaryRejected {
+                                DiagnosticsLogger.shared.log("Ghost Guard fallback • scene boundary protected, recursive retry skipped • t=\(String(format: "%.3f", t))")
+                            }
+                        }
                     }
                 }
 
@@ -412,6 +429,7 @@ final class RIFEVideoProcessor {
                 generated += 1
             }
 
+            previousPreviousPB = prevPB
             previousPB = currentPB
             previousTime = currentTime
 
