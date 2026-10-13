@@ -169,9 +169,11 @@ final class ColorPopGrade {
             let hueDelta = shortestHueDelta(from: color.h, to: targetHue)
             color.h = normalizeHue(color.h + hueDelta * 0.90 * correction)
             color.s = clamp(color.s * (1 - 0.22 * correction))
-            // Whiten by correcting temperature/hue, not by lifting exposure.
-            // The small value change keeps skin from looking washed out.
-            color.v = clamp(color.v * (1 + 0.018 * correction))
+            // Gently lift confidently detected skin independently of the
+            // background hue. Keep the lift local to the skin mask, roll it off
+            // near highlights via skinLuma, and retain the warm/cool correction
+            // below so peach skin gets lighter without turning orange or white.
+            color.v = clamp(color.v * (1 + 0.045 * correction))
             (rr, gg, bb) = rgb(color.h, color.s, color.v)
 
             let skinLumaBefore = luma(rr, gg, bb)
