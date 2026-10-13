@@ -583,11 +583,6 @@ enum OnDeviceImageGenerator {
         case .uniPC: appliedSampler = "UniPC"
         default: appliedSampler = "other"
         }
-        DiagnosticsLogger.shared.log(
-            "AI Image Studio effective config • model=\(modelID) • requestedSampler=\(samplerName) • appliedSampler=\(appliedSampler) • shift=\(String(format: "%.2f", shift)) • CFG=\(String(format: "%.2f", cfg)) • steps=\(effectiveSteps) • canvas=\(outputWidth)x\(outputHeight) • seed=\(pipeline!.configuration.seed) • LoRARequested=\(enableLoRA && hasSelectedLoRA) • LoRAApplied=\(canApplyLoRA) • benchmark=\(benchmarkMode)"
-        )
-        AIImageGenerationMemoryJournal.shared.record("effective-config-\(modelID)-\(appliedSampler.replacingOccurrences(of: " ", with: "_"))")
-
         if hiresEnabled && !benchmarkMode {
             // Hires diffusion multiplies the latent working surface. Keep it disabled
             // for this device profile; use the app's separate Real-CUGAN stage instead.
@@ -622,6 +617,12 @@ enum OnDeviceImageGenerator {
             && enableLoRA
             && preparedLoRAFile != nil
             && memory.availableMemoryMB >= 1_200
+
+        DiagnosticsLogger.shared.log(
+            "AI Image Studio effective config • model=\(modelID) • requestedSampler=\(samplerName) • appliedSampler=\(appliedSampler) • shift=\(String(format: "%.2f", shift)) • CFG=\(String(format: "%.2f", cfg)) • steps=\(effectiveSteps) • canvas=\(outputWidth)x\(outputHeight) • seed=\(pipeline!.configuration.seed) • LoRARequested=\(enableLoRA && hasSelectedLoRA) • LoRAApplied=\(canApplyLoRA) • benchmark=\(benchmarkMode)"
+        )
+        AIImageGenerationMemoryJournal.shared.record("effective-config-\(modelID)-\(appliedSampler.replacingOccurrences(of: " ", with: "_"))")
+
         if canApplyLoRA, let preparedLoRAFile {
             pipeline!.configuration.loras = [
                 DataModels.LoRA(file: preparedLoRAFile, weight: Float(loraWeight), mode: .all)
