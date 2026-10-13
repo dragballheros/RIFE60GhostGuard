@@ -169,11 +169,14 @@ final class ColorPopGrade {
             let hueDelta = shortestHueDelta(from: color.h, to: targetHue)
             color.h = normalizeHue(color.h + hueDelta * 0.90 * correction)
             color.s = clamp(color.s * (1 - 0.22 * correction))
-            // Gently lift confidently detected skin independently of the
-            // background hue. Keep the lift local to the skin mask, roll it off
-            // near highlights via skinLuma, and retain the warm/cool correction
-            // below so peach skin gets lighter without turning orange or white.
-            color.v = clamp(color.v * (1 + 0.045 * correction))
+            // Brighten only mid/darker skin tones. Fade the lift out before
+            // near-white anime skin/highlights, so already-pale characters do
+            // not get pushed brighter merely because their tint passes the mask.
+            // This is independent of background color and does not affect
+            // the hue/temperature correction below.
+            let skinBrightnessHeadroom = 1 - smoothstep(0.62, 0.82, y)
+            let brightnessLift = 0.045 * correction * skinBrightnessHeadroom
+            color.v = clamp(color.v * (1 + brightnessLift))
             (rr, gg, bb) = rgb(color.h, color.s, color.v)
 
             let skinLumaBefore = luma(rr, gg, bb)
