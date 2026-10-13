@@ -10,7 +10,8 @@ struct GhostGuard {
     var sensitivity: Double = 1.0
     var enableSceneCuts: Bool = true
 
-    func inspect(previous: CVPixelBuffer, generated: CVPixelBuffer, current: CVPixelBuffer) -> GhostGuardResult {
+    func inspect(previous: CVPixelBuffer, generated: CVPixelBuffer, current: CVPixelBuffer,
+                 previousContext: CVPixelBuffer? = nil) -> GhostGuardResult {
         guard let a = SampledBuffer(buffer: previous),
               let m = SampledBuffer(buffer: generated),
               let b = SampledBuffer(buffer: current) else {
@@ -18,6 +19,20 @@ struct GhostGuard {
         }
 
         let ab = a.meanAbsoluteDifference(to: b)
+
+        // Detect a single anomalous source frame at a scene edge. The prior
+        // source frame and the current frame should agree if "previous" is a
+        // damaged/isolated endpoint rather than genuine scene content.
+        if let previousContext,
+           let context = SampledBuffer(buffer: previousContext) {
+            let contextToPrevious = context.meanAbsoluteDifference(to: a)
+            let contextToCurrent = context.meanAbsoluteDifference(to: b)
+            if contextToPrevious > 0.14 &&
+               ab > 0.14 &&
+               contextToCurrent < 0.10 {
+                return .init(reject: true, reason: "isolated scene-end frame")
+            }
+        }
 
         // RIFE must never bridge a real shot boundary.  The old 0.30 threshold
         // was intentionally conservative, but it let a small number of anime
