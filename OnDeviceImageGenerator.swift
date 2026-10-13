@@ -1,4 +1,6 @@
 import Foundation
+import ImageIO
+import CoreGraphics
 import UniformTypeIdentifiers
 import Darwin
 import _MediaGenerationKit
@@ -195,6 +197,74 @@ enum OnDeviceImageGenerator {
             "LoRA import converted to Draw Things format • source=\(sourceURL.lastPathComponent) • native=\(outputName) • detectedModelVersion=\(String(describing: importer.version))"
         )
         return outputName
+    }
+
+    /// Inspect the actual PNG bytes after encoding. This distinguishes a valid, varied
+    /// decoded image from a near-uniform gray output without relying on the preview UI.
+    /// The check is diagnostic only: unusual artwork is never rejected automatically.
+    private static func logPNGOutputStatistics(at url: URL) {
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+              let image = CGImageSourceCreateImageAtIndex(source, 0, nil),
+              image.width > 0, image.height > 0 else {
+            DiagnosticsLogger.shared.log("AI Image Studio output validation • PNG could not be decoded after write • path=\(url.lastPathComponent)")
+            AIImageGenerationMemoryJournal.shared.record("output-png-validation-decode-failed")
+            return
+        }
+        let width = min(image.width, 96)
+        let height = min(image.height, 96)
+        var pixels = [UInt8](repeating: 0, count: width * height * 4)
+        let rendered = pixels.withUnsafeMutableBytes { rawBuffer -> Bool in
+            guard let base = rawBuffer.baseAddress,
+                  let context = CGContext(
+                    data: base,
+                    width: width,
+                    height: height,
+                    bitsPerComponent: 8,
+                    bytesPerRow: width * 4,
+                    space: CGColorSpaceCreateDeviceRGB(),
+                    bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+                  ) else { return false }
+            context.interpolationQuality = .low
+            context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+            return true
+        }
+        guard rendered else {
+            DiagnosticsLogger.shared.log("AI Image Studio output validation • could not render PNG for pixel statistics")
+            AIImageGenerationMemoryJournal.shared.record("output-png-validation-render-failed")
+            return
+        }
+        var minLuma = 255.0
+        var maxLuma = 0.0
+        var sum = 0.0
+        var sumSquares = 0.0
+        var redSum = 0.0
+        var greenSum = 0.0
+        var blueSum = 0.0
+        let count = width * height
+        for index in 0..<count {
+            let offset = index * 4
+            let red = Double(pixels[offset])
+            let green = Double(pixels[offset + 1])
+            let blue = Double(pixels[offset + 2])
+            let luma = 0.2126 * red + 0.7152 * green + 0.0722 * blue
+            minLuma = min(minLuma, luma)
+            maxLuma = max(maxLuma, luma)
+            sum += luma
+            sumSquares += luma * luma
+            redSum += red
+            greenSum += green
+            blueSum += blue
+        }
+        let mean = sum / Double(count)
+        let variance = max(0, sumSquares / Double(count) - mean * mean)
+        let standardDeviation = sqrt(variance)
+        let range = maxLuma - minLuma
+        let nearUniform = range < 8.0 && standardDeviation < 2.0
+        let meanRGB = "\(Int(redSum / Double(count))),\(Int(greenSum / Double(count))),\(Int(blueSum / Double(count)))"
+        DiagnosticsLogger.shared.log(
+            "AI Image Studio output pixel audit • size=\(image.width)x\(image.height) • meanLuma=\(String(format: "%.2f", mean)) • lumaStdDev=\(String(format: "%.2f", standardDeviation)) • lumaRange=\(String(format: "%.2f", range)) • meanRGB=\(meanRGB) • nearUniform=\(nearUniform)"
+        )
+        AIImageGenerationMemoryJournal.shared.record(nearUniform ? "output-png-near-uniform-warning" : "output-png-pixel-audit-passed")
     }
 
     static func generate(
@@ -505,6 +575,19 @@ enum OnDeviceImageGenerator {
         }
         pipeline!.configuration.clipSkip = max(1, min(2, clipSkip))
 
+        let appliedSampler: String
+        switch pipeline!.configuration.sampler {
+        case .eulerA: appliedSampler = "Euler a"
+        case .dPMPPSDEKarras: appliedSampler = "DPM++ SDE Karras"
+        case .dPMPP2MKarras: appliedSampler = "DPM++ 2M Karras"
+        case .uniPC: appliedSampler = "UniPC"
+        default: appliedSampler = "other"
+        }
+        DiagnosticsLogger.shared.log(
+            "AI Image Studio effective config • model=\(modelID) • requestedSampler=\(samplerName) • appliedSampler=\(appliedSampler) • shift=\(String(format: "%.2f", shift)) • CFG=\(String(format: "%.2f", cfg)) • steps=\(effectiveSteps) • canvas=\(outputWidth)x\(outputHeight) • seed=\(pipeline!.configuration.seed) • LoRARequested=\(enableLoRA && hasSelectedLoRA) • LoRAApplied=\(canApplyLoRA) • benchmark=\(benchmarkMode)"
+        )
+        AIImageGenerationMemoryJournal.shared.record("effective-config-\(modelID)-\(appliedSampler.replacingOccurrences(of: " ", with: "_"))")
+
         if hiresEnabled && !benchmarkMode {
             // Hires diffusion multiplies the latent working surface. Keep it disabled
             // for this device profile; use the app's separate Real-CUGAN stage instead.
@@ -717,6 +800,7 @@ enum OnDeviceImageGenerator {
                 AIImageGenerationMemoryJournal.shared.record("benchmark-png-write-start")
             }
             try result.write(to: outputURL, type: .png)
+            Self.logPNGOutputStatistics(at: outputURL)
             AIImageGenerationMemoryJournal.shared.record("image-output-saved")
             if benchmarkMode {
                 AIImageGenerationMemoryJournal.shared.record("benchmark-png-write-complete")
