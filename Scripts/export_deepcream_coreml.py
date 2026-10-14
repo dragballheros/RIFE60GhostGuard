@@ -87,8 +87,12 @@ def export_one(checkpoint: Path, output_dir: Path, model_name: str) -> None:
         ct.TensorType(name=INPUT_NAMES[2], shape=SHAPE, dtype=np.float32),
     ]
     print(f"Converting {model_name} with coremltools {ct.__version__}", flush=True)
+    # Core ML Tools 8's TensorFlow frontend accepts a TensorFlow GraphDef
+    # object directly; a frozen .pb filepath is not a supported TF2 model path.
+    # Passing the in-memory GraphDef also preserves the original frozen graph
+    # and avoids introducing a SavedModel wrapper with changed tensor names.
     converted = ct.convert(
-        str(frozen_path),
+        frozen,
         source="tensorflow",
         inputs=inputs,
         outputs=[ct.TensorType(name=OUTPUT_NAME)],
