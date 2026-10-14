@@ -89,7 +89,7 @@ def export_one(checkpoint: Path, output_dir: Path, model_name: str) -> None:
         str(frozen_path),
         source="tensorflow",
         inputs=inputs,
-        outputs=[OUTPUT_NAME],
+        outputs=[ct.TensorType(name=OUTPUT_NAME)],
         convert_to="mlprogram",
         minimum_deployment_target=ct.target.iOS16,
         compute_precision=ct.precision.FLOAT16,
