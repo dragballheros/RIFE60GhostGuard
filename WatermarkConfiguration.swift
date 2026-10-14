@@ -1,5 +1,6 @@
 import Foundation
 import CoreGraphics
+import CoreVideo
 
 enum WatermarkModel: String, CaseIterable, Identifiable, Sendable {
     case lama = "lama"
