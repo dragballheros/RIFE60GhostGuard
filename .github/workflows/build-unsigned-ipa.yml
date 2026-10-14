@@ -310,7 +310,7 @@ jobs:
                   raise SystemExit("DeepCream archive is not the expected v2 release: " + ", ".join(missing))
           print("DeepCreamPy v2 checkpoint archive verified.")
           PY
-          python3 -m pip install 'tensorflow==2.15.1' 'coremltools==8.3.0' 'numpy==1.26.4'
+          python3 -m pip install 'tensorflow==2.15.1' 'coremltools==9.0' 'numpy==1.26.4'
           python3 Scripts/export_deepcream_coreml.py --archive Models/DeepCreamSource.zip --output Models
           test -f Models/DeepCreamBar.mlpackage/Manifest.json
           test -f Models/DeepCreamMosaic.mlpackage/Manifest.json
