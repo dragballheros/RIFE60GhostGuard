@@ -129,9 +129,28 @@ def export_one(checkpoint: Path, output_dir: Path, model_name: str) -> None:
         raise RuntimeError(f"{model_name}: output shape {actual.shape} != TensorFlow {reference.shape}")
     if not np.isfinite(actual).all():
         raise RuntimeError(f"{model_name}: Core ML output contains NaN/Inf")
-    max_error = float(np.max(np.abs(actual.astype(np.float32) - reference.astype(np.float32))))
-    mean_error = float(np.mean(np.abs(actual.astype(np.float32) - reference.astype(np.float32))))
-    print(f"{model_name}: parity max_abs={max_error:.6f}, mean_abs={mean_error:.6f}", flush=True)
+    actual32 = actual.astype(np.float32)
+    reference32 = reference.astype(np.float32)
+    abs_error = np.abs(actual32 - reference32)
+    max_error = float(np.max(abs_error))
+    mean_error = float(np.mean(abs_error))
+    print(
+        f"{model_name}: parity max_abs={max_error:.6f}, mean_abs={mean_error:.6f}; "
+        f"reference[min,max,mean,std]=[{reference32.min():.5f},{reference32.max():.5f},"
+        f"{reference32.mean():.5f},{reference32.std():.5f}] "
+        f"coreml[min,max,mean,std]=[{actual32.min():.5f},{actual32.max():.5f},"
+        f"{actual32.mean():.5f},{actual32.std():.5f}] "
+        f"per_channel_mae={np.mean(abs_error, axis=(0,1,2)).tolist()}",
+        flush=True,
+    )
+    inside = np.broadcast_to(mask == 0.0, abs_error.shape)
+    outside = np.broadcast_to(mask == 1.0, abs_error.shape)
+    print(
+        f"{model_name}: parity mae_inpaint={abs_error[inside].mean():.6f}, "
+        f"mae_preserve={abs_error[outside].mean():.6f}, "
+        f"fraction_error_gt_0.1={np.mean(abs_error > 0.1):.5f}",
+        flush=True,
+    )
     if max_error > 0.12 or mean_error > 0.015:
         raise RuntimeError(
             f"{model_name}: Core ML numerical parity failed "
