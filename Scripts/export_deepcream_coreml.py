@@ -62,6 +62,10 @@ def export_one(checkpoint: Path, output_dir: Path, model_name: str) -> None:
         frozen = tf.compat.v1.graph_util.convert_variables_to_constants(
             session, graph_def, [OUTPUT_NAME]
         )
+        # Checkpoint MetaGraphs contain optimizer/backpropagation nodes as well as
+        # the generator. Freeze then prune to the inference output so Core ML
+        # never sees training-only ExtractImagePatches gradient subgraphs.
+        frozen = tf.compat.v1.graph_util.extract_sub_graph(frozen, [OUTPUT_NAME])
         # Diagnose source ranks around ExtractImagePatches before Core ML conversion.
         for op in graph.get_operations():
             if op.type == "ExtractImagePatches":
