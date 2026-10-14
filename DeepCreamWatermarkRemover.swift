@@ -138,11 +138,24 @@ final class DeepCreamWatermarkRemover: WatermarkRemovalApplying {
                 outputRGBA[index * 4 + channel] = UInt8((value * 255).rounded())
             }
         }
-        guard let outputCG = Self.makeCGImage(rgba: outputRGBA, width: modelSize, height: modelSize),
-              let resized = Self.resize(outputCG, width: Int(target.width), height: Int(target.height)) else {
-            throw ProcessorError.conversionFailed("DeepCream could not resize its predicted crop")
+        guard let outputCG = Self.makeCGImage(rgba: outputRGBA, width: modelSize, height: modelSize) else {
+            throw ProcessorError.conversionFailed("DeepCream could not decode its predicted crop")
         }
-        let replacement = try Self.rgbaBytes(from: resized, width: Int(target.width), height: Int(target.height))
+        // The model predicts the entire square context crop. Extract only the
+        // target rectangle from that prediction instead of stretching the whole
+        // context crop into the marked rectangle.
+        let restored = CIImage(cgImage: outputCG)
+            .transformed(by: CGAffineTransform(scaleX: CGFloat(side) / CGFloat(modelSize),
+                                               y: CGFloat(side) / CGFloat(modelSize)))
+            .transformed(by: CGAffineTransform(translationX: crop.minX - target.minX,
+                                               y: crop.minY - target.minY))
+        guard let targetPatch = context.createCGImage(
+            restored,
+            from: CGRect(x: 0, y: 0, width: Int(target.width), height: Int(target.height))
+        ) else {
+            throw ProcessorError.conversionFailed("DeepCream could not extract the reconstructed target region")
+        }
+        let replacement = try Self.rgbaBytes(from: targetPatch, width: Int(target.width), height: Int(target.height))
         let destination = try Self.allocate(resultPool)
         CVPixelBufferLockBaseAddress(source, .readOnly)
         CVPixelBufferLockBaseAddress(destination, [])
