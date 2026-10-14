@@ -58,7 +58,7 @@ final class ImageStillProcessor {
 
         if watermark.enabled {
             progress(0.05, "Image • Anime watermark removal…")
-            let remover = try AnimeWatermarkRemover(configuration: watermark)
+            let remover = try WatermarkRemoverFactory.make(configuration: watermark)
             buffer = try remover.apply(buffer)
             try Task.checkCancellation()
         }
