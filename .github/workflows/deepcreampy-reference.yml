@@ -1,6 +1,9 @@
 name: DeepCreamPy TensorFlow reference smoke test
 
 on:
+  push:
+    branches:
+      - feature/deepcreampy-ondevice
   workflow_dispatch:
     inputs:
       model_archive_id:
