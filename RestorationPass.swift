@@ -79,9 +79,9 @@ final class RestorationPass {
         // Keep these resources scoped strictly to pass 1. They are destroyed when
         // this function returns, before the RIFE Metal graphs are created.
         let encodedWatermark = watermark.inEncodedOrientation(size: naturalSize, transform: transform)
-        let watermarkRemover: AnimeWatermarkRemover?
+        let watermarkRemover: (any WatermarkRemovalApplying)?
         if encodedWatermark.enabled {
-            watermarkRemover = try AnimeWatermarkRemover(configuration: encodedWatermark)
+            watermarkRemover = try WatermarkRemoverFactory.make(configuration: encodedWatermark)
         } else {
             watermarkRemover = nil
         }
