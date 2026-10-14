@@ -62,6 +62,11 @@ def export_one(checkpoint: Path, output_dir: Path, model_name: str) -> None:
         frozen = tf.compat.v1.graph_util.convert_variables_to_constants(
             session, graph_def, [OUTPUT_NAME]
         )
+        # Diagnose source ranks around ExtractImagePatches before Core ML conversion.
+        for op in graph.get_operations():
+            if op.type == "ExtractImagePatches":
+                details = [(tensor.name, tensor.shape.as_list()) for tensor in op.inputs]
+                print(f"{model_name}: ExtractImagePatches {op.name} inputs={details} outputs={[t.shape.as_list() for t in op.outputs]}", flush=True)
         with tf.io.gfile.GFile(str(frozen_path), "wb") as handle:
             handle.write(frozen.SerializeToString())
 
