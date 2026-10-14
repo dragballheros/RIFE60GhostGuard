@@ -1,4 +1,4 @@
-// Standalone macOS smoke check for the shared iOS 16-compatible grade.
+// Standalone macOS regression check for the shared iOS 16-compatible grade.
 // CI copies this file to main.swift and compiles it with ColorPopGrade.swift.
 import Foundation
 import CoreVideo
@@ -39,7 +39,7 @@ func readPatch(_ buffer: CVPixelBuffer) throws -> (Int, Int, Int) {
 
 func metrics(_ rgb: (Int, Int, Int)) -> (hue: Double, saturation: Double, luma: Double) {
     let r = Double(rgb.0) / 255, g = Double(rgb.1) / 255, b = Double(rgb.2) / 255
-    let high = max(r, g, b), low = min(r, g, b), delta = high - low
+    let high = max(r, max(g, b)), low = min(r, min(g, b)), delta = high - low
     var hue = 0.0
     if delta > 0 {
         if high == r { hue = (g - b) / delta * 60 }
@@ -50,36 +50,61 @@ func metrics(_ rgb: (Int, Int, Int)) -> (hue: Double, saturation: Double, luma: 
     return (hue, high > 0 ? delta / high : 0, 0.2126 * r + 0.7152 * g + 0.0722 * b)
 }
 
+func hueDistance(_ lhs: Double, _ rhs: Double) -> Double {
+    let delta = abs(lhs - rhs).truncatingRemainder(dividingBy: 360)
+    return min(delta, 360 - delta)
+}
+
+func assertSkinPreserved(_ source: (Int, Int, Int), output: (Int, Int, Int), label: String, maxSaturationIncrease: Double) {
+    let before = metrics(source), after = metrics(output)
+    precondition(abs(after.luma - before.luma) < 0.012, "\(label) luminance shifted: \(before.luma) -> \(after.luma), output=\(output)")
+    precondition(hueDistance(after.hue, before.hue) < 4.0, "\(label) hue shifted: \(before.hue) -> \(after.hue), output=\(output)")
+    precondition(after.saturation - before.saturation < maxSaturationIncrease, "\(label) became oversaturated: \(before.saturation) -> \(after.saturation), output=\(output)")
+}
+
 let source = try makePatch((240, 190, 160))
 let bypass = try ColorPopGrade(strength: 0).apply(source)
 precondition(Unmanaged.passUnretained(source).toOpaque() == Unmanaged.passUnretained(bypass).toOpaque(), "zero strength must return the identical buffer")
 
+let skinSamples = [
+    ("peach skin", (240, 190, 160), 0.035),
+    ("shaded skin", (120, 82, 66), 0.045),
+    ("light skin", (250, 237, 230), 0.060)
+]
+let accentSamples = [
+    ("red", (245, 65, 90)),
+    ("pink", (235, 70, 180)),
+    ("blue", (80, 135, 230)),
+    ("teal", (40, 190, 180)),
+    ("green", (60, 190, 100))
+]
+
 for strength in [0.5, 1.0] {
     let grade = ColorPopGrade(strength: strength)
+
+    // Neutral pixels and highlight endpoints must not acquire a tint or change.
     for gray in 0...255 {
         let output = try readPatch(grade.apply(makePatch((gray, gray, gray))))
         precondition(abs(output.0 - gray) <= 2 && abs(output.1 - gray) <= 2 && abs(output.2 - gray) <= 2, "gray ramp changed: \(gray) -> \(output)")
-        // Core Image color-space round trips may differ by a couple of 8-bit codes
-        // between channels. Reject any tint beyond that quantization tolerance.
-        precondition(max(output.0, output.1, output.2) - min(output.0, output.1, output.2) <= 1, "gray acquired a tint: \(gray) -> \(output)")
-        if gray == 0 || gray == 255 { precondition(output.0 == gray, "black/white changed") }
+        precondition(max(output.0, max(output.1, output.2)) - min(output.0, min(output.1, output.2)) <= 1, "gray acquired a tint: \(gray) -> \(output)")
+        if gray == 0 || gray == 255 { precondition(output.0 == gray && output.1 == gray && output.2 == gray, "black/white endpoint changed: \(gray) -> \(output)") }
     }
-    let skin = try readPatch(grade.apply(source))
-    let before = metrics((240, 190, 160)), after = metrics(skin)
-    precondition(after.luma > before.luma && after.hue < before.hue && after.saturation < before.saturation, "skin must brighten, desaturate and move away from orange: \(skin)")
 
-    // Shaded-arm regression: darker peach/orange skin must still receive the
-    // same temperature correction instead of falling through the luma gate.
-    let shadowSkinRGB = (120, 82, 66)
-    let shadowSkin = try readPatch(grade.apply(makePatch(shadowSkinRGB)))
-    let shadowBefore = metrics(shadowSkinRGB), shadowAfter = metrics(shadowSkin)
-    precondition(shadowAfter.luma > shadowBefore.luma && shadowAfter.hue < shadowBefore.hue && shadowAfter.saturation < shadowBefore.saturation, "shaded skin must brighten, desaturate and move away from orange: \(shadowSkin)")
-    for color in [(80, 135, 230), (60, 190, 100)] {
-        let result = try readPatch(grade.apply(makePatch(color)))
-        precondition(metrics(result).saturation > metrics(color).saturation, "colored patch did not gain vibrance: \(color) -> \(result)")
-        print("strength=\(strength) color \(color) -> \(result)")
+    for (label, sample, maxSatIncrease) in skinSamples {
+        let output = try readPatch(grade.apply(makePatch(sample)))
+        assertSkinPreserved(sample, output: output, label: label, maxSaturationIncrease: maxSatIncrease)
     }
-    print("strength=\(strength) skin (240,190,160) -> \(skin); neutral ramp/black/white pass")
+
+    // Key saturated anime colors should gain chroma without large luma or hue shifts.
+    for (label, sample) in accentSamples {
+        let output = try readPatch(grade.apply(makePatch(sample)))
+        let before = metrics(sample), after = metrics(output)
+        precondition(after.saturation > before.saturation + 0.008, "\(label) failed to gain vibrance: \(sample) -> \(output)")
+        precondition(abs(after.luma - before.luma) < 0.018, "\(label) luminance moved too far: \(sample) -> \(output)")
+        precondition(hueDistance(after.hue, before.hue) < 4.0, "\(label) hue shifted: \(sample) -> \(output)")
+        print("strength=\(strength) \(label) \(sample) -> \(output)")
+    }
+    print("strength=\(strength) skin/highlight/gray protections passed")
 }
 
 // A runner timing is informative, not a performance promise for an iPhone.
