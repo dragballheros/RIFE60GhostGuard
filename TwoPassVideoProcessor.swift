@@ -275,7 +275,7 @@ final class TwoPassVideoProcessor {
                         autoreleasepool { }
                         try await thermalHandoff(progress: progress, position: 0.40, next: "Real-CUGAN native 2×")
                         progress(0.41, "Pass 3/4 • Loading Real-CUGAN Anime native 2×…")
-                        let cugan = RealCUGANPass(intensity: 1.30, colorPopStrength: config.outlineProtection ? 0 : colorPopStrength)
+                        let cugan = RealCUGANPass(intensity: 1.30, colorPopStrength: (!config.outlineProtection && automaticCuganPasses == 1) ? colorPopStrength : 0)
                         let generated = try await cugan.run(
                             sourceURL: firstPassInput,
                             finalAudioBitrate: audioBitrate,
@@ -321,7 +321,7 @@ final class TwoPassVideoProcessor {
                         }
                         try await thermalHandoff(progress: progress, position: 0.62, next: "Real-CUGAN automatic 4×")
                         progress(0.63, "Pass 4/4 • Real-CUGAN automatic second 2× pass…")
-                        let cuganSecond = RealCUGANPass(intensity: 1.30, colorPopStrength: config.outlineProtection ? 0 : colorPopStrength)
+                        let cuganSecond = RealCUGANPass(intensity: 1.30, colorPopStrength: (!config.outlineProtection && automaticCuganPasses == 2) ? colorPopStrength : 0)
                         let generated4x = try await cuganSecond.run(
                             sourceURL: firstPassOutput,
                             finalAudioBitrate: audioBitrate,
