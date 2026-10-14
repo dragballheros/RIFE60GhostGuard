@@ -94,13 +94,15 @@ final class DeepCreamWatermarkRemover: WatermarkRemovalApplying {
             brushPixels = nil
         }
 
-        let shape: [NSNumber] = [NSNumber(value: 1), NSNumber(value: modelSize), NSNumber(value: modelSize), NSNumber(value: 3)]
+        let batchSize = 8 // Official DCPv2 checkpoints have a fixed batch dimension of eight.
+        let shape: [NSNumber] = [NSNumber(value: batchSize), NSNumber(value: modelSize), NSNumber(value: modelSize), NSNumber(value: 3)]
         let maskedInput = try MLMultiArray(shape: shape, dataType: .float32)
         let originalInput = try MLMultiArray(shape: shape, dataType: .float32)
         let maskInput = try MLMultiArray(shape: shape, dataType: .float32)
-        let maskedPtr = maskedInput.dataPointer.bindMemory(to: Float.self, capacity: modelSize * modelSize * 3)
-        let originalPtr = originalInput.dataPointer.bindMemory(to: Float.self, capacity: modelSize * modelSize * 3)
-        let maskPtr = maskInput.dataPointer.bindMemory(to: Float.self, capacity: modelSize * modelSize * 3)
+        let sampleCount = batchSize * modelSize * modelSize * 3
+        let maskedPtr = maskedInput.dataPointer.bindMemory(to: Float.self, capacity: sampleCount)
+        let originalPtr = originalInput.dataPointer.bindMemory(to: Float.self, capacity: sampleCount)
+        let maskPtr = maskInput.dataPointer.bindMemory(to: Float.self, capacity: sampleCount)
 
         for row in 0..<modelSize {
             for col in 0..<modelSize {
@@ -113,9 +115,15 @@ final class DeepCreamWatermarkRemover: WatermarkRemovalApplying {
                 let pixel = (row * modelSize + col) * 3
                 for channel in 0..<3 {
                     let value = Float(rgba[(row * modelSize + col) * 4 + channel]) / 255.0 * 2.0 - 1.0
-                    originalPtr[pixel + channel] = value
-                    maskPtr[pixel + channel] = known
-                    maskedPtr[pixel + channel] = known == 0 ? -1.0 : value
+                    // The released checkpoint graph is fixed to batch=8. Until the
+                    // pipeline can batch independent crops, duplicate this crop so
+                    // its first prediction remains equivalent to single-crop inference.
+                    for batch in 0..<batchSize {
+                        let offset = batch * modelSize * modelSize * 3 + pixel + channel
+                        originalPtr[offset] = value
+                        maskPtr[offset] = known
+                        maskedPtr[offset] = known == 0 ? -1.0 : value
+                    }
                 }
             }
         }
@@ -127,10 +135,10 @@ final class DeepCreamWatermarkRemover: WatermarkRemovalApplying {
         ])
         let prediction = try model.prediction(from: features)
         guard let output = prediction.featureValue(for: "add")?.multiArrayValue,
-              output.count >= modelSize * modelSize * 3 else {
+              output.count >= sampleCount else {
             throw ProcessorError.conversionFailed("DeepCream returned no valid image tensor")
         }
-        let outputPtr = output.dataPointer.bindMemory(to: Float.self, capacity: modelSize * modelSize * 3)
+        let outputPtr = output.dataPointer.bindMemory(to: Float.self, capacity: sampleCount)
         var outputRGBA = [UInt8](repeating: 255, count: modelSize * modelSize * 4)
         for index in 0..<(modelSize * modelSize) {
             for channel in 0..<3 {
