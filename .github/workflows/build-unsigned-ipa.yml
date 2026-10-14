@@ -272,6 +272,51 @@ jobs:
           swiftc -swift-version 5 -parse-as-library WatermarkConfiguration.swift WatermarkBrushMask.swift BatchMediaQueue.swift Scripts/check_batch_media.swift -o /tmp/batch-media-check/check
           /tmp/batch-media-check/check
 
+      - name: Restore DeepCreamPy v2 checkpoint archive
+        uses: actions/cache@v4
+        with:
+          path: Models/DeepCreamSource.zip
+          key: deepcreampy-v2-2019-checkpoints-1IMwzqZUuRnTv5jcuKdvZx-RZweknww5x-v1
+
+      - name: Convert and validate DeepCreamPy v2 for iOS Core ML
+        timeout-minutes: 45
+        run: |
+          set -euo pipefail
+          mkdir -p Models
+          if [ ! -s Models/DeepCreamSource.zip ]; then
+            python3 -m pip install --upgrade pip
+            python3 -m pip install 'gdown==5.2.0'
+            gdown --fuzzy 'https://drive.google.com/uc?id=1IMwzqZUuRnTv5jcuKdvZx-RZweknww5x' --output Models/DeepCreamSource.zip
+          fi
+          python3 - <<'PY'
+          import zipfile
+          from pathlib import Path
+          p = Path("Models/DeepCreamSource.zip")
+          if not p.is_file() or p.stat().st_size < 100_000_000:
+              raise SystemExit("DeepCreamPy v2 checkpoint archive is missing or unexpectedly small.")
+          with zipfile.ZipFile(p) as z:
+              bad = z.testzip()
+              if bad:
+                  raise SystemExit(f"DeepCreamPy archive CRC failure: {bad}")
+              names = set(z.namelist())
+              required = (
+                  "09-11-2019 DCPv2 model/bar/Train_775000.meta",
+                  "09-11-2019 DCPv2 model/bar/Train_775000.index",
+                  "09-11-2019 DCPv2 model/mosaic/Train_290000.meta",
+                  "09-11-2019 DCPv2 model/mosaic/Train_290000.index",
+              )
+              missing = [n for n in required if n not in names]
+              if missing:
+                  raise SystemExit("DeepCream archive is not the expected v2 release: " + ", ".join(missing))
+          print("DeepCreamPy v2 checkpoint archive verified.")
+          PY
+          python3 -m pip install 'tensorflow==2.15.1' 'coremltools==8.3.0' 'numpy==1.26.4'
+          python3 Scripts/export_deepcream_coreml.py --archive Models/DeepCreamSource.zip --output Models
+          test -f Models/DeepCreamBar.mlpackage/Manifest.json
+          test -f Models/DeepCreamMosaic.mlpackage/Manifest.json
+          test ! -e Models/DeepCreamBar.pb
+          test ! -e Models/DeepCreamMosaic.pb
+
       - name: Generate Xcode project
         run: xcodegen generate
       - name: Cache Xcode and Swift package build outputs
