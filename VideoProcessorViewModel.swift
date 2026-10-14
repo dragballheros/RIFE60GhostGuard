@@ -55,6 +55,7 @@ final class VideoProcessorViewModel: ObservableObject {
     @Published var compressionProtection = true
     @Published var outlineProtection = true
     @Published var watermarkRemovalEnabled = false
+    @Published var watermarkModel: WatermarkModel = .lama
     @Published var watermarkRegions: [WatermarkRegion] = [] { didSet { saveSelectedMask() } }
     @Published var watermarkPaddingPixels = 1.0
     @Published var colorPopEnabled = true
@@ -328,7 +329,7 @@ final class VideoProcessorViewModel: ObservableObject {
 
     private func startSingle() async -> Task<Void, Never>? {
         guard let selectedSource = inputURL, !isProcessing, !isBenchmarking else { return nil }
-        let watermark = WatermarkConfiguration(enabled: effectiveWatermarkEnabled, regions: watermarkRegions, paddingPixels: Int(watermarkPaddingPixels))
+        let watermark = WatermarkConfiguration(enabled: effectiveWatermarkEnabled, regions: watermarkRegions, paddingPixels: Int(watermarkPaddingPixels), model: watermarkModel)
         guard watermark.isValid else {
             errorText = "Mark at least one watermark region before starting removal."
             return nil
@@ -1151,7 +1152,7 @@ final class VideoProcessorViewModel: ObservableObject {
         let colorPop = colorPopEnabled, gradeStrength = colorPopStrength
         let sensitivity = ghostSensitivity, audio = preserveAudio, upscale = upscaleTo4K
         let upscaleBeforeRIFE = upscaleFirst && upscale, modelCompute = computePreference.rawValue
-        let watermark = WatermarkConfiguration(enabled: watermarkRemovalEnabled, regions: watermarkRegions, paddingPixels: Int(watermarkPaddingPixels))
+        let watermark = WatermarkConfiguration(enabled: watermarkRemovalEnabled, regions: watermarkRegions, paddingPixels: Int(watermarkPaddingPixels), model: watermarkModel)
         return ["pipeline-v5-colorpop", "hq", "ghost=\(guardEnabled)", "cuts=\(cuts)", "compression=\(compressionEnabled)", "outline=\(outlineEnabled)", "colorpop=\(colorPop)", "colorpopStrength=\(gradeStrength)", "watermark=\(watermark.enabled)", "watermarkMasks=\(watermark.serializedRegions)", "watermarkPadding=\(watermark.paddingPixels)", "watermarkModel=\(WatermarkConfiguration.modelID)", String(format: "sensitivity=%.2f", sensitivity), "audio=\(audio)", "reddit=\(redditMode)", "videoToGIF=\(videoToGIFEnabled)", "upscale=\(upscale)", "upscaleFirst=\(upscaleBeforeRIFE)", "computeUnits=\(modelCompute)", "fps=60"].joined(separator: "|")
     }
 
