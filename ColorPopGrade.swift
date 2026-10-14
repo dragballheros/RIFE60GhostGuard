@@ -166,7 +166,7 @@ final class ColorPopGrade {
 
         // Gamut-map by reducing chroma only as much as needed. This prevents
         // clipping a saturated pink/red/blue channel at 1.0 and shifting hue.
-        var gamutLimit = 1.0
+        var gamutLimit = Double.greatestFiniteMagnitude
         for delta in [dr, dg, db] {
             if delta > 0 {
                 gamutLimit = min(gamutLimit, (1 - targetY) / delta)
