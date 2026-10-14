@@ -1,6 +1,25 @@
 import Foundation
 import CoreGraphics
 
+enum WatermarkModel: String, CaseIterable, Identifiable, Sendable {
+    case lama = "lama"
+    case deepCreamBar = "deepcream-bar"
+    case deepCreamMosaic = "deepcream-mosaic"
+
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .lama: return "Anime/Manga LaMa (default)"
+        case .deepCreamBar: return "DeepCream v2 • Bar"
+        case .deepCreamMosaic: return "DeepCream v2 • Mosaic"
+        }
+    }
+}
+
+protocol WatermarkRemovalApplying: AnyObject {
+    func apply(_ source: CVPixelBuffer) throws -> CVPixelBuffer
+}
+
 /// A rectangle in the upright preview: normalized 0...1, origin at top-left.
 struct WatermarkRegion: Codable, Sendable, Equatable {
     var x: Double
@@ -19,6 +38,7 @@ struct WatermarkConfiguration: Sendable {
     var enabled = false
     var regions: [WatermarkRegion] = []
     var paddingPixels = 3
+    var model: WatermarkModel = .lama
     static let modelID = "anime-lama-512-fp32-v1"
 
     var isValid: Bool { !enabled || (!regions.isEmpty && regions.count <= 8 && regions.allSatisfy { $0.isValid }) }
