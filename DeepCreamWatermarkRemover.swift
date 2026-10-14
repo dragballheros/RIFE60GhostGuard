@@ -112,10 +112,10 @@ final class DeepCreamWatermarkRemover: WatermarkRemovalApplying {
                 let known: Float = masked ? 0 : 1
                 let pixel = (row * modelSize + col) * 3
                 for channel in 0..<3 {
-                    let value = Float(rgba[(row * modelSize + col) * 4 + channel]) / 255.0
+                    let value = Float(rgba[(row * modelSize + col) * 4 + channel]) / 255.0 * 2.0 - 1.0
                     originalPtr[pixel + channel] = value
                     maskPtr[pixel + channel] = known
-                    maskedPtr[pixel + channel] = value * known
+                    maskedPtr[pixel + channel] = known == 0 ? -1.0 : value
                 }
             }
         }
@@ -134,8 +134,8 @@ final class DeepCreamWatermarkRemover: WatermarkRemovalApplying {
         var outputRGBA = [UInt8](repeating: 255, count: modelSize * modelSize * 4)
         for index in 0..<(modelSize * modelSize) {
             for channel in 0..<3 {
-                let value = min(max(Double(outputPtr[index * 3 + channel]), 0), 1)
-                outputRGBA[index * 4 + channel] = UInt8((value * 255).rounded())
+                let normalized = min(max((Double(outputPtr[index * 3 + channel]) + 1.0) * 0.5, 0), 1)
+                outputRGBA[index * 4 + channel] = UInt8((normalized * 255).rounded())
             }
         }
         guard let outputCG = Self.makeCGImage(rgba: outputRGBA, width: modelSize, height: modelSize) else {
