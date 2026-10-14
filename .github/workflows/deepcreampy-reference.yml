@@ -36,11 +36,12 @@ jobs:
 
       - name: Download upstream checkpoint archive (validation only)
         env:
-          MODEL_ARCHIVE_ID: ${{ inputs.model_archive_id }}
+          MODEL_ARCHIVE_ID: ${{ inputs.model_archive_id || '1IMwzqZUuRnTv5jcuKdvZx-RZweknww5x' }}
         run: |
           set -euo pipefail
           mkdir -p /tmp/dcp-checkpoints
-          gdown --id "$MODEL_ARCHIVE_ID" -O /tmp/dcp-checkpoints.zip
+          test -n "$MODEL_ARCHIVE_ID"
+          gdown "$MODEL_ARCHIVE_ID" -O /tmp/dcp-checkpoints.zip
           test -s /tmp/dcp-checkpoints.zip
           unzip -q /tmp/dcp-checkpoints.zip -d /tmp/dcp-checkpoints
           ROOT="$(find /tmp/dcp-checkpoints -type f -name 'Train_775000.index' -print -quit | xargs dirname)"
