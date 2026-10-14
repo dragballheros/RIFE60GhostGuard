@@ -66,11 +66,6 @@ def export_one(checkpoint: Path, output_dir: Path, model_name: str) -> None:
         # the generator. Freeze then prune to the inference output so Core ML
         # never sees training-only ExtractImagePatches gradient subgraphs.
         frozen = tf.compat.v1.graph_util.extract_sub_graph(frozen, [OUTPUT_NAME])
-        # Diagnose source ranks around ExtractImagePatches before Core ML conversion.
-        for op in graph.get_operations():
-            if op.type == "ExtractImagePatches":
-                details = [(tensor.name, tensor.shape.as_list()) for tensor in op.inputs]
-                print(f"{model_name}: ExtractImagePatches {op.name} inputs={details} outputs={[t.shape.as_list() for t in op.outputs]}", flush=True)
         with tf.io.gfile.GFile(str(frozen_path), "wb") as handle:
             handle.write(frozen.SerializeToString())
 
@@ -106,7 +101,7 @@ def export_one(checkpoint: Path, output_dir: Path, model_name: str) -> None:
         inputs=inputs,
         outputs=[ct.TensorType(name=OUTPUT_NAME)],
         convert_to="mlprogram",
-        minimum_deployment_target=ct.target.iOS16,
+        minimum_deployment_target=ct.target.iOS17,
         compute_precision=ct.precision.FLOAT16,
     )
     converted.short_description = (
