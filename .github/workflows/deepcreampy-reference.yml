@@ -43,7 +43,7 @@ jobs:
           unzip -q /tmp/dcp-checkpoints.zip -d /tmp/dcp-checkpoints
           ROOT="$(find /tmp/dcp-checkpoints -type f -name 'Train_775000.index' -print -quit | xargs dirname)"
           test -n "$ROOT"
-          test -f "$ROOT/Train_290000.index"
+          test -f "$(dirname "$ROOT")/mosaic/Train_290000.index"
           echo "DCP_CHECKPOINT_ROOT=$(dirname "$ROOT")" >> "$GITHUB_ENV"
           echo "Detected checkpoint parent: $(dirname "$ROOT")"
 
