@@ -20,7 +20,8 @@ tf.compat.v1.disable_eager_execution()
 
 INPUT_NAMES = ("Placeholder", "Placeholder_1", "Placeholder_2")
 OUTPUT_NAME = "add"
-SHAPE = (1, 256, 256, 3)
+BATCH_SIZE = 8
+SHAPE = (BATCH_SIZE, 256, 256, 3)
 
 
 def require_checkpoint(directory: Path, prefix: str) -> Path:
