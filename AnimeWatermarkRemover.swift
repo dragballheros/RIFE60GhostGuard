@@ -6,7 +6,7 @@ import CoreVideo
 /// Masked anime/manga LaMa inpainting before interpolation/upscale/sharpening.
 /// Only selected regions (plus explicit padding) are replaced. Every BGRA byte
 /// outside those regions is copied unchanged, including alpha. Serial-use class.
-final class AnimeWatermarkRemover {
+final class AnimeWatermarkRemover: WatermarkRemovalApplying {
     private let configuration: WatermarkConfiguration
     private let model: MLModel
     private let context = CIContext(options: [.cacheIntermediates: false])
