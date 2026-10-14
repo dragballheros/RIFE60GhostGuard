@@ -120,7 +120,7 @@ struct ContentView: View {
                         if vm.colorPopEnabled {
                             HStack { Text("Color Pop strength"); Spacer(); Text(String(format: "%.2f", vm.colorPopStrength)) }
                             Slider(value: $vm.colorPopStrength, in: 0.1...1.0).disabled(vm.queueLocked || vm.isImporting)
-                            Text("Selective vibrance after upscale and sharpening. Protects grays and highlights; gently cleans orange skin tones.").font(.caption).foregroundStyle(.secondary)
+                            Text("Selective anime color pop after enhancement: richer reds, pinks, blues and teals, with luma-preserving chroma, neutral-gray protection, and skin/highlight safeguards.").font(.caption).foregroundStyle(.secondary)
                         }
                         Text("Compression Guard runs before RIFE. Sharpie now runs as the final visual pass after Real-CUGAN, so CUGAN cannot soften or change the finished outlines. This revision is slightly narrower and closer to the original anime line width while remaining a little thicker/sharper than the original.").font(.caption).foregroundStyle(.secondary)
                     }
