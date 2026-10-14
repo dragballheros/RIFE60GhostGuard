@@ -2,7 +2,7 @@ import Foundation
 import CoreGraphics
 import CoreVideo
 
-enum WatermarkModel: String, CaseIterable, Identifiable, Sendable {
+enum WatermarkModel: String, CaseIterable, Identifiable, Hashable, Sendable {
     case lama = "lama"
     case deepCreamBar = "deepcream-bar"
     case deepCreamMosaic = "deepcream-mosaic"
