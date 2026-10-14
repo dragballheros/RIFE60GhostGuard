@@ -68,10 +68,11 @@ def export_one(checkpoint: Path, output_dir: Path, model_name: str) -> None:
         # conversion. The graph's third input is a known-pixel mask: 1=preserve,
         # 0=inpaint. The second input is the uncorrupted source image.
         rng = np.random.default_rng(20261014)
-        source = rng.random(SHAPE, dtype=np.float32)
+        source = rng.random(SHAPE, dtype=np.float32) * 2.0 - 1.0
         mask = np.ones(SHAPE, dtype=np.float32)
         mask[:, 80:176, 80:176, :] = 0.0
-        masked = source * mask
+        masked = source.copy()
+        masked[mask == 0.0] = -1.0
         feed = {
             INPUT_NAMES[0] + ":0": masked,
             INPUT_NAMES[1] + ":0": source,
@@ -98,10 +99,10 @@ def export_one(checkpoint: Path, output_dir: Path, model_name: str) -> None:
         "DeepCreamPy v2 anime-image inpainting model. Fixed 256x256 RGB input; "
         "use only with a user-provided inpainting mask."
     )
-    converted.input_description[INPUT_NAMES[0]] = "Masked RGB crop, float32 in [0,1], NHWC."
-    converted.input_description[INPUT_NAMES[1]] = "Original RGB crop, float32 in [0,1], NHWC."
+    converted.input_description[INPUT_NAMES[0]] = "Masked RGB crop, float32 in [-1,1], NHWC."
+    converted.input_description[INPUT_NAMES[1]] = "Original RGB crop, float32 in [-1,1], NHWC."
     converted.input_description[INPUT_NAMES[2]] = "Known-pixel mask, float32, 1=preserve and 0=inpaint."
-    converted.output_description[OUTPUT_NAME] = "Inpainted RGB crop, float32 in [0,1], NHWC."
+    converted.output_description[OUTPUT_NAME] = "Inpainted RGB crop, float32 in [-1,1], NHWC."
     converted.save(str(package_path))
 
     # Run the exported package on macOS, not just serialize it. Reject conversion
