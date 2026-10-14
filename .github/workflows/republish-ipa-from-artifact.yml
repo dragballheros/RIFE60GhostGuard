@@ -6,7 +6,7 @@ on:
       source_run_id:
         description: GitHub Actions run ID containing the verified-unsigned-ipa artifact
         required: true
-        default: "38173159565"
+        default: "38517758976"
   push:
     branches: [main]
     paths:
@@ -24,10 +24,10 @@ jobs:
       - name: Checkout repository for GitHub Release publishing
         uses: actions/checkout@v4
 
-      - name: Download existing IPA artifact ZIP and extract IPA
+      - name: Download existing IPA artifact and verify extracted IPA
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          SOURCE_RUN_ID: ${{ github.event.inputs.source_run_id || '38173159565' }}
+          SOURCE_RUN_ID: ${{ github.event.inputs.source_run_id || '38517758976' }}
         run: |
           set -euo pipefail
           mkdir -p recovered
@@ -39,33 +39,37 @@ jobs:
             exit 1
           fi
           unzip -t "$IPA_PATH" >/dev/null
-          cp "$IPA_PATH" RIFE60GhostGuard-build606-unsigned.ipa
-          test -s RIFE60GhostGuard-build606-unsigned.ipa
-          echo "Build 606 IPA size: $(stat -c%s RIFE60GhostGuard-build606-unsigned.ipa) bytes"
+          cp "$IPA_PATH" RIFE60GhostGuard-verified-unsigned.ipa
+          test -s RIFE60GhostGuard-verified-unsigned.ipa
+          echo "Verified IPA size: $(stat -c%s RIFE60GhostGuard-verified-unsigned.ipa) bytes"
+          echo "Source Actions run: $SOURCE_RUN_ID"
 
-      - name: Publish build 606 IPA as temporary GitHub Release
+      - name: Publish temporary GitHub Release with verified IPA
         id: publish
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SOURCE_RUN_ID: ${{ github.event.inputs.source_run_id || '38517758976' }}
         run: |
           set -euo pipefail
-          TAG="ipa-recovered-${GITHUB_RUN_ID}"
-          gh release create "$TAG" RIFE60GhostGuard-build606-unsigned.ipa \
-            --title "RIFE60GhostGuard build 606 IPA from build 606" \
-            --notes "Raw verified unsigned IPA extracted from the existing GitHub Actions artifact of run 38173159565 (build 606). The Actions artifact ZIP remains available separately. This temporary release is deleted 15 minutes after publication."
+          TAG="ipa-recovered-${SOURCE_RUN_ID}-${GITHUB_RUN_ID}"
+          gh release create "$TAG" RIFE60GhostGuard-verified-unsigned.ipa \
+            --title "RIFE60GhostGuard verified unsigned IPA" \
+            --notes "Raw verified unsigned IPA extracted from the existing GitHub Actions artifact of run ${SOURCE_RUN_ID}. The Actions artifact ZIP remains available separately. This temporary release is deleted 15 minutes after publication."
           URL="$(gh release view "$TAG" --json url --jq .url)"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "url=$URL" >> "$GITHUB_OUTPUT"
           {
-            echo "## Build 606 IPA release"
+            echo "## Temporary IPA release"
             echo
             echo "Download the raw IPA: [$TAG]($URL)"
             echo
-            echo "The source Actions artifact remains intact. This temporary Release is deleted after 15 minutes."
+            echo "Source Actions run: ${SOURCE_RUN_ID}"
+            echo
+            echo "This temporary Release is deleted 15 minutes after publication."
           } >> "$GITHUB_STEP_SUMMARY"
-          echo "Published build 606 IPA release: $URL"
+          echo "Published verified IPA release: $URL"
 
-      - name: Delete temporary build 606 IPA Release after 15 minutes
+      - name: Delete temporary IPA Release after 15 minutes
         if: success() && steps.publish.outputs.tag != ''
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -74,4 +78,4 @@ jobs:
           set -euo pipefail
           sleep 900
           gh release delete "$RELEASE_TAG" --yes --cleanup-tag
-          echo "Deleted temporary build 606 IPA release after 15 minutes."
+          echo "Deleted temporary IPA release $RELEASE_TAG after its 15-minute download window."
