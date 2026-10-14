@@ -102,7 +102,7 @@ def export_one(checkpoint: Path, output_dir: Path, model_name: str) -> None:
         outputs=[ct.TensorType(name=OUTPUT_NAME)],
         convert_to="mlprogram",
         minimum_deployment_target=ct.target.iOS17,
-        compute_precision=ct.precision.FLOAT16,
+        compute_precision=ct.precision.FLOAT32,
     )
     converted.short_description = (
         "DeepCreamPy v2 anime-image inpainting model. Fixed 256x256 RGB input; "
