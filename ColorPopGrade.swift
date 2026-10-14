@@ -46,8 +46,8 @@ final class ColorPopGrade {
         guard CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault, pool, &destination) == kCVReturnSuccess,
               let destination else { throw ProcessorError.conversionFailed("could not allocate Color Pop BGRA frame") }
 
-        // These pipeline frames are SDR BGRA. Explicit sRGB interpretation
-        // avoids an implicit device/display profile introducing a gray tint.
+        // Keep the same explicit SDR color-space interpretation and output
+        // attachment as the existing BT.709 video-writer handoff.
         filter.setValue(CIImage(cvPixelBuffer: buffer, options: [.colorSpace: colorSpace]), forKey: kCIInputImageKey)
         // Release the previous input graph promptly; retain the cube for the job.
         defer { filter.setValue(nil, forKey: kCIInputImageKey) }
@@ -94,121 +94,92 @@ final class ColorPopGrade {
         return rgba.withUnsafeBufferPointer { Data(buffer: $0) }
     }
 
+    /// Luminance-anchored chroma enhancement. Instead of pushing RGB channels
+    /// independently (which can brighten skin, clip saturated primaries, or
+    /// create a global color cast), expand the color vector around its luma.
+    /// Skin-like hues receive almost no chroma gain and no contrast change.
     private static func gradeNode(_ r: Double, _ g: Double, _ b: Double, strength s: Double) -> (r: Double, g: Double, b: Double) {
+        guard s > 0 else { return (r, g, b) }
         let original = hsv(r, g, b)
         let y = luma(r, g, b)
-        let chroma = max(r, g, b) - min(r, g, b)
+        guard y > 0 else { return (r, g, b) }
 
-        // Keep neutral/very-low-chroma pixels stable. The previous version
-        // also used this gate for skin, which accidentally disabled most
-        // saturated anime skin and allowed the global warm grade to make it
-        // increasingly yellow.
-        let neutralWeight = 1 - smoothstep(0.0, 0.055, chroma)
-        let protection = (1 - neutralWeight) * smoothstep(0.015, 0.10, y)
-            * (1 - smoothstep(0.92, 1.0, y))
-        guard s > 0, y > 0 else { return (r, g, b) }
+        let high = max(r, max(g, b))
+        let low = min(r, min(g, b))
+        let chroma = high - low
+        // Avoid amplifying codec noise and tint in neutral/near-neutral pixels.
+        let chromaWeight = smoothstep(0.020, 0.095, chroma)
+        guard chromaWeight > 0 else { return (r, g, b) }
 
-        // Endpoint-preserving luma S-curve. Mid-gray derivative is 1 + .08*s.
-        let newY = clamp(y + 0.08 * s * (y - 0.5) * 4 * y * (1 - y))
-        let ratio = y > 0 ? newY / y : 1
-        var rr = clamp(r * ratio)
-        var gg = clamp(g * ratio)
-        var bb = clamp(b * ratio)
-        var color = hsv(rr, gg, bb)
+        // Soft skin likelihood: peach/orange hue plus common anime-skin RGB
+        // relationships. It only suppresses the grade; it never forces skin
+        // toward white, orange, or a target hue.
+        let skinHue = smoothstep(2, 10, original.h) * (1 - smoothstep(43, 56, original.h))
+        let skinSaturation = smoothstep(0.045, 0.19, original.s) * (1 - smoothstep(0.82, 0.94, original.s))
+        let skinLuma = smoothstep(0.08, 0.20, y) * (1 - smoothstep(0.95, 0.99, y))
+        let redGreen = r / max(g, 0.001)
+        let greenBlue = g / max(b, 0.001)
+        let skinRedGreen = smoothstep(0.99, 1.045, redGreen) * (1 - smoothstep(1.62, 1.92, redGreen))
+        let skinGreenBlue = smoothstep(1.00, 1.09, greenBlue) * (1 - smoothstep(2.65, 3.10, greenBlue))
+        let skinWeight = skinHue * skinSaturation * skinLuma * skinRedGreen * skinGreenBlue
 
-        // Anime skin is commonly a fairly saturated orange/peach. Detect it
-        // directly and correct its white balance independently of the global
-        // grade. The narrower hue window avoids most green foliage and strong
-        // yellow highlights.
-        let skinHue = smoothstep(5, 12, original.h)
-            * (1 - smoothstep(38, 46, original.h))
-        let skinSaturation = smoothstep(0.16, 0.30, original.s)
-            * (1 - smoothstep(0.84, 0.96, original.s))
-        // Include shaded limbs and arms. The old gate started at y=0.22,
-        // which made darker red/orange skin fall out of the correction while
-        // brighter peach skin continued to be corrected.
-        let skinLuma = smoothstep(0.12, 0.30, y)
-            * (1 - smoothstep(0.96, 1.0, y))
-        let skinRedGreen = smoothstep(1.04, 1.10, r / max(g, 0.001))
-            * (1 - smoothstep(1.60, 1.90, r / max(g, 0.001)))
-        let skinGreenBlue = smoothstep(1.15, 1.30, g / max(b, 0.001))
-            * (1 - smoothstep(2.50, 3.10, g / max(b, 0.001)))
-        let skinWeight = skinHue * skinSaturation * skinLuma
-            * skinRedGreen * skinGreenBlue
+        // Fade the grade out near black and near peak white. The tiny S-curve
+        // improves midtone separation but is disabled for skin-like pixels.
+        let shadowWeight = smoothstep(0.015, 0.075, y)
+        let highlightWeight = 1 - smoothstep(0.84, 0.97, y)
+        let usableWeight = chromaWeight * shadowWeight * highlightWeight
+        let contrastWeight = usableWeight * (1 - skinWeight)
+        let contrastAmount = 0.035 * s * contrastWeight
+        let targetY = clamp(y + contrastAmount * (y - 0.5) * 4 * y * (1 - y))
 
-        // Keep the global pop from over-warming likely skin. Saturation boost
-        // remains available for scenery and clothing.
-        let vibranceGain = 1 + 0.35 * s * pow(1 - original.s, 1.5) * (1 - skinWeight)
-        color.s = clamp(color.s * vibranceGain)
-        (rr, gg, bb) = rgb(color.h, color.s, color.v)
+        // Hue-family weighting gives anime reds/pinks, blues and teal accents
+        // a slightly stronger lift than generic low-saturation vibrance.
+        let h = original.h
+        let redWeight = max(1 - smoothstep(8, 28, h), smoothstep(334, 354, h))
+        let pinkWeight = smoothstep(285, 307, h) * (1 - smoothstep(340, 357, h))
+        let tealWeight = smoothstep(150, 173, h) * (1 - smoothstep(202, 224, h))
+        let blueWeight = smoothstep(198, 220, h) * (1 - smoothstep(258, 280, h))
+        let greenWeight = smoothstep(65, 88, h) * (1 - smoothstep(145, 170, h))
+        let orangeWeight = smoothstep(14, 26, h) * (1 - smoothstep(42, 55, h))
+        let familyAccent = 0.10 * redWeight
+            + 0.14 * pinkWeight
+            + 0.12 * tealWeight
+            + 0.12 * blueWeight
+            + 0.07 * greenWeight
+            + 0.05 * orangeWeight
 
-        // Global white-balance nudge: slightly cool the whole grade without
-        // changing luma. Skin gets a stronger targeted correction below.
-        let beforeCool = luma(rr, gg, bb)
-        rr *= 1 - 0.003 * s
-        bb *= 1 + 0.006 * s
-        let afterCool = luma(rr, gg, bb)
-        if afterCool > 0 {
-            let normalize = beforeCool / afterCool
-            rr = clamp(rr * normalize)
-            gg = clamp(gg * normalize)
-            bb = clamp(bb * normalize)
-        }
+        // Lift muted colors while retaining a useful extra boost for already
+        // vivid anime colors. Skin keeps only 8% of the proposed saturation gain.
+        let mutedColorLift = 0.28 * pow(max(1 - original.s, 0), 0.75)
+        let proposedGain = 1 + s * (mutedColorLift + familyAccent) * usableWeight
+            * (1 - 0.92 * skinWeight)
 
-        color = hsv(rr, gg, bb)
+        // First apply the very small luma curve with a uniform channel scale,
+        // then expand chroma around targetY. Luma remains targetY by construction.
+        let toneRatio = targetY / y
+        let tr = r * toneRatio
+        let tg = g * toneRatio
+        let tb = b * toneRatio
+        let dr = tr - targetY
+        let dg = tg - targetY
+        let db = tb - targetY
 
-        // Pull yellow-orange skin toward a neutral peach/cream, reduce yellow
-        // chroma, and add a small blue contribution. Preserve luminance so
-        // this changes temperature/hue rather than simply increasing exposure.
-        if skinWeight > 0 {
-            // Use a stronger correction than the global grade. Anime skin can be
-            // visibly warm while still looking natural; a tiny hue nudge is not
-            // enough to counter that cast.
-            let correction = clamp(s * skinWeight * 2.45)
-            let targetHue = 18.0
-            let hueDelta = shortestHueDelta(from: color.h, to: targetHue)
-            color.h = normalizeHue(color.h + hueDelta * 0.90 * correction)
-            color.s = clamp(color.s * (1 - 0.22 * correction))
-            // Whiten by correcting temperature/hue, not by lifting exposure.
-            // The small value change keeps skin from looking washed out.
-            color.v = clamp(color.v * (1 + 0.018 * correction))
-            (rr, gg, bb) = rgb(color.h, color.s, color.v)
-
-            let skinLumaBefore = luma(rr, gg, bb)
-            rr *= 1 - 0.014 * correction
-            gg *= 1 - 0.003 * correction
-            bb *= 1 + 0.035 * correction
-            let skinLumaAfter = luma(rr, gg, bb)
-            if skinLumaAfter > 0 {
-                let normalize = skinLumaBefore / skinLumaAfter
-                rr = clamp(rr * normalize)
-                gg = clamp(gg * normalize)
-                bb = clamp(bb * normalize)
+        // Gamut-map by reducing chroma only as much as needed. This prevents
+        // clipping a saturated pink/red/blue channel at 1.0 and shifting hue.
+        var gamutLimit = 1.0
+        for delta in [dr, dg, db] {
+            if delta > 0 {
+                gamutLimit = min(gamutLimit, (1 - targetY) / delta)
+            } else if delta < 0 {
+                gamutLimit = min(gamutLimit, targetY / -delta)
             }
         }
-
-        // Do not rebuild RGB from the pre-nudge HSV here; that would discard
-        // the temperature correction just applied to rr/gg/bb.
-
-        // Fade the global grade, but let the skin-specific temperature/hue
-        // correction remain active where skin is confidently detected.
-        let globalAmount = protection * s
-        let skinAmount = clamp(skinWeight * s * 2.45)
-        let amount = max(globalAmount, skinAmount)
-        return (clamp(r + (rr - r) * amount),
-                clamp(g + (gg - g) * amount),
-                clamp(b + (bb - b) * amount))
-    }
-
-    private static func shortestHueDelta(from: Double, to: Double) -> Double {
-        var delta = (to - from).truncatingRemainder(dividingBy: 360)
-        if delta > 180 { delta -= 360 }
-        if delta < -180 { delta += 360 }
-        return delta
-    }
-
-    private static func normalizeHue(_ hue: Double) -> Double {
-        (hue.truncatingRemainder(dividingBy: 360) + 360).truncatingRemainder(dividingBy: 360)
+        let safeGain = min(proposedGain, max(0, gamutLimit))
+        return (
+            clamp(targetY + dr * safeGain),
+            clamp(targetY + dg * safeGain),
+            clamp(targetY + db * safeGain)
+        )
     }
 
     private static func luma(_ r: Double, _ g: Double, _ b: Double) -> Double {
@@ -223,8 +194,8 @@ final class ColorPopGrade {
     }
 
     private static func hsv(_ r: Double, _ g: Double, _ b: Double) -> (h: Double, s: Double, v: Double) {
-        let high = max(r, g, b)
-        let low = min(r, g, b)
+        let high = max(r, max(g, b))
+        let low = min(r, min(g, b))
         let delta = high - low
         guard high > 0, delta > 0 else { return (0, 0, high) }
         let sector: Double
@@ -233,22 +204,5 @@ final class ColorPopGrade {
         else { sector = 4 + (r - g) / delta }
         let degrees = sector * 60
         return (degrees < 0 ? degrees + 360 : degrees, delta / high, high)
-    }
-
-    private static func rgb(_ hue: Double, _ saturation: Double, _ value: Double) -> (Double, Double, Double) {
-        let h = (hue.truncatingRemainder(dividingBy: 360) + 360).truncatingRemainder(dividingBy: 360) / 60
-        let c = value * saturation
-        let x = c * (1 - abs(h.truncatingRemainder(dividingBy: 2) - 1))
-        let m = value - c
-        let channels: (Double, Double, Double)
-        switch h {
-        case 0..<1: channels = (c, x, 0)
-        case 1..<2: channels = (x, c, 0)
-        case 2..<3: channels = (0, c, x)
-        case 3..<4: channels = (0, x, c)
-        case 4..<5: channels = (x, 0, c)
-        default: channels = (c, 0, x)
-        }
-        return (channels.0 + m, channels.1 + m, channels.2 + m)
     }
 }
