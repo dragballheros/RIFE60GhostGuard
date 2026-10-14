@@ -98,6 +98,12 @@ struct ContentView: View {
                     Section("Anime Watermark Removal") {
                         Toggle("Remove marked watermarks", isOn: $vm.watermarkRemovalEnabled).disabled(vm.queueLocked || vm.isImporting)
                         if vm.watermarkRemovalEnabled {
+                            Picker("Inpainting model", selection: $vm.watermarkModel) {
+                                ForEach(WatermarkModel.allCases) { model in
+                                    Text(model.title).tag(model)
+                                }
+                            }
+                            .disabled(vm.queueLocked || vm.isImporting)
                             if let item = vm.selectedQueueItem, (vm.mediaQueue?.items.count ?? 0) > 1 {
                                 Text("Mask for: \(item.displayName)").font(.caption)
                                 Toggle("Remove watermark on this item", isOn: Binding(get: { vm.selectedQueueItem?.removeWatermark ?? true }, set: { vm.setSelectedWatermarkRemoval($0) })).disabled(vm.queueLocked || vm.isImporting)
@@ -109,7 +115,9 @@ struct ContentView: View {
                             }.disabled(vm.inputURL == nil || vm.queueLocked)
                             HStack { Text("Mask padding"); Spacer(); Text("\(Int(vm.watermarkPaddingPixels)) px") }
                             Slider(value: $vm.watermarkPaddingPixels, in: 0...16, step: 1).disabled(vm.queueLocked || vm.isImporting)
-                            Text("Anime/Manga LaMa reconstructs marked areas before RIFE and upscaling. Painted masks apply throughout a video. Use the brush and eraser to preserve the artwork between letters.").font(.caption).foregroundStyle(.secondary)
+                            Text(vm.watermarkModel == .lama
+                                 ? "Anime/Manga LaMa reconstructs marked areas before RIFE and upscaling. Painted masks apply throughout a video. Use the brush and eraser to preserve the artwork between letters."
+                                 : "DeepCream v2 runs locally on-device using its dedicated bar-censor or mosaic-censor weights. Mark only the area to reconstruct.").font(.caption).foregroundStyle(.secondary)
                         }
                     }
 
