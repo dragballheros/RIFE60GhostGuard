@@ -94,7 +94,7 @@ final class DeepCreamWatermarkRemover: WatermarkRemovalApplying {
             brushPixels = nil
         }
 
-        let shape: [NSNumber] = [1, NSNumber(value: modelSize), NSNumber(value: modelSize), 3]
+        let shape: [NSNumber] = [NSNumber(value: 1), NSNumber(value: modelSize), NSNumber(value: modelSize), NSNumber(value: 3)]
         let maskedInput = try MLMultiArray(shape: shape, dataType: .float32)
         let originalInput = try MLMultiArray(shape: shape, dataType: .float32)
         let maskInput = try MLMultiArray(shape: shape, dataType: .float32)
