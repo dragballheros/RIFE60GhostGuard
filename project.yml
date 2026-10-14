@@ -24,7 +24,6 @@ targets:
           - "*.swift"
           - "*.mm"
       - path: Assets.xcassets
-    resources:
       - path: Models/DeepCreamBar.mlpackage
       - path: Models/DeepCreamMosaic.mlpackage
     dependencies:
