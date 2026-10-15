@@ -110,7 +110,13 @@ final class ImageStillProcessor {
         if colorPopStrength > 0 {
             DiagnosticsLogger.shared.log("Color Pop active • strength=\(String(format: "%.2f", colorPopStrength)) • image grade after upscale and final polish")
             progress(0.88, "Image • Color Pop…")
-            buffer = try ColorPopGrade(strength: colorPopStrength).apply(buffer)
+            // Keep the exact pre-grade frame as the reference. Automatic warmth
+            // correction must compare the graded result against this frame and
+            // run after Color Pop, never against the original low-resolution input.
+            let preGradeReference = buffer
+            let graded = try ColorPopGrade(strength: colorPopStrength).apply(preGradeReference)
+            buffer = try AutoWarmthCorrection().apply(reference: preGradeReference, graded: graded)
+            DiagnosticsLogger.shared.log("Automatic warmth correction evaluated after Color Pop • still image")
             try Task.checkCancellation()
         }
 
