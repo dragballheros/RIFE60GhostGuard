@@ -515,9 +515,9 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-      # DELIVERY SAFEGUARD: the IPA is delivered only through the temporary GitHub Release below.
-      # Do not upload the IPA as an Actions artifact or to ChatGPT Library/chat attachments.
-      - name: Publish temporary GitHub Release with IPA
+      # Publish the IPA as a persistent GitHub Release asset so the download link does not expire after 15 minutes.
+      # The Actions artifact remains available as a fallback.
+      - name: Publish GitHub Release with IPA
         id: publish_ipa_release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -526,29 +526,19 @@ jobs:
           TAG="ipa-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           gh release create "$TAG" RIFE60GhostGuard-verified-unsigned.ipa \
             --title "RIFE60GhostGuard IPA — build ${GITHUB_RUN_NUMBER}" \
-            --notes "Verified unsigned IPA from GitHub Actions run ${GITHUB_RUN_ID}. This temporary release and its asset are automatically deleted 15 minutes after publication."
+            --notes "Verified unsigned IPA from GitHub Actions run ${GITHUB_RUN_ID}. This release is persistent; download link remains available until the release is manually removed."
           RELEASE_URL="$(gh release view "$TAG" --json url --jq .url)"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "url=$RELEASE_URL" >> "$GITHUB_OUTPUT"
           {
-            echo "## Temporary IPA release"
+            echo "## IPA release"
             echo
             echo "Download: [$TAG]($RELEASE_URL)"
             echo
-            echo "This release is scheduled for automatic deletion 15 minutes after publication."
+            echo "This release is persistent and will not be automatically deleted."
           } >> "$GITHUB_STEP_SUMMARY"
           echo "Published IPA release: $RELEASE_URL"
 
-      - name: Delete temporary IPA release after 15 minutes
-        if: success() && steps.publish_ipa_release.outputs.tag != ''
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RELEASE_TAG: ${{ steps.publish_ipa_release.outputs.tag }}
-        run: |
-          set -euo pipefail
-          sleep 900
-          gh release delete "$RELEASE_TAG" --yes --cleanup-tag
-          echo "Deleted temporary IPA release $RELEASE_TAG after its 15-minute download window."
       - name: Upload build diagnostics
         if: always()
         uses: actions/upload-artifact@v4
