@@ -31,6 +31,14 @@ This changes the first engineering question: do not attempt a full download onto
 
 A realistic first pass should audit only the model config, safetensors header, VAE architecture/config, and inference source, without downloading all checkpoint files. Then estimate memory from actual tensor metadata and test export of the smallest isolated component. No full checkpoint download or phone-side download should be triggered by this branch.
 
+## 14B transformer feasibility gate (2026-10-15)
+
+The official 14B Diffusers config reports `dim=5120`, `ffn_dim=13824`, `num_heads=40`, `num_layers=40`, and eight VACE injection layers. These are substantially larger than the 1.3B config and make a monolithic Core ML export an unrealistic first experiment. Source: https://huggingface.co/Wan-AI/Wan2.1-VACE-14B/blob/main/config.json
+
+A current public hardware guide reports the 14B pipeline was validated on a 48 GiB L40S and estimates about 70 GiB of disk for the full checkpoint set; that is a reference-system data point, not a guaranteed minimum for every quantized implementation. Source: https://github.com/vllm-project/vllm-omni/blob/main/recipes/Wan-AI/Wan2.1-VACE.md
+
+**Implication for iPhone 14 Pro Max:** do not assume that ordinary FP16/BF16 Core ML conversion will fit. Investigate a layer-wise or block-wise quantized implementation only after determining whether the attention/FFN operators and VACE conditioning can be represented with supported Metal/Core ML operations. Weight quantization and storage streaming do not remove activation-memory requirements. No iPhone runtime or throughput result has been established yet; the 14B/720p target remains required, but feasibility is an open gate rather than a promise.
+
 ## 1080p output strategy (required)
 
 The target deliverable is a final **1920×1080** video. Treat this as a hard output requirement, but do not label 480p/720p inference as native 1080p. The investigation must compare these possibilities:
