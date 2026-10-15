@@ -45,7 +45,7 @@ Use the app's existing local Real-CUGAN path as a candidate post-upscaler only a
 
 The official inference source imports `torch.cuda.amp`, and its CLI initializes CUDA devices for distributed execution. Its published requirements include `flash_attn` and `onnxruntime-gpu`. These are concrete portability blockers for a direct iOS port, not proof that a clean-room implementation is impossible. The denoiser also uses 3D convolution for VACE conditioning and repeated temporal/spatial attention blocks; the attention implementation and sequence padding will need a supported Metal/Core ML equivalent with bounded activation memory. Source files: https://github.com/ali-vilab/VACE/blob/main/vace/models/wan/modules/model.py and https://github.com/ali-vilab/VACE/blob/main/requirements/framework.txt.
 
-**Current technical conclusion:** a direct "convert the whole PyTorch model to one Core ML package" attempt is not a credible first move. The next experiment should be a component inventory and an export spike for the VAE or an isolated fixed-shape subgraph, while separately determining if the full temporal DiT attention can be reproduced with Core ML / Metal. Passing a VAE-only test would not mean VACE editing works end-to-end.
+**Current technical conclusion:** a direct "convert the whole PyTorch model to one Core ML package" attempt is not a credible first move. A first fixed-shape VAE-encoder export spike is now implemented in `Scripts/probe_wan_vae_coreml.py`, with a dedicated macOS GitHub Actions workflow at `.github/workflows/wan-vae-coreml-probe.yml`. The workflow fetches only the official VAE weights (not the entire 19 GB checkpoint), pins the upstream Wan source revision, attempts conversion, and compares converted output against PyTorch. Passing a VAE-only test would not mean VACE editing works end-to-end; failure should be used to identify the exact unsupported operation or conversion blocker.
 
 ## Why this must be a separate video pipeline
 
@@ -78,4 +78,4 @@ Keep the existing LaMa, DeepCream bar, and DeepCream mosaic paths untouched. The
 
 ## Current decision
 
-Proceed with artifact and component audit. Do **not** add VACE to the existing per-frame watermark picker or ship an unverified runtime. If a critical component cannot be exported to a supported iOS runtime, record the blocker and test whether a smaller compatible model family is a viable alternative rather than silently switching to cloud inference.
+Proceed with the component export spike and audit. Do **not** add VACE to the existing per-frame watermark picker or ship an unverified runtime. If a critical component cannot be exported to a supported iOS runtime, record the blocker and test whether a smaller compatible model family is a viable alternative rather than silently switching to cloud inference.
