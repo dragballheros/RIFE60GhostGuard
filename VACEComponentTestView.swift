@@ -39,7 +39,7 @@ struct VACEComponentTestView: View {
                     if let selectedModelURL {
                         Text(selectedModelURL.lastPathComponent)
                             .font(.caption)
-                            .textSelection(.enabled)
+                            .textSelection(.disabled)
                     }
                     Button {
                         guard let selectedModelURL else { return }
@@ -65,7 +65,7 @@ struct VACEComponentTestView: View {
                 Section("Test report") {
                     Text(report)
                         .font(.system(.footnote, design: .monospaced))
-                        .textSelection(.enabled)
+                        .textSelection(.disabled)
                     Button {
                         UIPasteboard.general.string = report
                     } label: {
