@@ -43,11 +43,18 @@ final class AutoWarmthCorrection {
             float sat = chroma / max(hi, 0.001);
             float skinHue = smoothstep(3.0, 12.0, hue) * (1.0 - smoothstep(42.0, 55.0, hue));
             float skinLike = skinHue * smoothstep(0.10, 0.24, sat) * (1.0 - smoothstep(0.78, 0.92, sat));
-            float neutralWeight = 1.0 - smoothstep(0.055, 0.23, chroma);
-            float correctionWeight = max(neutralWeight, 0.12 * skinLike);
+
+            // Keep neutral whites/greys as strong anchors, but do not exempt
+            // warm yellow/orange illustration areas simply because they are vivid.
+            float neutralWeight = 1.0 - smoothstep(0.045, 0.22, chroma);
+            float warmHue = smoothstep(18.0, 30.0, hue) * (1.0 - smoothstep(62.0, 78.0, hue));
+            float warmSat = smoothstep(0.12, 0.32, sat) * (1.0 - smoothstep(0.92, 0.99, sat));
+            float warmColorWeight = warmHue * warmSat * 0.62;
+            float skinProtection = 1.0 - 0.78 * skinLike;
+            float correctionWeight = max(neutralWeight, warmColorWeight) * skinProtection;
             float correction = amount * correctionWeight;
 
-            // Cool the red-blue axis gently while keeping luminance approximately stable.
+            // Move red toward blue while retaining approximate perceived brightness.
             c.r -= correction * 0.52;
             c.b += correction * 0.48;
             return vec4(clamp(c, 0.0, 1.0), pixel.a);
@@ -66,9 +73,12 @@ final class AutoWarmthCorrection {
         // source warmth above a small neutral tolerance, even when Color Pop added none.
         // Source warmth gets a lower gain to reduce unwanted cast without flattening
         // intentional warm lighting. A hard cap prevents aggressive white balancing.
-        let addedComponent = max(estimate.addedShift - 0.0015, 0) * 0.92
-        let sourceComponent = max(estimate.sourceBias - 0.012, 0) * 0.42
-        let target = min(max(addedComponent + sourceComponent, 0), 0.045)
+        let addedComponent = max(estimate.addedShift - 0.0010, 0) * 0.98
+        // The user explicitly wants source warmth reduced too, not merely the
+        // incremental warmth attributable to Color Pop. Increase the source gain
+        // and widen the ceiling while retaining a neutral deadband.
+        let sourceComponent = max(estimate.sourceBias - 0.006, 0) * 0.78
+        let target = min(max(addedComponent + sourceComponent, 0), 0.095)
         let confidence = CGFloat(min(max(Double(estimate.samples - 8) / 40.0, 0.0), 1.0))
         let confidenceScaledTarget = target * confidence
 
@@ -81,7 +91,7 @@ final class AutoWarmthCorrection {
         let amount = smoothedAmount
         lock.unlock()
 
-        guard amount > 0.0012, let kernel else { return graded }
+        guard amount > 0.0008, let kernel else { return graded }
         let width = CVPixelBufferGetWidth(graded)
         let height = CVPixelBufferGetHeight(graded)
         try preparePool(width: width, height: height)
@@ -118,11 +128,13 @@ final class AutoWarmthCorrection {
             let luma = 0.2126 * r + 0.7152 * g + 0.0722 * b
             let sat = chroma / max(hi, 0.001)
 
-            // Candidate reference pixels should be low-chroma midtones. Keep the
-            // gate broad enough to find neutral surfaces but exclude saturated objects.
-            guard luma > 0.10, luma < 0.91, chroma < 0.19,
-                  abs(r - g) < 0.13, abs(g - b) < 0.13,
-                  sat < 0.52 else { continue }
+            // Estimate the source cast from a broad sample of low-to-moderate
+            // chroma pixels, not just nearly neutral pixels. The wider chroma gate
+            // captures lightly tinted panels, paper, wood highlights and illustration
+            // backgrounds while rejecting highly saturated character colors.
+            guard luma > 0.075, luma < 0.94, chroma < 0.27,
+                  abs(r - g) < 0.20, abs(g - b) < 0.20,
+                  sat < 0.68 else { continue }
 
             let gr = CGFloat(out[i]) / 255
             let gb = CGFloat(out[i + 2]) / 255
