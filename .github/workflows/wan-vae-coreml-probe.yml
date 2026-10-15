@@ -76,3 +76,14 @@ jobs:
             /tmp/WanVAE-TemporalCache.validation.json
           if-no-files-found: warn
           retention-days: 14
+
+      - name: Upload Core ML packages for on-device component tests
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wan-vace-ondevice-coreml-components
+          path: |
+            /tmp/WanVAEEncoder-5x64.mlpackage/
+            /tmp/WanVAEDecoder-5x8.mlpackage/
+          if-no-files-found: error
+          retention-days: 14
