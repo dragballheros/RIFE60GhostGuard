@@ -25,6 +25,8 @@ The official Hugging Face model repository currently reports about **19 GB** tot
 
 Source: https://huggingface.co/Wan-AI/Wan2.1-VACE-1.3B/tree/main
 
+The public model `config.json` identifies the denoiser as `VaceWanModel` with 30 layers, hidden dimension 1536, 12 attention heads, FFN dimension 8960, and 15 configured VACE layers. These dimensions mean the activation footprint—not only the 7.15 GB transformer checkpoint—must be measured before choosing a temporal chunk length. Source: https://huggingface.co/Wan-AI/Wan2.1-VACE-1.3B/blob/main/config.json
+
 This changes the first engineering question: do not attempt a full download onto the iPhone. The official repository as published is far larger than the phone's physical memory and a practical on-device model-storage budget. Quantizing weights could reduce storage, but would not by itself solve peak activation memory, unsupported ops, or runtime/thermal limits. The 11.4 GB T5 encoder is a particular investigation target: establish whether a smaller compatible text encoder can be used without unacceptable quality/conditioning changes, or whether the actual VACE pipeline requires that exact encoder. Any such substitution must be treated as a model variant and validated—not silently assumed equivalent.
 
 A realistic first pass should audit only the model config, safetensors header, VAE architecture/config, and inference source, without downloading all checkpoint files. Then estimate memory from actual tensor metadata and test export of the smallest isolated component. No full checkpoint download or phone-side download should be triggered by this branch.
