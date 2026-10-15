@@ -110,7 +110,7 @@ def main() -> int:
         encoder_candidate = (mu - mean) * (1.0 / std)
 
         # Official wrapper result: model.decode uses one latent frame per chunk.
-        decoder_reference = model.decode(latent, scale)
+        decoder_reference = model.decode(latent, scale).clamp_(-1, 1)
 
         # Independently reproduce decode unscaling, conv2, and per-frame cache.
         decoder_input = model.conv2(latent / (1.0 / std) + mean)
