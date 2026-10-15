@@ -104,7 +104,7 @@ struct VACEComponentTestView: View {
         }
     }
 
-    private static func runSmokeTest(at packageURL: URL) -> String {
+    nonisolated private static func runSmokeTest(at packageURL: URL) -> String {
         let started = Date()
         let hasAccess = packageURL.startAccessingSecurityScopedResource()
         defer {
@@ -152,11 +152,14 @@ struct VACEComponentTestView: View {
                     array[index] = NSNumber(value: 0)
                 }
                 let bytesPerElement: Int64
+                // Core ML's public MLMultiArrayDataType supports these
+                // numeric cases on iOS; do not reference NSNumber-style widths
+                // that Core ML does not expose (int64, int16, uint8, bool).
                 switch constraint.dataType {
-                case .double, .int64: bytesPerElement = 8
+                case .double: bytesPerElement = 8
                 case .float32, .int32: bytesPerElement = 4
-                case .float16, .int16: bytesPerElement = 2
-                case .int8, .uint8, .bool: bytesPerElement = 1
+                case .float16: bytesPerElement = 2
+                case .int8: bytesPerElement = 1
                 @unknown default: bytesPerElement = 0
                 }
                 allocatedInputBytes += Int64(array.count) * bytesPerElement
