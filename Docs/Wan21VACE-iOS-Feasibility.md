@@ -15,6 +15,20 @@ Determine whether the official `Wan-AI/Wan2.1-VACE-1.3B` checkpoint can be conve
 
 The official model documentation describes VACE as an all-in-one video creation/editing model. The 1.3B checkpoint is intended for approximately 480p output (the README notes 720p may be less stable). The published reference inference stack uses PyTorch and CUDA-specific setup. That establishes the reference environment, not that iOS conversion is impossible.
 
+## Verified checkpoint-size finding (2026-10-15)
+
+The official Hugging Face model repository currently reports about **19 GB** total and lists these core artifacts:
+
+- `diffusion_pytorch_model.safetensors`: **7.15 GB**
+- `models_t5_umt5-xxl-enc-bf16.pth`: **11.4 GB**
+- `Wan2.1_VAE.pth`: **508 MB**
+
+Source: https://huggingface.co/Wan-AI/Wan2.1-VACE-1.3B/tree/main
+
+This changes the first engineering question: do not attempt a full download onto the iPhone. The official repository as published is far larger than the phone's physical memory and a practical on-device model-storage budget. Quantizing weights could reduce storage, but would not by itself solve peak activation memory, unsupported ops, or runtime/thermal limits. The 11.4 GB T5 encoder is a particular investigation target: establish whether a smaller compatible text encoder can be used without unacceptable quality/conditioning changes, or whether the actual VACE pipeline requires that exact encoder. Any such substitution must be treated as a model variant and validated—not silently assumed equivalent.
+
+A realistic first pass should audit only the model config, safetensors header, VAE architecture/config, and inference source, without downloading all checkpoint files. Then estimate memory from actual tensor metadata and test export of the smallest isolated component. No full checkpoint download or phone-side download should be triggered by this branch.
+
 ## Why this must be a separate video pipeline
 
 The existing `WatermarkRemovalApplying.apply(CVPixelBuffer)` interface performs single-frame inpainting. VACE video-to-video and masked video-to-video workflows use a temporal clip, prompt, and task-specific conditioning/preprocessing. Adding VACE to `WatermarkModel` would misrepresent the feature and discard temporal context.
