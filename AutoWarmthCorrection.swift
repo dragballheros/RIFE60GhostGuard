@@ -3,10 +3,10 @@ import CoreImage
 import CoreVideo
 import CoreGraphics
 
-/// Reference-relative warmth correction for Color Pop.
-/// Measures the *change* introduced by grading, not the absolute warmth of the scene.
-/// Neutral and low-chroma source pixels form the reference set, so warm sunsets,
-/// wood, and skin already present in the source are not treated as errors.
+/// Adaptive warmth correction for Color Pop.
+/// Removes both warmth introduced by grading and a limited amount of excess warmth
+/// already present in the source. The source baseline is estimated only from neutral
+/// and low-chroma midtones, with confidence gating to avoid cooling colorful scenes.
 final class AutoWarmthCorrection {
     private let colorSpace = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
     private let context: CIContext
@@ -55,17 +55,21 @@ final class AutoWarmthCorrection {
         """)
     }
 
-    /// Applies only the positive warmth shift introduced by grading.
-    /// If evidence is weak or the grade did not add warmth, output is unchanged.
+    /// Removes measured added warmth plus a conservative portion of source warmth.
+    /// The source component is intentionally weaker than the added-shift component.
     func apply(reference: CVPixelBuffer, graded: CVPixelBuffer) throws -> CVPixelBuffer {
         guard CVPixelBufferGetWidth(reference) == CVPixelBufferGetWidth(graded),
               CVPixelBufferGetHeight(reference) == CVPixelBufferGetHeight(graded) else { return graded }
 
-        let estimate = try addedWarmth(reference: reference, graded: graded)
-        // Ignore quantization/noise, then correct most of a clearly measured shift.
-        // The cap prevents the auto pass from becoming a global creative white-balance tool.
-        let target = min(max((estimate.shift - 0.0018) * 0.92, 0), 0.040)
-        let confidence = CGFloat(min(max(Double(estimate.samples - 8) / 48.0, 0.0), 1.0))
+        let estimate = try warmthEstimate(reference: reference, graded: graded)
+        // Correct nearly all clearly introduced warmth. Also gently reduce positive
+        // source warmth above a small neutral tolerance, even when Color Pop added none.
+        // Source warmth gets a lower gain to reduce unwanted cast without flattening
+        // intentional warm lighting. A hard cap prevents aggressive white balancing.
+        let addedComponent = max(estimate.addedShift - 0.0015, 0) * 0.92
+        let sourceComponent = max(estimate.sourceBias - 0.012, 0) * 0.42
+        let target = min(max(addedComponent + sourceComponent, 0), 0.045)
+        let confidence = CGFloat(min(max(Double(estimate.samples - 8) / 40.0, 0.0), 1.0))
         let confidenceScaledTarget = target * confidence
 
         lock.lock()
@@ -97,11 +101,13 @@ final class AutoWarmthCorrection {
         return output
     }
 
-    private func addedWarmth(reference: CVPixelBuffer, graded: CVPixelBuffer) throws -> (shift: CGFloat, samples: Int) {
+    private func warmthEstimate(reference: CVPixelBuffer, graded: CVPixelBuffer) throws -> (sourceBias: CGFloat, addedShift: CGFloat, samples: Int) {
         let ref = try sample(reference)
         let out = try sample(graded)
-        var deltas: [CGFloat] = []
-        deltas.reserveCapacity(1024)
+        var sourceBiases: [CGFloat] = []
+        var addedDeltas: [CGFloat] = []
+        sourceBiases.reserveCapacity(1024)
+        addedDeltas.reserveCapacity(1024)
         for i in stride(from: 0, to: min(ref.count, out.count), by: 4) {
             let r = CGFloat(ref[i]) / 255
             let g = CGFloat(ref[i + 1]) / 255
@@ -111,29 +117,37 @@ final class AutoWarmthCorrection {
             let chroma = hi - lo
             let luma = 0.2126 * r + 0.7152 * g + 0.0722 * b
             let sat = chroma / max(hi, 0.001)
-            // Include neutral and moderately low-chroma reference pixels. Exclude
-            // deep shadows, clipped whites, and saturated warm scene content.
+
+            // Candidate reference pixels should be low-chroma midtones. Keep the
+            // gate broad enough to find neutral surfaces but exclude saturated objects.
             guard luma > 0.10, luma < 0.91, chroma < 0.19,
                   abs(r - g) < 0.13, abs(g - b) < 0.13,
                   sat < 0.52 else { continue }
+
             let gr = CGFloat(out[i]) / 255
             let gb = CGFloat(out[i + 2]) / 255
             let delta = (gr - gb) - (r - b)
-            // A red-blue increase is the warm direction. Ignore large local changes
-            // which are more likely to be colored objects or quantization outliers.
-            if delta.isFinite, abs(delta) < 0.18 { deltas.append(delta) }
+            let sourceBias = r - b
+            if sourceBias.isFinite, abs(sourceBias) < 0.20 { sourceBiases.append(sourceBias) }
+            if delta.isFinite, abs(delta) < 0.18 { addedDeltas.append(delta) }
         }
-        guard deltas.count >= 12 else { return (0, deltas.count) }
-        deltas.sort()
-        let lower = deltas.count / 10
-        let upper = max(lower + 1, deltas.count - lower)
-        let trimmed = Array(deltas[lower..<upper])
-        // Median is robust to a small number of beige/wood pixels in the reference set.
-        let middle = trimmed.count / 2
-        let median: CGFloat = trimmed.count.isMultiple(of: 2)
-            ? (trimmed[middle - 1] + trimmed[middle]) * 0.5
-            : trimmed[middle]
-        return (max(0, median), deltas.count)
+        guard sourceBiases.count >= 12 else { return (0, 0, sourceBiases.count) }
+        sourceBiases.sort()
+        addedDeltas.sort()
+        let sourceMedian: CGFloat = {
+            let m = sourceBiases.count / 2
+            return sourceBiases.count.isMultiple(of: 2)
+                ? (sourceBiases[m - 1] + sourceBiases[m]) * 0.5
+                : sourceBiases[m]
+        }()
+        let addedMedian: CGFloat = {
+            guard !addedDeltas.isEmpty else { return 0 }
+            let m = addedDeltas.count / 2
+            return addedDeltas.count.isMultiple(of: 2)
+                ? (addedDeltas[m - 1] + addedDeltas[m]) * 0.5
+                : addedDeltas[m]
+        }()
+        return (max(0, sourceMedian), max(0, addedMedian), min(sourceBiases.count, addedDeltas.count))
     }
 
     private func sample(_ buffer: CVPixelBuffer) throws -> [UInt8] {
