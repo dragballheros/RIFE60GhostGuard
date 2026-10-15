@@ -2,7 +2,9 @@
 
 Date: 2026-10-15  
 Branch: `research/wan21-vace-ios-feasibility`  
-Workflow: [Wan VAE Core ML Export Probe #8](https://github.com/dragballheros/RIFE60GhostGuard/actions/runs/38781782053)
+Initial encoder workflow: [Probe #8](https://github.com/dragballheros/RIFE60GhostGuard/actions/runs/38781782053)  
+Follow-up encoder + decoder workflow: [Probe #14](https://github.com/dragballheros/RIFE60GhostGuard/actions/runs/38796988952)  
+Latest decoder diagnostics: [Workflow artifact](https://github.com/dragballheros/RIFE60GhostGuard/actions/runs/38796988952/artifacts/12002806289)
 
 ## Result
 
@@ -16,6 +18,22 @@ The fixed-shape **encoder-only** export completed successfully on the macOS GitH
 | Mean absolute error vs traced PyTorch reference | 0.00804413 |
 | Core ML package | `WanVAEEncoder-5x64.mlpackage` |
 | Diagnostics artifact | [Download workflow artifact](https://github.com/dragballheros/RIFE60GhostGuard/actions/runs/38781782053/artifacts/11996147482) |
+
+## Follow-up result: fixed-shape decoder (Probe #14)
+
+The same macOS CI workflow also exported the fixed-shape decoder after replacing the unsupported `nearest-exact` upsample with explicit index selection. The replacement passed an equivalence check against the official PyTorch upsample with **maximum absolute error 0.0** before conversion.
+
+| Measurement | Result |
+|---|---:|
+| Decoder input | `[1, 16, 5, 8, 8]` |
+| Decoder output | `[1, 3, 5, 64, 64]` |
+| Max absolute error vs traced PyTorch reference | 0.0195475 |
+| Mean absolute error vs traced PyTorch reference | 0.00212934 |
+| RMSE | 0.00276781 |
+| Reference output range | [-1.104354, 1.201722] |
+| Core ML output range | [-1.097656, 1.201172] |
+
+This is a meaningful component-level improvement: both fixed-shape VAE encoder and decoder exports now convert and execute in CI. The output errors are measured in a FLOAT16 Core ML export and still need quality acceptance criteria. This test does **not** validate causal temporal caches or the official chunk-by-chunk decoder path, and it does not test on an iPhone.
 
 ## Interpretation
 
