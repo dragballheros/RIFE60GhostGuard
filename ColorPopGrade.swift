@@ -14,6 +14,7 @@ final class ColorPopGrade {
     private var pool: CVPixelBufferPool?
     private var poolWidth = 0
     private var poolHeight = 0
+    private let warmthCorrection = AutoWarmthCorrection()
 
     init(strength: Double) {
         let amount = strength.isFinite ? min(max(strength, 0), 1) : 0
@@ -55,7 +56,7 @@ final class ColorPopGrade {
         guard let image = filter.outputImage else { throw ProcessorError.conversionFailed("Color Pop LUT produced no image") }
         context.render(image, to: destination, bounds: bounds, colorSpace: colorSpace)
         CVBufferSetAttachment(destination, kCVImageBufferCGColorSpaceKey, colorSpace, .shouldPropagate)
-        return destination
+        return try warmthCorrection.apply(reference: buffer, graded: destination)
     }
 
     private func preparePool(width: Int, height: Int) throws {
