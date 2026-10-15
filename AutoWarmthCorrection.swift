@@ -103,22 +103,32 @@ final class AutoWarmthCorrection {
             scaleX: 64.0 / CGFloat(CVPixelBufferGetWidth(buffer)),
             y: 64.0 / CGFloat(CVPixelBufferGetHeight(buffer))
         )).cropped(to: CGRect(x: 0, y: 0, width: 64, height: 64))
-        guard let sample = context.createCGImage(small, from: small.extent),
-              let data = sample.dataProvider?.data,
-              let bytes = CFDataGetBytePtr(data) else {
+        guard let sample = context.createCGImage(small, from: small.extent) else {
             throw ProcessorError.conversionFailed("could not analyze frame warmth")
         }
-        let components = sample.bitsPerPixel / sample.bitsPerComponent
-        guard components >= 3 else { return 0 }
+        // Normalize the sampled image to explicit RGBA byte order, independent
+        // of the Core Graphics provider's native pixel layout.
+        var pixels = [UInt8](repeating: 0, count: 64 * 64 * 4)
+        guard let bitmap = CGContext(
+            data: &pixels,
+            width: 64,
+            height: 64,
+            bitsPerComponent: 8,
+            bytesPerRow: 64 * 4,
+            space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue
+        ) else {
+            throw ProcessorError.conversionFailed("could not allocate warmth-analysis bitmap")
+        }
+        bitmap.draw(sample, in: CGRect(x: 0, y: 0, width: 64, height: 64))
         var sum: CGFloat = 0
         var count: CGFloat = 0
-        let stride = sample.bytesPerRow
-        for y in 0..<sample.height {
-            for x in 0..<sample.width {
-                let offset = y * stride + x * components
-                let r = CGFloat(bytes[offset]) / 255
-                let g = CGFloat(bytes[offset + 1]) / 255
-                let b = CGFloat(bytes[offset + 2]) / 255
+        for y in 0..<64 {
+            for x in 0..<64 {
+                let offset = (y * 64 + x) * 4
+                let r = CGFloat(pixels[offset]) / 255
+                let g = CGFloat(pixels[offset + 1]) / 255
+                let b = CGFloat(pixels[offset + 2]) / 255
                 let hi = max(r, max(g, b))
                 let lo = min(r, min(g, b))
                 let chroma = hi - lo
