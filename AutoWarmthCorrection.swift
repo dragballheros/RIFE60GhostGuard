@@ -107,7 +107,6 @@ final class AutoWarmthCorrection {
         }
         context.render(corrected, to: output, bounds: input.extent, colorSpace: colorSpace)
         CVBufferSetAttachment(output, kCVImageBufferCGColorSpaceKey, colorSpace, .shouldPropagate)
-        DiagnosticsLogger.shared.log("Auto warmth • sourceBias=\(String(format: "%.5f", Double(estimate.sourceBias))) • addedShift=\(String(format: "%.5f", Double(estimate.addedShift))) • samples=\(estimate.samples) • confidence=\(String(format: "%.2f", Double(confidence))) • correction=\(String(format: "%.4f", Double(amount)))")
         return output
     }
 
