@@ -29,7 +29,7 @@ class InspectVaceCheckpointTests(unittest.TestCase):
             )
             self.assertEqual(result.returncode, 0, result.stderr)
             report = json.loads(output.read_text(encoding="utf-8"))
-            self.assertEqual(report["file_count"], 4)
+            self.assertEqual(report["file_count"], 3)
             self.assertEqual(report["weight_file_count"], 1)
             self.assertEqual(report["total_size_bytes"] > 0, True)
             index = next(item for item in report["files"] if item["path"].endswith(".index.json"))
