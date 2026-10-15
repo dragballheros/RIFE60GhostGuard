@@ -42,7 +42,8 @@ final class AutoWarmthCorrection {
             if (hue < 0.0) hue += 360.0;
             float sat = chroma / max(hi, 0.001);
             float skinHue = smoothstep(3.0, 12.0, hue) * (1.0 - smoothstep(42.0, 55.0, hue));
-            float skinLike = skinHue * smoothstep(0.10, 0.24, sat) * (1.0 - smoothstep(0.78, 0.92, sat));
+            // Include lightly saturated skin highlights; the prior lower bound missed the light-skin regression sample.
+            float skinLike = skinHue * smoothstep(0.025, 0.09, sat) * (1.0 - smoothstep(0.78, 0.92, sat));
 
             // Keep neutral whites/greys as strong anchors, but do not exempt
             // warm yellow/orange illustration areas simply because they are vivid.
