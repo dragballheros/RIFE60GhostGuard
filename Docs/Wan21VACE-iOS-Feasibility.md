@@ -41,6 +41,12 @@ The target deliverable is a final **1920×1080** video. Treat this as a hard out
 
 Use the app's existing local Real-CUGAN path as a candidate post-upscaler only after VACE inference can run. Compare 1080p output against the original clip for temporal flicker, line/detail retention, geometry changes, and frame consistency. Keep output frame rate, duration, and audio handling explicit. A 1920×1080 file container alone is not proof of native 1080p detail.
 
+## Additional source-code findings
+
+The official inference source imports `torch.cuda.amp`, and its CLI initializes CUDA devices for distributed execution. Its published requirements include `flash_attn` and `onnxruntime-gpu`. These are concrete portability blockers for a direct iOS port, not proof that a clean-room implementation is impossible. The denoiser also uses 3D convolution for VACE conditioning and repeated temporal/spatial attention blocks; the attention implementation and sequence padding will need a supported Metal/Core ML equivalent with bounded activation memory. Source files: https://github.com/ali-vilab/VACE/blob/main/vace/models/wan/modules/model.py and https://github.com/ali-vilab/VACE/blob/main/requirements/framework.txt.
+
+**Current technical conclusion:** a direct "convert the whole PyTorch model to one Core ML package" attempt is not a credible first move. The next experiment should be a component inventory and an export spike for the VAE or an isolated fixed-shape subgraph, while separately determining if the full temporal DiT attention can be reproduced with Core ML / Metal. Passing a VAE-only test would not mean VACE editing works end-to-end.
+
 ## Why this must be a separate video pipeline
 
 The existing `WatermarkRemovalApplying.apply(CVPixelBuffer)` interface performs single-frame inpainting. VACE video-to-video and masked video-to-video workflows use a temporal clip, prompt, and task-specific conditioning/preprocessing. Adding VACE to `WatermarkModel` would misrepresent the feature and discard temporal context.
