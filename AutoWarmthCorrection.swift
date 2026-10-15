@@ -88,9 +88,15 @@ final class AutoWarmthCorrection {
         lock.lock()
         // Smooth temporal estimates for video; still-image instances receive the full
         // estimate on their first call. Smoothing never creates a correction if target is zero.
-        smoothedAmount = confidenceScaledTarget <= 0
-            ? smoothedAmount * 0.35
-            : smoothedAmount * 0.35 + confidenceScaledTarget * 0.65
+        if confidenceScaledTarget <= 0 {
+            smoothedAmount *= 0.35
+        } else if smoothedAmount <= 0.000001 {
+            // Still images and the first frame of a video must receive the full
+            // measured correction; smoothing is only for subsequent video frames.
+            smoothedAmount = confidenceScaledTarget
+        } else {
+            smoothedAmount = smoothedAmount * 0.35 + confidenceScaledTarget * 0.65
+        }
         let amount = smoothedAmount
         lock.unlock()
 
