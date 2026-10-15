@@ -2,6 +2,7 @@ import SwiftUI
 import CoreML
 import UniformTypeIdentifiers
 import Foundation
+import UIKit
 
 /// Runs a genuine on-device Core ML compile/predict smoke test for a converted
 /// Wan VAE component. This is not the VACE transformer or a video-editing pipeline.
@@ -82,7 +83,7 @@ struct VACEComponentTestView: View {
             .navigationTitle("VACE Component Lab")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
+                ToolbarItem(placement: .navigationBarTrailing) {
                     Button("Done") { dismiss() }.disabled(isTesting)
                 }
             }
@@ -171,7 +172,7 @@ struct VACEComponentTestView: View {
                 if let array = prediction.featureValue(for: name)?.multiArrayValue {
                     return "\(name): shape=\(array.shape.map(\.intValue)), type=\(array.dataType)"
                 }
-                return "\(name): \(prediction.featureValue(for: name)?.type.description ?? "non-array output")"
+                return "\(name): non-array output"
             }
 
             let totalSeconds = Date().timeIntervalSince(started)
