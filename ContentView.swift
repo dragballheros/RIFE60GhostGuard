@@ -109,12 +109,30 @@ struct ContentView: View {
                     Section("Anime Watermark Removal") {
                         Toggle("Remove marked watermarks", isOn: $vm.watermarkRemovalEnabled).disabled(vm.queueLocked || vm.isImporting)
                         if vm.watermarkRemovalEnabled {
-                            Picker("Inpainting model", selection: $vm.watermarkModel) {
+                            VStack(alignment: .leading, spacing: 0) {
+                                Text("Inpainting model")
+                                    .font(.subheadline)
+                                    .foregroundStyle(.secondary)
+                                    .padding(.bottom, 6)
                                 ForEach(WatermarkModel.allCases) { model in
-                                    Text(model.title).tag(model)
+                                    Button {
+                                        guard !vm.queueLocked && !vm.isImporting else { return }
+                                        vm.watermarkModel = model
+                                    } label: {
+                                        HStack(spacing: 12) {
+                                            Text(model.title).foregroundStyle(.primary)
+                                            Spacer(minLength: 8)
+                                            Image(systemName: vm.watermarkModel == model ? "checkmark.circle.fill" : "circle")
+                                                .foregroundStyle(vm.watermarkModel == model ? Color.accentColor : Color.secondary)
+                                        }
+                                        .contentShape(Rectangle())
+                                        .padding(.vertical, 8)
+                                    }
+                                    .buttonStyle(.plain)
+                                    .disabled(vm.queueLocked || vm.isImporting)
+                                    .accessibilityAddTraits(vm.watermarkModel == model ? .isSelected : [])
                                 }
                             }
-                            .disabled(vm.queueLocked || vm.isImporting)
                             if let item = vm.selectedQueueItem, (vm.mediaQueue?.items.count ?? 0) > 1 {
                                 Text("Mask for: \(item.displayName)").font(.caption)
                                 Toggle("Remove watermark on this item", isOn: Binding(get: { vm.selectedQueueItem?.removeWatermark ?? true }, set: { vm.setSelectedWatermarkRemoval($0) })).disabled(vm.queueLocked || vm.isImporting)
@@ -146,9 +164,30 @@ struct ContentView: View {
 
                     Section("2× Anime Upscale") {
                         Toggle("Real-CUGAN Native 2×", isOn: $vm.upscaleTo4K).disabled(vm.queueLocked || vm.isImporting)
-                        Picker("Model compute units", selection: $vm.computePreference) {
-                            ForEach(ModelComputePreference.allCases) { option in Text(option.title).tag(option) }
-                        }.disabled(vm.queueLocked || vm.isBusy || vm.isBenchmarking)
+                        VStack(alignment: .leading, spacing: 0) {
+                            Text("Model compute units")
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                                .padding(.bottom, 6)
+                            ForEach(ModelComputePreference.allCases) { option in
+                                Button {
+                                    guard !vm.queueLocked && !vm.isBusy && !vm.isBenchmarking else { return }
+                                    vm.computePreference = option
+                                } label: {
+                                    HStack(spacing: 12) {
+                                        Text(option.title).foregroundStyle(.primary)
+                                        Spacer(minLength: 8)
+                                        Image(systemName: vm.computePreference == option ? "checkmark.circle.fill" : "circle")
+                                            .foregroundStyle(vm.computePreference == option ? Color.accentColor : Color.secondary)
+                                    }
+                                    .contentShape(Rectangle())
+                                    .padding(.vertical, 8)
+                                }
+                                .buttonStyle(.plain)
+                                .disabled(vm.queueLocked || vm.isBusy || vm.isBenchmarking)
+                                .accessibilityAddTraits(vm.computePreference == option ? .isSelected : [])
+                            }
+                        }
                         Text("Auto preserves the current Core ML policy. GPU may use more memory. GPU and Neural Engine modes both allow CPU fallback; benchmark first.").font(.caption).foregroundStyle(.secondary)
                         if vm.inputKind == .video {
                             Toggle("Upscale before interpolation (faster)", isOn: $vm.upscaleFirst)
