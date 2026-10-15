@@ -24,8 +24,9 @@ final class AutoWarmthCorrection {
             .outputColorSpace: colorSpace
         ])
         kernel = CIColorKernel(source: """
-        kernel vec4 autoWarmth(__sample pixel, float amount) {
+        kernel vec4 autoWarmth(__sample pixel, __sample referencePixel, float amount) {
             vec3 c = pixel.rgb;
+            vec3 source = referencePixel.rgb;
             float hi = max(c.r, max(c.g, c.b));
             float lo = min(c.r, min(c.g, c.b));
             float chroma = hi - lo;
@@ -41,9 +42,22 @@ final class AutoWarmthCorrection {
             }
             if (hue < 0.0) hue += 360.0;
             float sat = chroma / max(hi, 0.001);
-            float skinHue = smoothstep(3.0, 12.0, hue) * (1.0 - smoothstep(42.0, 55.0, hue));
-            // Include lightly saturated skin highlights; the prior lower bound missed the light-skin regression sample.
-            float skinLike = skinHue * smoothstep(0.025, 0.09, sat) * (1.0 - smoothstep(0.78, 0.92, sat));
+            // Skin protection is derived from the ungraded source, not the graded pixel.
+            // A neutral source pixel that becomes orange due to a grade must remain correctable.
+            float sourceHi = max(source.r, max(source.g, source.b));
+            float sourceLo = min(source.r, min(source.g, source.b));
+            float sourceChroma = sourceHi - sourceLo;
+            float sourceDelta = sourceChroma;
+            float sourceHue = 0.0;
+            if (sourceDelta > 0.0001) {
+                if (sourceHi == source.r) sourceHue = 60.0 * mod((source.g - source.b) / sourceDelta, 6.0);
+                else if (sourceHi == source.g) sourceHue = 60.0 * ((source.b - source.r) / sourceDelta + 2.0);
+                else sourceHue = 60.0 * ((source.r - source.g) / sourceDelta + 4.0);
+            }
+            if (sourceHue < 0.0) sourceHue += 360.0;
+            float sourceSat = sourceChroma / max(sourceHi, 0.001);
+            float skinHue = smoothstep(3.0, 12.0, sourceHue) * (1.0 - smoothstep(42.0, 55.0, sourceHue));
+            float skinLike = skinHue * smoothstep(0.025, 0.09, sourceSat) * (1.0 - smoothstep(0.78, 0.92, sourceSat));
 
             // Keep neutral whites/greys as strong anchors, but do not exempt
             // warm yellow/orange illustration areas simply because they are vivid.
@@ -111,7 +125,8 @@ final class AutoWarmthCorrection {
             throw ProcessorError.conversionFailed("could not allocate automatic warmth-correction buffer")
         }
         let input = CIImage(cvPixelBuffer: graded, options: [.colorSpace: colorSpace])
-        guard let corrected = kernel.apply(extent: input.extent, arguments: [input, amount]) else {
+        let source = CIImage(cvPixelBuffer: reference, options: [.colorSpace: colorSpace])
+        guard let corrected = kernel.apply(extent: input.extent, arguments: [input, source, amount]) else {
             throw ProcessorError.conversionFailed("automatic warmth correction produced no image")
         }
         context.render(corrected, to: output, bounds: input.extent, colorSpace: colorSpace)
