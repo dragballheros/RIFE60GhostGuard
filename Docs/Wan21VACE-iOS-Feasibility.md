@@ -37,6 +37,8 @@ The official 14B Diffusers config reports `dim=5120`, `ffn_dim=13824`, `num_head
 
 A current public hardware guide reports the 14B pipeline was validated on a 48 GiB L40S and estimates about 70 GiB of disk for the full checkpoint set; that is a reference-system data point, not a guaranteed minimum for every quantized implementation. Source: https://github.com/vllm-project/vllm-omni/blob/main/recipes/Wan-AI/Wan2.1-VACE.md
 
+A simple parameter-storage lower bound makes the constraint concrete: 14 billion parameters require roughly 28 GB at 16-bit, 14 GB at 8-bit, or 7 GB at 4-bit (decimal units), before quantization scales/metadata, non-quantized tensors, activations, VAE/text components, and iOS overhead. The 4-bit raw-weight floor alone exceeds the phone's approximately 6 GB physical-memory class. Therefore, keeping all 14B weights resident is not a viable target; a streamed/layerwise approach would be mandatory even to investigate feasibility, and would still need to meet runtime and activation-memory limits.
+
 **Implication for iPhone 14 Pro Max:** do not assume that ordinary FP16/BF16 Core ML conversion will fit. Investigate a layer-wise or block-wise quantized implementation only after determining whether the attention/FFN operators and VACE conditioning can be represented with supported Metal/Core ML operations. Weight quantization and storage streaming do not remove activation-memory requirements. No iPhone runtime or throughput result has been established yet; the 14B/720p target remains required, but feasibility is an open gate rather than a promise.
 
 ## 1080p output strategy (required)
