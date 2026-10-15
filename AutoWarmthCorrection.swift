@@ -65,7 +65,7 @@ final class AutoWarmthCorrection {
         // Ignore quantization/noise, then correct most of a clearly measured shift.
         // The cap prevents the auto pass from becoming a global creative white-balance tool.
         let target = min(max((estimate.shift - 0.0018) * 0.92, 0), 0.040)
-        let confidence = min(max((estimate.samples - 8) / 48, 0), 1)
+        let confidence = CGFloat(min(max(Double(estimate.samples - 8) / 48.0, 0.0), 1.0))
         let confidenceScaledTarget = target * confidence
 
         lock.lock()
