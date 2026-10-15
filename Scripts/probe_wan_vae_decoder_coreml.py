@@ -72,16 +72,18 @@ def main() -> int:
         official_reference = model.decoder(latent)
 
         def nearest_exact_as_gather(self, x):
-            out_h = int(round(int(x.shape[-2]) * float(self.scale_factor[0])))
-            out_w = int(round(int(x.shape[-1]) * float(self.scale_factor[1])))
+            # Resolve dimensions to Python constants for this fixed-shape trace.
+            in_h, in_w = int(x.shape[-2]), int(x.shape[-1])
+            out_h = int(round(in_h * float(self.scale_factor[0])))
+            out_w = int(round(in_w * float(self.scale_factor[1])))
             y = torch.floor(
                 (torch.arange(out_h, device=x.device, dtype=torch.float32) + 0.5)
-                * (x.shape[-2] / out_h)
-            ).to(torch.long).clamp_(0, x.shape[-2] - 1)
+                * (in_h / out_h)
+            ).to(torch.long).clamp_(0, in_h - 1)
             z = torch.floor(
                 (torch.arange(out_w, device=x.device, dtype=torch.float32) + 0.5)
-                * (x.shape[-1] / out_w)
-            ).to(torch.long).clamp_(0, x.shape[-1] - 1)
+                * (in_w / out_w)
+            ).to(torch.long).clamp_(0, in_w - 1)
             return x.index_select(-2, y).index_select(-1, z).type_as(x)
 
         module.Upsample.forward = nearest_exact_as_gather
