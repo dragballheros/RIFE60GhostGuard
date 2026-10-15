@@ -22,11 +22,11 @@ def main() -> int:
     parser.add_argument("--latent-width", type=int, default=8)
     args = parser.parse_args()
 
-    if args.latent-frames < 1:
+    if args.latent_frames < 1:
         parser.error("--latent-frames must be positive")
-    if min(args.latent-height, args.latent-width) < 1:
+    if min(args.latent_height, args.latent_width) < 1:
         parser.error("latent spatial dimensions must be positive")
-    vae_source = args.wan-repo / "wan/modules/vae.py"
+    vae_source = args.wan_repo / "wan/modules/vae.py"
     if not vae_source.is_file():
         parser.error("--wan-repo must point to a checkout of Wan-Video/Wan2.1")
     if not args.checkpoint.is_file():
