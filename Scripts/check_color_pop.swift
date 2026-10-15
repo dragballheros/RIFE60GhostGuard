@@ -114,4 +114,15 @@ _ = try grade4K.apply(patch4K) // warm the filter graph and pool
 let start = CFAbsoluteTimeGetCurrent()
 for _ in 0..<5 { _ = try grade4K.apply(patch4K) }
 print(String(format: "Color Pop warmed 4K render: %.2f ms/frame on this CI runner", (CFAbsoluteTimeGetCurrent() - start) * 1000 / 5))
+// Automatic warmth correction must remove a detected grade-added warm cast,
+// while a no-change frame must remain an exact zero-strength bypass.
+let warmthReference = try makePatch((120, 120, 120), width: 128, height: 128)
+let warmthGraded = try makePatch((130, 120, 110), width: 128, height: 128)
+let warmthCorrection = AutoWarmthCorrection()
+let correctedWarmth = try readPatch(warmthCorrection.apply(reference: warmthReference, graded: warmthGraded))
+precondition(correctedWarmth.0 - correctedWarmth.2 < 20, "automatic warmth correction failed to reduce a measured warm shift: \\(correctedWarmth)")
+let unchangedWarmth = try warmthCorrection.apply(reference: warmthReference, graded: warmthReference)
+precondition(Unmanaged.passUnretained(warmthReference).toOpaque() == Unmanaged.passUnretained(unchangedWarmth).toOpaque(), "neutral source/output must bypass warmth correction")
+print("Automatic warmth correction checks passed • warm cast reduced • neutral bypass preserved")
+
 print("Color Pop checks passed")
