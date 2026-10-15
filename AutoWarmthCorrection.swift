@@ -84,6 +84,7 @@ final class AutoWarmthCorrection {
         let target = min(max(addedComponent + sourceComponent, 0), 0.095)
         let confidence = CGFloat(min(max(Double(estimate.samples - 8) / 40.0, 0.0), 1.0))
         let confidenceScaledTarget = target * confidence
+        print("AutoWarmth diagnostics sourceBias=\(estimate.sourceBias) addedShift=\(estimate.addedShift) samples=\(estimate.samples) target=\(target) confidence=\(confidence)")
 
         lock.lock()
         // Smooth temporal estimates for video; still-image instances receive the full
