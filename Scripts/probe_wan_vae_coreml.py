@@ -69,7 +69,9 @@ def main() -> int:
     model.load_state_dict(state, strict=True)
     model.eval().requires_grad_(False).float()
 
-    example = torch.zeros((1, 3, args.frames, args.height, args.width), dtype=torch.float32)
+    # Use a fixed, non-zero input so numerical comparison exercises the graph beyond the all-zero case.
+    generator = torch.Generator(device="cpu").manual_seed(20261015)
+    example = torch.randn((1, 3, args.frames, args.height, args.width), generator=generator, dtype=torch.float32)
     with torch.no_grad():
         traced = torch.jit.trace(model.encoder, example, strict=True)
         reference = traced(example)
@@ -93,6 +95,7 @@ def main() -> int:
         "probe": "wan_vae_encoder_fixed_shape",
         "complete_vace_pipeline": False,
         "input_shape": list(example.shape),
+        "validation_input": "deterministic random tensor, seed 20261015",
         "output_shape": list(reference_np.shape),
         "package_path": str(args.output),
         "max_absolute_error": float(absolute_error.max()),
