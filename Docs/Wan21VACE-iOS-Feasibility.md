@@ -13,7 +13,7 @@ Determine whether the official `Wan-AI/Wan2.1-VACE-1.3B` checkpoint can be conve
 - Official 1.3B checkpoint: https://huggingface.co/Wan-AI/Wan2.1-VACE-1.3B
 - Official 14B checkpoint (reference only): https://huggingface.co/Wan-AI/Wan2.1-VACE-14B
 
-The official model documentation describes VACE as an all-in-one video creation/editing model. The 1.3B checkpoint is intended for approximately 480p output (the README notes 720p may be less stable). The published reference inference stack uses PyTorch and CUDA-specific setup. That establishes the reference environment, not that iOS conversion is impossible.
+The official model documentation describes VACE as an all-in-one video creation/editing model. **User requirement: target a 1080p final video, not 480p.** The official VACE model table lists 1.3B at about 480p (832×480) and 14B at about 720p (1280×720); neither official VACE checkpoint is documented as a native 1080p editing model. The base Wan VAE can encode/decode 1080p video, but that alone does not mean the VACE denoiser performs 1080p editing. Sources: https://github.com/ali-vilab/VACE and https://github.com/Wan-Video/Wan2.1. The published reference inference stack uses PyTorch and CUDA-specific setup. That establishes the reference environment, not that iOS conversion is impossible.
 
 ## Verified checkpoint-size finding (2026-10-15)
 
@@ -31,6 +31,16 @@ This changes the first engineering question: do not attempt a full download onto
 
 A realistic first pass should audit only the model config, safetensors header, VAE architecture/config, and inference source, without downloading all checkpoint files. Then estimate memory from actual tensor metadata and test export of the smallest isolated component. No full checkpoint download or phone-side download should be triggered by this branch.
 
+## 1080p output strategy (required)
+
+The target deliverable is a final **1920×1080** video. Treat this as a hard output requirement, but do not label 480p/720p inference as native 1080p. The investigation must compare these possibilities:
+
+- **Native 1080p VACE inference:** not supported by the official VACE model table and likely much more expensive in activation memory; do not assume it is feasible on A17 Pro.
+- **720p VACE editing then 1080p upscale:** the 14B model is officially listed for 720p, but its checkpoint size is an even larger obstacle on this phone. Upscaling after a lower-resolution edit may soften or invent detail and must be quality-tested.
+- **480p VACE 1.3B editing then upscale:** easiest model scale to investigate, but it does not meet the preferred source-detail quality by itself. It is only acceptable if objective/visual comparisons after upscaling demonstrate a result the user approves; do not silently downgrade the requested resolution.
+
+Use the app's existing local Real-CUGAN path as a candidate post-upscaler only after VACE inference can run. Compare 1080p output against the original clip for temporal flicker, line/detail retention, geometry changes, and frame consistency. Keep output frame rate, duration, and audio handling explicit. A 1920×1080 file container alone is not proof of native 1080p detail.
+
 ## Why this must be a separate video pipeline
 
 The existing `WatermarkRemovalApplying.apply(CVPixelBuffer)` interface performs single-frame inpainting. VACE video-to-video and masked video-to-video workflows use a temporal clip, prompt, and task-specific conditioning/preprocessing. Adding VACE to `WatermarkModel` would misrepresent the feature and discard temporal context.
@@ -43,9 +53,10 @@ Keep the existing LaMa, DeepCream bar, and DeepCream mosaic paths untouched. The
 2. **Graph map:** identify the VACE conditioning path, temporal DiT, text encoder/tokenizer, video VAE, scheduler, and preprocessing annotators needed for the desired edit mode. Distinguish model weights from auxiliary annotator weights.
 3. **Export spike:** attempt an export of one component at a time. Record every unsupported operator, dynamic-shape issue, precision limitation, and conversion tool/version. Do not claim a full conversion from a successful component export.
 4. **Numerical validation:** run reference and converted inference on a tiny fixed clip/conditioning sample; compare intermediate tensors where possible and compare output quality. Add deterministic repeatability and temporal-consistency checks.
-5. **Device feasibility:** evaluate peak resident memory and Metal allocation on the target A17 Pro / approximately 6 GB physical-memory class. Start with short clips and conservative 480p latent/frame sizes. Test FP16 first; consider lower-bit weights only after measuring quality. Weight streaming alone does not bound activations, KV/context tensors, VAE buffers, or temporary allocations.
-6. **iOS integration:** only after the export and memory gates pass, implement a separate clip-level backend. Keep model files optional/downloadable rather than bloating the IPA, and verify checksums, available storage, cancellation cleanup, and low-memory failure handling.
-7. **CI:** run static checks and conversion smoke tests on GitHub Actions where supported. CI success is not evidence of acceptable A17 Pro speed or thermals; device performance must be explicitly marked unverified until measured on hardware.
+5. **Device feasibility:** evaluate peak resident memory and Metal allocation on the target A17 Pro / approximately 6 GB physical-memory class. Begin with the smallest temporal window and the 480p 1.3B model solely as a feasibility experiment; separately evaluate the 720p/14B path on a research machine for quality reference, not as a presumed phone candidate. Test FP16 first; consider lower-bit weights only after measuring quality. Weight streaming alone does not bound activations, KV/context tensors, VAE buffers, or temporary allocations.
+6. **1080p quality gate:** require a 1920×1080 final export and compare native source, edited intermediate, and upscaled output. Record the effective inference resolution separately from export resolution; no claims of native 1080p quality unless the denoiser truly ran at that resolution.
+7. **iOS integration:** only after the export and memory gates pass, implement a separate clip-level backend. Keep model files optional/downloadable rather than bloating the IPA, and verify checksums, available storage, cancellation cleanup, and low-memory failure handling.
+8. **CI:** run static checks and conversion smoke tests on GitHub Actions where supported. CI success is not evidence of acceptable A17 Pro speed or thermals; device performance must be explicitly marked unverified until measured on hardware.
 
 ## Acceptance criteria before exposing the feature
 
@@ -56,7 +67,8 @@ Keep the existing LaMa, DeepCream bar, and DeepCream mosaic paths untouched. The
 - Peak memory stays under a measured device budget with headroom for iOS and video buffers.
 - Short-clip processing completes without crash/watchdog termination; progress, cancellation, and cleanup work.
 - Existing watermark models, RIFE, upscaling, image studio, and release workflow remain unchanged.
-- App UI labels limitations honestly (initially 480p/short clip if required).
+- Final export is 1920×1080; the inference resolution is separately disclosed and the upscaled result passes temporal/detail checks.
+- App UI labels any remaining limitations honestly; 480p/short-clip output is not considered fulfillment of the user's preferred 1080p target.
 
 ## Current decision
 
