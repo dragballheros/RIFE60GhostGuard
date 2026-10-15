@@ -114,9 +114,12 @@ final class ImageStillProcessor {
             // correction must compare the graded result against this frame and
             // run after Color Pop, never against the original low-resolution input.
             let preGradeReference = buffer
-            let graded = try ColorPopGrade(strength: colorPopStrength).apply(preGradeReference)
-            buffer = try AutoWarmthCorrection().apply(reference: preGradeReference, graded: graded)
-            DiagnosticsLogger.shared.log("Automatic warmth correction evaluated after Color Pop • still image")
+            // ColorPopGrade owns the single post-grade warmth correction pass.
+            // Do not apply AutoWarmthCorrection a second time here, which would
+            // cool the already-corrected result and make the still path diverge
+            // from the video frame path.
+            buffer = try ColorPopGrade(strength: colorPopStrength).apply(preGradeReference)
+            DiagnosticsLogger.shared.log("Color Pop and one reference-relative automatic warmth correction completed • still image")
             try Task.checkCancellation()
         }
 
