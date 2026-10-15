@@ -34,6 +34,7 @@ def main() -> int:
 
     import numpy as np
     import torch
+    import torch.nn.functional as F
     import coremltools as ct
 
     # Load the pinned official source file without executing package initializers.
@@ -62,7 +63,39 @@ def main() -> int:
         generator=generator,
         dtype=torch.float32,
     )
+
+    # Core ML Tools 9.0 does not implement PyTorch's nearest-exact 2D upsample
+    # op. Replace it with explicit constant index selection for this fixed shape,
+    # and prove the replacement matches the official implementation first.
     with torch.no_grad():
+        official_forward = module.Upsample.forward
+        official_reference = model.decoder(latent)
+
+        def nearest_exact_as_gather(self, x):
+            out_h = int(round(x.shape[-2] * self.scale_factor[0]))
+            out_w = int(round(x.shape[-1] * self.scale_factor[1]))
+            y = torch.floor(
+                (torch.arange(out_h, device=x.device, dtype=torch.float32) + 0.5)
+                * (x.shape[-2] / out_h)
+            ).to(torch.long).clamp_(0, x.shape[-2] - 1)
+            z = torch.floor(
+                (torch.arange(out_w, device=x.device, dtype=torch.float32) + 0.5)
+                * (x.shape[-1] / out_w)
+            ).to(torch.long).clamp_(0, x.shape[-1] - 1)
+            return x.index_select(-2, y).index_select(-1, z).type_as(x)
+
+        module.Upsample.forward = nearest_exact_as_gather
+        replacement_reference = model.decoder(latent)
+        replacement_delta = (replacement_reference - official_reference).abs()
+        replacement_max_error = float(replacement_delta.max())
+        if not torch.allclose(
+            replacement_reference, official_reference, rtol=0.0, atol=1e-6
+        ):
+            module.Upsample.forward = official_forward
+            raise RuntimeError(
+                "Explicit nearest-exact replacement failed equivalence check: "
+                f"max_abs_error={replacement_max_error}"
+            )
         traced = torch.jit.trace(model.decoder, latent, strict=True)
         reference = traced(latent)
 
@@ -88,6 +121,7 @@ def main() -> int:
         "validation_input": "deterministic random latent tensor, seed 20261016",
         "output_shape": list(reference_np.shape),
         "package_path": str(args.output),
+        "nearest_exact_replacement_max_absolute_error_vs_official": replacement_max_error,
         "max_absolute_error": float(absolute_error.max()),
         "mean_absolute_error": float(absolute_error.mean()),
         "rmse": float(np.sqrt(np.mean(np.square(prediction - reference_np)))),
@@ -96,8 +130,10 @@ def main() -> int:
         "converted_output_min": float(prediction.min()),
         "converted_output_max": float(prediction.max()),
         "note": (
-            "Decoder-only fixed-shape export. This does not validate the official "
-            "causal temporal-cache streaming path, VACE transformer, or complete pipeline."
+            "Decoder-only fixed-shape export. Explicit nearest-exact index selection "
+            "is numerically checked against the official PyTorch operation first. "
+            "This does not validate the official causal temporal-cache streaming path, "
+            "VACE transformer, or complete pipeline."
         ),
     }
     report_path = args.output.with_suffix(".validation.json")
