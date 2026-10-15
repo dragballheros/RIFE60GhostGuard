@@ -53,10 +53,10 @@ jobs:
             --output /tmp/WanVAEDecoder-5x8.mlpackage \
             --latent-frames 5 --latent-height 8 --latent-width 8
       - name: Probe fixed-shape SDPA attention replacement
-        run: |
-          python Scripts/probe_vace_attention_coreml.py \\
-            --output /tmp/VACEAttention-SDPA-32x512.mlpackage \\
-            --query-tokens 32 --key-tokens 512 --heads 40 --head-dim 128
+        run: >-
+          python Scripts/probe_vace_attention_coreml.py
+          --output /tmp/VACEAttention-SDPA-32x512.mlpackage
+          --query-tokens 32 --key-tokens 512 --heads 40 --head-dim 128
       - name: Upload conversion diagnostics
         if: always()
         uses: actions/upload-artifact@v4
