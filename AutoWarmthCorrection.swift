@@ -109,18 +109,22 @@ final class AutoWarmthCorrection {
         // Normalize the sampled image to explicit RGBA byte order, independent
         // of the Core Graphics provider's native pixel layout.
         var pixels = [UInt8](repeating: 0, count: 64 * 64 * 4)
-        guard let bitmap = CGContext(
-            data: &pixels,
-            width: 64,
-            height: 64,
-            bitsPerComponent: 8,
-            bytesPerRow: 64 * 4,
-            space: colorSpace,
-            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue
-        ) else {
+        let didDraw = pixels.withUnsafeMutableBytes { rawBuffer -> Bool in
+            guard let bitmap = CGContext(
+                data: rawBuffer.baseAddress,
+                width: 64,
+                height: 64,
+                bitsPerComponent: 8,
+                bytesPerRow: 64 * 4,
+                space: colorSpace,
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue
+            ) else { return false }
+            bitmap.draw(sample, in: CGRect(x: 0, y: 0, width: 64, height: 64))
+            return true
+        }
+        guard didDraw else {
             throw ProcessorError.conversionFailed("could not allocate warmth-analysis bitmap")
         }
-        bitmap.draw(sample, in: CGRect(x: 0, y: 0, width: 64, height: 64))
         var sum: CGFloat = 0
         var count: CGFloat = 0
         for y in 0..<64 {
