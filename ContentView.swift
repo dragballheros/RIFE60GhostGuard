@@ -332,7 +332,16 @@ struct ContentView: View {
                             Button("Cancel Benchmark", role: .destructive) { vm.cancelBenchmark() }
                         }
                         if !vm.benchmarkStatus.isEmpty { Text(vm.benchmarkStatus).font(.caption) }
-                        if !vm.benchmarkReport.isEmpty { Text(vm.benchmarkReport).font(.system(.caption, design: .monospaced)).textSelection(.enabled) }
+                        if !vm.benchmarkReport.isEmpty {
+                            Text(vm.benchmarkReport)
+                                .font(.system(.caption, design: .monospaced))
+                                .textSelection(.disabled)
+                            Button {
+                                UIPasteboard.general.string = vm.benchmarkReport
+                            } label: {
+                                Label("Copy Benchmark Report", systemImage: "doc.on.doc")
+                            }
+                        }
                         Text("Keep the app open and cool. Tests 2 warm-ups and 5 timed predictions per model/policy. Results are device measurements; no preference is changed automatically.").font(.caption).foregroundStyle(.secondary)
                         Button { vm.copyErrorLogs() } label: { Label("Copy Error Logs", systemImage: "doc.on.doc") }
                         if !vm.diagnosticsCopyStatus.isEmpty { Text(vm.diagnosticsCopyStatus).font(.caption).foregroundStyle(.secondary) }
