@@ -72,8 +72,8 @@ def main() -> int:
         official_reference = model.decoder(latent)
 
         def nearest_exact_as_gather(self, x):
-            out_h = int(round(x.shape[-2] * self.scale_factor[0]))
-            out_w = int(round(x.shape[-1] * self.scale_factor[1]))
+            out_h = int(round(int(x.shape[-2]) * float(self.scale_factor[0])))
+            out_w = int(round(int(x.shape[-1]) * float(self.scale_factor[1])))
             y = torch.floor(
                 (torch.arange(out_h, device=x.device, dtype=torch.float32) + 0.5)
                 * (x.shape[-2] / out_h)
