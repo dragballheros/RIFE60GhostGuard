@@ -15,8 +15,8 @@ The checkpoint should come from the official Wan-AI/Wan2.1-VACE-1.3B repository.
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
-import sys
 from pathlib import Path
 
 
@@ -39,11 +39,20 @@ def main() -> int:
     if not args.checkpoint.is_file():
         parser.error(f"checkpoint not found: {args.checkpoint}")
 
-    sys.path.insert(0, str(args.wan_repo.resolve()))
     import numpy as np
     import torch
     import coremltools as ct
-    from wan.modules.vae import WanVAE_
+
+    # Load only the official VAE source file. Importing `wan.modules.vae`
+    # executes Wan's package initializers and pulls in unrelated Diffusers,
+    # distributed, and transformer dependencies that the VAE probe does not need.
+    vae_source = args.wan_repo / "wan/modules/vae.py"
+    spec = importlib.util.spec_from_file_location("wan_vae_probe", vae_source)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Could not load official VAE source: {vae_source}")
+    vae_module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(vae_module)
+    WanVAE_ = vae_module.WanVAE_
 
     # Match the official WanVAE default architecture used by VACE 1.3B.
     model = WanVAE_(
