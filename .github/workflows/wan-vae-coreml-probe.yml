@@ -8,6 +8,7 @@ on:
       - "Scripts/probe_wan_vae_coreml.py"
       - "Scripts/probe_wan_vae_decoder_coreml.py"
       - "Scripts/probe_vace_attention_coreml.py"
+      - "Scripts/probe_wan_vae_temporal_cache.py"
       - ".github/workflows/wan-vae-coreml-probe.yml"
       - "Docs/Wan21VACE-iOS-Feasibility.md"
       - "Docs/WanVAE-CoreML-Probe-Results.md"
@@ -38,6 +39,12 @@ jobs:
           mkdir -p /tmp/vace-checkpoint
           curl --fail --location --retry 3 'https://huggingface.co/Wan-AI/Wan2.1-VACE-1.3B/resolve/main/Wan2.1_VAE.pth?download=true' --output /tmp/vace-checkpoint/Wan2.1_VAE.pth
           test -s /tmp/vace-checkpoint/Wan2.1_VAE.pth
+      - name: Validate official temporal-cache equivalence
+        run: |
+          python Scripts/probe_wan_vae_temporal_cache.py \\
+            --wan-repo Vendor/Wan2.1 \\
+            --checkpoint /tmp/vace-checkpoint/Wan2.1_VAE.pth \\
+            --output /tmp/WanVAE-TemporalCache.validation.json
       - name: Attempt fixed-shape temporal VAE encoder conversion
         run: |
           python Scripts/probe_wan_vae_coreml.py \
@@ -66,5 +73,6 @@ jobs:
             /tmp/WanVAEEncoder-5x64.validation.json
             /tmp/WanVAEDecoder-5x8.validation.json
             /tmp/VACEAttention-SDPA-32x512.validation.json
+            /tmp/WanVAE-TemporalCache.validation.json
           if-no-files-found: warn
           retention-days: 14
