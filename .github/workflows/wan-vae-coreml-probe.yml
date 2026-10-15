@@ -6,14 +6,16 @@ on:
     branches: [main]
     paths:
       - "Scripts/probe_wan_vae_coreml.py"
+      - "Scripts/probe_wan_vae_decoder_coreml.py"
       - ".github/workflows/wan-vae-coreml-probe.yml"
       - "Docs/Wan21VACE-iOS-Feasibility.md"
+      - "Docs/WanVAE-CoreML-Probe-Results.md"
 
 permissions:
   contents: read
 
 jobs:
-  encoder-export:
+  vae-export:
     runs-on: macos-26
     timeout-minutes: 90
     steps:
@@ -42,11 +44,20 @@ jobs:
             --checkpoint /tmp/vace-checkpoint/Wan2.1_VAE.pth \
             --output /tmp/WanVAEEncoder-5x64.mlpackage \
             --frames 5 --height 64 --width 64
+      - name: Attempt fixed-shape VAE decoder conversion
+        run: |
+          python Scripts/probe_wan_vae_decoder_coreml.py \
+            --wan-repo Vendor/Wan2.1 \
+            --checkpoint /tmp/vace-checkpoint/Wan2.1_VAE.pth \
+            --output /tmp/WanVAEDecoder-5x8.mlpackage \
+            --latent-frames 5 --latent-height 8 --latent-width 8
       - name: Upload conversion diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: wan-vae-coreml-probe-diagnostics
-          path: /tmp/WanVAEEncoder-5x64.validation.json
+          path: |
+            /tmp/WanVAEEncoder-5x64.validation.json
+            /tmp/WanVAEDecoder-5x8.validation.json
           if-no-files-found: warn
           retention-days: 14
