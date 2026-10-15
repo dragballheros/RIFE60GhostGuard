@@ -4,7 +4,7 @@ Status: **investigation branch; no iOS conversion or device execution is claimed
 
 ## Objective
 
-Determine whether the official `Wan-AI/Wan2.1-VACE-1.3B` checkpoint can be converted into a fully local iPhone implementation for RIFE60GhostGuard, without any hosted inference endpoint. Do not add a selectable model to the production UI until the end-to-end backend is real and validated.
+Determine whether the official 720p `Wan-AI/Wan2.1-VACE-14B` checkpoint can be converted into a fully local iPhone implementation for RIFE60GhostGuard, without any hosted inference endpoint. The 14B/720p path is the target—not the 1.3B/480p path. Do not add a selectable model to the production UI until the end-to-end backend is real and validated.
 
 ## Primary sources
 
@@ -36,8 +36,8 @@ A realistic first pass should audit only the model config, safetensors header, V
 The target deliverable is a final **1920×1080** video. Treat this as a hard output requirement, but do not label 480p/720p inference as native 1080p. The investigation must compare these possibilities:
 
 - **Native 1080p VACE inference:** not supported by the official VACE model table and likely much more expensive in activation memory; do not assume it is feasible on A17 Pro.
-- **720p VACE editing then 1080p upscale:** the 14B model is officially listed for 720p, but its checkpoint size is an even larger obstacle on this phone. Upscaling after a lower-resolution edit may soften or invent detail and must be quality-tested.
-- **480p VACE 1.3B editing then upscale:** easiest model scale to investigate, but it does not meet the preferred source-detail quality by itself. It is only acceptable if objective/visual comparisons after upscaling demonstrate a result the user approves; do not silently downgrade the requested resolution.
+- **Primary target — 720p VACE 14B editing then 1080p upscale:** this is the requested model path. Its large checkpoint and activation footprint are major blockers on an iPhone-class device; investigate quantization, bounded temporal windows, and component-wise export without pretending these techniques guarantee feasibility. Upscaling after 720p editing may soften or invent detail and must be quality-tested.
+- **480p VACE 1.3B:** do not silently substitute this as the shipped target. It may be used only as an isolated tooling/debugging experiment if needed, and any user-facing downgrade requires explicit approval.
 
 Use the app's existing local Real-CUGAN path as a candidate post-upscaler only after VACE inference can run. Compare 1080p output against the original clip for temporal flicker, line/detail retention, geometry changes, and frame consistency. Keep output frame rate, duration, and audio handling explicit. A 1920×1080 file container alone is not proof of native 1080p detail.
 
@@ -59,7 +59,7 @@ Keep the existing LaMa, DeepCream bar, and DeepCream mosaic paths untouched. The
 2. **Graph map:** identify the VACE conditioning path, temporal DiT, text encoder/tokenizer, video VAE, scheduler, and preprocessing annotators needed for the desired edit mode. Distinguish model weights from auxiliary annotator weights.
 3. **Export spike:** attempt an export of one component at a time. Record every unsupported operator, dynamic-shape issue, precision limitation, and conversion tool/version. Do not claim a full conversion from a successful component export.
 4. **Numerical validation:** run reference and converted inference on a tiny fixed clip/conditioning sample; compare intermediate tensors where possible and compare output quality. Add deterministic repeatability and temporal-consistency checks.
-5. **Device feasibility:** evaluate peak resident memory and Metal allocation on the target A17 Pro / approximately 6 GB physical-memory class. Begin with the smallest temporal window and the 480p 1.3B model solely as a feasibility experiment; separately evaluate the 720p/14B path on a research machine for quality reference, not as a presumed phone candidate. Test FP16 first; consider lower-bit weights only after measuring quality. Weight streaming alone does not bound activations, KV/context tensors, VAE buffers, or temporary allocations.
+5. **Device feasibility:** evaluate peak resident memory and Metal allocation on the target A17 Pro / approximately 6 GB physical-memory class, with the 720p/14B path as the required target. Start with a small temporal window and quantized/component-wise experiments. If the 14B model cannot fit and run within measured device limits, report that as a blocker; do not silently substitute the 480p model. Test FP16 first where possible; consider lower-bit weights only after measuring quality. Weight streaming alone does not bound activations, KV/context tensors, VAE buffers, or temporary allocations.
 6. **1080p quality gate:** require a 1920×1080 final export and compare native source, edited intermediate, and upscaled output. Record the effective inference resolution separately from export resolution; no claims of native 1080p quality unless the denoiser truly ran at that resolution.
 7. **iOS integration:** only after the export and memory gates pass, implement a separate clip-level backend. Keep model files optional/downloadable rather than bloating the IPA, and verify checksums, available storage, cancellation cleanup, and low-memory failure handling.
 8. **CI:** run static checks and conversion smoke tests on GitHub Actions where supported. CI success is not evidence of acceptable A17 Pro speed or thermals; device performance must be explicitly marked unverified until measured on hardware.
