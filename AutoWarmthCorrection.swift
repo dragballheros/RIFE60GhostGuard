@@ -50,7 +50,9 @@ final class AutoWarmthCorrection {
             float warmHue = smoothstep(18.0, 30.0, hue) * (1.0 - smoothstep(62.0, 78.0, hue));
             float warmSat = smoothstep(0.12, 0.32, sat) * (1.0 - smoothstep(0.92, 0.99, sat));
             float warmColorWeight = warmHue * warmSat * 0.62;
-            float skinProtection = 1.0 - 0.78 * skinLike;
+            // Skin-like hues are not reliable white-balance anchors: peach skin is naturally red-biased.
+            // Suppress correction almost entirely on these pixels while still correcting nearby neutrals.
+            float skinProtection = 1.0 - 0.98 * skinLike;
             float correctionWeight = max(neutralWeight, warmColorWeight) * skinProtection;
             float correction = amount * correctionWeight;
 
