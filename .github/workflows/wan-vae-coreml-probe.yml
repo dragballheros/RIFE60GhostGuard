@@ -24,7 +24,7 @@ jobs:
       - name: Install Core ML conversion dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install 'torch==2.5.1' 'coremltools==9.0' 'numpy==1.26.4' einops
+          python -m pip install 'torch==2.5.1' 'coremltools==9.0' 'numpy==1.26.4' einops easydict
       - name: Fetch pinned official Wan implementation
         run: |
           git clone https://github.com/Wan-Video/Wan2.1.git Vendor/Wan2.1
@@ -33,17 +33,20 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p /tmp/vace-checkpoint
-          curl --fail --location --retry 3             'https://huggingface.co/Wan-AI/Wan2.1-VACE-1.3B/resolve/main/Wan2.1_VAE.pth?download=true'             --output /tmp/vace-checkpoint/Wan2.1_VAE.pth
+          curl --fail --location --retry 3 'https://huggingface.co/Wan-AI/Wan2.1-VACE-1.3B/resolve/main/Wan2.1_VAE.pth?download=true' --output /tmp/vace-checkpoint/Wan2.1_VAE.pth
           test -s /tmp/vace-checkpoint/Wan2.1_VAE.pth
       - name: Attempt fixed-shape temporal VAE encoder conversion
         run: |
-          python Scripts/probe_wan_vae_coreml.py             --wan-repo Vendor/Wan2.1             --checkpoint /tmp/vace-checkpoint/Wan2.1_VAE.pth             --output /tmp/WanVAEEncoder-5x64.mlpackage             --frames 5 --height 64 --width 64
+          python Scripts/probe_wan_vae_coreml.py \
+            --wan-repo Vendor/Wan2.1 \
+            --checkpoint /tmp/vace-checkpoint/Wan2.1_VAE.pth \
+            --output /tmp/WanVAEEncoder-5x64.mlpackage \
+            --frames 5 --height 64 --width 64
       - name: Upload conversion diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: wan-vae-coreml-probe-diagnostics
-          path: |
-            /tmp/WanVAEEncoder-5x64.mlpackage.validation.json
+          path: /tmp/WanVAEEncoder-5x64.mlpackage.validation.json
           if-no-files-found: warn
           retention-days: 14
