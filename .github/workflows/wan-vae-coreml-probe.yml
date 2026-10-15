@@ -47,6 +47,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: wan-vae-coreml-probe-diagnostics
-          path: /tmp/WanVAEEncoder-5x64.mlpackage.validation.json
+          path: /tmp/WanVAEEncoder-5x64.validation.json
           if-no-files-found: warn
           retention-days: 14
