@@ -9,6 +9,7 @@ struct ContentView: View {
     @StateObject private var pipController = ProcessingPiPController()
     @State private var showingImporter = false
     @State private var showingAIImageStudio = false
+    @State private var showingVACEComponentTest = false
     @State private var showingWatermarkEditor = false
     @State private var showingPhotosPicker = false
     @State private var showingExportFolderPicker = false
@@ -30,6 +31,16 @@ struct ContentView: View {
 
             NavigationStack {
                 Form {
+                    Section("Wan VACE — On-device Component Test") {
+                        Button { showingVACEComponentTest = true } label: {
+                            Label("Open VACE Component Test Lab", systemImage: "cpu")
+                        }
+                        .disabled(vm.isBusy || vm.isImporting || vm.isBenchmarking)
+                        Text("Experimental local Core ML smoke test for exported Wan VAE components. This does not perform VACE video editing and does not contain the 14B transformer.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+
                     Section("AI Image Studio") {
                         Button { showingAIImageStudio = true } label: {
                             Label("Open AI Image Studio", systemImage: "sparkles")
@@ -381,6 +392,9 @@ struct ContentView: View {
             }
         }
         .simultaneousGesture(DragGesture(minimumDistance: 0).onChanged { _ in registerPostRenderInteraction() })
+        .sheet(isPresented: $showingVACEComponentTest) {
+            VACEComponentTestView()
+        }
         .onDisappear {
             pipController.disarmAndStop()
             cancelPostRenderSleep(restoreDisplay: true)
