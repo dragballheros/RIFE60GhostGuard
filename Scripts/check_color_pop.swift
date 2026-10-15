@@ -135,9 +135,9 @@ let sourceWarmOutput = try readPatch(AutoWarmthCorrection().apply(reference: sou
 let sourceWarmBefore = try readPatch(sourceWarm)
 let sourceWarmSpreadBefore = sourceWarmBefore.0 - sourceWarmBefore.2
 let sourceWarmSpreadAfter = sourceWarmOutput.0 - sourceWarmOutput.2
-print("Source warmth regression RGB=\\(sourceWarmOutput), red-blue spread=\\(sourceWarmSpreadBefore)->\\(sourceWarmSpreadAfter)")
-precondition(sourceWarmSpreadAfter < sourceWarmSpreadBefore, "automatic warmth correction did not reduce existing source warmth: \\(sourceWarmBefore) -> \\(sourceWarmOutput)")
-precondition(sourceWarmSpreadBefore - sourceWarmSpreadAfter >= 1, "existing source warmth reduction was not measurable: \\(sourceWarmBefore) -> \\(sourceWarmOutput)")
+print("Source warmth regression RGB=\(sourceWarmOutput), red-blue spread=\(sourceWarmSpreadBefore)->\(sourceWarmSpreadAfter)")
+precondition(sourceWarmSpreadAfter < sourceWarmSpreadBefore, "automatic warmth correction did not reduce existing source warmth: \(sourceWarmBefore) -> \(sourceWarmOutput)")
+precondition(sourceWarmSpreadBefore - sourceWarmSpreadAfter >= 1, "existing source warmth reduction was not measurable: \(sourceWarmBefore) -> \(sourceWarmOutput)")
 
 
 print("Color Pop checks passed")
