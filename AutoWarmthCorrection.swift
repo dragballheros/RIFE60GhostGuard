@@ -84,7 +84,6 @@ final class AutoWarmthCorrection {
         let target = min(max(addedComponent + sourceComponent, 0), 0.095)
         let confidence = CGFloat(min(max(Double(estimate.samples - 8) / 40.0, 0.0), 1.0))
         let confidenceScaledTarget = target * confidence
-        print("AutoWarmth diagnostics sourceBias=\(estimate.sourceBias) addedShift=\(estimate.addedShift) samples=\(estimate.samples) target=\(target) confidence=\(confidence)")
 
         lock.lock()
         // Smooth temporal estimates for video; still-image instances receive the full
@@ -128,9 +127,9 @@ final class AutoWarmthCorrection {
         sourceBiases.reserveCapacity(1024)
         addedDeltas.reserveCapacity(1024)
         for i in stride(from: 0, to: min(ref.count, out.count), by: 4) {
-            let r = CGFloat(ref[i]) / 255
+            let r = CGFloat(ref[i + 2]) / 255
             let g = CGFloat(ref[i + 1]) / 255
-            let b = CGFloat(ref[i + 2]) / 255
+            let b = CGFloat(ref[i]) / 255
             let hi = max(r, max(g, b))
             let lo = min(r, min(g, b))
             let chroma = hi - lo
@@ -145,8 +144,8 @@ final class AutoWarmthCorrection {
                   abs(r - g) < 0.20, abs(g - b) < 0.20,
                   sat < 0.68 else { continue }
 
-            let gr = CGFloat(out[i]) / 255
-            let gb = CGFloat(out[i + 2]) / 255
+            let gr = CGFloat(out[i + 2]) / 255
+            let gb = CGFloat(out[i]) / 255
             let delta = (gr - gb) - (r - b)
             let sourceBias = r - b
             if sourceBias.isFinite, abs(sourceBias) < 0.20 { sourceBiases.append(sourceBias) }
@@ -187,7 +186,7 @@ final class AutoWarmthCorrection {
             guard let bitmap = CGContext(
                 data: raw.baseAddress, width: w, height: h, bitsPerComponent: 8,
                 bytesPerRow: w * 4, space: colorSpace,
-                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue
+                bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue
             ) else { return false }
             bitmap.draw(cgImage, in: CGRect(x: 0, y: 0, width: w, height: h))
             return true
