@@ -40,11 +40,11 @@ jobs:
           curl --fail --location --retry 3 'https://huggingface.co/Wan-AI/Wan2.1-VACE-1.3B/resolve/main/Wan2.1_VAE.pth?download=true' --output /tmp/vace-checkpoint/Wan2.1_VAE.pth
           test -s /tmp/vace-checkpoint/Wan2.1_VAE.pth
       - name: Validate official temporal-cache equivalence
-        run: |
-          python Scripts/probe_wan_vae_temporal_cache.py \\
-            --wan-repo Vendor/Wan2.1 \\
-            --checkpoint /tmp/vace-checkpoint/Wan2.1_VAE.pth \\
-            --output /tmp/WanVAE-TemporalCache.validation.json
+        run: >-
+          python Scripts/probe_wan_vae_temporal_cache.py
+          --wan-repo Vendor/Wan2.1
+          --checkpoint /tmp/vace-checkpoint/Wan2.1_VAE.pth
+          --output /tmp/WanVAE-TemporalCache.validation.json
       - name: Attempt fixed-shape temporal VAE encoder conversion
         run: |
           python Scripts/probe_wan_vae_coreml.py \
