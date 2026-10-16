@@ -143,7 +143,7 @@ actor VACEBlockStreamingRuntime {
 
         try Task.checkCancellation()
         let predictionStart = Date()
-        let prediction = try model.prediction(from: provider)
+        let prediction = try await model.prediction(from: provider)
         let predictionSeconds = Date().timeIntervalSince(predictionStart)
 
         var outputs: [String: MLMultiArray] = [:]
