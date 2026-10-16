@@ -39,7 +39,7 @@ jobs:
             -typecheck VACESelectiveRegionPlanner.swift VACEConditioningBuilder.swift VACESelectiveVideoPipeline.swift VACEOpticalFlowMaskWarp.swift VACEOpticalFlowMaskProvider.swift -framework AVFoundation -framework CoreVideo -framework Vision
       - name: Compile and run algorithm tests
         run: |
-          swiftc -swift-version 5 VACESelectiveRegionPlanner.swift VACEConditioningBuilder.swift VACEOpticalFlowMaskWarp.swift Scripts/test_vace_selective_region_planner.swift -o /tmp/vace-region-tests
+          swiftc -swift-version 5 VACESelectiveRegionPlanner.swift VACEConditioningBuilder.swift VACEReconstructionCropPreprocessor.swift VACEOpticalFlowMaskWarp.swift Scripts/test_vace_selective_region_planner.swift -o /tmp/vace-region-tests
           /tmp/vace-region-tests
       - name: Run synthetic AVFoundation end-to-end video test
         run: |
