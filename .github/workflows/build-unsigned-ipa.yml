@@ -16,9 +16,9 @@ concurrency:
 on:
   workflow_dispatch:
   pull_request:
-    branches: [main]
+    branches: [main, feature/wan-vace-ondevice-component-test]
   push:
-    branches: [main]
+    branches: [main, feature/wan-vace-iphone-memory-first]
 
 permissions:
   contents: write
@@ -775,7 +775,7 @@ jobs:
           TAG="ipa-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           gh release create "$TAG" RIFE60GhostGuard-verified-unsigned.ipa \
             --title "RIFE60GhostGuard IPA — build ${GITHUB_RUN_NUMBER}" \
-            --notes "Verified unsigned IPA from GitHub Actions run ${GITHUB_RUN_ID}. This release is persistent; download link remains available until the release is manually removed."
+            --notes "Verified unsigned IPA from GitHub Actions run ${GITHUB_RUN_ID}. This temporary release is automatically removed 15 minutes after upload; download the IPA before it expires."
           RELEASE_URL="$(gh release view "$TAG" --json url --jq .url)"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "url=$RELEASE_URL" >> "$GITHUB_OUTPUT"
@@ -784,9 +784,19 @@ jobs:
             echo
             echo "Download: [$TAG]($RELEASE_URL)"
             echo
-            echo "This release is persistent and will not be automatically deleted."
+            echo "This release is temporary and will be automatically deleted after 15 minutes. Download the IPA before it expires."
           } >> "$GITHUB_STEP_SUMMARY"
           echo "Published IPA release: $RELEASE_URL"
+
+      - name: Delete temporary IPA release after 15 minutes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.publish_ipa_release.outputs.tag }}
+        run: |
+          set -euo pipefail
+          sleep 900
+          gh release delete "$TAG" --yes --cleanup-tag
+          echo "Deleted temporary IPA release $TAG after 15 minutes." >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload build diagnostics
         if: always()
