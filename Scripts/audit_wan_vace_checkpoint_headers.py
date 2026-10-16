@@ -187,7 +187,9 @@ def main() -> int:
         ],
         "dtype_payload_bytes": dict(dtype_sizes),
         "dtype_element_counts": dict(dtype_elements),
-        "largest_weight_groups": ordered_layers[:30],
+        "weight_group_count": len(ordered_layers),
+        "transformer_layer_group_count": sum(name.startswith("layer_") for name in layer_sizes),
+        "largest_weight_groups": ordered_layers,
         "named_module_group_source_bytes": {
             name: size for name, size in layer_sizes.items() if name.startswith("module_")
         },
