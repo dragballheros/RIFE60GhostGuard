@@ -187,7 +187,9 @@ before file access.
 
 A dedicated macOS CI job passes Swift parsing and Core ML typechecking for this
 runtime. This checks the source API surface, not the full app build or iOS runtime
-behavior. The actor cannot force Core ML/Metal to release every internal buffer,
+behavior. Cache keys include an explicit model/cache version, and an optional
+UIKit observer asks the actor to evict the active model after an iOS memory
+warning. The actor cannot force Core ML/Metal to release every internal buffer,
 and it is not yet connected to a VACE denoising coordinator. No on-device memory
 or speed claim is made from this source check.
 
