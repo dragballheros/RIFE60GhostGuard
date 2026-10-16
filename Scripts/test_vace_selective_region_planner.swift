@@ -13,7 +13,9 @@ enum VACESelectiveRegionPlannerTests {
         try testCompositorPreservesEveryUnmaskedByte()
         try testVACEFrameConditioningSplit()
         try testVACEControlMaskPacking()
-        print("PASS: VACE selective-region and conditioning checks")
+        try testBackwardFlowMovesMasksConsistently()
+        try testUnsafeOpticalFlowDoesNotSpreadMask()
+        print("PASS: VACE selective-region, conditioning and flow-warp checks")
     }
 
     static func check(_ condition: Bool, _ message: String) {
@@ -99,6 +101,32 @@ enum VACESelectiveRegionPlannerTests {
         check(short.count == 1 && short[0].validFrameCount == 2, "short clips must be padded")
         check(short[0].frameIndices == [0, 1, 1, 1, 1], "edge padding must repeat the final available frame")
         check(try VACETemporalWindowPlanner.makeWindows(frameCount: 0).isEmpty, "empty clip should produce no window")
+    }
+
+    static func testBackwardFlowMovesMasksConsistently() throws {
+        let mask = try makeMask(width: 8, height: 4, active: [(2, 1, 255)])
+        var flow = [Float](repeating: 0, count: 8 * 4 * 2)
+        for y in 0..<4 {
+            for x in 0..<8 {
+                let offset = (y * 8 + x) * 2
+                flow[offset] = -2
+                flow[offset + 1] = 0
+            }
+        }
+        let field = try VACEBackwardFlowField(width: 8, height: 4, xy: flow)
+        let propagated = try VACEOpticalFlowMaskWarp.propagate(previousMask: mask, backwardFlow: field,
+                                                                maximumDisplacementPixels: 4)
+        check(propagated[4, 1] == 255, "backward flow of -2 pixels must shift mask content two pixels right")
+        check(propagated[2, 1] == 0, "mask must move from the old to the new location")
+    }
+
+    static func testUnsafeOpticalFlowDoesNotSpreadMask() throws {
+        let mask = try makeMask(width: 4, height: 2, active: [(1, 0, 255)])
+        var flow = [Float](repeating: 0, count: 4 * 2 * 2)
+        for index in stride(from: 0, to: flow.count, by: 2) { flow[index] = .infinity }
+        let field = try VACEBackwardFlowField(width: 4, height: 2, xy: flow)
+        let propagated = try VACEOpticalFlowMaskWarp.propagate(previousMask: mask, backwardFlow: field)
+        check(propagated.activePixelCount == 0, "non-finite flow must not propagate or explode the edit region")
     }
 
     static func testVACEFrameConditioningSplit() throws {
