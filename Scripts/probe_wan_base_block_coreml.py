@@ -150,6 +150,8 @@ def main() -> int:
 
         def forward(self, latent_tokens, time_modulation, text_context, vace_hint=None, context_scale=None):
             kwargs = {
+                "hints": [],
+                "context_scale": 1.0,
                 "e": time_modulation,
                 "seq_lens": seq_lens,
                 "grid_sizes": grid_sizes,
