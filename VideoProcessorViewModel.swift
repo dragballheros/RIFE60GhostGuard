@@ -1042,14 +1042,15 @@ final class VideoProcessorViewModel: ObservableObject {
         inputURL = batchStore.sourceURL(for: item, in: queue)
         watermarkRegions = item.masks
         loadingQueueSelection = false
-        if recoveryAvailable, id == queue.nextItemID, let job = RecoveryStore.existingJob() {
-            inputURL = job.sourceURL
-            progress = job.manifest.progress
-            if item.kind == .gif {
-                inputKind = .video
-                videoToGIFEnabled = true
-            }
-        } else { progress = item.state == .completed ? 1 : 0 }
+        // Never replace the selected queue item's source with the recovery
+        // directory's source copy here. That unconditional override allowed a
+        // stale recovery manifest to make a newly selected video process an old
+        // source. startSingle() verifies byte identity in RecoveryStore.prepare()
+        // before it can reuse checkpoints.
+        if item.kind == .gif {
+            videoToGIFEnabled = true
+        }
+        progress = item.state == .completed ? 1 : 0
         outputURL = item.outputURL
     }
 
