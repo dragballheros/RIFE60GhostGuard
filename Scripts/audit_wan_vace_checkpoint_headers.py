@@ -71,6 +71,15 @@ def tensor_bytes(entry: dict[str, Any]) -> int:
     return elements * DTYPE_BYTES[dtype]
 
 
+def ideal_quantized_payload_bytes(elements: int, bits_per_element: int) -> float:
+    """Return ideal packed payload bytes, excluding all quantization metadata."""
+    if elements < 0:
+        raise ValueError("elements must be non-negative")
+    if bits_per_element <= 0:
+        raise ValueError("bits_per_element must be positive")
+    return elements * bits_per_element / 8
+
+
 def layer_bucket(name: str) -> str:
     """Group numbered transformer blocks and preserve named non-block modules."""
     import re
@@ -156,8 +165,8 @@ def main() -> int:
             "tensor_count": layer_tensors[name],
             "elements": layer_elements[name],
             "source_bytes": size,
-            "theoretical_int8_payload_gib": layer_elements[name] / (1024 ** 3),
-            "theoretical_int4_payload_gib": layer_elements[name] * 0.5 / (1024 ** 3),
+            "theoretical_int8_payload_gib": ideal_quantized_payload_bytes(layer_elements[name], 8) / (1024 ** 3),
+            "theoretical_int4_payload_gib": ideal_quantized_payload_bytes(layer_elements[name], 4) / (1024 ** 3),
         } for name, size in layer_sizes.items()),
         key=lambda item: item["source_bytes"], reverse=True,
     )
@@ -174,10 +183,10 @@ def main() -> int:
         "total_tensor_elements": total_elements,
         "total_tensor_payload_bytes": total_bytes,
         "estimated_all_weights_gib": total_bytes / (1024 ** 3),
-        "theoretical_uniform_int8_payload_gib": total_elements / (1024 ** 3),
-        "theoretical_uniform_int4_payload_gib": total_elements * 0.5 / (1024 ** 3),
-        "theoretical_uniform_int8_payload_bytes": total_elements,
-        "theoretical_uniform_int4_payload_bytes": total_elements * 0.5,
+        "theoretical_uniform_int8_payload_gib": ideal_quantized_payload_bytes(total_elements, 8) / (1024 ** 3),
+        "theoretical_uniform_int4_payload_gib": ideal_quantized_payload_bytes(total_elements, 4) / (1024 ** 3),
+        "theoretical_uniform_int8_payload_bytes": ideal_quantized_payload_bytes(total_elements, 8),
+        "theoretical_uniform_int4_payload_bytes": ideal_quantized_payload_bytes(total_elements, 4),
         "quantization_estimates_exclude": [
             "quantization scales and zero points",
             "unquantized normalization/embedding tensors",
