@@ -12,8 +12,8 @@ enum VACESelectiveRegionPlannerTests {
         print("PASS: VACE selective-region planner/compositor checks")
     }
 
-    static func check(_ condition: @autoclosure () -> Bool, _ message: String) {
-        if !condition() { fatalError("FAIL: \(message)") }
+    static func check(_ condition: Bool, _ message: String) {
+        if !condition { fatalError("FAIL: \(message)") }
     }
 
     static func makeMask(width: Int, height: Int, active: [(Int, Int, UInt8)]) throws -> VACEMaskPlane {
