@@ -20,7 +20,7 @@ concurrency:
 jobs:
   vace-block-parity:
     runs-on: macos-26
-    timeout-minutes: 90
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -43,17 +43,46 @@ jobs:
           git clone https://github.com/Wan-Video/Wan2.1.git Vendor/Wan2.1
           git -C Vendor/Wan2.1 checkout 9737cba9c1c3c4d04b33fcad41c111989865d315
           test "$(git -C Vendor/Wan2.1 rev-parse HEAD)" = "9737cba9c1c3c4d04b33fcad41c111989865d315"
-      - name: Convert actual VACE conditioning block and validate Core ML parity
+      - name: Convert and test iOS 16-compatible VACE block with INT8 weights
         run: |
           python Scripts/probe_vace_block_coreml.py \
             --wan-repo Vendor/Wan2.1 \
-            --output /tmp/VACEBlock-1p3B-CoreML.mlpackage \
-            --report /tmp/VACEBlock-1p3B-CoreML.validation.json
-      - name: Upload parity report
+            --minimum-deployment-target ios16 \
+            --quantization-levels int8 \
+            --output /tmp/VACEBlock-1p3B-iOS16.mlpackage \
+            --report /tmp/VACEBlock-1p3B-iOS16.validation.json
+      - name: Convert and test iOS 18 VACE block with INT8 and INT4 weights
+        run: |
+          python Scripts/probe_vace_block_coreml.py \
+            --wan-repo Vendor/Wan2.1 \
+            --minimum-deployment-target ios18 \
+            --quantization-levels int8 int4 \
+            --output /tmp/VACEBlock-1p3B-iOS18.mlpackage \
+            --report /tmp/VACEBlock-1p3B-iOS18.validation.json
+      - name: Download pinned official VACE 1.3B checkpoint for explicit trained-weight run
+        if: github.event_name == 'push' && contains(github.event.head_commit.message, '[vace-trained]')
+        run: |
+          set -euo pipefail
+          curl --location --fail --retry 3 --retry-all-errors \
+            'https://huggingface.co/Wan-AI/Wan2.1-VACE-1.3B/resolve/ae5437bcd803e960d99fd901c15f065d3e94a86a/diffusion_pytorch_model.safetensors?download=true' \
+            --output /tmp/Wan2.1-VACE-1.3B.safetensors
+          echo 'c46a6f5f7d32c453c3983bbc59761ea41cd02ad584fb55d1a7ee2b76145847a  /tmp/Wan2.1-VACE-1.3B.safetensors' | shasum -a 256 -c -
+      - name: Convert a real trained VACE block and test INT8 and INT4 compression
+        if: github.event_name == 'push' && contains(github.event.head_commit.message, '[vace-trained]')
+        run: |
+          python Scripts/probe_vace_block_coreml.py \
+            --wan-repo Vendor/Wan2.1 \
+            --checkpoint /tmp/Wan2.1-VACE-1.3B.safetensors \
+            --block-prefix 'vace_blocks.0.' \
+            --minimum-deployment-target ios18 \
+            --quantization-levels int8 int4 \
+            --output /tmp/VACEBlock-1p3B-trained-iOS18.mlpackage \
+            --report /tmp/VACEBlock-1p3B-trained-iOS18.validation.json
+      - name: Upload validation reports
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: wan-vace-block-coreml-parity-report
-          path: /tmp/VACEBlock-1p3B-CoreML.validation.json
+          name: wan-vace-block-coreml-validation-reports
+          path: /tmp/VACEBlock-*.validation.json
           if-no-files-found: warn
           retention-days: 14
