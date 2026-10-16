@@ -7,6 +7,8 @@ on:
       - feature/wan-vace-iphone-memory-first
     paths:
       - "Scripts/probe_vace_block_coreml.py"
+      - "Scripts/probe_wan_base_block_coreml.py"
+      - "Scripts/test_vace_checkpoint_mapping.py"
       - ".github/workflows/wan-vace-block-coreml-parity.yml"
       - "Docs/WanVACE-iPhone-Memory-First-Implementation.md"
 
@@ -85,27 +87,50 @@ jobs:
               raise SystemExit(f"SHA-256 mismatch: expected {expected}, got {actual}")
           print(f"Verified pinned checkpoint: {checkpoint.stat().st_size} bytes")
           PY
-      - name: Convert a real trained VACE block and test INT8 and INT4 compression
+      - name: Convert trained VACE control block 0 and measure INT8 versus INT4
         if: github.event_name == 'push' && contains(github.event.head_commit.message, '[vace-trained]')
         run: |
           python Scripts/probe_vace_block_coreml.py \
             --wan-repo Vendor/Wan2.1 \
             --checkpoint /tmp/Wan2.1-VACE-1.3B.safetensors \
-            --block-prefix 'vace_blocks.0.' \
+            --block-index 0 \
             --minimum-deployment-target ios18 \
             --quantization-levels int8 int4 \
-            --output /tmp/VACEBlock-1p3B-trained-iOS18.mlpackage \
-            --report /tmp/VACEBlock-1p3B-trained-iOS18.validation.json
-      - name: Convert a trained base transformer block with its VACE hint input
+            --output /tmp/VACEBlock-Index00-trained-iOS18.mlpackage \
+            --report /tmp/VACEBlock-Index00-trained-iOS18.validation.json
+      - name: Convert a second trained VACE control block without input projection
+        if: github.event_name == 'push' && contains(github.event.head_commit.message, '[vace-trained]')
+        run: |
+          python Scripts/probe_vace_block_coreml.py \
+            --wan-repo Vendor/Wan2.1 \
+            --checkpoint /tmp/Wan2.1-VACE-1.3B.safetensors \
+            --block-index 1 \
+            --minimum-deployment-target ios18 \
+            --quantization-levels int8 \
+            --output /tmp/VACEBlock-Index01-trained-iOS18.mlpackage \
+            --report /tmp/VACEBlock-Index01-trained-iOS18.validation.json
+      - name: Convert a trained base block with its VACE hint input
         if: github.event_name == 'push' && contains(github.event.head_commit.message, '[vace-trained]')
         run: |
           python Scripts/probe_wan_base_block_coreml.py \
             --wan-repo Vendor/Wan2.1 \
             --checkpoint /tmp/Wan2.1-VACE-1.3B.safetensors \
-            --block-prefix 'blocks.0.' \
-            --quantization-levels int8 int4 \
-            --output /tmp/WanBaseBlock-1p3B-trained-iOS18.mlpackage \
-            --report /tmp/WanBaseBlock-1p3B-trained-iOS18.validation.json
+            --block-index 0 \
+            --num-layers 30 \
+            --quantization-levels int8 \
+            --output /tmp/WanBaseBlock-Index00-trained-iOS18.mlpackage \
+            --report /tmp/WanBaseBlock-Index00-trained-iOS18.validation.json
+      - name: Convert a trained base block without a VACE hint
+        if: github.event_name == 'push' && contains(github.event.head_commit.message, '[vace-trained]')
+        run: |
+          python Scripts/probe_wan_base_block_coreml.py \
+            --wan-repo Vendor/Wan2.1 \
+            --checkpoint /tmp/Wan2.1-VACE-1.3B.safetensors \
+            --block-index 1 \
+            --num-layers 30 \
+            --quantization-levels int8 \
+            --output /tmp/WanBaseBlock-Index01-trained-iOS18.mlpackage \
+            --report /tmp/WanBaseBlock-Index01-trained-iOS18.validation.json
       - name: Upload validation reports
         if: always()
         uses: actions/upload-artifact@v4
