@@ -3,9 +3,9 @@
 
 This is a component-level conversion harness, not a full VACE denoiser. It imports
 VaceWanAttentionBlock from the pinned upstream Wan2.1 source and instantiates it
-with the published 1.3B width/depth dimensions. The weights are deterministic
-random initialization unless a future checkpoint-loading path is added; therefore
-this harness verifies operator/shape portability, not learned-weight quality.
+with the published 1.3B width/FFN/head dimensions. By default the weights are
+deterministic random initialization; pass --checkpoint to selectively load one
+trained VACE block from a SafeTensors checkpoint without materializing the full model.
 
 The fixed test grid is 1x2x2 latent tokens and text context length 8. It deliberately
 does not claim 480p throughput or iPhone memory/thermal validation.
