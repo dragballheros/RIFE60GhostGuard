@@ -1,0 +1,28 @@
+name: Wan VACE Swift Runtime Typecheck
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - feature/wan-vace-iphone-memory-first
+    paths:
+      - "VACEBlockStreamingRuntime.swift"
+      - ".github/workflows/wan-vace-runtime-swift-check.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wan-vace-runtime-swift-check-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  swift-runtime:
+    runs-on: macos-26
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Parse Swift runtime source
+        run: swiftc -frontend -parse VACEBlockStreamingRuntime.swift
+      - name: Typecheck Core ML runtime against macOS SDK
+        run: swiftc -typecheck VACEBlockStreamingRuntime.swift -framework CoreML
