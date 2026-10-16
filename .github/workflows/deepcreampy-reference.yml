@@ -1,0 +1,70 @@
+name: DeepCreamPy TensorFlow reference smoke test
+
+on:
+  push:
+    branches:
+      - feature/deepcreampy-ondevice
+  workflow_dispatch:
+    inputs:
+      model_archive_id:
+        description: "Google Drive file ID for the upstream DCPv2 checkpoint archive"
+        required: false
+        default: "1IMwzqZUuRnTv5jcuKdvZx-RZweknww5x"
+
+permissions:
+  contents: read
+
+jobs:
+  reference-inference:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: feature/deepcreampy-ondevice
+
+      - name: Set up legacy TensorFlow-compatible Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.7.17"
+
+      - name: Install pinned reference dependencies
+        run: |
+          python -m pip install --upgrade "pip<24.1"
+          python -m pip install "numpy==1.18.5" "protobuf==3.20.3" "tensorflow==1.15.5" "gdown==4.7.1"
+
+      - name: Download upstream checkpoint archive (validation only)
+        env:
+          MODEL_ARCHIVE_ID: ${{ inputs.model_archive_id || '1IMwzqZUuRnTv5jcuKdvZx-RZweknww5x' }}
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/dcp-checkpoints
+          test -n "$MODEL_ARCHIVE_ID"
+          gdown "$MODEL_ARCHIVE_ID" -O /tmp/dcp-checkpoints.zip
+          test -s /tmp/dcp-checkpoints.zip
+          unzip -q /tmp/dcp-checkpoints.zip -d /tmp/dcp-checkpoints
+          ROOT="$(find /tmp/dcp-checkpoints -type f -name 'Train_775000.index' -print -quit | xargs dirname)"
+          test -n "$ROOT"
+          test -f "$(dirname "$ROOT")/mosaic/Train_290000.index"
+          echo "DCP_CHECKPOINT_ROOT=$(dirname "$ROOT")" >> "$GITHUB_ENV"
+          echo "Detected checkpoint parent: $(dirname "$ROOT")"
+
+      - name: Verify checkpoint file layout and variable groups
+        run: |
+          python Scripts/DeepCreamPy/inspect_checkpoints.py --root "$DCP_CHECKPOINT_ROOT"
+
+      - name: Restore both graphs and run deterministic inference
+        run: |
+          python Scripts/DeepCreamPy/reference_inference.py \
+            --root "$DCP_CHECKPOINT_ROOT" \
+            --family both \
+            --output-dir /tmp/deepcreampy-reference
+
+      - name: Upload small reference fixtures (not model weights)
+        uses: actions/upload-artifact@v4
+        with:
+          name: deepcreampy-reference-fixtures
+          path: /tmp/deepcreampy-reference/*.npz
+          if-no-files-found: error
+          retention-days: 7
