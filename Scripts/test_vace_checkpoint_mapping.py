@@ -34,7 +34,7 @@ class TinyStateModule:
         return SimpleNamespace(missing_keys=missing, unexpected_keys=unexpected)
 
 
-def source_key(upstream_key: str) -> str:
+def source_key(upstream_key: str, prefix: str = "vace_blocks.0.") -> str:
     """Reverse the mapping under test to construct Diffusers-style fixture tensors."""
     name = upstream_key
     if name.startswith("self_attn."):
@@ -65,7 +65,7 @@ def source_key(upstream_key: str) -> str:
                 "o": "to_out.0.",
             }[source]
             name = head + "." + target + rest
-    return "vace_blocks.0." + name
+    return prefix + name
 
 
 def test_complete_mapping_and_selective_tensor_load() -> None:
@@ -126,10 +126,36 @@ def test_complete_mapping_and_selective_tensor_load() -> None:
     assert report["loading_policy"].startswith("SafeTensors header indexed")
     assert "vace_blocks.1.attn1.to_q.weight" not in report["ignored_source_tensors"]
     assert all(torch.count_nonzero(value).item() > 0 for value in module.loaded.values())
+
+    # The main/base transformer block shares most key families but does not have
+    # the VACE before_proj/after_proj tensors. Validate it independently with a
+    # blocks.N prefix rather than assuming every checkpoint block is a VACE block.
+    base_values = {
+        name: value.clone()
+        for name, value in values.items()
+        if not name.startswith(("before_proj.", "after_proj."))
+    }
+    base_source = {
+        source_key(name, prefix="blocks.0."): torch.full_like(value, fill_value=(index + 1) / 100.0)
+        for index, (name, value) in enumerate(base_values.items())
+    }
+    base_source["blocks.1.attn1.to_q.weight"] = torch.ones(2, 2)
+    with tempfile.TemporaryDirectory(prefix="wan-base-key-map-") as temp_dir:
+        checkpoint = Path(temp_dir) / "synthetic-base.safetensors"
+        save_file(base_source, str(checkpoint))
+        base_module = TinyStateModule(base_values)
+        base_report = load_safetensors_block(base_module, checkpoint, "blocks.0.")
+    assert base_report["loaded_tensor_count"] == len(base_values), base_report
+    assert set(base_module.loaded) == set(base_values)
+    assert "blocks.1.attn1.to_q.weight" not in base_report["ignored_source_tensors"]
+    assert all(torch.count_nonzero(value).item() > 0 for value in base_module.loaded.values())
+
     print(
         "PASS: mapped all",
         len(values),
-        "synthetic VACE block tensors; unrelated checkpoint tensors were not loaded.",
+        "VACE tensors and",
+        len(base_values),
+        "base-block tensors; unrelated checkpoint tensors remained unloaded.",
     )
 
 
