@@ -12,6 +12,7 @@ on:
       - "VACEOpticalFlowMaskWarp.swift"
       - "VACEOpticalFlowMaskProvider.swift"
       - "Scripts/test_vace_selective_region_planner.swift"
+      - "Scripts/test_vace_video_pipeline.swift"
       - ".github/workflows/wan-vace-selective-region-check.yml"
 
 permissions:
@@ -40,3 +41,10 @@ jobs:
         run: |
           swiftc -swift-version 5 VACESelectiveRegionPlanner.swift VACEConditioningBuilder.swift VACEOpticalFlowMaskWarp.swift Scripts/test_vace_selective_region_planner.swift -o /tmp/vace-region-tests
           /tmp/vace-region-tests
+      - name: Run synthetic AVFoundation end-to-end video test
+        run: |
+          swiftc -swift-version 5 \\
+            VACESelectiveRegionPlanner.swift VACEConditioningBuilder.swift VACESelectiveVideoPipeline.swift \\
+            Scripts/test_vace_video_pipeline.swift \\
+            -framework AVFoundation -framework CoreVideo -o /tmp/vace-video-tests
+          /tmp/vace-video-tests
