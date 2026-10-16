@@ -2,8 +2,7 @@ import Foundation
 
 func require(_ condition: @autoclosure () -> Bool, _ message: String) {
     guard condition() else {
-        fputs("DEEP CREAM PREPROCESSING FAIL: \(message)\n", stderr)
-        exit(1)
+        fatalError("DEEP CREAM PREPROCESSING FAIL: \(message)")
     }
 }
 
