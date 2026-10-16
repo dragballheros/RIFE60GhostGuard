@@ -51,13 +51,14 @@ jobs:
             --height 4 \
             --width 4 \
             --max-context-tokens 16 \
-            --output /tmp/VACEBlock-DynamicTemporal-CoreML.mlpackage \
-            --report /tmp/VACEBlock-DynamicTemporal.validation.json
+            --compute-precision fp32 \
+            --output /tmp/VACEBlock-DynamicTemporal-FP32-CoreML.mlpackage \
+            --report /tmp/VACEBlock-DynamicTemporal-FP32.validation.json
       - name: Upload dynamic-shape parity report
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: wan-vace-dynamic-temporal-parity-report
-          path: /tmp/VACEBlock-DynamicTemporal.validation.json
+          path: /tmp/VACEBlock-DynamicTemporal-FP32.validation.json
           if-no-files-found: warn
           retention-days: 14
