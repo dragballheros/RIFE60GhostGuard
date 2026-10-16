@@ -35,8 +35,11 @@ jobs:
             'numpy==1.26.4' \
             'diffusers==0.32.2' \
             einops easydict
-      - name: Check converter syntax
-        run: python -m py_compile Scripts/probe_vace_block_coreml.py
+      - name: Check converter and mapping-test syntax
+        run: |
+          python -m py_compile Scripts/probe_vace_block_coreml.py Scripts/test_vace_checkpoint_mapping.py
+      - name: Test Diffusers-to-original checkpoint key mapping without large model downloads
+        run: python Scripts/test_vace_checkpoint_mapping.py
       - name: Fetch pinned official Wan2.1 source
         run: |
           set -euo pipefail
