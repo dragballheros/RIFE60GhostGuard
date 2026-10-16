@@ -9,6 +9,7 @@ struct ContentView: View {
     @StateObject private var pipController = ProcessingPiPController()
     @State private var showingImporter = false
     @State private var showingAIImageStudio = false
+    @State private var showingVACEComponentTest = false
     @State private var showingWatermarkEditor = false
     @State private var showingPhotosPicker = false
     @State private var showingExportFolderPicker = false
@@ -30,6 +31,16 @@ struct ContentView: View {
 
             NavigationStack {
                 Form {
+                    Section("Wan VACE — On-device Component Test") {
+                        Button { showingVACEComponentTest = true } label: {
+                            Label("Open VACE Component Test Lab", systemImage: "cpu")
+                        }
+                        .disabled(vm.isBusy || vm.isImporting || vm.isBenchmarking)
+                        Text("Experimental local Core ML smoke test for exported Wan VAE components. This does not perform VACE video editing and does not contain the 14B transformer.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+
                     Section("AI Image Studio") {
                         Button { showingAIImageStudio = true } label: {
                             Label("Open AI Image Studio", systemImage: "sparkles")
@@ -98,12 +109,30 @@ struct ContentView: View {
                     Section("Anime Watermark Removal") {
                         Toggle("Remove marked watermarks", isOn: $vm.watermarkRemovalEnabled).disabled(vm.queueLocked || vm.isImporting)
                         if vm.watermarkRemovalEnabled {
-                            Picker("Inpainting model", selection: $vm.watermarkModel) {
+                            VStack(alignment: .leading, spacing: 0) {
+                                Text("Inpainting model")
+                                    .font(.subheadline)
+                                    .foregroundStyle(.secondary)
+                                    .padding(.bottom, 6)
                                 ForEach(WatermarkModel.allCases) { model in
-                                    Text(model.title).tag(model)
+                                    Button {
+                                        guard !vm.queueLocked && !vm.isImporting else { return }
+                                        vm.watermarkModel = model
+                                    } label: {
+                                        HStack(spacing: 12) {
+                                            Text(model.title).foregroundStyle(.primary)
+                                            Spacer(minLength: 8)
+                                            Image(systemName: vm.watermarkModel == model ? "checkmark.circle.fill" : "circle")
+                                                .foregroundStyle(vm.watermarkModel == model ? Color.accentColor : Color.secondary)
+                                        }
+                                        .contentShape(Rectangle())
+                                        .padding(.vertical, 8)
+                                    }
+                                    .buttonStyle(.plain)
+                                    .disabled(vm.queueLocked || vm.isImporting)
+                                    .accessibilityAddTraits(vm.watermarkModel == model ? .isSelected : [])
                                 }
                             }
-                            .disabled(vm.queueLocked || vm.isImporting)
                             if let item = vm.selectedQueueItem, (vm.mediaQueue?.items.count ?? 0) > 1 {
                                 Text("Mask for: \(item.displayName)").font(.caption)
                                 Toggle("Remove watermark on this item", isOn: Binding(get: { vm.selectedQueueItem?.removeWatermark ?? true }, set: { vm.setSelectedWatermarkRemoval($0) })).disabled(vm.queueLocked || vm.isImporting)
@@ -135,9 +164,30 @@ struct ContentView: View {
 
                     Section("2× Anime Upscale") {
                         Toggle("Real-CUGAN Native 2×", isOn: $vm.upscaleTo4K).disabled(vm.queueLocked || vm.isImporting)
-                        Picker("Model compute units", selection: $vm.computePreference) {
-                            ForEach(ModelComputePreference.allCases) { option in Text(option.title).tag(option) }
-                        }.disabled(vm.queueLocked || vm.isBusy || vm.isBenchmarking)
+                        VStack(alignment: .leading, spacing: 0) {
+                            Text("Model compute units")
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                                .padding(.bottom, 6)
+                            ForEach(ModelComputePreference.allCases) { option in
+                                Button {
+                                    guard !vm.queueLocked && !vm.isBusy && !vm.isBenchmarking else { return }
+                                    vm.computePreference = option
+                                } label: {
+                                    HStack(spacing: 12) {
+                                        Text(option.title).foregroundStyle(.primary)
+                                        Spacer(minLength: 8)
+                                        Image(systemName: vm.computePreference == option ? "checkmark.circle.fill" : "circle")
+                                            .foregroundStyle(vm.computePreference == option ? Color.accentColor : Color.secondary)
+                                    }
+                                    .contentShape(Rectangle())
+                                    .padding(.vertical, 8)
+                                }
+                                .buttonStyle(.plain)
+                                .disabled(vm.queueLocked || vm.isBusy || vm.isBenchmarking)
+                                .accessibilityAddTraits(vm.computePreference == option ? .isSelected : [])
+                            }
+                        }
                         Text("Auto preserves the current Core ML policy. GPU may use more memory. GPU and Neural Engine modes both allow CPU fallback; benchmark first.").font(.caption).foregroundStyle(.secondary)
                         if vm.inputKind == .video {
                             Toggle("Upscale before interpolation (faster)", isOn: $vm.upscaleFirst)
@@ -282,7 +332,16 @@ struct ContentView: View {
                             Button("Cancel Benchmark", role: .destructive) { vm.cancelBenchmark() }
                         }
                         if !vm.benchmarkStatus.isEmpty { Text(vm.benchmarkStatus).font(.caption) }
-                        if !vm.benchmarkReport.isEmpty { Text(vm.benchmarkReport).font(.system(.caption, design: .monospaced)).textSelection(.enabled) }
+                        if !vm.benchmarkReport.isEmpty {
+                            Text(vm.benchmarkReport)
+                                .font(.system(.caption, design: .monospaced))
+                                .textSelection(.disabled)
+                            Button {
+                                UIPasteboard.general.string = vm.benchmarkReport
+                            } label: {
+                                Label("Copy Benchmark Report", systemImage: "doc.on.doc")
+                            }
+                        }
                         Text("Keep the app open and cool. Tests 2 warm-ups and 5 timed predictions per model/policy. Results are device measurements; no preference is changed automatically.").font(.caption).foregroundStyle(.secondary)
                         Button { vm.copyErrorLogs() } label: { Label("Copy Error Logs", systemImage: "doc.on.doc") }
                         if !vm.diagnosticsCopyStatus.isEmpty { Text(vm.diagnosticsCopyStatus).font(.caption).foregroundStyle(.secondary) }
@@ -381,6 +440,9 @@ struct ContentView: View {
             }
         }
         .simultaneousGesture(DragGesture(minimumDistance: 0).onChanged { _ in registerPostRenderInteraction() })
+        .sheet(isPresented: $showingVACEComponentTest) {
+            VACEComponentTestView()
+        }
         .onDisappear {
             pipController.disarmAndStop()
             cancelPostRenderSleep(restoreDisplay: true)
