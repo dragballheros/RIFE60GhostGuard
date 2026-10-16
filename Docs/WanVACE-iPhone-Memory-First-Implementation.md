@@ -153,3 +153,7 @@ checkpoint-backed CI result. The branch does not yet contain a quantized block
 streaming runtime, a mobile-feasible text encoder, a full VACE denoising loop,
 or an end-to-end video editor. Those remain required milestones, followed by
 measured on-device memory, speed, thermal, output quality, and regression checks.
+
+## Trained-checkpoint smoke test
+
+The checkpoint-backed lane is intentionally opt-in because downloading the official 1.3B checkpoint is a multi-gigabyte CI task. A commit message containing `[vace-trained]` downloads the immutable checkpoint revision, verifies its SHA-256, and exercises only `vace_blocks.0`; it is a component test and not hosted inference.
