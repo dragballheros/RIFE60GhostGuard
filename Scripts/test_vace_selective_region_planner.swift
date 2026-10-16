@@ -113,7 +113,7 @@ enum VACESelectiveRegionPlannerTests {
               "reactive red plane must preserve only pixels inside edit mask")
         check(result.inactiveRGBCHW[2] == Float(127) / 127.5 - 1,
               "inactive branch must normalize RGB from [0,255] to [-1,1]")
-        check(result.reactiveRGBCHW[3] == 0,
+        check(result.reactiveRGBCHW[2] == 0,
               "the unedited pixel must be zero in the reactive branch")
     }
 
