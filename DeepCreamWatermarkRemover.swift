@@ -122,7 +122,11 @@ final class DeepCreamWatermarkRemover: WatermarkRemovalApplying {
                         let offset = batch * modelSize * modelSize * 3 + pixel + channel
                         originalPtr[offset] = value
                         maskPtr[offset] = known
-                        maskedPtr[offset] = known == 0 ? -1.0 : value
+                        maskedPtr[offset] = DeepCreamInputPreprocessor.maskedInputPixel(
+                            sourceValue: value,
+                            knownMaskValue: known,
+                            model: configuration.model
+                        )
                     }
                 }
             }
