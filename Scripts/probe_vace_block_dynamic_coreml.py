@@ -132,6 +132,7 @@ def main() -> int:
     parser.add_argument("--height", type=int, default=HEIGHT)
     parser.add_argument("--width", type=int, default=WIDTH)
     parser.add_argument("--max-context-tokens", type=int, default=CONTEXT_MAX)
+    parser.add_argument("--compute-precision", choices=("fp16", "fp32"), default="fp16")
     parser.add_argument("--max-absolute-error", type=float, default=0.20)
     parser.add_argument("--max-rmse", type=float, default=0.035)
     parser.add_argument("--max-relative-rmse", type=float, default=0.02)
@@ -245,7 +246,9 @@ def main() -> int:
             ct.TensorType(name="conditioned_context"),
             ct.TensorType(name="skip_hint"),
         ],
-        compute_precision=ct.precision.FLOAT16,
+        compute_precision=(
+            ct.precision.FLOAT16 if args.compute_precision == "fp16" else ct.precision.FLOAT32
+        ),
         minimum_deployment_target=ct.target.iOS18,
     )
     conversion_seconds = time.perf_counter() - started
@@ -381,6 +384,7 @@ def main() -> int:
             "passed": passed,
         },
         "runtime": {
+            "compute_precision": args.compute_precision,
             "conversion_seconds": conversion_seconds,
             "package_path": str(args.output),
             "package_size_bytes": sum(p.stat().st_size for p in args.output.rglob("*") if p.is_file()),
