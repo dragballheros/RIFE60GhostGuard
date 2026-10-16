@@ -88,11 +88,18 @@ def main() -> int:
     original_rope_apply = wan_model.rope_apply
     original_flash_attention = wan_model.flash_attention
 
+    # Numerical check for the fixed-grid real-valued RoPE rewrite used by Core ML.
+    rotary_sample = torch.randn(1, tokens, heads, head_dim)
+    official_rotary = original_rope_apply(rotary_sample, grid_sizes, freqs)
     def fixed_rope_apply(x, _grid_sizes, _freqs):
         c = rope_cos.to(device=x.device, dtype=x.dtype).expand(1, tokens, 1, head_dim // 2)
         s = rope_sin.to(device=x.device, dtype=x.dtype).expand(1, tokens, 1, head_dim // 2)
         even, odd = x[..., 0::2], x[..., 1::2]
         return torch.stack((even * c - odd * s, even * s + odd * c), dim=-1).flatten(-2)
+
+    rotary_error = float(
+        (official_rotary.float() - fixed_rope_apply(rotary_sample, grid_sizes, freqs).float()).abs().max().item()
+    )
 
     def portable_attention(q, k, v, q_lens=None, k_lens=None, **kwargs):
         result = F.scaled_dot_product_attention(
@@ -139,7 +146,7 @@ def main() -> int:
     time_modulation = torch.randn(1, 6, dim, dtype=torch.float32) * 0.01
     text_context = torch.randn(1, CONTEXT_TOKENS, dim, dtype=torch.float32) * 0.1
     vace_hint = torch.randn(1, tokens, dim, dtype=torch.float32) * 0.1
-    context_scale = torch.tensor(1.0, dtype=torch.float32)
+    context_scale = torch.tensor([1.0], dtype=torch.float32)
     inputs = (latent_tokens, time_modulation, text_context, vace_hint, context_scale)
     names = ("latent_tokens", "time_modulation", "text_context", "vace_hint", "context_scale")
 
@@ -250,21 +257,10 @@ def main() -> int:
                 "time_modulation": list(time_modulation.shape),
                 "text_context": list(text_context.shape),
                 "vace_hint": list(vace_hint.shape),
-                "context_scale": [],
+                "context_scale": [1],
             },
             "validation": {
-                "rotary_real_vs_official_complex_max_absolute_error": max_abs_diff(
-                    wan_model.rope_apply(
-                        torch.randn(1, tokens, heads, head_dim),
-                        grid_sizes,
-                        freqs
-                    ),
-                    wan_model.rope_apply(
-                        torch.randn(1, tokens, heads, head_dim),
-                        grid_sizes,
-                        freqs
-                    ),
-                ) if False else None,
+                "rotary_real_vs_official_complex_max_absolute_error": rotary_error,
                 "outputs": errors,
                 "pass_rmse_limit": args.max_rmse,
                 "pass_max_absolute_error_limit": args.max_absolute_error,
