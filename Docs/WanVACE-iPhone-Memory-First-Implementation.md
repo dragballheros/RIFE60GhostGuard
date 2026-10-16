@@ -154,6 +154,26 @@ with a short fixed text context. These results validate only one-block host
 conversion and error under compression, not a production-ready VACE model,
 an iPhone memory pass, or an end-to-end result.
 
+## Experimental milestone: flexible sequence length and INT8 storage
+
+On a separate experiment branch, the same VACE control-block graph was converted
+with Core ML flexible token/context dimensions. With FP16 arithmetic, the graph
+converted and executed across the tested shapes but failed a strict numerical
+gate, so FP16 dynamic shape is not accepted. Changing the graph to FP32 passed
+all 16 tested combinations (1 to 4 latent frames with a 4×4 spatial token grid,
+and context lengths 1, 5, 8, and 16) with max absolute error about
+`3.6e-7`. The FP32 block package was `204,639,660` bytes.
+
+Post-training INT8 weight compression on that FP32 dynamic-shape package also
+passed all 16 tests. It reduced package size to `51,363,477` bytes, with worst
+maximum absolute errors about `0.00197` for conditioned context and
+`0.00189` for skip hint; worst RMSE was about `3.78e-4` and `3.94e-4`.
+This is promising component-level evidence for INT8 weights with FP32 activations,
+but still uses deterministic random weights and a tiny 4×4 spatial grid. The
+four-frame tests do not measure real 480p latent-grid attention memory. The
+experiment workflow is separate from the main implementation branch and has not
+yet been integrated into the app runtime.
+
 ## Implementation milestone 2: serial Core ML block runtime primitive
 
 Added `VACEBlockStreamingRuntime.swift`, automatically included in the iOS target
@@ -173,16 +193,17 @@ or speed claim is made from this source check.
 
 ## Current truth
 
-This branch contains an executable converter and numerical parity/weight-
-compression harness for an actual upstream VACE conditioning block. Its pinned,
-SHA-256-verified trained checkpoint run passed one-block Float16 and INT8 parity;
-uniform INT4 failed the configured trained-weight error limits. A Swift serial
-Core ML runtime primitive is now implemented and passes macOS Core ML typecheck.
-It is not yet connected to the VACE pipeline. The branch still lacks a full base
-transformer + VACE block stack, a validated mobile-feasible text encoder, the
-complete denoising schedule, temporal VAE integration, masks/reference clip
-conditioning, and the end-to-end video editor. Device memory, performance,
-thermals, visual quality, and existing-feature regression are unmeasured gates.
+This branch contains executable VACE control-block and base-block converters,
+strict learned-checkpoint mapping tests, quantization experiments, and a serial
+Core ML runtime primitive that passes macOS and iOS 16 SDK typechecking. The
+pinned trained-weight control block passed Float16 and INT8 parity; uniform INT4
+failed and is rejected. A separate dynamic-shape experiment passed at FP32 and
+with INT8 weight storage across a tiny test grid. A trained base-block pass is
+currently being run. None of these component experiments is an end-to-end video
+editor or an iPhone memory/performance result. The full model stack, mobile
+text-conditioning solution, denoising schedule, temporal VAE, mask/reference
+conditioning, end-to-end output, measured phone memory/thermal behavior and
+existing-feature regression tests are still outstanding.
 
 ## Trained-checkpoint smoke test
 
