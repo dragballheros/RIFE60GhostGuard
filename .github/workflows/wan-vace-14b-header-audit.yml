@@ -1,0 +1,44 @@
+name: Wan VACE 14B checkpoint header audit
+
+on:
+  workflow_dispatch:
+    inputs:
+      revision:
+        description: Hugging Face commit SHA or revision to audit
+        required: true
+        default: main
+        type: string
+  push:
+    branches:
+      - feature/wan-vace-layerwise-runtime-audit
+    paths:
+      - "Scripts/audit_wan_vace_checkpoint_headers.py"
+      - ".github/workflows/wan-vace-14b-header-audit.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Unit-test audit arithmetic and layer grouping
+        run: python -m unittest discover -s Scripts -p 'test_audit_*.py' -v
+      - name: Audit official 14B safetensors headers without downloading tensor weights
+        run: |
+          python Scripts/audit_wan_vace_checkpoint_headers.py \
+            --repo Wan-AI/Wan2.1-VACE-14B \
+            --revision "${{ inputs.revision || 'main' }}" \
+            --output artifacts/wan-vace-14b-header-audit.json
+      - name: Upload audit report
+        uses: actions/upload-artifact@v4
+        with:
+          name: wan-vace-14b-header-audit
+          path: artifacts/wan-vace-14b-header-audit.json
+          if-no-files-found: error
+          retention-days: 30
