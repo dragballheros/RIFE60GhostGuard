@@ -278,10 +278,10 @@ final class VACEOpticalFlowMaskProvider: VACEFrameMaskProvider {
         let pixelCount = lhs.width * lhs.height
         // Sampling every fourth pixel bounds this check; a hard cut normally
         // changes a large fraction of the frame, so full resolution is unnecessary.
-        let stride = 4
+        let sampleStep = 4
         var absoluteDifference: Double = 0
         var samples = 0
-        for pixel in stride(from: 0, to: pixelCount, by: stride) {
+        for pixel in Swift.stride(from: 0, to: pixelCount, by: sampleStep) {
             let offset = pixel * 4
             let leftLuma = 0.2126 * Double(lhs.bytes[offset]) + 0.7152 * Double(lhs.bytes[offset + 1]) + 0.0722 * Double(lhs.bytes[offset + 2])
             let rightLuma = 0.2126 * Double(rhs.bytes[offset]) + 0.7152 * Double(rhs.bytes[offset + 1]) + 0.0722 * Double(rhs.bytes[offset + 2])
