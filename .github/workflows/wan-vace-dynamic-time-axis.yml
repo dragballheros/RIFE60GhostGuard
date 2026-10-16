@@ -8,6 +8,7 @@ on:
     paths:
       - "Scripts/probe_vace_block_dynamic_coreml.py"
       - "Scripts/probe_vace_block_coreml.py"
+      - "Scripts/probe_wan_base_block_dynamic_coreml.py"
       - ".github/workflows/wan-vace-dynamic-time-axis.yml"
 
 permissions:
@@ -36,7 +37,7 @@ jobs:
             'diffusers==0.32.2' \
             einops easydict safetensors
       - name: Check dynamic probe syntax
-        run: python -m py_compile Scripts/probe_vace_block_coreml.py Scripts/probe_vace_block_dynamic_coreml.py
+        run: python -m py_compile Scripts/probe_vace_block_coreml.py Scripts/probe_vace_block_dynamic_coreml.py Scripts/probe_wan_base_block_dynamic_coreml.py
       - name: Fetch pinned official Wan2.1 source
         run: |
           set -euo pipefail
@@ -54,11 +55,35 @@ jobs:
             --compute-precision fp32 \
             --output /tmp/VACEBlock-DynamicTemporal-FP32-CoreML.mlpackage \
             --report /tmp/VACEBlock-DynamicTemporal-FP32.validation.json
-      - name: Upload dynamic-shape parity report
+      - name: Export main transformer block 0 with dynamic temporal tokens and VACE hint
+        run: |
+          python Scripts/probe_wan_base_block_dynamic_coreml.py \
+            --wan-repo Vendor/Wan2.1 \
+            --block-index 0 \
+            --max-frames 4 \
+            --height 4 \
+            --width 4 \
+            --max-context-tokens 16 \
+            --compute-precision fp32 \
+            --output /tmp/WanBaseBlock-Index00-Dynamic-FP32.mlpackage \
+            --report /tmp/WanBaseBlock-Index00-Dynamic-FP32.validation.json
+      - name: Export main transformer block 1 without a VACE hint
+        run: |
+          python Scripts/probe_wan_base_block_dynamic_coreml.py \
+            --wan-repo Vendor/Wan2.1 \
+            --block-index 1 \
+            --max-frames 4 \
+            --height 4 \
+            --width 4 \
+            --max-context-tokens 16 \
+            --compute-precision fp32 \
+            --output /tmp/WanBaseBlock-Index01-Dynamic-FP32.mlpackage \
+            --report /tmp/WanBaseBlock-Index01-Dynamic-FP32.validation.json
+      - name: Upload dynamic-shape parity reports
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: wan-vace-dynamic-temporal-parity-report
-          path: /tmp/VACEBlock-DynamicTemporal-FP32.validation.json
+          name: wan-vace-dynamic-temporal-parity-reports
+          path: /tmp/*Dynamic-FP32.validation.json
           if-no-files-found: warn
           retention-days: 14
