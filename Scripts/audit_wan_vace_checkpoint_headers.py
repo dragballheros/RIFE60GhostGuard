@@ -84,11 +84,11 @@ def layer_bucket(name: str) -> str:
     """Preserve block namespace so separately indexed stacks are not merged."""
     import re
     patterns = (
-        ("diffusion_model_blocks", r"^(?:model\\.)?diffusion_model\\.blocks\\.(\\d+)\\."),
-        ("blocks", r"^(?:model\\.)?blocks\\.(\\d+)\\."),
-        ("transformer_blocks", r"^(?:model\\.)?transformer_blocks\\.(\\d+)\\."),
-        ("vace_blocks", r"^(?:model\\.)?vace_blocks\\.(\\d+)\\."),
-        ("single_transformer_blocks", r"^(?:model\\.)?single_transformer_blocks\\.(\\d+)\\."),
+        ("diffusion_model_blocks", r"^(?:model\.)?diffusion_model\.blocks\.(\d+)\."),
+        ("blocks", r"^(?:model\.)?blocks\.(\d+)\."),
+        ("transformer_blocks", r"^(?:model\.)?transformer_blocks\.(\d+)\."),
+        ("vace_blocks", r"^(?:model\.)?vace_blocks\.(\d+)\."),
+        ("single_transformer_blocks", r"^(?:model\.)?single_transformer_blocks\.(\d+)\."),
     )
     for namespace, pattern in patterns:
         match = re.match(pattern, name)
