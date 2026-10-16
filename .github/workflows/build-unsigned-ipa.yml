@@ -73,19 +73,66 @@ jobs:
 
           while time.monotonic() < deadline and artifact_id is None:
               try:
+                  # Reuse a successful component artifact from this branch only when
+                  # every VAE export input is byte-for-byte the same as the target
+                  # commit. Swift/UI-only fixes need not wait for another expensive
+                  # export, but changes to the converter or export workflow invalidate it.
                   runs_url = (
                       f"https://api.github.com/repos/{repo}/actions/runs"
-                      f"?head_sha={sha}&per_page=100"
+                      "?branch=feature%2Fwan-vace-ondevice-component-test&per_page=100"
                   )
                   runs = fetch_json(runs_url).get("workflow_runs", [])
-                  candidates = [
-                      run for run in runs
-                      if run.get("name") == "Wan VAE Core ML Export Probe"
-                      and run.get("head_sha") == sha
-                      and run.get("conclusion") == "success"
-                  ]
-                  candidates.sort(key=lambda run: run.get("created_at", ""), reverse=True)
-                  for run in candidates:
+                  export_inputs = (
+                      ".github/workflows/wan-vae-coreml-probe.yml",
+                      "Scripts/probe_wan_vae_coreml.py",
+                      "Scripts/probe_wan_vae_decoder_coreml.py",
+                      "Scripts/probe_vace_attention_coreml.py",
+                      "Scripts/probe_wan_vae_temporal_cache.py",
+                  )
+                  tree_cache = {}
+
+                  def tree_files(commit_sha):
+                      if commit_sha not in tree_cache:
+                          tree_url = (
+                              f"https://api.github.com/repos/{repo}/git/trees/"
+                              f"{commit_sha}?recursive=1"
+                          )
+                          tree = fetch_json(tree_url).get("tree", [])
+                          tree_cache[commit_sha] = {
+                              item["path"]: item.get("sha")
+                              for item in tree
+                              if item.get("type") == "blob"
+                          }
+                      return tree_cache[commit_sha]
+
+                  target_tree = tree_files(sha)
+                  missing_inputs = [path for path in export_inputs if path not in target_tree]
+                  if missing_inputs:
+                      raise SystemExit(
+                          "Missing required VAE export inputs in target commit: "
+                          + ", ".join(missing_inputs)
+                      )
+
+                  successful_runs = sorted(
+                      (
+                          run for run in runs
+                          if run.get("name") == "Wan VAE Core ML Export Probe"
+                          and run.get("head_branch") == "feature/wan-vace-ondevice-component-test"
+                          and run.get("conclusion") == "success"
+                      ),
+                      key=lambda run: run.get("created_at", ""),
+                      reverse=True,
+                  )
+                  compatible_runs = []
+                  for run in successful_runs:
+                      candidate_tree = tree_files(run["head_sha"])
+                      if all(
+                          target_tree.get(path) == candidate_tree.get(path)
+                          for path in export_inputs
+                      ):
+                          compatible_runs.append(run)
+
+                  for run in compatible_runs:
                       export_run_id = run["id"]
                       artifacts_url = (
                           f"https://api.github.com/repos/{repo}/actions/runs/"
@@ -99,6 +146,11 @@ jobs:
                       ), None)
                       if match:
                           artifact_id = match["id"]
+                          print(
+                              f"Reusing validated VAE component artifact from run {export_run_id}; "
+                              "export inputs match the target commit.",
+                              flush=True,
+                          )
                           break
                   if artifact_id is None:
                       last_problem = (
