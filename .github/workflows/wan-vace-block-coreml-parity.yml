@@ -66,7 +66,22 @@ jobs:
           curl --location --fail --retry 3 --retry-all-errors \
             'https://huggingface.co/Wan-AI/Wan2.1-VACE-1.3B/resolve/ae5437bcd803e960d99fd901c15f065d3e94a86a/diffusion_pytorch_model.safetensors?download=true' \
             --output /tmp/Wan2.1-VACE-1.3B.safetensors
-          echo 'c46a6f5f7d32c453c3983bbc59761ea41cd02ad584fb55d1a7ee2b76145847a  /tmp/Wan2.1-VACE-1.3B.safetensors' | shasum -a 256 -c -
+          python - <<'PY'
+          from hashlib import sha256
+          from pathlib import Path
+
+          checkpoint = Path("/tmp/Wan2.1-VACE-1.3B.safetensors")
+          expected = "c46a6f5f7d32c453c3983bbc59761ea41cd02ad584fb55d1a7ee2b76145847a2"
+          digest = sha256()
+          with checkpoint.open("rb") as stream:
+              for chunk in iter(lambda: stream.read(8 * 1024 * 1024), b""):
+                  digest.update(chunk)
+          actual = digest.hexdigest()
+          print(f"Checkpoint SHA-256: {actual}")
+          if actual != expected:
+              raise SystemExit(f"SHA-256 mismatch: expected {expected}, got {actual}")
+          print(f"Verified pinned checkpoint: {checkpoint.stat().st_size} bytes")
+          PY
       - name: Convert a real trained VACE block and test INT8 and INT4 compression
         if: github.event_name == 'push' && contains(github.event.head_commit.message, '[vace-trained]')
         run: |
