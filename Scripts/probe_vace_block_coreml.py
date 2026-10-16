@@ -41,6 +41,58 @@ def tensor_bytes(module: Any) -> int:
     return sum(p.numel() * p.element_size() for p in module.parameters())
 
 
+def load_safetensors_block(module: Any, checkpoint: Path, prefix: str) -> dict[str, Any]:
+    """Read only one block's tensors from a SafeTensors checkpoint, never the full model."""
+    import torch
+    from safetensors import safe_open
+
+    if not checkpoint.is_file():
+        raise FileNotFoundError(f"Checkpoint file does not exist: {checkpoint}")
+    expected = set(module.state_dict().keys())
+    state: dict[str, Any] = {}
+    matched_names: list[str] = []
+    dtypes: dict[str, int] = {}
+
+    with safe_open(str(checkpoint), framework="pt", device="cpu") as handle:
+        keys = handle.keys()
+        selected = [key for key in keys if key.startswith(prefix)]
+        if not selected:
+            examples = [key for key in keys if key.startswith(("vace_blocks.", "blocks."))][:12]
+            raise ValueError(
+                f"No tensors matched block prefix {prefix!r} in {checkpoint.name}. "
+                f"Sample block keys: {examples}"
+            )
+        for key in selected:
+            name = key[len(prefix):]
+            if name not in expected:
+                continue
+            value = handle.get_tensor(key)
+            dtypes[str(value.dtype)] = dtypes.get(str(value.dtype), 0) + value.numel()
+            state[name] = value.to(dtype=torch.float32)
+            matched_names.append(name)
+
+    missing = sorted(expected - set(state))
+    unexpected = sorted(set(state) - expected)
+    if missing or unexpected:
+        raise ValueError(
+            "Checkpoint block does not exactly match the pinned upstream block. "
+            f"Missing tensors: {missing[:20]}; unexpected tensors: {unexpected[:20]}"
+        )
+    incompatible = module.load_state_dict(state, strict=True)
+    if incompatible.missing_keys or incompatible.unexpected_keys:
+        raise ValueError(f"Strict checkpoint load failed: {incompatible}")
+
+    return {
+        "checkpoint_file": checkpoint.name,
+        "checkpoint_file_size_bytes": checkpoint.stat().st_size,
+        "checkpoint_block_prefix": prefix,
+        "loaded_tensor_count": len(matched_names),
+        "loaded_parameter_count": sum(module.state_dict()[name].numel() for name in matched_names),
+        "source_dtypes": dtypes,
+        "loading_policy": "SafeTensors header indexed; only selected block tensors materialized",
+    }
+
+
 def max_abs_diff(left: Any, right: Any) -> float:
     import torch
     return float((left.detach().float() - right.detach().float()).abs().max().item())
@@ -74,6 +126,17 @@ def main() -> int:
     parser.add_argument("--context-tokens", type=int, default=CONTEXT_TOKENS)
     parser.add_argument("--max-rmse", type=float, default=0.035)
     parser.add_argument("--max-absolute-error", type=float, default=0.20)
+    parser.add_argument(
+        "--checkpoint",
+        type=Path,
+        default=None,
+        help="optional official SafeTensors checkpoint; only --block-prefix tensors are read",
+    )
+    parser.add_argument(
+        "--block-prefix",
+        default="vace_blocks.0.",
+        help="exact SafeTensors key prefix for the selected VACE block",
+    )
     parser.add_argument(
         "--quantization-levels",
         nargs="*",
@@ -188,16 +251,19 @@ def main() -> int:
         eps=1e-6,
         block_id=0,
     ).eval()
-    # Upstream intentionally zero-initializes the VACE before/after projections.
-    # Randomly initialize them here so the conversion/parity test exercises those
-    # linear operators instead of trivially returning the unchanged latent/zero hint.
-    with torch.no_grad():
-        for projection_name in ("before_proj", "after_proj"):
-            projection = getattr(block, projection_name, None)
-            if projection is not None:
-                torch.nn.init.normal_(projection.weight, mean=0.0, std=0.01)
-                if projection.bias is not None:
-                    torch.nn.init.zeros_(projection.bias)
+    checkpoint_metadata = None
+    if args.checkpoint is not None:
+        checkpoint_metadata = load_safetensors_block(block, args.checkpoint, args.block_prefix)
+    else:
+        # Upstream intentionally zero-initializes the VACE before/after projections.
+        # Give them deterministic nonzero test weights so their operators are exercised.
+        with torch.no_grad():
+            for projection_name in ("before_proj", "after_proj"):
+                projection = getattr(block, projection_name, None)
+                if projection is not None:
+                    torch.nn.init.normal_(projection.weight, mean=0.0, std=0.01)
+                    if projection.bias is not None:
+                        torch.nn.init.zeros_(projection.bias)
 
     class FixedShapeVACEBlock(torch.nn.Module):
         def __init__(self, layer):
@@ -335,7 +401,12 @@ def main() -> int:
             "architecture": "Wan2.1 VACE 1.3B width/FFN/head dimensions",
         },
         "weights": {
-            "initialization": "deterministic random initialization; no learned checkpoint weights loaded",
+            "initialization": (
+                "selective learned checkpoint tensors"
+                if checkpoint_metadata is not None
+                else "deterministic random initialization; no learned checkpoint weights loaded"
+            ),
+            "checkpoint_load": checkpoint_metadata,
             "seed": args.seed,
             "parameter_count": parameter_count,
             "fp32_parameter_bytes": fp32_weight_bytes,
