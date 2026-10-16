@@ -91,6 +91,7 @@ struct VACESelectiveVideoOptions {
     var maximumCropWidth: Int = 832
     var maximumCropHeight: Int = 480
     var contextPaddingPixels: Int = 32
+    var minimumActivePixels: Int = 4
     var tileOverlapPixels: Int = 64
     var maximumCropCount: Int = 32
     var preserveSourceAudio: Bool = true
@@ -143,6 +144,9 @@ final class VACESelectiveVideoPipeline {
         guard reader.startReading() else {
             throw VACEVideoPipelineError.readerStartFailed(reader.error?.localizedDescription ?? "unknown reader error")
         }
+        defer {
+            if reader.status == .reading { reader.cancelReading() }
+        }
 
         guard let firstSample = readerOutput.copyNextSampleBuffer() else {
             throw VACEVideoPipelineError.emptyVideo
@@ -170,7 +174,15 @@ final class VACESelectiveVideoPipeline {
         }
 
         let writer = try AVAssetWriter(outputURL: videoOnlyURL, fileType: options.writerFileType)
+        defer {
+            if writer.status == .writing || writer.status == .unknown { writer.cancelWriting() }
+        }
         let frameRate = max(1, Int(sourceVideoTrack.nominalFrameRate.rounded()))
+        let estimatedFrameCount: Int? = {
+            let seconds = asset.duration.seconds
+            guard seconds.isFinite, seconds > 0 else { return nil }
+            return max(1, Int(ceil(seconds * Double(frameRate))))
+        }()
         let videoSettings: [String: Any] = [
             AVVideoCodecKey: AVVideoCodecType.hevc,
             AVVideoWidthKey: width,
@@ -206,8 +218,6 @@ final class VACESelectiveVideoPipeline {
         let stride = options.temporalWindowLength - options.temporalOverlap
         var framesRead = 1
         var framesWritten = 0
-        var frame = firstSample
-
         func append(_ record: VACEVideoFrameRecord) async throws {
             try Task.checkCancellation()
             while !writerInput.isReadyForMoreMediaData {
@@ -235,7 +245,7 @@ final class VACESelectiveVideoPipeline {
                 options: VACERegionPlanningOptions(
                     contextPaddingPixels: options.contextPaddingPixels,
                     cropAlignment: 16,
-                    minimumActivePixels: 4,
+                    minimumActivePixels: options.minimumActivePixels,
                     maximumCropWidth: options.maximumCropWidth,
                     maximumCropHeight: options.maximumCropHeight,
                     tileOverlapPixels: options.tileOverlapPixels,
@@ -282,7 +292,7 @@ final class VACESelectiveVideoPipeline {
                 for position in 0..<realRecords.count {
                     guard let patchFrame = outputsByPosition[position] else {
                         let record = realRecords[position]
-                        if windowRecords[position].mask.activePixelCount == 0 { continue }
+                        if inputs[position].maskCrop.activePixelCount == 0 { continue }
                         throw VACEVideoPipelineError.reconstructorReturnedNoFrame(
                             frame: record.index, crop: cropPlan.regionID
                         )
@@ -308,7 +318,6 @@ final class VACESelectiveVideoPipeline {
 
         while let sample = readerOutput.copyNextSampleBuffer() {
             try Task.checkCancellation()
-            frame = sample
             guard let pixelBuffer = CMSampleBufferGetImageBuffer(sample) else {
                 throw VACEVideoPipelineError.invalidPixelBuffer
             }
@@ -332,7 +341,6 @@ final class VACESelectiveVideoPipeline {
                 pending.removeFirst(stride)
             }
         }
-        _ = frame
         guard reader.status == .completed else {
             throw VACEVideoPipelineError.readerStartFailed(reader.error?.localizedDescription ?? "reader stopped before EOF")
         }
