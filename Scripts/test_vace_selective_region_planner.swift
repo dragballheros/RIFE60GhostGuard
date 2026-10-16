@@ -42,7 +42,7 @@ enum VACESelectiveRegionPlannerTests {
         let mask = try makeMask(width: 160, height: 96,
                                 active: [(10, 10, 255), (11, 10, 255), (120, 70, 255), (121, 70, 255)])
         var options = VACERegionPlanningOptions()
-        options.contextPaddingPixels = 8; options.cropAlignment = 4
+        options.contextPaddingPixels = 8; options.cropAlignment = 4; options.minimumActivePixels = 2
         options.maximumCropWidth = 64; options.maximumCropHeight = 48; options.tileOverlapPixels = 8
         let plans = try VACESelectiveRegionPlanner.plan(mask: mask, options: options)
         check(plans.count == 2, "distant repair areas should become separate crops")
