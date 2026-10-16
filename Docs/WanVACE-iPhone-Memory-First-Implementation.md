@@ -109,38 +109,47 @@ rotary multiplication as real arithmetic and uses portable scaled-dot-product
 attention in place of the upstream CUDA-only FlashAttention kernel.
 
 The converter first checks its fixed-grid rotary rewrite against Wan's original
-complex implementation, then traces/converts the real upstream block to an
-iOS 16-compatible Core ML ML Program, runs a Core ML prediction, and records
-per-output max absolute error, mean absolute error, RMSE, conversion time, and
-estimated parameter footprint. The VACE before/after projections are explicitly
-given deterministic nonzero test weights so their conversion is exercised
-instead of passing trivially because upstream initializes them to zero. The CI
-workflow also tests Core ML post-training INT8 and INT4 per-channel weight
-compression against the same PyTorch reference, recording package sizes and
-error metrics. CI is pinned to the repository's configured Wan2.1 source
-revision and uploads a machine-readable validation report.
+complex implementation, then traces/converts the real upstream block to Core ML,
+runs a Core ML prediction, and records per-output max absolute error, mean
+absolute error, RMSE, conversion time, package size, and parameter footprint.
+The VACE before/after projections are explicitly given deterministic nonzero test
+weights unless trained checkpoint tensors are supplied, so those operators are
+exercised instead of passing trivially because upstream initializes them to zero.
+With `--checkpoint`, the converter uses SafeTensors header metadata to materialize
+only the selected `vace_blocks.0.*` tensors, verifies strict key/shape compatibility,
+and loads no other checkpoint tensors. The checkpoint-backed lane is guarded by
+an explicit `[vace-trained]` commit marker and verifies the pinned official
+checkpoint's SHA-256 before loading it.
 
-Initial uncompressed-block CI run passed the fixed-shape parity gate: rotary
-rewrite max absolute error was approximately 2.4e-7, and the main conditioned
-context output had maximum absolute error about 8.1e-4 and RMSE about 1.5e-4.
-These figures are for deterministic random weights at only four latent tokens,
-not the trained checkpoint or realistic video sequence. The INT8/INT4 sweeps
-are being added as a storage/error experiment and must report independently
-whether each quantized candidate meets the configured numerical tolerances.
+The CI workflow now covers an iOS 16-compatible INT8 model and a separate iOS 18
+model for INT8/INT4 compression. INT4 requires iOS 18 Core ML support; the first
+attempt on the iOS 16 target correctly reported that restriction rather than
+silently claiming compatibility. Weight-compressed package size and numerical
+error are measured against the same PyTorch reference. CI is pinned to the
+upstream Wan2.1 source revision and uploads machine-readable validation reports.
 
-**Important scope boundary:** the block currently uses deterministic random
-weights, a four-token grid, and a short fixed text context. This first milestone
-validates architecture/operator portability and Core ML numerical parity, not
-learned-model behavior or editing quality. A successful report must not be
-presented as a production-ready VACE model, a trained model, an iPhone memory
-pass, or an end-to-end result. The converter's CI run still needs to pass before
-this milestone can be called validated.
+Measured with deterministic random weights on the fixed four-token test:
+the iOS 16 uncompressed package was 102,342,120 bytes; INT8 compression reduced
+it to 51,280,550 bytes (about 50% smaller). INT8 maximum absolute error was
+about 0.00173 for the conditioned-context output and 0.00196 for the skip hint;
+RMSE was about 4.22e-4 and 4.29e-4 respectively, within the current test limits.
+These results do not establish learned-checkpoint quality or realistic video
+sequence accuracy. The trained-weight lane and iOS 18 INT4 experiment remain
+separate validation gates.
+
+**Important scope boundary:** random weights are still the default test mode;
+checkpoint loading is now implemented but is not considered validated until the
+explicit trained-checkpoint CI lane succeeds. The grid remains four latent tokens
+with a short fixed text context. A successful report validates only component
+conversion/parity and storage compression, not a production-ready VACE model,
+an iPhone memory pass, or an end-to-end result.
 
 ## Current truth
 
-This branch now contains the first executable converter for an actual upstream
-VACE conditioning block, rather than only a generic SDPA micro-kernel. It does
-not yet contain trained VACE block weights, a quantized block streaming runtime,
-a mobile-feasible text encoder, a full VACE denoising loop, or an end-to-end
-video editor. Those are the remaining implementation stages, followed by
+This branch contains an executable converter and numerical parity/weight-
+compression harness for an actual upstream VACE conditioning block. Selective
+SafeTensors loading for a learned VACE block is implemented but awaiting a
+checkpoint-backed CI result. The branch does not yet contain a quantized block
+streaming runtime, a mobile-feasible text encoder, a full VACE denoising loop,
+or an end-to-end video editor. Those remain required milestones, followed by
 measured on-device memory, speed, thermal, output quality, and regression checks.
