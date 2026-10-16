@@ -43,8 +43,5 @@ jobs:
           /tmp/vace-region-tests
       - name: Run synthetic AVFoundation end-to-end video test
         run: |
-          swiftc -swift-version 5 \\
-            VACESelectiveRegionPlanner.swift VACEConditioningBuilder.swift VACESelectiveVideoPipeline.swift \\
-            Scripts/test_vace_video_pipeline.swift \\
-            -framework AVFoundation -framework CoreVideo -o /tmp/vace-video-tests
+          swiftc -swift-version 5 VACESelectiveRegionPlanner.swift VACEConditioningBuilder.swift VACEReconstructionCropPreprocessor.swift VACESelectiveVideoPipeline.swift Scripts/test_vace_video_pipeline.swift -framework AVFoundation -framework CoreVideo -o /tmp/vace-video-tests
           /tmp/vace-video-tests
