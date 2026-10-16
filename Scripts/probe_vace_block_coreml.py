@@ -19,6 +19,7 @@ import math
 import subprocess
 import sys
 import time
+import types
 from pathlib import Path
 from typing import Any
 
@@ -83,7 +84,15 @@ def main() -> int:
     actual_commit = git_head(repo)
     if args.expected_commit and actual_commit != args.expected_commit:
         parser.error(f"Wan source commit mismatch: expected {args.expected_commit}, got {actual_commit}")
-    sys.path.insert(0, str(repo))
+    # Import only the pinned Wan modules required by this harness. The upstream
+    # package __init__ eagerly imports its full T5/distributed stack, which is
+    # unnecessary here and pulls unrelated CUDA-era dependencies into CI.
+    wan_package = types.ModuleType("wan")
+    wan_package.__path__ = [str(repo / "wan")]
+    modules_package = types.ModuleType("wan.modules")
+    modules_package.__path__ = [str(repo / "wan/modules")]
+    sys.modules["wan"] = wan_package
+    sys.modules["wan.modules"] = modules_package
 
     import numpy as np
     import torch
