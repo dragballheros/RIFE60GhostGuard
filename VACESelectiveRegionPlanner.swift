@@ -171,6 +171,25 @@ enum VACESelectiveRegionPlanner {
         return plans
     }
 
+    /// Plans crops for a temporal window by unioning its masks spatially. The
+    /// union is used only to ensure each crop contains the region across motion;
+    /// callers must still pass each frame's original mask to the denoiser/compositor.
+    static func plan(masks: [VACEMaskPlane],
+                     options: VACERegionPlanningOptions = VACERegionPlanningOptions()) throws -> [VACERegionCropPlan] {
+        guard let first = masks.first else { return [] }
+        guard masks.allSatisfy({ $0.width == first.width && $0.height == first.height }) else {
+            throw VACERegionPlanningError.invalidOptions("all masks in a temporal window must have the same dimensions")
+        }
+        var unionPixels = [UInt8](repeating: 0, count: first.pixelCount)
+        for mask in masks {
+            for index in unionPixels.indices where mask.pixels[index] > unionPixels[index] {
+                unionPixels[index] = mask.pixels[index]
+            }
+        }
+        let unionMask = try VACEMaskPlane(width: first.width, height: first.height, pixels: unionPixels)
+        return try plan(mask: unionMask, options: options)
+    }
+
     private static func validate(options: VACERegionPlanningOptions) throws {
         guard options.contextPaddingPixels >= 0 else { throw VACERegionPlanningError.invalidOptions("padding cannot be negative") }
         guard options.cropAlignment > 0 else { throw VACERegionPlanningError.invalidOptions("alignment must be positive") }
@@ -336,6 +355,21 @@ struct VACERGBAFrame {
             throw VACERegionPlanningError.maskBufferSizeMismatch(expected: byteCount.partialValue, actual: bytes.count)
         }
         self.width = width; self.height = height; self.bytes = bytes
+    }
+    func cropped(to rect: VACERegionRect) throws -> VACERGBAFrame {
+        let bounds = VACERegionRect(x: 0, y: 0, width: width, height: height)
+        guard let crop = rect.intersection(bounds), crop == rect else {
+            throw VACERegionPlanningError.invalidOptions("Cannot crop an RGBA frame outside its bounds.")
+        }
+        var result = [UInt8](repeating: 0, count: crop.width * crop.height * 4)
+        let bytesPerRow = crop.width * 4
+        for row in 0..<crop.height {
+            let sourceStart = ((crop.y + row) * width + crop.x) * 4
+            let destinationStart = row * bytesPerRow
+            result.replaceSubrange(destinationStart..<(destinationStart + bytesPerRow),
+                                   with: bytes[sourceStart..<(sourceStart + bytesPerRow)])
+        }
+        return try VACERGBAFrame(width: crop.width, height: crop.height, bytes: result)
     }
 }
 
