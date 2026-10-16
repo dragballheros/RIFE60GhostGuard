@@ -11,7 +11,9 @@ enum VACESelectiveRegionPlannerTests {
         try testLargeRegionIsTiledWithBounds()
         try testTemporalWindowsCoverEveryFrameAndPadShortClips()
         try testCompositorPreservesEveryUnmaskedByte()
-        print("PASS: VACE selective-region planner/compositor checks")
+        try testVACEFrameConditioningSplit()
+        try testVACEControlMaskPacking()
+        print("PASS: VACE selective-region and conditioning checks")
     }
 
     static func check(_ condition: Bool, _ message: String) {
@@ -97,6 +99,38 @@ enum VACESelectiveRegionPlannerTests {
         check(short.count == 1 && short[0].validFrameCount == 2, "short clips must be padded")
         check(short[0].frameIndices == [0, 1, 1, 1, 1], "edge padding must repeat the final available frame")
         check(try VACETemporalWindowPlanner.makeWindows(frameCount: 0).isEmpty, "empty clip should produce no window")
+    }
+
+    static func testVACEFrameConditioningSplit() throws {
+        let frame = try VACERGBAFrame(width: 2, height: 1,
+            bytes: [0, 127, 255, 255, 255, 0, 128, 255])
+        let mask = try VACEMaskPlane(width: 2, height: 1, pixels: [0, 128])
+        let result = try VACEConditioningBuilder.splitFrame(frame, editMask: mask)
+        check(result.width == 2 && result.height == 1, "conditioning dimensions must match the crop")
+        check(result.inactiveRGBCHW[0] == -1 && result.inactiveRGBCHW[1] == 0,
+              "inactive red plane must preserve only pixels outside edit mask")
+        check(result.reactiveRGBCHW[0] == 0 && result.reactiveRGBCHW[1] == 1,
+              "reactive red plane must preserve only pixels inside edit mask")
+        check(result.inactiveRGBCHW[2] == Float(127) / 127.5 - 1,
+              "inactive branch must normalize RGB from [0,255] to [-1,1]")
+        check(result.reactiveRGBCHW[3] == 0,
+              "the unedited pixel must be zero in the reactive branch")
+    }
+
+    static func testVACEControlMaskPacking() throws {
+        let m0 = try makeMask(width: 4, height: 4, active: [(0, 0, 255)])
+        let m1 = try makeMask(width: 4, height: 4, active: [(1, 0, 255)])
+        let m2 = try makeMask(width: 4, height: 4, active: [(2, 1, 255)])
+        let packed = try VACEConditioningBuilder.packControlMask(
+            [m0, m1, m2], temporalStride: 2, spatialStrideY: 2, spatialStrideX: 2,
+            referenceLatentFrames: 1)
+        check(packed.channels == 4 && packed.frames == 3 && packed.height == 2 && packed.width == 2,
+              "control mask output shape should follow VACE spatial channels and temporal stride")
+        check(packed.values.allSatisfy { $0 == 0 || $0 == 1 }, "VACE control mask must be binary")
+        check(packed[0, 0, 0, 0] == 0, "reference latent mask prefix must be zero")
+        check(packed[0, 1, 0, 0] == 1, "top-left source mask bit should enter subpixel channel 0")
+        check(packed[2, 2, 0, 1] == 1, "bottom-left subpixel should map to channel 2 at second sampled time")
+        check(packed[0, 2, 0, 0] == 0, "nearest-exact temporal resize must not invent an unselected mask bit")
     }
 
     static func testCompositorPreservesEveryUnmaskedByte() throws {
