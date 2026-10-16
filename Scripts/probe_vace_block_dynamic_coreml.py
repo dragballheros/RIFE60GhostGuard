@@ -239,8 +239,8 @@ def main() -> int:
             ct.TensorType(name="rope_sin", shape=(1, token_dim, 1, head_dim // 2), dtype=np.float32),
         ],
         outputs=[
-            ct.TensorType(name="conditioned_context", shape=(1, token_dim, dim), dtype=np.float32),
-            ct.TensorType(name="skip_hint", shape=(1, token_dim, dim), dtype=np.float32),
+            ct.TensorType(name="conditioned_context"),
+            ct.TensorType(name="skip_hint"),
         ],
         compute_precision=ct.precision.FLOAT16,
         minimum_deployment_target=ct.target.iOS18,
