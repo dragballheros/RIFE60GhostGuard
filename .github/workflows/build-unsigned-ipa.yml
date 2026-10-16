@@ -31,6 +31,148 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+      - name: Bundle Wan VAE component packages for offline iPhone testing
+        if: >-
+          (github.event_name == 'pull_request' &&
+          github.event.pull_request.head.ref == 'feature/wan-vace-ondevice-component-test') ||
+          github.ref == 'refs/heads/feature/wan-vace-ondevice-component-test'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+          import shutil
+          import time
+          import urllib.request
+          import zipfile
+          from pathlib import Path
+
+          repo = os.environ["GITHUB_REPOSITORY"]
+          sha = os.environ["TARGET_SHA"]
+          token = os.environ["GH_TOKEN"]
+          headers = {
+              "Accept": "application/vnd.github+json",
+              "Authorization": f"Bearer {token}",
+              "X-GitHub-Api-Version": "2022-11-28",
+              "User-Agent": "RIFE60GhostGuard-CI",
+          }
+
+          def fetch_json(url):
+              request = urllib.request.Request(url, headers=headers)
+              with urllib.request.urlopen(request, timeout=45) as response:
+                  return json.load(response)
+
+          deadline = time.monotonic() + 900
+          artifact_id = None
+          export_run_id = None
+          last_problem = "no successful VAE export run/artifact found for this commit"
+
+          while time.monotonic() < deadline and artifact_id is None:
+              try:
+                  runs_url = (
+                      f"https://api.github.com/repos/{repo}/actions/runs"
+                      f"?head_sha={sha}&per_page=100"
+                  )
+                  runs = fetch_json(runs_url).get("workflow_runs", [])
+                  candidates = [
+                      run for run in runs
+                      if run.get("name") == "Wan VAE Core ML Export Probe"
+                      and run.get("head_sha") == sha
+                      and run.get("conclusion") == "success"
+                  ]
+                  candidates.sort(key=lambda run: run.get("created_at", ""), reverse=True)
+                  for run in candidates:
+                      export_run_id = run["id"]
+                      artifacts_url = (
+                          f"https://api.github.com/repos/{repo}/actions/runs/"
+                          f"{export_run_id}/artifacts?per_page=100"
+                      )
+                      artifacts = fetch_json(artifacts_url).get("artifacts", [])
+                      match = next((
+                          item for item in artifacts
+                          if item.get("name") == "wan-vace-ondevice-coreml-components"
+                          and not item.get("expired", False)
+                      ), None)
+                      if match:
+                          artifact_id = match["id"]
+                          break
+                  if artifact_id is None:
+                      last_problem = (
+                          f"waiting for wan-vace-ondevice-coreml-components for "
+                          f"commit {sha}; latest candidate run: {export_run_id}"
+                      )
+                      print(last_problem, flush=True)
+              except Exception as error:
+                  last_problem = f"temporary GitHub Actions artifact lookup failure: {error}"
+                  print(last_problem, flush=True)
+              if artifact_id is None:
+                  time.sleep(15)
+
+          if artifact_id is None:
+              raise SystemExit(
+                  "Could not obtain the matching Wan VAE component artifact within 15 minutes. "
+                  + last_problem
+              )
+
+          artifact_url = (
+              f"https://api.github.com/repos/{repo}/actions/artifacts/{artifact_id}/zip"
+          )
+          archive_path = Path("/tmp/wan-vace-coreml-components-artifact.zip")
+          request = urllib.request.Request(artifact_url, headers=headers)
+          with urllib.request.urlopen(request, timeout=180) as response, archive_path.open("wb") as output:
+              shutil.copyfileobj(response, output)
+
+          extract_root = Path("/tmp/wan-vace-coreml-components")
+          shutil.rmtree(extract_root, ignore_errors=True)
+          extract_root.mkdir(parents=True, exist_ok=True)
+          with zipfile.ZipFile(archive_path) as archive:
+              root = extract_root.resolve()
+              for item in archive.infolist():
+                  target = (extract_root / item.filename).resolve()
+                  if target != root and root not in target.parents:
+                      raise SystemExit(f"Unsafe artifact archive path: {item.filename}")
+              archive.extractall(extract_root)
+
+          model_names = ("WanVAEEncoder-5x64", "WanVAEDecoder-5x8")
+          models_dir = Path("Models")
+          models_dir.mkdir(exist_ok=True)
+          for model_name in model_names:
+              package_name = model_name + ".mlpackage"
+              manifests = [
+                  item for item in extract_root.rglob("Manifest.json")
+                  if item.parent.name == package_name
+              ]
+              if len(manifests) != 1:
+                  raise SystemExit(
+                      f"Expected one {package_name}/Manifest.json in the CI artifact; "
+                      f"found {len(manifests)}"
+                  )
+              destination = models_dir / package_name
+              shutil.rmtree(destination, ignore_errors=True)
+              shutil.copytree(manifests[0].parent, destination)
+              print(f"Prepared bundled test model: {destination}", flush=True)
+
+          project_path = Path("project.yml")
+          project = project_path.read_text(encoding="utf-8")
+          marker = "      - path: Models/DeepCreamMosaic.mlpackage\n"
+          additions = (
+              marker
+              + "      - path: Models/WanVAEEncoder-5x64.mlpackage\n"
+              + "        type: folder\n"
+              + "        buildPhase: resources\n"
+              + "      - path: Models/WanVAEDecoder-5x8.mlpackage\n"
+              + "        type: folder\n"
+              + "        buildPhase: resources\n"
+          )
+          if project.count(marker) != 1:
+              raise SystemExit("Could not uniquely locate the model resource list in project.yml")
+          project_path.write_text(project.replace(marker, additions), encoding="utf-8")
+          print("VAE component packages are ready to be embedded in this test IPA.", flush=True)
+          PY
+
 
       - name: Fetch pinned on-device diffusion engine
         run: |
