@@ -55,16 +55,16 @@ def source_key(upstream_key: str) -> str:
         name = "scale_shift_table"
 
     if name.startswith(("attn1.", "attn2.")):
-        for source, target in (
-            ("o.", "to_out.0."),
-            ("q.", "to_q."),
-            ("k.", "to_k."),
-            ("v.", "to_v."),
-        ):
-            marker = name.find(source)
-            if marker >= 0:
-                name = name[:marker] + target + name[marker + len(source):]
-                break
+        head, separator, tail = name.partition(".")
+        if separator and tail.startswith(("q.", "k.", "v.", "o.")):
+            source, _, rest = tail.partition(".")
+            target = {
+                "q": "to_q.",
+                "k": "to_k.",
+                "v": "to_v.",
+                "o": "to_out.0.",
+            }[source]
+            name = head + "." + target + rest
     return "vace_blocks.0." + name
 
 
