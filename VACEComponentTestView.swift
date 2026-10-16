@@ -1,53 +1,96 @@
 import SwiftUI
 import CoreML
-import UniformTypeIdentifiers
 import Foundation
 import UIKit
 
-/// Runs a genuine on-device Core ML compile/predict smoke test for a converted
-/// Wan VAE component. This is not the VACE transformer or a video-editing pipeline.
+private enum VACEComponentChoice: String, CaseIterable, Identifiable {
+    case encoder
+    case decoder
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .encoder: return "Wan VAE Encoder"
+        case .decoder: return "Wan VAE Decoder"
+        }
+    }
+
+    var subtitle: String {
+        switch self {
+        case .encoder: return "5-frame video tensor • 64 × 64 test shape"
+        case .decoder: return "5 latent frames • 8 × 8 test shape"
+        }
+    }
+
+    var packageName: String {
+        switch self {
+        case .encoder: return "WanVAEEncoder-5x64"
+        case .decoder: return "WanVAEDecoder-5x8"
+        }
+    }
+}
+
+/// Runs an on-device Core ML smoke test against component packages bundled in
+/// this test IPA. No model file picker or network access is required.
 struct VACEComponentTestView: View {
     @Environment(\.dismiss) private var dismiss
-    @State private var showingModelImporter = false
-    @State private var selectedModelURL: URL?
+    @State private var selectedComponent: VACEComponentChoice = .encoder
     @State private var isTesting = false
-    @State private var report = "Choose a converted Wan VAE .mlpackage to begin. The test runs locally on this iPhone."
-
-    private var packageType: UTType {
-        UTType(filenameExtension: "mlpackage") ?? .package
-    }
+    @State private var report = "Choose the bundled encoder or decoder and run its local smoke test."
 
     var body: some View {
         NavigationStack {
             Form {
-                Section("Scope") {
-                    Label("Local Core ML only", systemImage: "iphone")
-                    Text("This lab tests an exported VAE component by compiling the package and running a deterministic zero-input prediction on the device. It does not run VACE video editing, the 14B transformer, the text encoder, or a 720p clip.")
+                Section("On-device component models") {
+                    Label("Models bundled in this test IPA", systemImage: "iphone")
+                    Text("The fixed-shape Wan VAE encoder and decoder test packages are included with this build. You do not need to import a model or download anything on the phone.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                    Text("Use the encoder package (input: video tensor) or decoder package (input: latent tensor) from the GitHub Actions artifact named “wan-vace-ondevice-coreml-components”.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
 
-                Section("Model package") {
-                    Button {
-                        showingModelImporter = true
-                    } label: {
-                        Label("Choose Core ML .mlpackage", systemImage: "folder")
+                    ForEach(VACEComponentChoice.allCases) { choice in
+                        Button {
+                            guard !isTesting else { return }
+                            selectedComponent = choice
+                        } label: {
+                            HStack(spacing: 12) {
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text(choice.title)
+                                        .foregroundStyle(.primary)
+                                    Text(choice.subtitle)
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                                Spacer(minLength: 8)
+                                Image(systemName: selectedComponent == choice ? "checkmark.circle.fill" : "circle")
+                                    .foregroundStyle(selectedComponent == choice ? Color.accentColor : Color.secondary)
+                            }
+                            .contentShape(Rectangle())
+                            .padding(.vertical, 6)
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(isTesting)
+                        .accessibilityAddTraits(selectedComponent == choice ? .isSelected : [])
                     }
-                    if let selectedModelURL {
-                        Text(selectedModelURL.lastPathComponent)
+
+                    if !Self.hasBundledPackage(named: selectedComponent.packageName) {
+                        Text("This build does not contain the selected component package. Install the VACE component-test IPA built from the test branch.")
                             .font(.caption)
-                            .textSelection(.disabled)
+                            .foregroundStyle(.orange)
                     }
+
                     Button {
-                        guard let selectedModelURL else { return }
+                        guard !isTesting else { return }
+                        guard let packageURL = Self.bundledPackageURL(named: selectedComponent.packageName) else {
+                            report = "FAIL\nThe \(selectedComponent.title) package is missing from this app bundle."
+                            return
+                        }
+                        let title = selectedComponent.title
                         isTesting = true
-                        report = "Compiling and running locally… Keep the app in the foreground."
+                        report = "Compiling and running \(title) locally… Keep the app in the foreground."
                         Task {
                             let result = await Task.detached(priority: .userInitiated) {
-                                Self.runSmokeTest(at: selectedModelURL)
+                                Self.runSmokeTest(at: packageURL)
                             }.value
                             report = result
                             isTesting = false
@@ -56,10 +99,10 @@ struct VACEComponentTestView: View {
                         if isTesting {
                             ProgressView("Running on device…")
                         } else {
-                            Label("Compile and run local smoke test", systemImage: "play.circle")
+                            Label("Run \(selectedComponent.title) smoke test", systemImage: "play.circle")
                         }
                     }
-                    .disabled(selectedModelURL == nil || isTesting)
+                    .disabled(isTesting || !Self.hasBundledPackage(named: selectedComponent.packageName))
                 }
 
                 Section("Test report") {
@@ -74,8 +117,8 @@ struct VACEComponentTestView: View {
                     .disabled(report.isEmpty || isTesting)
                 }
 
-                Section("Interpretation") {
-                    Text("PASS means only that this selected component compiled and produced outputs for the generated fixed-shape zero input. It does not prove numerical parity, useful video quality, peak-memory headroom, sustained thermal performance, or complete VACE inference.")
+                Section("What this proves") {
+                    Text("PASS means the selected fixed-shape VAE component compiled and produced outputs for a zero-valued test input. It does not prove numerical parity, useful video quality, peak-memory headroom, sustained thermal performance, or complete VACE inference.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -87,36 +130,37 @@ struct VACEComponentTestView: View {
                     Button("Done") { dismiss() }.disabled(isTesting)
                 }
             }
-            .fileImporter(
-                isPresented: $showingModelImporter,
-                allowedContentTypes: [packageType],
-                allowsMultipleSelection: false
-            ) { result in
-                switch result {
-                case .success(let urls):
-                    selectedModelURL = urls.first
-                    report = urls.first.map { "Selected: \($0.lastPathComponent)\nReady to compile and run a local smoke test." }
-                        ?? "No model package selected."
-                case .failure(let error):
-                    report = "Model selection failed: \(error.localizedDescription)"
-                }
-            }
         }
+    }
+
+    private static func bundledPackageURL(named name: String) -> URL? {
+        let candidates: [URL] = [
+            Bundle.main.url(forResource: name, withExtension: "mlpackage"),
+            Bundle.main.resourceURL?.appendingPathComponent("Models", isDirectory: true)
+                .appendingPathComponent("\(name).mlpackage", isDirectory: true),
+            Bundle.main.resourceURL?.appendingPathComponent("\(name).mlpackage", isDirectory: true)
+        ].compactMap { $0 }
+
+        return candidates.first { url in
+            var isDirectory: ObjCBool = false
+            return FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory)
+                && isDirectory.boolValue
+                && FileManager.default.fileExists(atPath: url.appendingPathComponent("Manifest.json").path)
+        }
+    }
+
+    private static func hasBundledPackage(named name: String) -> Bool {
+        bundledPackageURL(named: name) != nil
     }
 
     nonisolated private static func runSmokeTest(at packageURL: URL) -> String {
         let started = Date()
-        let hasAccess = packageURL.startAccessingSecurityScopedResource()
-        defer {
-            if hasAccess { packageURL.stopAccessingSecurityScopedResource() }
-        }
-
         do {
             var isDirectory: ObjCBool = false
             guard FileManager.default.fileExists(atPath: packageURL.path, isDirectory: &isDirectory),
                   isDirectory.boolValue,
                   packageURL.pathExtension == "mlpackage" else {
-                return "FAIL\nThe selected item is not an accessible .mlpackage directory."
+                return "FAIL\nThe bundled resource is not an accessible .mlpackage directory."
             }
 
             let compileStarted = Date()
@@ -139,7 +183,7 @@ struct VACEComponentTestView: View {
                 guard let description = descriptions[name],
                       description.type == .multiArray,
                       let constraint = description.multiArrayConstraint else {
-                    return "FAIL\nInput “\(name)” is not a fixed-shape multi-array. This lab currently accepts the exported VAE tensor components only."
+                    return "FAIL\nInput “\(name)” is not a fixed-shape multi-array."
                 }
 
                 let shape = constraint.shape
@@ -151,10 +195,8 @@ struct VACEComponentTestView: View {
                 for index in 0..<array.count {
                     array[index] = NSNumber(value: 0)
                 }
+
                 let bytesPerElement: Int64
-                // Core ML's public MLMultiArrayDataType supports these
-                // numeric cases on iOS; do not reference NSNumber-style widths
-                // that Core ML does not expose (int64, int16, uint8, bool).
                 switch constraint.dataType {
                 case .double: bytesPerElement = 8
                 case .float32, .int32: bytesPerElement = 4
