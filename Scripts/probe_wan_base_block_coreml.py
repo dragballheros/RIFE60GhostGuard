@@ -43,7 +43,10 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--wan-repo", type=Path, required=True)
     parser.add_argument("--checkpoint", type=Path, required=True)
-    parser.add_argument("--block-prefix", default="blocks.0.")
+    parser.add_argument("--block-index", type=int, default=0, help="index in the main transformer stack")
+    parser.add_argument("--num-layers", type=int, default=30, help="full model layer count, used to derive default VACE hint placement")
+    parser.add_argument("--block-prefix", default=None, help="defaults to blocks.<block-index>.")
+    parser.add_argument("--vace-layer-indices", type=int, nargs="*", default=None, help="main block indices receiving VACE hints; defaults to every other layer starting at zero")
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--report", type=Path, default=None)
     parser.add_argument("--expected-commit", default=WAN_COMMIT)
@@ -110,6 +113,22 @@ def main() -> int:
 
     wan_model.rope_apply = fixed_rope_apply
     wan_model.flash_attention = portable_attention
+    if args.num_layers < 1 or not 0 <= args.block_index < args.num_layers:
+        parser.error("--block-index must be within 0 .. --num-layers - 1")
+    block_prefix = args.block_prefix or f"blocks.{args.block_index}."
+    vace_layer_indices = (
+        args.vace_layer_indices
+        if args.vace_layer_indices is not None
+        else list(range(0, args.num_layers, 2))
+    )
+    if len(set(vace_layer_indices)) != len(vace_layer_indices):
+        parser.error("--vace-layer-indices must not contain duplicates")
+    hint_index = (
+        vace_layer_indices.index(args.block_index)
+        if args.block_index in vace_layer_indices
+        else None
+    )
+
     block = BaseWanAttentionBlock(
         cross_attn_type="t2v_cross_attn",
         dim=dim,
@@ -119,36 +138,56 @@ def main() -> int:
         qk_norm=True,
         cross_attn_norm=True,
         eps=1e-6,
-        block_id=0,
+        block_id=hint_index,
     ).eval()
-    checkpoint_metadata = load_safetensors_block(block, args.checkpoint, args.block_prefix)
+    checkpoint_metadata = load_safetensors_block(block, args.checkpoint, block_prefix)
 
     class FixedShapeBaseBlock(torch.nn.Module):
-        def __init__(self, layer):
+        def __init__(self, layer, block_hint_index):
             super().__init__()
             self.layer = layer
+            self.block_hint_index = block_hint_index
 
-        def forward(self, latent_tokens, time_modulation, text_context, vace_hint, context_scale):
-            return self.layer(
-                latent_tokens,
-                hints=[vace_hint],
-                context_scale=context_scale,
-                e=time_modulation,
-                seq_lens=seq_lens,
-                grid_sizes=grid_sizes,
-                freqs=freqs,
-                context=text_context,
-                context_lens=None,
-            )
+        def forward(self, latent_tokens, time_modulation, text_context, vace_hint=None, context_scale=None):
+            kwargs = {
+                "e": time_modulation,
+                "seq_lens": seq_lens,
+                "grid_sizes": grid_sizes,
+                "freqs": freqs,
+                "context": text_context,
+                "context_lens": None,
+            }
+            if self.block_hint_index is not None:
+                # The upstream base block indexes its hint by the position of
+                # the corresponding main-layer in vace_layers. Only this selected
+                # hint is semantically used by this individual block.
+                kwargs["hints"] = [vace_hint] * (self.block_hint_index + 1)
+                kwargs["context_scale"] = context_scale
+            return self.layer(latent_tokens, **kwargs)
 
-    wrapper = FixedShapeBaseBlock(block).eval()
+    wrapper = FixedShapeBaseBlock(block, hint_index).eval()
     latent_tokens = torch.randn(1, tokens, dim, dtype=torch.float32) * 0.1
     time_modulation = torch.randn(1, 6, dim, dtype=torch.float32) * 0.01
     text_context = torch.randn(1, CONTEXT_TOKENS, dim, dtype=torch.float32) * 0.1
-    vace_hint = torch.randn(1, tokens, dim, dtype=torch.float32) * 0.1
-    context_scale = torch.tensor([1.0], dtype=torch.float32)
-    inputs = (latent_tokens, time_modulation, text_context, vace_hint, context_scale)
-    names = ("latent_tokens", "time_modulation", "text_context", "vace_hint", "context_scale")
+    inputs_list = [latent_tokens, time_modulation, text_context]
+    input_specs = [
+        ct.TensorType(name="latent_tokens", shape=tuple(latent_tokens.shape), dtype=np.float32),
+        ct.TensorType(name="time_modulation", shape=tuple(time_modulation.shape), dtype=np.float32),
+        ct.TensorType(name="text_context", shape=tuple(text_context.shape), dtype=np.float32),
+    ]
+    names = ["latent_tokens", "time_modulation", "text_context"]
+    vace_hint = None
+    context_scale = None
+    if hint_index is not None:
+        vace_hint = torch.randn(1, tokens, dim, dtype=torch.float32) * 0.1
+        context_scale = torch.tensor([1.0], dtype=torch.float32)
+        inputs_list.extend([vace_hint, context_scale])
+        input_specs.extend([
+            ct.TensorType(name="vace_hint", shape=tuple(vace_hint.shape), dtype=np.float32),
+            ct.TensorType(name="context_scale", shape=tuple(context_scale.shape), dtype=np.float32),
+        ])
+        names.extend(["vace_hint", "context_scale"])
+    inputs = tuple(inputs_list)
 
     try:
         with torch.no_grad():
@@ -162,13 +201,7 @@ def main() -> int:
         converted = ct.convert(
             traced,
             convert_to="mlprogram",
-            inputs=[
-                ct.TensorType(name="latent_tokens", shape=tuple(latent_tokens.shape), dtype=np.float32),
-                ct.TensorType(name="time_modulation", shape=tuple(time_modulation.shape), dtype=np.float32),
-                ct.TensorType(name="text_context", shape=tuple(text_context.shape), dtype=np.float32),
-                ct.TensorType(name="vace_hint", shape=tuple(vace_hint.shape), dtype=np.float32),
-                ct.TensorType(name="context_scale", shape=tuple(context_scale.shape), dtype=np.float32),
-            ],
+            inputs=input_specs,
             outputs=[ct.TensorType(name="hidden_state")],
             compute_precision=ct.precision.FLOAT16,
             minimum_deployment_target=ct.target.iOS18,
@@ -240,7 +273,11 @@ def main() -> int:
                 "repository": "https://github.com/Wan-Video/Wan2.1",
                 "commit": actual_commit,
                 "component_class": "wan.modules.vace_model.BaseWanAttentionBlock",
-                "block_prefix": args.block_prefix,
+                "main_block_index": args.block_index,
+                "main_layer_count": args.num_layers,
+                "checkpoint_prefix": block_prefix,
+                "vace_layer_indices": vace_layer_indices,
+                "vace_hint_index": hint_index,
             },
             "weights": {
                 "initialization": "selective learned checkpoint tensors",
@@ -256,8 +293,8 @@ def main() -> int:
                 "latent_tokens_shape": list(latent_tokens.shape),
                 "time_modulation": list(time_modulation.shape),
                 "text_context": list(text_context.shape),
-                "vace_hint": list(vace_hint.shape),
-                "context_scale": [1],
+                "vace_hint": list(vace_hint.shape) if vace_hint is not None else None,
+                "context_scale": list(context_scale.shape) if context_scale is not None else None,
             },
             "validation": {
                 "rotary_real_vs_official_complex_max_absolute_error": rotary_error,
