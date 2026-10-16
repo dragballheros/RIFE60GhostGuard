@@ -34,4 +34,28 @@ let barKnown = DeepCreamInputPreprocessor.maskedInputPixel(
 require(mosaicKnown == sourcePixel && barKnown == sourcePixel,
         "known context pixels must stay byte-normalized source values for both models")
 
+let smallContext = DeepCreamInputPreprocessor.contextCropSide(
+    targetWidth: 150,
+    targetHeight: 90,
+    frameWidth: 1920,
+    frameHeight: 1080
+)
+require(smallContext == 256, "small targets must retain at least the checkpoint's 256 px context")
+
+let typicalContext = DeepCreamInputPreprocessor.contextCropSide(
+    targetWidth: 400,
+    targetHeight: 120,
+    frameWidth: 1920,
+    frameHeight: 1080
+)
+require(typicalContext == 600, "normal targets should use the official 1.5x context crop, not a 2x crop that unnecessarily downsamples the repair")
+
+let tallFrameLimit = DeepCreamInputPreprocessor.contextCropSide(
+    targetWidth: 900,
+    targetHeight: 500,
+    frameWidth: 1920,
+    frameHeight: 1080
+)
+require(tallFrameLimit == 1080, "context crop should honor the short frame dimension when the target still fits")
+
 print("DEEP_CREAM_PREPROCESSING_PASS: mosaic texture preserved; bar mask blanked; known context preserved")
