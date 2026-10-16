@@ -133,6 +133,13 @@ def main() -> int:
     parser.add_argument("--width", type=int, default=WIDTH)
     parser.add_argument("--max-context-tokens", type=int, default=CONTEXT_MAX)
     parser.add_argument("--compute-precision", choices=("fp16", "fp32"), default="fp16")
+    parser.add_argument(
+        "--quantization-levels",
+        nargs="*",
+        choices=("int8", "int4"),
+        default=["int8"],
+        help="measure compressed-weight accuracy against the same PyTorch outputs",
+    )
     parser.add_argument("--max-absolute-error", type=float, default=0.20)
     parser.add_argument("--max-rmse", type=float, default=0.035)
     parser.add_argument("--max-relative-rmse", type=float, default=0.02)
@@ -254,14 +261,60 @@ def main() -> int:
     conversion_seconds = time.perf_counter() - started
     converted.save(str(args.output))
 
+    # Test compressed weight storage separately from FP32 activation arithmetic.
+    # This can retain a numerically faithful graph while reducing the package size.
+    quantized_models = []
+    quantization_setup_reports = []
+    if args.quantization_levels:
+        from coremltools.optimize.coreml import (
+            OptimizationConfig,
+            OpLinearQuantizerConfig,
+            linear_quantize_weights,
+        )
+        for bits in args.quantization_levels:
+            quantized_path = args.output.with_name(
+                f"{args.output.stem}-{bits}-weights.mlpackage"
+            )
+            try:
+                config = OptimizationConfig(global_config=OpLinearQuantizerConfig(
+                    mode="linear_symmetric",
+                    dtype=bits,
+                    granularity="per_channel",
+                ))
+                compressed = linear_quantize_weights(converted, config=config)
+                compressed.save(str(quantized_path))
+                quantized_models.append((bits, compressed, quantized_path))
+                quantization_setup_reports.append({
+                    "bits": int(bits[3:]),
+                    "package_path": str(quantized_path),
+                    "package_size_bytes": sum(
+                        p.stat().st_size for p in quantized_path.rglob("*") if p.is_file()
+                    ),
+                })
+            except Exception as exc:
+                quantization_setup_reports.append({
+                    "bits": int(bits[3:]),
+                    "package_path": str(quantized_path),
+                    "error": f"{type(exc).__name__}: {exc}",
+                    "package_size_bytes": None,
+                })
+
     # Reference path uses the original upstream block for each tested frame count,
     # with only its global RoPE/FlashAttention kernels replaced by portable equivalents.
     original_rope_apply = wan_model.rope_apply
     original_flash_attention = wan_model.flash_attention
     tests = []
-    max_abs_by_output = {"conditioned_context": 0.0, "skip_hint": 0.0}
-    max_rmse_by_output = {"conditioned_context": 0.0, "skip_hint": 0.0}
-    max_relative_rmse_by_output = {"conditioned_context": 0.0, "skip_hint": 0.0}
+    output_names = ("conditioned_context", "skip_hint")
+    max_abs_by_output = {name: 0.0 for name in output_names}
+    max_rmse_by_output = {name: 0.0 for name in output_names}
+    max_relative_rmse_by_output = {name: 0.0 for name in output_names}
+    quantized_metrics = {
+        bits: {
+            "max_absolute_error_by_output": {name: 0.0 for name in output_names},
+            "max_rmse_by_output": {name: 0.0 for name in output_names},
+        }
+        for bits, _model, _path in quantized_models
+    }
 
     try:
         for frame_count in range(1, args.max_frames + 1):
@@ -294,41 +347,70 @@ def main() -> int:
                         context=inputs[3],
                         context_lens=None,
                     )
-                    predicted = converted.predict({
+                    prediction_inputs = {
                         "conditioning": inputs[0].numpy(),
                         "latent_tokens": inputs[1].numpy(),
                         "time_modulation": inputs[2].numpy(),
                         "text_context": inputs[3].numpy(),
                         "rope_cos": cos.numpy(),
                         "rope_sin": sin.numpy(),
-                    })
-                output_errors = []
-                for name, ref_tensor in zip(("conditioned_context", "skip_hint"), reference):
-                    prediction = np.asarray(predicted[name], dtype=np.float32)
-                    ref_array = ref_tensor.detach().cpu().numpy().astype(np.float32)
-                    delta = prediction - ref_array
-                    max_abs = float(np.abs(delta).max())
-                    rmse = float(np.sqrt(np.mean(np.square(delta))))
-                    reference_rms = float(np.sqrt(np.mean(np.square(ref_array))))
-                    relative_rmse = rmse / max(reference_rms, 1e-8)
-                    max_abs_by_output[name] = max(max_abs_by_output[name], max_abs)
-                    max_rmse_by_output[name] = max(max_rmse_by_output[name], rmse)
+                    }
+                    prediction_by_model = {
+                        "fp32_or_fp16": converted.predict(prediction_inputs)
+                    }
+                    for bits, model, _path in quantized_models:
+                        prediction_by_model[f"int{bits[3:]}"] = model.predict(prediction_inputs)
+
+                def summarize_prediction(predicted, reference_tensors):
+                    result = []
+                    for name, ref_tensor in zip(output_names, reference_tensors):
+                        prediction = np.asarray(predicted[name], dtype=np.float32)
+                        ref_array = ref_tensor.detach().cpu().numpy().astype(np.float32)
+                        delta = prediction - ref_array
+                        max_abs = float(np.abs(delta).max())
+                        rmse = float(np.sqrt(np.mean(np.square(delta))))
+                        reference_rms = float(np.sqrt(np.mean(np.square(ref_array))))
+                        relative_rmse = rmse / max(reference_rms, 1e-8)
+                        result.append({
+                            "name": name,
+                            "shape": list(prediction.shape),
+                            "max_absolute_error": max_abs,
+                            "rmse": rmse,
+                            "reference_rms": reference_rms,
+                            "relative_rmse": relative_rmse,
+                        })
+                    return result
+
+                output_errors = summarize_prediction(
+                    prediction_by_model["fp32_or_fp16"], reference
+                )
+                for item in output_errors:
+                    name = item["name"]
+                    max_abs_by_output[name] = max(max_abs_by_output[name], item["max_absolute_error"])
+                    max_rmse_by_output[name] = max(max_rmse_by_output[name], item["rmse"])
                     max_relative_rmse_by_output[name] = max(
-                        max_relative_rmse_by_output[name], relative_rmse
+                        max_relative_rmse_by_output[name], item["relative_rmse"]
                     )
-                    output_errors.append({
-                        "name": name,
-                        "shape": list(prediction.shape),
-                        "max_absolute_error": max_abs,
-                        "rmse": rmse,
-                        "reference_rms": reference_rms,
-                        "relative_rmse": relative_rmse,
-                    })
+                quantized_test_errors = {}
+                for bits, _model, _path in quantized_models:
+                    key = f"int{bits[3:]}"
+                    test_errors = summarize_prediction(prediction_by_model[key], reference)
+                    quantized_test_errors[key] = test_errors
+                    for item in test_errors:
+                        name = item["name"]
+                        quantized_metrics[bits]["max_absolute_error_by_output"][name] = max(
+                            quantized_metrics[bits]["max_absolute_error_by_output"][name],
+                            item["max_absolute_error"],
+                        )
+                        quantized_metrics[bits]["max_rmse_by_output"][name] = max(
+                            quantized_metrics[bits]["max_rmse_by_output"][name], item["rmse"]
+                        )
                 tests.append({
                     "frames": frame_count,
                     "latent_tokens": token_count,
                     "context_tokens": context_count,
                     "outputs": output_errors,
+                    "quantized_outputs": quantized_test_errors,
                 })
     finally:
         wan_model.rope_apply = original_rope_apply
@@ -339,11 +421,34 @@ def main() -> int:
     max_allowed_abs = args.max_absolute_error
     max_allowed_rmse = args.max_rmse
     max_allowed_relative_rmse = args.max_relative_rmse
-    passed = all(
+    baseline_passed = all(
         max_abs_by_output[name] <= max_allowed_abs
         and max_rmse_by_output[name] <= max_allowed_rmse
         and max_relative_rmse_by_output[name] <= max_allowed_relative_rmse
         for name in max_abs_by_output
+    )
+    quantization_reports = []
+    for bits, model, quantized_path in quantized_models:
+        maximum_absolute_errors = quantized_metrics[bits]["max_absolute_error_by_output"]
+        maximum_rms_errors = quantized_metrics[bits]["max_rmse_by_output"]
+        quant_passed = all(
+            maximum_absolute_errors[name] <= max_allowed_abs
+            and maximum_rms_errors[name] <= max_allowed_rmse
+            for name in output_names
+        )
+        quantization_reports.append({
+            "bits": int(bits[3:]),
+            "package_path": str(quantized_path),
+            "package_size_bytes": sum(
+                p.stat().st_size for p in quantized_path.rglob("*") if p.is_file()
+            ),
+            **quantized_metrics[bits],
+            "max_allowed_absolute_error": max_allowed_abs,
+            "max_allowed_rmse": max_allowed_rmse,
+            "passed": quant_passed,
+        })
+    passed = baseline_passed and all(item["passed"] for item in quantization_reports) and all(
+        "error" not in item for item in quantization_setup_reports
     )
     report = {
         "probe": "wan_vace_block_coreml_dynamic_temporal_axis",
@@ -381,8 +486,11 @@ def main() -> int:
             "max_allowed_absolute_error": max_allowed_abs,
             "max_allowed_rmse": max_allowed_rmse,
             "max_allowed_relative_rmse": max_allowed_relative_rmse,
+            "baseline_passed": baseline_passed,
             "passed": passed,
         },
+        "quantization_setup": quantization_setup_reports,
+        "quantization_experiments": quantization_reports,
         "runtime": {
             "compute_precision": args.compute_precision,
             "conversion_seconds": conversion_seconds,
