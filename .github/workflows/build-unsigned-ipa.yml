@@ -656,6 +656,20 @@ jobs:
           zip -qry RIFE60GhostGuard-verified-unsigned.ipa Payload
           unzip -t RIFE60GhostGuard-verified-unsigned.ipa >/dev/null
 
+      - name: Verify bundled Wan VAE test packages inside IPA
+        if: >-
+          (github.event_name == 'pull_request' &&
+          github.event.pull_request.head.ref == 'feature/wan-vace-ondevice-component-test') ||
+          github.ref == 'refs/heads/feature/wan-vace-ondevice-component-test'
+        run: |
+          set -euo pipefail
+          APP="Payload/RIFE60GhostGuard.app"
+          test -f "$APP/WanVAEEncoder-5x64.mlpackage/Manifest.json"
+          test -f "$APP/WanVAEDecoder-5x8.mlpackage/Manifest.json"
+          unzip -Z1 RIFE60GhostGuard-verified-unsigned.ipa | grep -Fxq "Payload/RIFE60GhostGuard.app/WanVAEEncoder-5x64.mlpackage/Manifest.json"
+          unzip -Z1 RIFE60GhostGuard-verified-unsigned.ipa | grep -Fxq "Payload/RIFE60GhostGuard.app/WanVAEDecoder-5x8.mlpackage/Manifest.json"
+          echo "Both bundled VAE component packages are present in the IPA."
+
       # Keep the normal Actions artifact ZIP as well as publishing the raw .ipa to Releases.
       - name: Upload verified IPA artifact
         uses: actions/upload-artifact@v4
