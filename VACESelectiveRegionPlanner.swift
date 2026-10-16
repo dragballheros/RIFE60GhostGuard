@@ -259,8 +259,7 @@ enum VACESelectiveRegionPlanner {
             if previous + maximum >= end { break }
             let next = previous + step
             if next + maximum >= end {
-                let finalStart = max(start, end - maximum)
-                if finalStart > previous { starts.append(finalStart) }
+                if next > previous { starts.append(next) }
                 break
             }
             starts.append(next)
@@ -327,7 +326,7 @@ struct VACERGBAFrame {
         let pixels = width.multipliedReportingOverflow(by: height)
         guard !pixels.overflow else { throw VACERegionPlanningError.imageTooLarge(pixelCount: Int.max) }
         let byteCount = pixels.partialValue.multipliedReportingOverflow(by: 4)
-        guard !byteCount.overflow || pixels.partialValue > 16_777_216 else {
+        guard !byteCount.overflow else {
             throw VACERegionPlanningError.imageTooLarge(pixelCount: Int.max)
         }
         guard pixels.partialValue <= 16_777_216 else {
