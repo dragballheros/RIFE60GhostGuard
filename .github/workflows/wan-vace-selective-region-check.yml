@@ -8,6 +8,7 @@ on:
     paths:
       - "VACESelectiveRegionPlanner.swift"
       - "VACEConditioningBuilder.swift"
+      - "VACESelectiveVideoPipeline.swift"
       - "Scripts/test_vace_selective_region_planner.swift"
       - ".github/workflows/wan-vace-selective-region-check.yml"
 
@@ -25,14 +26,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Parse implementation
-        run: swiftc -frontend -parse VACESelectiveRegionPlanner.swift VACEConditioningBuilder.swift
+        run: swiftc -frontend -parse VACESelectiveRegionPlanner.swift VACEConditioningBuilder.swift VACESelectiveVideoPipeline.swift
       - name: Typecheck against iOS 16 SDK
         run: |
           xcrun --sdk iphoneos swiftc \
             -swift-version 5 \
             -target arm64-apple-ios16.0 \
             -sdk "$(xcrun --sdk iphoneos --show-sdk-path)" \
-            -typecheck VACESelectiveRegionPlanner.swift VACEConditioningBuilder.swift
+            -typecheck VACESelectiveRegionPlanner.swift VACEConditioningBuilder.swift VACESelectiveVideoPipeline.swift -framework AVFoundation -framework CoreVideo
       - name: Compile and run algorithm tests
         run: |
           swiftc -swift-version 5 VACESelectiveRegionPlanner.swift VACEConditioningBuilder.swift Scripts/test_vace_selective_region_planner.swift -o /tmp/vace-region-tests
