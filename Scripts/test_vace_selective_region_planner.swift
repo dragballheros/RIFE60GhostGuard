@@ -6,6 +6,8 @@ enum VACESelectiveRegionPlannerTests {
         try testEmptyMaskProducesNoCrops()
         try testMinimumComponentThresholdFiltersNoise()
         try testDisconnectedRegionsRemainSeparate()
+        try testMaskUnionCoversMotionAcrossWindow()
+        try testCropExtraction()
         try testLargeRegionIsTiledWithBounds()
         try testTemporalWindowsCoverEveryFrameAndPadShortClips()
         try testCompositorPreservesEveryUnmaskedByte()
@@ -47,6 +49,26 @@ enum VACESelectiveRegionPlannerTests {
         check(plans.allSatisfy { $0.cropRect.width <= 64 && $0.cropRect.height <= 48 }, "crop limits must hold")
         check(plans.allSatisfy { $0.cropRect.x >= 0 && $0.cropRect.y >= 0 && $0.cropRect.maxX <= 160 && $0.cropRect.maxY <= 96 },
               "crop must stay in source bounds")
+    }
+
+    static func testMaskUnionCoversMotionAcrossWindow() throws {
+        let first = try makeMask(width: 128, height: 64, active: [(8, 30, 255)])
+        let second = try makeMask(width: 128, height: 64, active: [(110, 30, 255)])
+        var options = VACERegionPlanningOptions()
+        options.contextPaddingPixels = 4; options.cropAlignment = 4; options.minimumActivePixels = 1
+        options.maximumCropWidth = 64; options.maximumCropHeight = 48; options.tileOverlapPixels = 8
+        let plans = try VACESelectiveRegionPlanner.plan(masks: [first, second], options: options)
+        check(plans.count == 2, "separated positions over time should retain separate bounded crops")
+        check(plans.contains { $0.cropRect.minX <= 8 && $0.cropRect.maxX > 8 }, "first-frame motion position must be covered")
+        check(plans.contains { $0.cropRect.minX <= 110 && $0.cropRect.maxX > 110 }, "later-frame motion position must be covered")
+    }
+
+    static func testCropExtraction() throws {
+        let frame = try VACERGBAFrame(width: 2, height: 2,
+            bytes: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15])
+        let crop = try frame.cropped(to: VACERegionRect(x: 1, y: 0, width: 1, height: 2))
+        check(crop.width == 1 && crop.height == 2, "cropped dimensions are incorrect")
+        check(crop.bytes == [4, 5, 6, 7, 12, 13, 14, 15], "crop must copy the requested RGBA rows")
     }
 
     static func testLargeRegionIsTiledWithBounds() throws {
