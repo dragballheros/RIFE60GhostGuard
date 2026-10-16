@@ -41,8 +41,44 @@ def tensor_bytes(module: Any) -> int:
     return sum(p.numel() * p.element_size() for p in module.parameters())
 
 
+def map_diffusers_vace_key_to_upstream(name: str) -> str:
+    """Map Diffusers Wan VACE block keys onto the pinned original Wan2.1 module."""
+    if name.startswith("attn1."):
+        name = "self_attn." + name[len("attn1."):]
+    elif name.startswith("attn2."):
+        name = "cross_attn." + name[len("attn2."):]
+    elif name.startswith("ffn.net.0.proj."):
+        name = "ffn.0." + name[len("ffn.net.0.proj."):]
+    elif name.startswith("ffn.net.2."):
+        name = "ffn.2." + name[len("ffn.net.2."):]
+    elif name.startswith("norm2."):
+        # Diffusers names the affine cross-attention norm norm2; original Wan
+        # names the corresponding layer norm3. norm1/norm2 in original Wan
+        # are non-affine and therefore absent from the checkpoint.
+        name = "norm3." + name[len("norm2."):]
+    elif name.startswith("proj_in."):
+        name = "before_proj." + name[len("proj_in."):]
+    elif name.startswith("proj_out."):
+        name = "after_proj." + name[len("proj_out."):]
+    elif name == "scale_shift_table":
+        name = "modulation"
+
+    if name.startswith(("self_attn.", "cross_attn.")):
+        for source, target in (
+            ("to_out.0.", "o."),
+            ("to_q.", "q."),
+            ("to_k.", "k."),
+            ("to_v.", "v."),
+        ):
+            marker = name.find(source)
+            if marker >= 0:
+                name = name[:marker] + target + name[marker + len(source):]
+                break
+    return name
+
+
 def load_safetensors_block(module: Any, checkpoint: Path, prefix: str) -> dict[str, Any]:
-    """Read only one block's tensors from a SafeTensors checkpoint, never the full model."""
+    """Read one Diffusers-format VACE block from SafeTensors without loading the full model."""
     import torch
     from safetensors import safe_open
 
@@ -50,7 +86,8 @@ def load_safetensors_block(module: Any, checkpoint: Path, prefix: str) -> dict[s
         raise FileNotFoundError(f"Checkpoint file does not exist: {checkpoint}")
     expected = set(module.state_dict().keys())
     state: dict[str, Any] = {}
-    matched_names: list[str] = []
+    matched_source_names: list[str] = []
+    ignored_source_names: list[str] = []
     dtypes: dict[str, int] = {}
 
     with safe_open(str(checkpoint), framework="pt", device="cpu") as handle:
@@ -63,20 +100,30 @@ def load_safetensors_block(module: Any, checkpoint: Path, prefix: str) -> dict[s
                 f"Sample block keys: {examples}"
             )
         for key in selected:
-            name = key[len(prefix):]
+            source_name = key[len(prefix):]
+            name = map_diffusers_vace_key_to_upstream(source_name)
             if name not in expected:
+                ignored_source_names.append(source_name)
                 continue
+            if name in state:
+                raise ValueError(f"Multiple checkpoint tensors map to upstream tensor {name!r}")
             value = handle.get_tensor(key)
             dtypes[str(value.dtype)] = dtypes.get(str(value.dtype), 0) + value.numel()
+            if tuple(value.shape) != tuple(module.state_dict()[name].shape):
+                raise ValueError(
+                    f"Shape mismatch for {key} -> {name}: checkpoint {tuple(value.shape)}, "
+                    f"expected {tuple(module.state_dict()[name].shape)}"
+                )
             state[name] = value.to(dtype=torch.float32)
-            matched_names.append(name)
+            matched_source_names.append(key)
 
     missing = sorted(expected - set(state))
-    unexpected = sorted(set(state) - expected)
-    if missing or unexpected:
+    if missing:
         raise ValueError(
-            "Checkpoint block does not exactly match the pinned upstream block. "
-            f"Missing tensors: {missing[:20]}; unexpected tensors: {unexpected[:20]}"
+            "Checkpoint block mapping is incomplete. "
+            f"Missing upstream tensors: {missing[:25]}; "
+            f"source tensor examples: {matched_source_names[:8]}; "
+            f"ignored source tensors: {ignored_source_names[:12]}"
         )
     incompatible = module.load_state_dict(state, strict=True)
     if incompatible.missing_keys or incompatible.unexpected_keys:
@@ -86,10 +133,12 @@ def load_safetensors_block(module: Any, checkpoint: Path, prefix: str) -> dict[s
         "checkpoint_file": checkpoint.name,
         "checkpoint_file_size_bytes": checkpoint.stat().st_size,
         "checkpoint_block_prefix": prefix,
-        "loaded_tensor_count": len(matched_names),
-        "loaded_parameter_count": sum(module.state_dict()[name].numel() for name in matched_names),
+        "source_format": "Diffusers Wan2.1 VACE SafeTensors",
+        "loaded_tensor_count": len(matched_source_names),
+        "loaded_parameter_count": sum(module.state_dict()[name].numel() for name in state),
         "source_dtypes": dtypes,
-        "loading_policy": "SafeTensors header indexed; only selected block tensors materialized",
+        "ignored_source_tensors": ignored_source_names,
+        "loading_policy": "SafeTensors header indexed; selected block tensors mapped and materialized only",
     }
 
 
