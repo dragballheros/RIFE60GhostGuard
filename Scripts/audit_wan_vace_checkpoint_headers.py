@@ -87,6 +87,17 @@ def layer_bucket(name: str) -> str:
     return "non_layer_or_unrecognized"
 
 
+def resolve_revision(repo: str, revision: str) -> str:
+    """Resolve branch/tag names to an immutable Hugging Face commit SHA."""
+    from urllib.parse import quote
+    url = f"https://huggingface.co/api/models/{repo}/revision/{quote(revision, safe='')}"
+    metadata = fetch_json(url)
+    sha = metadata.get("sha")
+    if not isinstance(sha, str) or len(sha) != 40:
+        raise RuntimeError(f"Could not resolve {repo}@{revision} to a 40-character commit SHA")
+    return sha
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo", default=DEFAULT_REPO, help="Official Hugging Face repo ID")
@@ -95,7 +106,8 @@ def main() -> int:
     args = parser.parse_args()
 
     from pathlib import Path
-    repo_api = f"https://huggingface.co/api/models/{args.repo}/tree/{args.revision}?recursive=true&expand=false"
+    resolved_sha = resolve_revision(args.repo, args.revision)
+    repo_api = f"https://huggingface.co/api/models/{args.repo}/tree/{resolved_sha}?recursive=true&expand=false"
     files = fetch_json(repo_api)
     safetensor_files = [f for f in files if f.get("type") == "file" and f.get("path", "").endswith(".safetensors")]
     if not safetensor_files:
@@ -105,7 +117,7 @@ def main() -> int:
     shard_reports = []
     for file_info in safetensor_files:
         filename = file_info["path"]
-        url = safe_url(args.repo, args.revision, filename)
+        url = safe_url(args.repo, resolved_sha, filename)
         header = safetensors_header(url)
         shard_tensor_count = 0
         shard_bytes = 0
@@ -127,11 +139,21 @@ def main() -> int:
     layer_sizes: dict[str, int] = defaultdict(int)
     layer_tensors: dict[str, int] = defaultdict(int)
     dtype_sizes: dict[str, int] = defaultdict(int)
+    dtype_elements: dict[str, int] = defaultdict(int)
+    unrecognized_samples: list[dict[str, Any]] = []
     for name, entry in all_tensors.items():
         bucket = layer_bucket(name)
         layer_sizes[bucket] += entry["bytes"]
         layer_tensors[bucket] += 1
         dtype_sizes[entry["dtype"]] += entry["bytes"]
+        dtype_elements[entry["dtype"]] += math.prod(int(x) for x in entry["shape"])
+        if bucket == "non_layer_or_unrecognized" and len(unrecognized_samples) < 40:
+            unrecognized_samples.append({
+                "name": name,
+                "dtype": entry["dtype"],
+                "shape": entry["shape"],
+                "bytes": entry["bytes"],
+            })
 
     ordered_layers = sorted(
         ({"name": name, "tensor_count": layer_tensors[name], "bytes": size}
@@ -139,15 +161,22 @@ def main() -> int:
         key=lambda item: item["bytes"], reverse=True,
     )
     total_bytes = sum(entry["bytes"] for entry in all_tensors.values())
+    total_elements = sum(math.prod(int(x) for x in entry["shape"]) for entry in all_tensors.values())
+    # Ideal payload bounds are calculated from tensor element counts, not source bytes:
+    # source tensors are mixed F32/BF16, so dividing source bytes by 2 or 4 is incorrect.
     report = {
         "repo": args.repo,
-        "revision": args.revision,
-        "method": "safetensors HTTP Range header reads only; tensor payloads not downloaded",
+        "requested_revision": args.revision,
+        "resolved_commit_sha": resolved_sha,
+        "method": "Safetensors HTTP Range header reads only; tensor payloads not downloaded",
         "tensor_count": len(all_tensors),
+        "total_tensor_elements": total_elements,
         "total_tensor_payload_bytes": total_bytes,
         "estimated_all_weights_gib": total_bytes / (1024 ** 3),
-        "theoretical_uniform_8bit_gib": total_bytes / (1024 ** 3) / 2,
-        "theoretical_uniform_4bit_gib": total_bytes / (1024 ** 3) / 4,
+        "theoretical_uniform_int8_payload_gib": total_elements / (1024 ** 3),
+        "theoretical_uniform_int4_payload_gib": total_elements * 0.5 / (1024 ** 3),
+        "theoretical_uniform_int8_payload_bytes": total_elements,
+        "theoretical_uniform_int4_payload_bytes": total_elements * 0.5,
         "quantization_estimates_exclude": [
             "quantization scales and zero points",
             "unquantized normalization/embedding tensors",
@@ -156,8 +185,10 @@ def main() -> int:
             "Core ML runtime and iOS process overhead",
         ],
         "dtype_payload_bytes": dict(dtype_sizes),
+        "dtype_element_counts": dict(dtype_elements),
         "largest_weight_groups": ordered_layers[:20],
         "unrecognized_group_bytes": layer_sizes.get("non_layer_or_unrecognized", 0),
+        "unrecognized_tensor_sample": unrecognized_samples,
         "shards": shard_reports,
         "can_fit_iphone_14_pro_max": False,
         "complete_pipeline_or_runtime_test": False,
@@ -172,10 +203,13 @@ def main() -> int:
     out.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     print(json.dumps({
         "repo": args.repo,
-        "revision": args.revision,
+        "requested_revision": args.revision,
+        "resolved_commit_sha": resolved_sha,
         "tensor_count": len(all_tensors),
+        "total_tensor_elements": total_elements,
         "weight_gib": round(total_bytes / (1024 ** 3), 3),
-        "uniform_int4_gib_lower_bound": round(total_bytes / (1024 ** 3) / 4, 3),
+        "uniform_int8_payload_gib_lower_bound": round(total_elements / (1024 ** 3), 3),
+        "uniform_int4_payload_gib_lower_bound": round(total_elements * 0.5 / (1024 ** 3), 3),
         "largest_groups": ordered_layers[:5],
         "report": str(out),
     }, indent=2))
