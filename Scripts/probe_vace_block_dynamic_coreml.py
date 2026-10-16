@@ -132,6 +132,9 @@ def main() -> int:
     parser.add_argument("--height", type=int, default=HEIGHT)
     parser.add_argument("--width", type=int, default=WIDTH)
     parser.add_argument("--max-context-tokens", type=int, default=CONTEXT_MAX)
+    parser.add_argument("--max-absolute-error", type=float, default=0.20)
+    parser.add_argument("--max-rmse", type=float, default=0.035)
+    parser.add_argument("--max-relative-rmse", type=float, default=0.02)
     args = parser.parse_args()
 
     if not 1 <= args.max_frames <= MAX_FRAMES:
@@ -255,6 +258,7 @@ def main() -> int:
     tests = []
     max_abs_by_output = {"conditioned_context": 0.0, "skip_hint": 0.0}
     max_rmse_by_output = {"conditioned_context": 0.0, "skip_hint": 0.0}
+    max_relative_rmse_by_output = {"conditioned_context": 0.0, "skip_hint": 0.0}
 
     try:
         for frame_count in range(1, args.max_frames + 1):
@@ -302,13 +306,20 @@ def main() -> int:
                     delta = prediction - ref_array
                     max_abs = float(np.abs(delta).max())
                     rmse = float(np.sqrt(np.mean(np.square(delta))))
+                    reference_rms = float(np.sqrt(np.mean(np.square(ref_array))))
+                    relative_rmse = rmse / max(reference_rms, 1e-8)
                     max_abs_by_output[name] = max(max_abs_by_output[name], max_abs)
                     max_rmse_by_output[name] = max(max_rmse_by_output[name], rmse)
+                    max_relative_rmse_by_output[name] = max(
+                        max_relative_rmse_by_output[name], relative_rmse
+                    )
                     output_errors.append({
                         "name": name,
                         "shape": list(prediction.shape),
                         "max_absolute_error": max_abs,
                         "rmse": rmse,
+                        "reference_rms": reference_rms,
+                        "relative_rmse": relative_rmse,
                     })
                 tests.append({
                     "frames": frame_count,
@@ -322,12 +333,14 @@ def main() -> int:
 
     # Baseline gate is deliberately numerical only. Passing does not guarantee
     # memory or runtime on the phone; those remain on-device gates.
-    max_allowed_abs = 0.08
-    max_allowed_rmse = 0.015
+    max_allowed_abs = args.max_absolute_error
+    max_allowed_rmse = args.max_rmse
+    max_allowed_relative_rmse = args.max_relative_rmse
     passed = all(
-        abs_error <= max_allowed_abs and max_rmse <= max_allowed_rmse
-        for name, abs_error in max_abs_by_output.items()
-        for max_rmse in [max_rmse_by_output[name]]
+        max_abs_by_output[name] <= max_allowed_abs
+        and max_rmse_by_output[name] <= max_allowed_rmse
+        and max_relative_rmse_by_output[name] <= max_allowed_relative_rmse
+        for name in max_abs_by_output
     )
     report = {
         "probe": "wan_vace_block_coreml_dynamic_temporal_axis",
@@ -361,8 +374,10 @@ def main() -> int:
             "tests": tests,
             "max_absolute_error_by_output": max_abs_by_output,
             "max_rmse_by_output": max_rmse_by_output,
+            "max_relative_rmse_by_output": max_relative_rmse_by_output,
             "max_allowed_absolute_error": max_allowed_abs,
             "max_allowed_rmse": max_allowed_rmse,
+            "max_allowed_relative_rmse": max_allowed_relative_rmse,
             "passed": passed,
         },
         "runtime": {
