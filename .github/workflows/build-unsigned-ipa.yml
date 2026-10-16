@@ -391,6 +391,14 @@ jobs:
           swiftc -swift-version 5 WatermarkConfiguration.swift WatermarkBrushMask.swift AnimeWatermarkRemover.swift /tmp/anime-inpaint-check/main.swift -o /tmp/anime-inpaint-check/check
           /tmp/anime-inpaint-check/check CompiledModels/AnimeWatermarkLaMa512.mlmodelc
 
+      - name: Verify DeepCream bar and mosaic preprocessing
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/deepcream-preprocessing-check
+          cp Scripts/check_deepcream_preprocessing.swift /tmp/deepcream-preprocessing-check/main.swift
+          swiftc -swift-version 5 WatermarkConfiguration.swift WatermarkBrushMask.swift DeepCreamInputPreprocessor.swift /tmp/deepcream-preprocessing-check/main.swift -o /tmp/deepcream-preprocessing-check/check
+          /tmp/deepcream-preprocessing-check/check
+
       - name: Verify speed options and checkpoint planning
         run: |
           set -euo pipefail
