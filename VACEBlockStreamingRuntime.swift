@@ -108,7 +108,8 @@ actor VACEBlockStreamingRuntime {
         }
 
         let packageURL = try resolvePackageURL(reference)
-        let wasModelReused = activeIdentifier == reference.identifier && activeModel != nil
+        let modelCacheKey = reference.identifier + "-" + reference.cacheVersion
+        let wasModelReused = activeIdentifier == modelCacheKey && activeModel != nil
         var loadSeconds: TimeInterval = 0
 
         if !wasModelReused {
@@ -125,7 +126,7 @@ actor VACEBlockStreamingRuntime {
             let model = try MLModel(contentsOf: compiledURL, configuration: configuration)
             activeModel = model
             activeCompiledURL = compiledURL
-            activeIdentifier = reference.identifier
+            activeIdentifier = modelCacheKey
             loadSeconds = Date().timeIntervalSince(loadStart)
         }
 
