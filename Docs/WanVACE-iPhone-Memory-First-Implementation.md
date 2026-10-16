@@ -210,3 +210,18 @@ existing-feature regression tests are still outstanding.
 ## Trained-checkpoint smoke test
 
 The checkpoint-backed lane is intentionally opt-in because downloading the official 1.3B checkpoint is a multi-gigabyte CI task. A commit message containing `[vace-trained]` downloads the immutable checkpoint revision, verifies its SHA-256, and exercises only `vace_blocks.0`; it is a component test and not hosted inference.
+
+## Implementation milestone 3: mask-driven selective reconstruction primitives
+
+Added `VACESelectiveRegionPlanner.swift`, which is compiled into the app target by the existing XcodeGen root-level Swift source rule. This is the spatial/temporal handoff layer needed before the diffusion engine:
+
+- Validates one-channel 8-bit mask dimensions and rejects unexpectedly large masks before planning.
+- Finds connected replacement regions, filters tiny components, expands them with context, aligns crops, merges overlapping context windows, and splits large areas into overlapping bounded crops. The default single-crop limit is 832×480; this is a crop limit, not a claim of full 480p VACE video inference.
+- Computes bounded inference-canvas dimensions and enforces a hard maximum crop count so an accidental full-frame mask cannot schedule unbounded inference.
+- Builds fixed-length overlapping temporal windows and repeats the final frame index for short clips. For a temporal window, the new mask-array overload unions mask locations only to plan a crop envelope around motion; each frame's own mask must still be used for the actual reconstruction/composite.
+- Extracts a checked RGBA source crop and its matching mask crop.
+- Composites reconstructed RGBA patches under an 8-bit soft mask using integer blending. Mask value 0 preserves the original frame's RGBA bytes exactly, mask value 255 selects reconstructed RGB, intermediate values feather the edge, and source alpha remains unchanged.
+
+Added `.github/workflows/wan-vace-selective-region-check.yml` plus `Scripts/test_vace_selective_region_planner.swift`. The workflow parses the source, typechecks against the iOS 16 SDK, and runs executable macOS unit-style tests for empty/noisy/disconnected masks, bounded overlapping tiles, per-window mask union, frame crop extraction, fixed-length temporal coverage, and exact unmasked-pixel preservation.
+
+**Scope boundary:** these primitives do not infer which pixels need replacement, do not estimate optical flow, do not run the VACE diffusion denoiser, and do not decode/encode an actual movie. The mask must currently be supplied by a future user/segmentation/tracking stage, and a real model adapter still must produce a reconstructed patch. This commit builds and tests the selective spatial/compositing foundation; it does not yet make the VACE video editing feature usable in the app or prove phone performance.
