@@ -172,6 +172,8 @@ def main() -> int:
     parser.add_argument("--report", type=Path, default=None)
     parser.add_argument("--expected-commit", default=WAN_COMMIT)
     parser.add_argument("--seed", type=int, default=20261017)
+    parser.add_argument("--block-index", type=int, default=0, help="position inside the VACE control-block list")
+    parser.add_argument("--block-prefix", default=None, help="defaults to vace_blocks.<block-index>.")
     parser.add_argument("--context-tokens", type=int, default=CONTEXT_TOKENS)
     parser.add_argument("--max-rmse", type=float, default=0.035)
     parser.add_argument("--max-absolute-error", type=float, default=0.20)
@@ -295,6 +297,9 @@ def main() -> int:
     wan_model.rope_apply = fixed_rope_apply
     wan_model.flash_attention = portable_attention
 
+    if args.block_index < 0:
+        parser.error("--block-index must be >= 0")
+    block_prefix = args.block_prefix or f"vace_blocks.{args.block_index}."
     block = VaceWanAttentionBlock(
         cross_attn_type="t2v_cross_attn",
         dim=dim,
@@ -304,11 +309,11 @@ def main() -> int:
         qk_norm=True,
         cross_attn_norm=True,
         eps=1e-6,
-        block_id=0,
+        block_id=args.block_index,
     ).eval()
     checkpoint_metadata = None
     if args.checkpoint is not None:
-        checkpoint_metadata = load_safetensors_block(block, args.checkpoint, args.block_prefix)
+        checkpoint_metadata = load_safetensors_block(block, args.checkpoint, block_prefix)
     else:
         # Upstream intentionally zero-initializes the VACE before/after projections.
         # Give them deterministic nonzero test weights so their operators are exercised.
@@ -456,6 +461,8 @@ def main() -> int:
             "expected_commit": args.expected_commit,
             "component_class": "wan.modules.vace_model.VaceWanAttentionBlock",
             "architecture": "Wan2.1 VACE 1.3B width/FFN/head dimensions",
+            "vace_block_index": args.block_index,
+            "checkpoint_prefix": block_prefix,
         },
         "weights": {
             "initialization": (
