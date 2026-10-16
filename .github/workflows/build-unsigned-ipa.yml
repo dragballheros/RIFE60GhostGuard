@@ -137,8 +137,8 @@ jobs:
               archive.extractall(extract_root)
 
           model_names = ("WanVAEEncoder-5x64", "WanVAEDecoder-5x8")
-          models_dir = Path("Models")
-          models_dir.mkdir(exist_ok=True)
+          # Keep the folder references at the project root. This avoids XcodeGen's
+          # nested-folder reference path issue for type: folder resources.
           for model_name in model_names:
               package_name = model_name + ".mlpackage"
               manifests = [
@@ -150,7 +150,7 @@ jobs:
                       f"Expected one {package_name}/Manifest.json in the CI artifact; "
                       f"found {len(manifests)}"
                   )
-              destination = models_dir / package_name
+              destination = Path(package_name)
               shutil.rmtree(destination, ignore_errors=True)
               shutil.copytree(manifests[0].parent, destination)
               print(f"Prepared bundled test model: {destination}", flush=True)
@@ -160,10 +160,10 @@ jobs:
           marker = "      - path: Models/DeepCreamMosaic.mlpackage\n"
           additions = (
               marker
-              + "      - path: Models/WanVAEEncoder-5x64.mlpackage\n"
+              + "      - path: WanVAEEncoder-5x64.mlpackage\n"
               + "        type: folder\n"
               + "        buildPhase: resources\n"
-              + "      - path: Models/WanVAEDecoder-5x8.mlpackage\n"
+              + "      - path: WanVAEDecoder-5x8.mlpackage\n"
               + "        type: folder\n"
               + "        buildPhase: resources\n"
           )
