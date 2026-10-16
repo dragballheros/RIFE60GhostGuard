@@ -154,15 +154,35 @@ with a short fixed text context. These results validate only one-block host
 conversion and error under compression, not a production-ready VACE model,
 an iPhone memory pass, or an end-to-end result.
 
+## Implementation milestone 2: serial Core ML block runtime primitive
+
+Added `VACEBlockStreamingRuntime.swift`, automatically included in the iOS target
+by the existing XcodeGen `*.swift` source rule. The actor accepts locally stored
+`.mlpackage` or `.mlmodelc` directories, compiles a package on first use, caches
+the compiled artifact on local disk, and retains only one `MLModel` object at a
+time. It validates requested tensor inputs against the model description, returns
+tensor outputs with per-call load and prediction timings, and exposes explicit
+eviction/cache-clear calls. Package paths and cache identifiers are validated
+before file access.
+
+A dedicated macOS CI job passes Swift parsing and Core ML typechecking for this
+runtime. This checks the source API surface, not the full app build or iOS runtime
+behavior. The actor cannot force Core ML/Metal to release every internal buffer,
+and it is not yet connected to a VACE denoising coordinator. No on-device memory
+or speed claim is made from this source check.
+
 ## Current truth
 
 This branch contains an executable converter and numerical parity/weight-
-compression harness for an actual upstream VACE conditioning block. Selective
-SafeTensors loading for a learned VACE block is implemented but awaiting a
-checkpoint-backed CI result. The branch does not yet contain a quantized block
-streaming runtime, a mobile-feasible text encoder, a full VACE denoising loop,
-or an end-to-end video editor. Those remain required milestones, followed by
-measured on-device memory, speed, thermal, output quality, and regression checks.
+compression harness for an actual upstream VACE conditioning block. Its pinned,
+SHA-256-verified trained checkpoint run passed one-block Float16 and INT8 parity;
+uniform INT4 failed the configured trained-weight error limits. A Swift serial
+Core ML runtime primitive is now implemented and passes macOS Core ML typecheck.
+It is not yet connected to the VACE pipeline. The branch still lacks a full base
+transformer + VACE block stack, a validated mobile-feasible text encoder, the
+complete denoising schedule, temporal VAE integration, masks/reference clip
+conditioning, and the end-to-end video editor. Device memory, performance,
+thermals, visual quality, and existing-feature regression are unmeasured gates.
 
 ## Trained-checkpoint smoke test
 
