@@ -83,7 +83,10 @@ jobs:
                   )
                   runs = fetch_json(runs_url).get("workflow_runs", [])
                   export_inputs = (
-                      ".github/workflows/wan-vae-coreml-probe.yml",
+                      # Hash only the code that affects the converted graphs.
+                      # The workflow itself may change triggers/concurrency without
+                      # changing model output; treating that as an export input
+                      # needlessly blocks IPA bundling on another macOS conversion.
                       "Scripts/probe_wan_vae_coreml.py",
                       "Scripts/probe_wan_vae_decoder_coreml.py",
                       "Scripts/probe_vace_attention_coreml.py",
