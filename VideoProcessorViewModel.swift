@@ -424,7 +424,9 @@ final class VideoProcessorViewModel: ObservableObject {
                         self.progress = 0
                         self.restorationProgress = 0
                         self.upscaleProgress = 0
-                        self.statusText = "Saved checkpoints came from a different configuration • starting fresh"
+                        self.recoveryAvailable = false
+                        self.recoveryStatusText = ""
+                        self.statusText = "Recovery source or settings differ • starting a fresh render"
                     }
                 }
 
