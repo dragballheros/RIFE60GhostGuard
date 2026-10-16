@@ -3,7 +3,8 @@ name: Build Unsigned IPA
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: false
+  # Only supersede stale PR builds. Do not auto-cancel a main-branch release build.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 # Rebuild trigger after reverting mobile compression restoration
 # Color Pop skin-state preservation fix build trigger
