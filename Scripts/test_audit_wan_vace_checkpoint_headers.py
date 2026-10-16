@@ -44,10 +44,18 @@ class CheckpointLayoutTests(unittest.TestCase):
             12,
         )
 
-    def test_transformer_blocks_are_grouped_by_index(self) -> None:
+    def test_transformer_blocks_preserve_namespace_and_index(self) -> None:
         self.assertEqual(
             audit.layer_bucket("diffusion_model.blocks.7.attn.q.weight"),
-            "layer_007",
+            "diffusion_model_blocks_layer_007",
+        )
+        self.assertEqual(
+            audit.layer_bucket("transformer_blocks.7.attn.q.weight"),
+            "transformer_blocks_layer_007",
+        )
+        self.assertNotEqual(
+            audit.layer_bucket("diffusion_model.blocks.7.attn.q.weight"),
+            audit.layer_bucket("transformer_blocks.7.attn.q.weight"),
         )
 
     def test_named_modules_are_not_lumped_into_unknown_bucket(self) -> None:
