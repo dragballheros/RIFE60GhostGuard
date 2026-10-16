@@ -25,4 +25,12 @@ jobs:
       - name: Parse Swift runtime source
         run: swiftc -frontend -parse VACEBlockStreamingRuntime.swift
       - name: Typecheck Core ML runtime against macOS SDK
-        run: swiftc -typecheck VACEBlockStreamingRuntime.swift -framework CoreML
+        run: swiftc -swift-version 5 -typecheck VACEBlockStreamingRuntime.swift -framework CoreML
+      - name: Typecheck Core ML runtime against iOS 16 SDK
+        run: |
+          xcrun --sdk iphoneos swiftc \
+            -swift-version 5 \
+            -target arm64-apple-ios16.0 \
+            -sdk "$(xcrun --sdk iphoneos --show-sdk-path)" \
+            -typecheck VACEBlockStreamingRuntime.swift \
+            -framework CoreML
