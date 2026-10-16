@@ -879,6 +879,7 @@ final class VideoProcessorViewModel: ObservableObject {
                     try await validateFinishedVideo(persisted)
                     let attrs = try FileManager.default.attributesOfItem(atPath: persisted.path)
                     let bytes = (attrs[.size] as? NSNumber)?.int64Value ?? 0
+                    LastCompletedVideoStore.recordCompletedVideo(persisted)
                     return (persisted, "Files > \(folder.lastPathComponent) > \(persisted.lastPathComponent)", bytes)
                 } catch {
                     DiagnosticsLogger.shared.log("Selected Files folder write/validation failed while security scope was active: \(error.localizedDescription). Falling back to app Exports folder.")
@@ -897,6 +898,7 @@ final class VideoProcessorViewModel: ObservableObject {
         try await validateFinishedVideo(destination)
         let attrs = try FileManager.default.attributesOfItem(atPath: destination.path)
         let bytes = (attrs[.size] as? NSNumber)?.int64Value ?? 0
+        LastCompletedVideoStore.recordCompletedVideo(destination)
         return (destination, "On My iPhone > RIFE 60 Ghost Guard > Exports > \(destination.lastPathComponent)", bytes)
     }
 
