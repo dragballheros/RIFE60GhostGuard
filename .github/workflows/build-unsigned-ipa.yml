@@ -47,6 +47,8 @@ jobs:
           import os
           import shutil
           import time
+          import urllib.error
+          import urllib.parse
           import urllib.request
           import zipfile
           from pathlib import Path
@@ -178,8 +180,35 @@ jobs:
           )
           archive_path = Path("/tmp/wan-vace-coreml-components-artifact.zip")
           request = urllib.request.Request(artifact_url, headers=headers)
-          with urllib.request.urlopen(request, timeout=180) as response, archive_path.open("wb") as output:
-              shutil.copyfileobj(response, output)
+
+          # GitHub redirects artifact downloads to a short-lived signed storage
+          # URL. Do not forward the GitHub bearer token to that other host.
+          class StopRedirect(urllib.request.HTTPRedirectHandler):
+              def redirect_request(self, req, fp, code, msg, response_headers, newurl):
+                  return None
+
+          github_opener = urllib.request.build_opener(StopRedirect)
+          try:
+              response = github_opener.open(request, timeout=45)
+          except urllib.error.HTTPError as redirect:
+              if redirect.code not in (301, 302, 303, 307, 308):
+                  raise
+              download_url = redirect.headers.get("Location")
+              redirect.close()
+              if not download_url:
+                  raise SystemExit("GitHub artifact endpoint returned a redirect without a Location header.")
+              parsed = urllib.parse.urlparse(download_url)
+              if parsed.scheme != "https" or not parsed.netloc:
+                  raise SystemExit("GitHub artifact redirect was not a valid HTTPS URL.")
+              storage_request = urllib.request.Request(
+                  download_url,
+                  headers={"User-Agent": headers["User-Agent"], "Accept": "application/octet-stream"},
+              )
+              with urllib.request.urlopen(storage_request, timeout=300) as storage_response, archive_path.open("wb") as output:
+                  shutil.copyfileobj(storage_response, output)
+          else:
+              with response, archive_path.open("wb") as output:
+                  shutil.copyfileobj(response, output)
 
           extract_root = Path("/tmp/wan-vace-coreml-components")
           shutil.rmtree(extract_root, ignore_errors=True)
