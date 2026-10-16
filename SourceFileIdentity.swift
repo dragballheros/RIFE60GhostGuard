@@ -36,7 +36,6 @@ enum SourceFileIdentity {
         do {
             return try sha256(of: lhs) == sha256(of: rhs)
         } catch {
-            DiagnosticsLogger.shared.log("Source identity comparison failed • lhs=\(lhs.lastPathComponent) • rhs=\(rhs.lastPathComponent) • \(error.localizedDescription)")
             return false
         }
     }
