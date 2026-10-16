@@ -2,16 +2,22 @@ name: Wan VAE Core ML Export Probe
 
 on:
   workflow_dispatch:
-  pull_request:
-    branches: [main]
+  # Run this expensive macOS conversion only when its actual probe inputs change.
+  # A PR includes the same added workflow file in every diff, which otherwise
+  # incorrectly queued another 90-minute export on every unrelated Swift edit.
+  push:
+    branches:
+      - research/wan21-vace-ios-feasibility
+      - feature/wan-vace-ondevice-component-test
     paths:
       - "Scripts/probe_wan_vae_coreml.py"
       - "Scripts/probe_wan_vae_decoder_coreml.py"
       - "Scripts/probe_vace_attention_coreml.py"
       - "Scripts/probe_wan_vae_temporal_cache.py"
-      - ".github/workflows/wan-vae-coreml-probe.yml"
-      - "Docs/Wan21VACE-iOS-Feasibility.md"
-      - "Docs/WanVAE-CoreML-Probe-Results.md"
+
+concurrency:
+  group: wan-vae-coreml-probe-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
