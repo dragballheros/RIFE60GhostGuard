@@ -1,14 +1,20 @@
 import CoreML
 import Foundation
+#if canImport(UIKit)
+import UIKit
+#endif
 
 /// Reference to one separately exported Wan VACE transformer component.
 struct VACEBlockModelReference: Sendable, Hashable {
     let identifier: String
     let relativePackagePath: String
+    /// Must change whenever weights, quantization, or the Core ML graph changes.
+    let cacheVersion: String
 
-    init(identifier: String, relativePackagePath: String) {
+    init(identifier: String, relativePackagePath: String, cacheVersion: String) {
         self.identifier = identifier
         self.relativePackagePath = relativePackagePath
+        self.cacheVersion = cacheVersion
     }
 }
 
@@ -92,6 +98,13 @@ actor VACEBlockStreamingRuntime {
               reference.identifier.unicodeScalars.allSatisfy({ allowedIdentifierCharacters.contains($0) })
         else {
             throw VACEBlockRuntimeError.invalidIdentifier(reference.identifier)
+        }
+        guard !reference.cacheVersion.isEmpty,
+              reference.cacheVersion != ".",
+              reference.cacheVersion != "..",
+              reference.cacheVersion.unicodeScalars.allSatisfy({ allowedIdentifierCharacters.contains($0) })
+        else {
+            throw VACEBlockRuntimeError.invalidIdentifier(reference.cacheVersion)
         }
 
         let packageURL = try resolvePackageURL(reference)
@@ -226,7 +239,7 @@ actor VACEBlockStreamingRuntime {
             withIntermediateDirectories: true
         )
         let cacheURL = compiledCacheDirectoryURL
-            .appendingPathComponent(reference.identifier)
+            .appendingPathComponent(reference.identifier + "-" + reference.cacheVersion)
             .appendingPathExtension("mlmodelc")
         if FileManager.default.fileExists(atPath: cacheURL.path) {
             return cacheURL
@@ -246,3 +259,34 @@ actor VACEBlockStreamingRuntime {
         return cacheURL
     }
 }
+
+#if canImport(UIKit)
+/// Optional owner for the memory-warning hook. Keep this object alive for as long
+/// as a VACE editing coordinator may be running. The actor remains the sole model
+/// owner; this observer only asks it to evict the active model reference.
+@MainActor
+final class VACEBlockMemoryPressureObserver {
+    private let runtime: VACEBlockStreamingRuntime
+    private var notificationToken: NSObjectProtocol?
+
+    init(runtime: VACEBlockStreamingRuntime) {
+        self.runtime = runtime
+        notificationToken = NotificationCenter.default.addObserver(
+            forName: UIApplication.didReceiveMemoryWarningNotification,
+            object: nil,
+            queue: .main
+        ) { [weak runtime] _ in
+            guard let runtime else { return }
+            Task {
+                await runtime.unloadActiveModel()
+            }
+        }
+    }
+
+    deinit {
+        if let notificationToken {
+            NotificationCenter.default.removeObserver(notificationToken)
+        }
+    }
+}
+#endif
