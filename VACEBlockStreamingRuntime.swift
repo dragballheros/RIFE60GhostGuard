@@ -85,8 +85,11 @@ actor VACEBlockStreamingRuntime {
         inputs: [String: MLMultiArray]
     ) async throws -> ([String: MLMultiArray], VACEBlockRuntimeTiming) {
         try Task.checkCancellation()
+        let allowedIdentifierCharacters = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_"))
         guard !reference.identifier.isEmpty,
-              reference.identifier.rangeOfCharacter(from: CharacterSet(charactersIn: "/\\:")) == nil
+              reference.identifier != ".",
+              reference.identifier != "..",
+              reference.identifier.unicodeScalars.allSatisfy({ allowedIdentifierCharacters.contains($0) })
         else {
             throw VACEBlockRuntimeError.invalidIdentifier(reference.identifier)
         }
@@ -180,25 +183,28 @@ actor VACEBlockStreamingRuntime {
     }
 
     private func resolvePackageURL(_ reference: VACEBlockModelReference) throws -> URL {
-        let relativeURL = URL(fileURLWithPath: reference.relativePackagePath)
-        guard !relativeURL.isFileURL || !relativeURL.path.hasPrefix("/") else {
-            // URL(fileURLWithPath:) resolves relative-looking strings to absolute URLs.
-            // The caller must provide a relative path, never a full filesystem path.
-            throw VACEBlockRuntimeError.pathEscapesModelDirectory(reference.relativePackagePath)
+        let relativePath = reference.relativePackagePath
+        let components = relativePath.split(separator: "/", omittingEmptySubsequences: false)
+        guard !relativePath.isEmpty,
+              !relativePath.hasPrefix("/"),
+              !components.contains(".."),
+              !relativePath.contains("\\") else {
+            throw VACEBlockRuntimeError.pathEscapesModelDirectory(relativePath)
         }
         let resolved = modelDirectoryURL
-            .appendingPathComponent(reference.relativePackagePath)
+            .appendingPathComponent(relativePath)
             .standardizedFileURL
         let base = modelDirectoryURL.path.hasSuffix("/")
             ? modelDirectoryURL.path
             : modelDirectoryURL.path + "/"
         guard resolved.path.hasPrefix(base) else {
-            throw VACEBlockRuntimeError.pathEscapesModelDirectory(reference.relativePackagePath)
+            throw VACEBlockRuntimeError.pathEscapesModelDirectory(relativePath)
         }
         var isDirectory: ObjCBool = false
+        let isSupportedPackage = ["mlpackage", "mlmodelc"].contains(resolved.pathExtension)
         guard FileManager.default.fileExists(atPath: resolved.path, isDirectory: &isDirectory),
               isDirectory.boolValue,
-              resolved.pathExtension == "mlpackage" || resolved.pathExtension == "mlmodelc" else {
+              isSupportedPackage else {
             throw VACEBlockRuntimeError.packageMissing(resolved)
         }
         return resolved
