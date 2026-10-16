@@ -112,8 +112,21 @@ The converter first checks its fixed-grid rotary rewrite against Wan's original
 complex implementation, then traces/converts the real upstream block to an
 iOS 16-compatible Core ML ML Program, runs a Core ML prediction, and records
 per-output max absolute error, mean absolute error, RMSE, conversion time, and
-estimated parameter footprint. CI is pinned to the repository's configured
-Wan2.1 source revision and uploads a machine-readable validation report.
+estimated parameter footprint. The VACE before/after projections are explicitly
+given deterministic nonzero test weights so their conversion is exercised
+instead of passing trivially because upstream initializes them to zero. The CI
+workflow also tests Core ML post-training INT8 and INT4 per-channel weight
+compression against the same PyTorch reference, recording package sizes and
+error metrics. CI is pinned to the repository's configured Wan2.1 source
+revision and uploads a machine-readable validation report.
+
+Initial uncompressed-block CI run passed the fixed-shape parity gate: rotary
+rewrite max absolute error was approximately 2.4e-7, and the main conditioned
+context output had maximum absolute error about 8.1e-4 and RMSE about 1.5e-4.
+These figures are for deterministic random weights at only four latent tokens,
+not the trained checkpoint or realistic video sequence. The INT8/INT4 sweeps
+are being added as a storage/error experiment and must report independently
+whether each quantized candidate meets the configured numerical tolerances.
 
 **Important scope boundary:** the block currently uses deterministic random
 weights, a four-token grid, and a short fixed text context. This first milestone
