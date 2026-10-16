@@ -190,11 +190,6 @@ def main() -> int:
         help="optional official SafeTensors checkpoint; only --block-prefix tensors are read",
     )
     parser.add_argument(
-        "--block-prefix",
-        default="vace_blocks.0.",
-        help="exact SafeTensors key prefix for the selected VACE block",
-    )
-    parser.add_argument(
         "--quantization-levels",
         nargs="*",
         choices=("int8", "int4"),
