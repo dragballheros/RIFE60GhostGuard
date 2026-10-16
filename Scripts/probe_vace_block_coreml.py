@@ -188,6 +188,16 @@ def main() -> int:
         eps=1e-6,
         block_id=0,
     ).eval()
+    # Upstream intentionally zero-initializes the VACE before/after projections.
+    # Randomly initialize them here so the conversion/parity test exercises those
+    # linear operators instead of trivially returning the unchanged latent/zero hint.
+    with torch.no_grad():
+        for projection_name in ("before_proj", "after_proj"):
+            projection = getattr(block, projection_name, None)
+            if projection is not None:
+                torch.nn.init.normal_(projection.weight, mean=0.0, std=0.01)
+                if projection.bias is not None:
+                    torch.nn.init.zeros_(projection.bias)
 
     class FixedShapeVACEBlock(torch.nn.Module):
         def __init__(self, layer):
