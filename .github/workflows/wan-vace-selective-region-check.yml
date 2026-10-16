@@ -7,6 +7,7 @@ on:
       - feature/wan-vace-iphone-memory-first
     paths:
       - "VACESelectiveRegionPlanner.swift"
+      - "VACEConditioningBuilder.swift"
       - "Scripts/test_vace_selective_region_planner.swift"
       - ".github/workflows/wan-vace-selective-region-check.yml"
 
@@ -24,15 +25,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Parse implementation
-        run: swiftc -frontend -parse VACESelectiveRegionPlanner.swift
+        run: swiftc -frontend -parse VACESelectiveRegionPlanner.swift VACEConditioningBuilder.swift
       - name: Typecheck against iOS 16 SDK
         run: |
           xcrun --sdk iphoneos swiftc \
             -swift-version 5 \
             -target arm64-apple-ios16.0 \
             -sdk "$(xcrun --sdk iphoneos --show-sdk-path)" \
-            -typecheck VACESelectiveRegionPlanner.swift
+            -typecheck VACESelectiveRegionPlanner.swift VACEConditioningBuilder.swift
       - name: Compile and run algorithm tests
         run: |
-          swiftc -swift-version 5 VACESelectiveRegionPlanner.swift Scripts/test_vace_selective_region_planner.swift -o /tmp/vace-region-tests
+          swiftc -swift-version 5 VACESelectiveRegionPlanner.swift VACEConditioningBuilder.swift Scripts/test_vace_selective_region_planner.swift -o /tmp/vace-region-tests
           /tmp/vace-region-tests
