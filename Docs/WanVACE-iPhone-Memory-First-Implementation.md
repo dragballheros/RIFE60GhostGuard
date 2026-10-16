@@ -95,6 +95,39 @@ The feature must remain marked experimental and must not be presented as a worki
 6. the 1920×1080 export and quality checks pass;
 7. the existing RIFE, Real-CUGAN, DeepCream, image, and recovery paths remain regression-free.
 
+## Implementation milestone 1: real VACE block conversion harness
+
+Added `Scripts/probe_vace_block_coreml.py` and
+`.github/workflows/wan-vace-block-coreml-parity.yml`.
+
+The converter imports the pinned upstream `wan.modules.vace_model.VaceWanAttentionBlock`
+and creates the published VACE 1.3B transformer width (1536), FFN width (8960),
+and 12-head configuration without allocating all 30 transformer blocks. It
+exercises the block's conditioning injection, normalization, self-attention,
+text cross-attention, FFN, and skip-hint projection. It rewrites Wan's complex
+rotary multiplication as real arithmetic and uses portable scaled-dot-product
+attention in place of the upstream CUDA-only FlashAttention kernel.
+
+The converter first checks its fixed-grid rotary rewrite against Wan's original
+complex implementation, then traces/converts the real upstream block to an
+iOS 16-compatible Core ML ML Program, runs a Core ML prediction, and records
+per-output max absolute error, mean absolute error, RMSE, conversion time, and
+estimated parameter footprint. CI is pinned to the repository's configured
+Wan2.1 source revision and uploads a machine-readable validation report.
+
+**Important scope boundary:** the block currently uses deterministic random
+weights, a four-token grid, and a short fixed text context. This first milestone
+validates architecture/operator portability and Core ML numerical parity, not
+learned-model behavior or editing quality. A successful report must not be
+presented as a production-ready VACE model, a trained model, an iPhone memory
+pass, or an end-to-end result. The converter's CI run still needs to pass before
+this milestone can be called validated.
+
 ## Current truth
 
-The existing VAE and attention probes are useful component experiments, but they do not implement the VACE denoiser, text conditioning, task conditioning, or end-to-end video editing. This branch starts the memory-first implementation path; it does not yet deliver a working VACE runtime or IPA. The next code milestone is the real VACE transformer-block conversion/parity harness, followed by the quantized block runtime and a full short-clip pipeline.
+This branch now contains the first executable converter for an actual upstream
+VACE conditioning block, rather than only a generic SDPA micro-kernel. It does
+not yet contain trained VACE block weights, a quantized block streaming runtime,
+a mobile-feasible text encoder, a full VACE denoising loop, or an end-to-end
+video editor. Those are the remaining implementation stages, followed by
+measured on-device memory, speed, thermal, output quality, and regression checks.
