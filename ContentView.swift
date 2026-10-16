@@ -412,7 +412,13 @@ struct ContentView: View {
                 .onChange(of: vm.statusText) { _ in refreshPiPStatus() }
                 .onChange(of: vm.etaSeconds) { _ in refreshPiPStatus() }
                 .onChange(of: vm.outputURL) { newURL in
-                    if let newURL { lastCompletedVideoURL = newURL }
+                    // outputURL also carries completed still-image results. Never
+                    // overwrite the retained-video link with a PNG/AVIF/JPEG (or GIF),
+                    // otherwise "Export Last Completed Video" can share the wrong asset.
+                    if let newURL,
+                       ["mov", "mp4", "m4v"].contains(newURL.pathExtension.lowercased()) {
+                        lastCompletedVideoURL = newURL
+                    }
                     schedulePostRenderSleepIfNeeded()
                 }
                 .confirmationDialog("Copy mask to other media?", isPresented: $showingMaskCopyConfirmation, titleVisibility: .visible) {
