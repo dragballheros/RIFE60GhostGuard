@@ -74,6 +74,13 @@ def main() -> int:
     parser.add_argument("--context-tokens", type=int, default=CONTEXT_TOKENS)
     parser.add_argument("--max-rmse", type=float, default=0.035)
     parser.add_argument("--max-absolute-error", type=float, default=0.20)
+    parser.add_argument(
+        "--quantization-levels",
+        nargs="*",
+        choices=("int8", "int4"),
+        default=["int8", "int4"],
+        help="also test Core ML post-training weight compression at these bit widths",
+    )
     args = parser.parse_args()
     if args.context_tokens < 1:
         parser.error("--context-tokens must be >= 1")
@@ -234,23 +241,77 @@ def main() -> int:
     conversion_seconds = time.perf_counter() - start
     converted.save(str(args.output))
 
-    prediction = converted.predict({
+    prediction_inputs = {
         name: value.detach().cpu().numpy().astype(np.float32)
         for name, value in zip(input_names, inputs)
-    })
-    predicted = (prediction["conditioned_context"], prediction["skip_hint"])
-    errors = []
-    for name, reference_tensor, prediction_tensor in zip(
-        ("conditioned_context", "skip_hint"), reference, predicted
-    ):
-        delta = np.asarray(prediction_tensor, dtype=np.float32) - reference_tensor.detach().cpu().numpy()
-        errors.append({
-            "name": name,
-            "shape": list(delta.shape),
-            "max_absolute_error": float(np.abs(delta).max()),
-            "mean_absolute_error": float(np.abs(delta).mean()),
-            "rmse": float(np.sqrt(np.mean(np.square(delta)))),
-        })
+    }
+    reference_numpy = tuple(
+        value.detach().cpu().numpy().astype(np.float32) for value in reference
+    )
+
+    def output_errors(prediction_map: dict[str, Any]) -> list[dict[str, Any]]:
+        names = ("conditioned_context", "skip_hint")
+        result = []
+        for name, ref_array in zip(names, reference_numpy):
+            delta = np.asarray(prediction_map[name], dtype=np.float32) - ref_array
+            result.append({
+                "name": name,
+                "shape": list(delta.shape),
+                "max_absolute_error": float(np.abs(delta).max()),
+                "mean_absolute_error": float(np.abs(delta).mean()),
+                "rmse": float(np.sqrt(np.mean(np.square(delta)))),
+            })
+        return result
+
+    prediction = converted.predict(prediction_inputs)
+    errors = output_errors(prediction)
+    quantization_reports = []
+    if args.quantization_levels:
+        from coremltools.optimize.coreml import (
+            OptimizationConfig,
+            OpLinearQuantizerConfig,
+            linear_quantize_weights,
+        )
+
+        for bits in args.quantization_levels:
+            compressed_path = args.output.with_name(
+                f"{args.output.stem}-{bits}-weights.mlpackage"
+            )
+            started = time.perf_counter()
+            try:
+                config = OptimizationConfig(
+                    global_config=OpLinearQuantizerConfig(
+                        mode="linear_symmetric",
+                        dtype=bits,
+                        granularity="per_channel",
+                    )
+                )
+                compressed = linear_quantize_weights(converted, config=config)
+                compressed.save(str(compressed_path))
+                compressed_prediction = compressed.predict(prediction_inputs)
+                compressed_errors = output_errors(compressed_prediction)
+                quantization_reports.append({
+                    "bits": int(bits[3:]),
+                    "package_path": str(compressed_path),
+                    "package_size_bytes": sum(
+                        item.stat().st_size for item in compressed_path.rglob("*") if item.is_file()
+                    ),
+                    "elapsed_seconds": time.perf_counter() - started,
+                    "outputs": compressed_errors,
+                    "passed_current_float_reference_thresholds": all(
+                        item["rmse"] <= args.max_rmse
+                        and item["max_absolute_error"] <= args.max_absolute_error
+                        for item in compressed_errors
+                    ),
+                    "runtime_precision_note": "Weight storage is quantized; intermediate calculations remain floating point unless separately activation-quantized.",
+                })
+            except Exception as exc:
+                quantization_reports.append({
+                    "bits": int(bits[3:]),
+                    "elapsed_seconds": time.perf_counter() - started,
+                    "error": f"{type(exc).__name__}: {exc}",
+                    "passed_current_float_reference_thresholds": False,
+                })
 
     parameter_count = sum(p.numel() for p in block.parameters())
     fp32_weight_bytes = tensor_bytes(block)
@@ -295,8 +356,12 @@ def main() -> int:
         "runtime": {
             "pytorch_reference_seconds": reference_seconds,
             "coreml_conversion_seconds": conversion_seconds,
-            "package_path": str(args.output),
+            "fp16_package_path": str(args.output),
+            "fp16_package_size_bytes": sum(
+                item.stat().st_size for item in args.output.rglob("*") if item.is_file()
+            ),
         },
+        "weight_quantization_experiments": quantization_reports,
         "limitations": [
             "Fixed four-latent-token spatial-temporal grid and fixed context length; not a dynamic-shape model.",
             "Uses the official VACE block class and its conditioning/skip projections, but substitutes a portable SDPA path for the CUDA-only FlashAttention kernel.",
