@@ -128,20 +128,30 @@ silently claiming compatibility. Weight-compressed package size and numerical
 error are measured against the same PyTorch reference. CI is pinned to the
 upstream Wan2.1 source revision and uploads machine-readable validation reports.
 
-Measured with deterministic random weights on the fixed four-token test:
-the iOS 16 uncompressed package was 102,342,120 bytes; INT8 compression reduced
-it to 51,280,550 bytes (about 50% smaller). INT8 maximum absolute error was
-about 0.00173 for the conditioned-context output and 0.00196 for the skip hint;
-RMSE was about 4.22e-4 and 4.29e-4 respectively, within the current test limits.
-These results do not establish learned-checkpoint quality or realistic video
-sequence accuracy. The trained-weight lane and iOS 18 INT4 experiment remain
-separate validation gates.
+Measured with the actual official 1.3B Diffusers checkpoint (SHA-256 verified),
+the first VACE block loaded 31 learned tensors covering 51,162,368 parameters,
+with no unmapped/ignored tensors. On the fixed four-token test, Float16 Core ML
+conversion passed the configured PyTorch reference gate: conditioned-context
+max absolute error 0.0521, RMSE 0.00523; skip-hint max absolute error 0.00388,
+RMSE 0.00091. The FP16 package was 102,360,246 bytes.
 
-**Important scope boundary:** random weights are still the default test mode;
-checkpoint loading is now implemented but is not considered validated until the
-explicit trained-checkpoint CI lane succeeds. The grid remains four latent tokens
-with a short fixed text context. A successful report validates only component
-conversion/parity and storage compression, not a production-ready VACE model,
+On that same trained block, INT8 compression passed the configured float-reference
+gate and reduced package size to 51,286,938 bytes (about 50% smaller). Its
+conditioned-context max absolute error was 0.0593 / RMSE 0.00946; skip-hint
+max absolute error was 0.00849 / RMSE 0.00189. Uniform INT4 reduced the package
+to 25,723,286 bytes, but **failed numerical parity**: conditioned-context RMSE
+was 0.1677 and skip-hint RMSE was 0.0413. Do not use uniform INT4 for this
+trained block. This evidence supports continuing with INT8 as the current
+candidate, and investigating mixed precision / selective quantization only
+with a new error report. These are still four-token host tests, not realistic
+sequence or iPhone accuracy measurements.
+
+**Important scope boundary:** deterministic random weights remain the default
+for the regular quick run, while the separate explicit trained-checkpoint CI
+lane has now passed for the one-block Float16 and INT8 variants. Uniform INT4
+failed the trained-weight numerical gate. The grid remains four latent tokens
+with a short fixed text context. These results validate only one-block host
+conversion and error under compression, not a production-ready VACE model,
 an iPhone memory pass, or an end-to-end result.
 
 ## Current truth
