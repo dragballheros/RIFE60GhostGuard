@@ -127,6 +127,12 @@ def main() -> int:
     parser.add_argument("--max-rmse", type=float, default=0.035)
     parser.add_argument("--max-absolute-error", type=float, default=0.20)
     parser.add_argument(
+        "--minimum-deployment-target",
+        choices=("ios16", "ios18"),
+        default="ios16",
+        help="use ios18 for the Core ML INT4 compression path; keep ios16 for compatibility probes",
+    )
+    parser.add_argument(
         "--checkpoint",
         type=Path,
         default=None,
@@ -312,7 +318,9 @@ def main() -> int:
             ct.TensorType(name="skip_hint"),
         ],
         compute_precision=ct.precision.FLOAT16,
-        minimum_deployment_target=ct.target.iOS16,
+        minimum_deployment_target=(
+            ct.target.iOS18 if args.minimum_deployment_target == "ios18" else ct.target.iOS16
+        ),
     )
     conversion_seconds = time.perf_counter() - start
     converted.save(str(args.output))
@@ -437,6 +445,7 @@ def main() -> int:
         "runtime": {
             "pytorch_reference_seconds": reference_seconds,
             "coreml_conversion_seconds": conversion_seconds,
+            "minimum_deployment_target": args.minimum_deployment_target,
             "fp16_package_path": str(args.output),
             "fp16_package_size_bytes": sum(
                 item.stat().st_size for item in args.output.rglob("*") if item.is_file()
