@@ -81,19 +81,19 @@ def ideal_quantized_payload_bytes(elements: int, bits_per_element: int) -> float
 
 
 def layer_bucket(name: str) -> str:
-    """Group numbered transformer blocks and preserve named non-block modules."""
+    """Preserve block namespace so separately indexed stacks are not merged."""
     import re
     patterns = (
-        r"^(?:model\.)?diffusion_model\.blocks\.(\d+)\.",
-        r"^(?:model\.)?blocks\.(\d+)\.",
-        r"^(?:model\.)?transformer_blocks\.(\d+)\.",
-        r"^(?:model\.)?vace_blocks\.(\d+)\.",
-        r"^(?:model\.)?single_transformer_blocks\.(\d+)\.",
+        ("diffusion_model_blocks", r"^(?:model\\.)?diffusion_model\\.blocks\\.(\\d+)\\."),
+        ("blocks", r"^(?:model\\.)?blocks\\.(\\d+)\\."),
+        ("transformer_blocks", r"^(?:model\\.)?transformer_blocks\\.(\\d+)\\."),
+        ("vace_blocks", r"^(?:model\\.)?vace_blocks\\.(\\d+)\\."),
+        ("single_transformer_blocks", r"^(?:model\\.)?single_transformer_blocks\\.(\\d+)\\."),
     )
-    for pattern in patterns:
+    for namespace, pattern in patterns:
         match = re.match(pattern, name)
         if match:
-            return f"layer_{int(match.group(1)):03d}"
+            return f"{namespace}_layer_{int(match.group(1)):03d}"
     return "module_" + name.split(".", 1)[0]
 
 def resolve_revision(repo: str, revision: str) -> str:
@@ -123,6 +123,7 @@ def main() -> int:
         raise RuntimeError(f"No safetensors files found in {args.repo}@{args.revision}; refusing to guess checkpoint layout")
 
     all_tensors: dict[str, dict[str, Any]] = {}
+    duplicate_tensor_names: list[str] = []
     shard_reports = []
     for file_info in safetensor_files:
         filename = file_info["path"]
@@ -134,6 +135,9 @@ def main() -> int:
             if name == "__metadata__":
                 continue
             size = tensor_bytes(entry)
+            if name in all_tensors:
+                duplicate_tensor_names.append(name)
+                continue
             all_tensors[name] = {"dtype": entry["dtype"], "shape": entry["shape"], "bytes": size}
             shard_tensor_count += 1
             shard_bytes += size
@@ -144,6 +148,9 @@ def main() -> int:
             "tensor_payload_bytes_from_shapes": shard_bytes,
             "header_only_download": True,
         })
+
+    if duplicate_tensor_names:
+        raise RuntimeError(f"Duplicate tensor keys across checkpoint shards: {duplicate_tensor_names[:10]}")
 
     layer_sizes: dict[str, int] = defaultdict(int)
     layer_tensors: dict[str, int] = defaultdict(int)
@@ -170,6 +177,14 @@ def main() -> int:
         } for name, size in layer_sizes.items()),
         key=lambda item: item["source_bytes"], reverse=True,
     )
+    namespace_summary: dict[str, dict[str, int]] = defaultdict(lambda: {"group_count": 0, "tensor_count": 0, "source_bytes": 0})
+    for group in ordered_layers:
+        group_name = group["name"]
+        namespace = group_name.rsplit("_layer_", 1)[0] if "_layer_" in group_name else group_name
+        namespace_summary[namespace]["group_count"] += 1
+        namespace_summary[namespace]["tensor_count"] += group["tensor_count"]
+        namespace_summary[namespace]["source_bytes"] += group["source_bytes"]
+
     total_bytes = sum(entry["bytes"] for entry in all_tensors.values())
     total_elements = sum(math.prod(int(x) for x in entry["shape"]) for entry in all_tensors.values())
     # Ideal payload bounds are calculated from tensor element counts, not source bytes:
@@ -197,8 +212,10 @@ def main() -> int:
         "dtype_payload_bytes": dict(dtype_sizes),
         "dtype_element_counts": dict(dtype_elements),
         "weight_group_count": len(ordered_layers),
-        "transformer_layer_group_count": sum(name.startswith("layer_") for name in layer_sizes),
-        "largest_weight_groups": ordered_layers,
+        "transformer_layer_group_count": sum("_layer_" in name for name in layer_sizes),
+        "layer_namespace_summary": dict(namespace_summary),
+        "largest_weight_groups": ordered_layers[:20],
+        "all_weight_groups": ordered_layers,
         "named_module_group_source_bytes": {
             name: size for name, size in layer_sizes.items() if name.startswith("module_")
         },
@@ -208,7 +225,8 @@ def main() -> int:
         "notes": [
             "This report is an artifact-layout and lower-bound memory audit only.",
             "Uniform int4/int8 figures are theoretical storage bounds, not evidence that a supported quantized Core ML runtime exists.",
-            "Layer grouping is based on recognized state-dict key patterns; inspect unrecognized groups before using the report to design streaming.",
+            "Block grouping preserves namespace to avoid merging same-index blocks from separate transformer stacks.",
+            "Review all_weight_groups and named_module_group_source_bytes before designing any streaming runtime.",
         ],
     }
     out = Path(args.output)
