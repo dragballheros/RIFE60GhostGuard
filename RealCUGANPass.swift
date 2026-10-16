@@ -33,7 +33,7 @@ final class RealCUGANPass {
     // The CVMetalTextureCache CIContextOption is unavailable in the Xcode 16.4 SDK used
     // by the unsigned build, so retain the IOSurface/Metal-compatible pixel-buffer pools
     // as the reusable pixel-buffer boundary without using a version-fragile option key.
-    private lazy var ciContext: CIContext = CIContext(options: [.cacheIntermediates: false])
+    private lazy var ciContext: CIContext = CIContext(options: [.cacheIntermediates: false, .useSoftwareRenderer: false])
     private let colorSpace = CGColorSpaceCreateDeviceRGB()
 
     private let colorPopGrade: ColorPopGrade?
@@ -90,7 +90,7 @@ final class RealCUGANPass {
         progress(0.002, "Pass 3/3 • Loading Real-CUGAN Anime 2x Noise 3…")
         DiagnosticsLogger.shared.log("Real-CUGAN tiled model load begin • \(profile.modelName)")
         let preferNeuralEngine = false
-        let model = try loadModel(named: profile.modelName, preferNeuralEngine: preferNeuralEngine)
+        let model = try loadModel(named: profile.modelName, preferNeuralEngine: preferNeuralEngine, preferGPUForAuto: true)
         DiagnosticsLogger.shared.log("Real-CUGAN tiled model load complete")
 
         let reader = try AVAssetReader(asset: asset)
@@ -242,12 +242,22 @@ final class RealCUGANPass {
         return try upscaleNative2x(source, model: stillModel, alpha: stillAlpha, frameNumber: 1, profile: stillProfile)
     }
 
-    private func loadModel(named name: String, preferNeuralEngine: Bool = false) throws -> MLModel {
+    private func loadModel(named name: String, preferNeuralEngine: Bool = false, preferGPUForAuto: Bool = false) throws -> MLModel {
         guard let url = Bundle.main.url(forResource: name, withExtension: "mlmodelc") else {
             throw ProcessorError.conversionFailed("Bundled tiled Real-CUGAN model is missing: \(name)")
         }
         let configuration = MLModelConfiguration()
-        configuration.computeUnits = preferNeuralEngine ? .cpuAndNeuralEngine : ModelComputePreference.current.units
+        let preference = ModelComputePreference.current
+        if preferNeuralEngine {
+            configuration.computeUnits = .cpuAndNeuralEngine
+        } else if preferGPUForAuto && preference == .auto {
+            // Video upscaling is a sustained, convolution-heavy workload. In Auto mode,
+            // prefer CPU+GPU instead of allowing Core ML to dispatch this pass to ANE.
+            // An explicit Neural Engine preference still remains respected.
+            configuration.computeUnits = .cpuAndGPU
+        } else {
+            configuration.computeUnits = preference.units
+        }
         configuration.allowLowPrecisionAccumulationOnGPU = true
         DiagnosticsLogger.shared.log("Real-CUGAN compute policy • model=\(name) • requested=\(configuration.computeUnits.rawValue) • autoWideTileANE=\(preferNeuralEngine)")
         return try MLModel(contentsOf: url, configuration: configuration)
