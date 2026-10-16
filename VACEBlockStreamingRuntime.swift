@@ -73,6 +73,30 @@ actor VACEBlockStreamingRuntime {
     private var activeModel: MLModel?
     private var activeCompiledURL: URL?
 
+    // Actors are reentrant across await points. This explicit gate keeps a second
+    // predict/clear request from loading another model while Core ML is predicting.
+    private var predictionGateIsHeld = false
+    private var predictionGateWaiters: [CheckedContinuation<Void, Never>] = []
+
+    private func acquirePredictionGate() async {
+        if !predictionGateIsHeld {
+            predictionGateIsHeld = true
+            return
+        }
+        await withCheckedContinuation { continuation in
+            predictionGateWaiters.append(continuation)
+        }
+    }
+
+    private func releasePredictionGate() {
+        if predictionGateWaiters.isEmpty {
+            predictionGateIsHeld = false
+        } else {
+            let next = predictionGateWaiters.removeFirst()
+            next.resume()
+        }
+    }
+
     init(
         modelDirectoryURL: URL,
         compiledCacheDirectoryURL: URL,
@@ -90,6 +114,9 @@ actor VACEBlockStreamingRuntime {
         using reference: VACEBlockModelReference,
         inputs: [String: MLMultiArray]
     ) async throws -> ([String: MLMultiArray], VACEBlockRuntimeTiming) {
+        try Task.checkCancellation()
+        await acquirePredictionGate()
+        defer { releasePredictionGate() }
         try Task.checkCancellation()
         let allowedIdentifierCharacters = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_"))
         guard !reference.identifier.isEmpty,
@@ -189,7 +216,9 @@ actor VACEBlockStreamingRuntime {
     }
 
     /// Clears compiled cache files only. Source model packages are never removed.
-    func clearCompiledModelCache() throws {
+    func clearCompiledModelCache() async throws {
+        await acquirePredictionGate()
+        defer { releasePredictionGate() }
         unloadActiveModel()
         if FileManager.default.fileExists(atPath: compiledCacheDirectoryURL.path) {
             try FileManager.default.removeItem(at: compiledCacheDirectoryURL)
