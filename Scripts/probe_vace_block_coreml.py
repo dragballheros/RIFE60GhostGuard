@@ -161,10 +161,11 @@ def main() -> int:
         c = rope_cos.to(device=x.device, dtype=x.dtype).expand(1, tokens, 1, head_dim // 2)
         s = rope_sin.to(device=x.device, dtype=x.dtype).expand(1, tokens, 1, head_dim // 2)
         evens, odds = x[..., 0::2], x[..., 1::2]
-        out = torch.empty_like(x)
-        out[..., 0::2] = evens * c - odds * s
-        out[..., 1::2] = evens * s + odds * c
-        return out
+        rotated_even = evens * c - odds * s
+        rotated_odd = evens * s + odds * c
+        # Avoid in-place assignment into strided slices; Core ML translates
+        # tensor copy updates as a full-shaped replacement and rejects the halves.
+        return torch.stack((rotated_even, rotated_odd), dim=-1).flatten(-2)
 
     wan_model.rope_apply = fixed_rope_apply
     wan_model.flash_attention = portable_attention
