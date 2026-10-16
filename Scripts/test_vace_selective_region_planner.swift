@@ -11,6 +11,7 @@ enum VACESelectiveRegionPlannerTests {
         try testLargeRegionIsTiledWithBounds()
         try testTemporalWindowsCoverEveryFrameAndPadShortClips()
         try testCompositorPreservesEveryUnmaskedByte()
+        try testCropPreprocessorMaintainsBoundedModelAndSourceSizes()
         try testVACEFrameConditioningSplit()
         try testVACEControlMaskPacking()
         try testBackwardFlowMovesMasksConsistently()
@@ -127,6 +128,35 @@ enum VACESelectiveRegionPlannerTests {
         let field = try VACEBackwardFlowField(width: 4, height: 2, xy: flow)
         let propagated = try VACEOpticalFlowMaskWarp.propagate(previousMask: mask, backwardFlow: field)
         check(propagated.activePixelCount == 0, "non-finite flow must not propagate or explode the edit region")
+    }
+
+    static func testCropPreprocessorMaintainsBoundedModelAndSourceSizes() throws {
+        var sourceBytes = [UInt8](repeating: 0, count: 64 * 32 * 4)
+        for y in 0..<32 {
+            for x in 0..<64 {
+                let p = (y * 64 + x) * 4
+                sourceBytes[p] = UInt8(x * 3)
+                sourceBytes[p + 1] = UInt8(y * 7)
+                sourceBytes[p + 2] = 90
+                sourceBytes[p + 3] = 255
+            }
+        }
+        let frame = try VACERGBAFrame(width: 64, height: 32, bytes: sourceBytes)
+        var maskPixels = [UInt8](repeating: 0, count: 64 * 32)
+        for y in 8..<24 { for x in 16..<48 { maskPixels[y * 64 + x] = 255 } }
+        let mask = try VACEMaskPlane(width: 64, height: 32, pixels: maskPixels)
+        let prepared = try VACEReconstructionCropPreprocessor.prepare(
+            image: frame, mask: mask, targetWidth: 32, targetHeight: 16)
+        check(prepared.image.width == 32 && prepared.image.height == 16, "inference image dimensions should be bounded target shape")
+        check(prepared.mask.width == 32 && prepared.mask.height == 16, "mask must have same dimensions as inference image")
+        check(prepared.sourceWidth == 64 && prepared.sourceHeight == 32, "preprocessing must remember original dimensions")
+        check(prepared.mask.pixels.allSatisfy { $0 == 0 || $0 == 255 }, "nearest-exact resizing must not blur mask labels")
+        check(prepared.mask[10, 6] == 255 && prepared.mask[2, 6] == 0, "mask nearest-exact resize should preserve edit placement")
+
+        let restored = try VACEReconstructionCropPreprocessor.restoreGeneratedCrop(
+            prepared.image, toSourceWidth: 64, height: 32)
+        check(restored.width == 64 && restored.height == 32, "generated crops must return to source-pixel dimensions")
+        check(restored.bytes.count == sourceBytes.count, "restored crop byte count must match original")
     }
 
     static func testVACEFrameConditioningSplit() throws {
