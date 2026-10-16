@@ -10,7 +10,6 @@ on:
       - "Scripts/probe_wan_base_block_coreml.py"
       - "Scripts/test_vace_checkpoint_mapping.py"
       - ".github/workflows/wan-vace-block-coreml-parity.yml"
-      - "Docs/WanVACE-iPhone-Memory-First-Implementation.md"
 
 permissions:
   contents: read
