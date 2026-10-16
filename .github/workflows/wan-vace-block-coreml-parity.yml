@@ -37,7 +37,7 @@ jobs:
             einops easydict
       - name: Check converter and mapping-test syntax
         run: |
-          python -m py_compile Scripts/probe_vace_block_coreml.py Scripts/test_vace_checkpoint_mapping.py
+          python -m py_compile Scripts/probe_vace_block_coreml.py Scripts/probe_wan_base_block_coreml.py Scripts/test_vace_checkpoint_mapping.py
       - name: Test Diffusers-to-original checkpoint key mapping without large model downloads
         run: python Scripts/test_vace_checkpoint_mapping.py
       - name: Fetch pinned official Wan2.1 source
@@ -96,11 +96,21 @@ jobs:
             --quantization-levels int8 int4 \
             --output /tmp/VACEBlock-1p3B-trained-iOS18.mlpackage \
             --report /tmp/VACEBlock-1p3B-trained-iOS18.validation.json
+      - name: Convert a trained base transformer block with its VACE hint input
+        if: github.event_name == 'push' && contains(github.event.head_commit.message, '[vace-trained]')
+        run: |
+          python Scripts/probe_wan_base_block_coreml.py \
+            --wan-repo Vendor/Wan2.1 \
+            --checkpoint /tmp/Wan2.1-VACE-1.3B.safetensors \
+            --block-prefix 'blocks.0.' \
+            --quantization-levels int8 int4 \
+            --output /tmp/WanBaseBlock-1p3B-trained-iOS18.mlpackage \
+            --report /tmp/WanBaseBlock-1p3B-trained-iOS18.validation.json
       - name: Upload validation reports
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: wan-vace-block-coreml-validation-reports
-          path: /tmp/VACEBlock-*.validation.json
+          path: /tmp/*Block-*.validation.json
           if-no-files-found: warn
           retention-days: 14
