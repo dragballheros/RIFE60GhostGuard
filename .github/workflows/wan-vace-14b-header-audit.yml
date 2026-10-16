@@ -8,6 +8,12 @@ on:
         required: true
         default: main
         type: string
+  push:
+    branches:
+      - feature/wan-vace-layerwise-runtime-audit
+    paths:
+      - "Scripts/audit_wan_vace_checkpoint_headers.py"
+      - ".github/workflows/wan-vace-14b-header-audit.yml"
 
 permissions:
   contents: read
@@ -25,7 +31,7 @@ jobs:
         run: |
           python Scripts/audit_wan_vace_checkpoint_headers.py \
             --repo Wan-AI/Wan2.1-VACE-14B \
-            --revision "${{ inputs.revision }}" \
+            --revision "${{ inputs.revision || 'main' }}" \
             --output artifacts/wan-vace-14b-header-audit.json
       - name: Upload audit report
         uses: actions/upload-artifact@v4
