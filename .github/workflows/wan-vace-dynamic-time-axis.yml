@@ -1,0 +1,63 @@
+name: Wan VACE Dynamic Temporal Axis Core ML
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - experiment/wan-vace-dynamic-time-axis
+    paths:
+      - "Scripts/probe_vace_block_dynamic_coreml.py"
+      - "Scripts/probe_vace_block_coreml.py"
+      - ".github/workflows/wan-vace-dynamic-time-axis.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wan-vace-dynamic-time-axis-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  dynamic-temporal-axis:
+    runs-on: macos-26
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install pinned conversion dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install \
+            'torch==2.5.1' \
+            'coremltools==9.0' \
+            'numpy==1.26.4' \
+            'diffusers==0.32.2' \
+            einops easydict safetensors
+      - name: Check dynamic probe syntax
+        run: python -m py_compile Scripts/probe_vace_block_coreml.py Scripts/probe_vace_block_dynamic_coreml.py
+      - name: Fetch pinned official Wan2.1 source
+        run: |
+          set -euo pipefail
+          git clone https://github.com/Wan-Video/Wan2.1.git Vendor/Wan2.1
+          git -C Vendor/Wan2.1 checkout 9737cba9c1c3c4d04b33fcad41c111989865d315
+          test "$(git -C Vendor/Wan2.1 rev-parse HEAD)" = "9737cba9c1c3c4d04b33fcad41c111989865d315"
+      - name: Export a block with flexible temporal tokens and text context
+        run: |
+          python Scripts/probe_vace_block_dynamic_coreml.py \
+            --wan-repo Vendor/Wan2.1 \
+            --max-frames 4 \
+            --height 4 \
+            --width 4 \
+            --max-context-tokens 16 \
+            --output /tmp/VACEBlock-DynamicTemporal-CoreML.mlpackage \
+            --report /tmp/VACEBlock-DynamicTemporal.validation.json
+      - name: Upload dynamic-shape parity report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wan-vace-dynamic-temporal-parity-report
+          path: /tmp/VACEBlock-DynamicTemporal.validation.json
+          if-no-files-found: warn
+          retention-days: 14
