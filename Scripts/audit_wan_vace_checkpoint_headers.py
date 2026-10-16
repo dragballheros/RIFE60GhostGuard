@@ -72,6 +72,7 @@ def tensor_bytes(entry: dict[str, Any]) -> int:
 
 
 def layer_bucket(name: str) -> str:
+    """Group numbered transformer blocks and preserve named non-block modules."""
     import re
     patterns = (
         r"^(?:model\.)?diffusion_model\.blocks\.(\d+)\.",
@@ -84,8 +85,7 @@ def layer_bucket(name: str) -> str:
         match = re.match(pattern, name)
         if match:
             return f"layer_{int(match.group(1)):03d}"
-    return "non_layer_or_unrecognized"
-
+    return "module_" + name.split(".", 1)[0]
 
 def resolve_revision(repo: str, revision: str) -> str:
     """Resolve branch/tag names to an immutable Hugging Face commit SHA."""
@@ -138,27 +138,28 @@ def main() -> int:
 
     layer_sizes: dict[str, int] = defaultdict(int)
     layer_tensors: dict[str, int] = defaultdict(int)
+    layer_elements: dict[str, int] = defaultdict(int)
     dtype_sizes: dict[str, int] = defaultdict(int)
     dtype_elements: dict[str, int] = defaultdict(int)
-    unrecognized_samples: list[dict[str, Any]] = []
     for name, entry in all_tensors.items():
         bucket = layer_bucket(name)
+        elements = math.prod(int(x) for x in entry["shape"])
         layer_sizes[bucket] += entry["bytes"]
         layer_tensors[bucket] += 1
+        layer_elements[bucket] += elements
         dtype_sizes[entry["dtype"]] += entry["bytes"]
-        dtype_elements[entry["dtype"]] += math.prod(int(x) for x in entry["shape"])
-        if bucket == "non_layer_or_unrecognized" and len(unrecognized_samples) < 40:
-            unrecognized_samples.append({
-                "name": name,
-                "dtype": entry["dtype"],
-                "shape": entry["shape"],
-                "bytes": entry["bytes"],
-            })
+        dtype_elements[entry["dtype"]] += elements
 
     ordered_layers = sorted(
-        ({"name": name, "tensor_count": layer_tensors[name], "bytes": size}
-         for name, size in layer_sizes.items()),
-        key=lambda item: item["bytes"], reverse=True,
+        ({
+            "name": name,
+            "tensor_count": layer_tensors[name],
+            "elements": layer_elements[name],
+            "source_bytes": size,
+            "theoretical_int8_payload_gib": layer_elements[name] / (1024 ** 3),
+            "theoretical_int4_payload_gib": layer_elements[name] * 0.5 / (1024 ** 3),
+        } for name, size in layer_sizes.items()),
+        key=lambda item: item["source_bytes"], reverse=True,
     )
     total_bytes = sum(entry["bytes"] for entry in all_tensors.values())
     total_elements = sum(math.prod(int(x) for x in entry["shape"]) for entry in all_tensors.values())
@@ -186,9 +187,10 @@ def main() -> int:
         ],
         "dtype_payload_bytes": dict(dtype_sizes),
         "dtype_element_counts": dict(dtype_elements),
-        "largest_weight_groups": ordered_layers[:20],
-        "unrecognized_group_bytes": layer_sizes.get("non_layer_or_unrecognized", 0),
-        "unrecognized_tensor_sample": unrecognized_samples,
+        "largest_weight_groups": ordered_layers[:30],
+        "named_module_group_source_bytes": {
+            name: size for name, size in layer_sizes.items() if name.startswith("module_")
+        },
         "shards": shard_reports,
         "can_fit_iphone_14_pro_max": False,
         "complete_pipeline_or_runtime_test": False,
