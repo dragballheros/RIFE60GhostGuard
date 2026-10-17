@@ -423,6 +423,18 @@ struct VACEVideoEditView: View {
         defer { if hasSecurityScope { modelURL.stopAccessingSecurityScopedResource() } }
 
         do {
+            // Official Ref2VA accepts reference clips of 2–15 seconds. Validate
+            // before native model loading so invalid input cannot trigger a huge allocation.
+            let referenceAsset = AVURLAsset(url: sourceURL)
+            let referenceDuration = try await referenceAsset.load(.duration)
+            let referenceTracks = try await referenceAsset.loadTracks(withMediaType: .video)
+            guard !referenceTracks.isEmpty,
+                  referenceDuration.seconds.isFinite,
+                  (2.0...15.0).contains(referenceDuration.seconds) else {
+                throw H3NativeRuntime.RuntimeError.invalidRequest(
+                    "H3 Ref2VA requires a playable reference video between 2 and 15 seconds. Trim the clip and retry; Wan VACE remains available for longer videos."
+                )
+            }
             let directory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
                 .appendingPathComponent("MiniMaxH3Exports", isDirectory: true)
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
