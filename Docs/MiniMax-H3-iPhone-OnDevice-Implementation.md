@@ -132,3 +132,26 @@ The H3cApp fork is explicitly a macOS 15+ application. Its README confirms that 
 The portability script now targets pinned H3cApp commit `826fafffc84a15283cb7b3f4c234e7aedf07516c`, not the older upstream command-line engine. This fork replaces the FFmpeg media shell with native `h3_av_reader.m` and `h3_av_writer.m`, so it is a better candidate for the app's on-device media flow. The audit source list includes the fork's LoRA and attention-cache modules and its AVFoundation reader/writer, while intentionally excluding the macOS app UI and CLI.
 
 This is a portability experiment, not yet a vendored runtime integration. The H3cApp project currently declares macOS 15 as its platform and uses APIs newer than this app's iOS 16 deployment target. The audit should be treated as failed if its link probe fails; if it passes, the next gates remain API availability guards/fallbacks, integration into the iOS XcodeGen target, model layout/downloading, and a device execution test. Do not add a selectable H3 model option until a real engine adapter is linked into the app and can run.
+
+## Updated native-port audit result (2026-10-17 17:58 UTC)
+
+The GitHub Actions run for commit `2a003c012c2c6739ec7e289ed4d288d7b51b0647` passed:
+https://github.com/dragballheros/RIFE60GhostGuard/actions/runs/39054454374
+
+It ran both:
+1. `Scripts/test_patch_h3_ios_availability.py` (guard insertion, idempotence, and fail-closed behavior for missing/ambiguous source signatures).
+2. `Scripts/audit_h3_ios_portability.sh` (compiles the selected native C/Objective-C translation units for arm64 iOS and force-links the static archive).
+
+This is a portability result only. The workflow compiles a temporary checkout of the pinned H3cApp fork with a CI-applied availability patch; it does not compile H3 into the app target, execute inference, or verify behavior on an iPhone.
+
+## Memory gate before application integration
+
+The pinned H3 API's cache documentation states that retaining the DiT cache holds approximately 1.5 GiB more between generations and retaining the video decoder cache holds approximately 2.7 GiB. Those are cache-retention costs, not total end-to-end peak memory. Together they are approximately 4.2 GiB before the app, encoder, audio/video conditioning, transient Metal buffers, allocator fragmentation, and iOS itself. Therefore the iPhone integration must leave interactive caches disabled by default and must not enable DIT/decoder caching merely to improve repeat-generation speed.
+
+The native engine reports device physical memory, recommended working set, and Metal maximum buffer length via `h3_device_info`; its model inspection API reports component sizes. The next runtime milestone must collect these values before generation and refuse unsafe profiles, then measure peak process/Metal memory on an actual target device. A Mac compile/link result cannot substitute for that measurement.
+
+## Next implementation boundary
+
+Do not yet add H3 as an enabled backend in `VACEVideoEditView`. That screen currently requires a `VACERegionReconstructionEngine` which produces masked, source-sized five-frame patches. H3's `h3_generate` API instead produces a complete generated clip from its own text/reference inputs and does not accept the VACE per-pixel edit mask. Wiring H3 into the existing protocol would either be semantically incorrect or require a mask-conditioned H3 implementation that has not been built.
+
+The next correct step is a separate H3 engine adapter and workflow, preserving the Wan VACE editor untouched: first integrate the native runtime and AVFoundation media adapters, then expose a distinct reference-conditioned generation path, with explicit disclosure that it does not provide Wan VACE's exact mask-preservation semantics. Only after real iPhone memory and inference tests should the H3 action become enabled in the UI.
