@@ -7,6 +7,8 @@ on:
       - feature/minimax-h3-ios-runtime
     paths:
       - "Scripts/audit_h3_ios_portability.sh"
+      - "Scripts/patch_h3_ios_availability.py"
+      - "Scripts/test_patch_h3_ios_availability.py"
       - ".github/workflows/minimax-h3-ios-port-audit.yml"
   pull_request:
     branches:
@@ -28,5 +30,7 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+      - name: Test H3 iOS availability patcher
+        run: python3 Scripts/test_patch_h3_ios_availability.py
       - name: Audit native H3 C/Metal source against iOS SDK
         run: bash Scripts/audit_h3_ios_portability.sh
