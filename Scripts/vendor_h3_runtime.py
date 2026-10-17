@@ -18,7 +18,7 @@ SOURCES = [
     "h3_weights.h", "h3_text_encoder.h", "h3_dit_schedule.h",
     "h3_dit.h", "h3_lora.h", "h3_video_vae.h", "h3_video_encoder.h",
     "h3_audio_vae.h", "h3_vision_encoder.h", "h3_multimodal.h",
-    "h3_attention_cache.h", "h3_gpu.h", "h3_metal.h",
+    "h3_gpu.h", "h3_metal.h",
     "h3_av_writer.h", "h3_av_reader.h", "h3_tokenizer.h",
     "h3_shaders.metal", "LICENSE",
 ]
