@@ -2,6 +2,29 @@ import Combine
 import CryptoKit
 import Foundation
 
+private enum H3ModelDownloadError: LocalizedError {
+    case listing(Int)
+    case emptyManifest
+    case badDigest(String)
+    case badSize(String)
+    case http(String, Int)
+    case rangeIgnored
+    case hashMismatch(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .listing(let status): return "Could not list official H3 model files (HTTP \(status))."
+        case .emptyManifest: return "The pinned Ref2VA model manifest was empty."
+        case .badDigest(let path): return "No verifiable checksum was supplied for \(path)."
+        case .badSize(let path): return "Downloaded size did not match the manifest for \(path)."
+        case .http(let path, let status): return "Download failed for \(path) (HTTP \(status))."
+        case .rangeIgnored: return "The model server did not honor a resume request."
+        case .hashMismatch(let path): return "Checksum verification failed for \(path); the incomplete file was discarded."
+        }
+    }
+}
+
+
 /// Downloads only the Ref2VA task tree. Model weights are never bundled in the IPA.
 /// The model revision is pinned so the listed sizes and digests cannot drift under us.
 @MainActor
@@ -51,7 +74,7 @@ final class H3ModelDownloader: ObservableObject {
             do {
                 let entries = try await Self.fetchEntries()
                 try Task.checkCancellation()
-                guard !entries.isEmpty else { throw DownloadError.emptyManifest }
+                guard !entries.isEmpty else { throw H3ModelDownloadError.emptyManifest }
                 files = entries.sorted { $0.path < $1.path }
                 totalBytes = files.reduce(0) { $0 + $1.size }
                 totalFiles = files.count
@@ -137,39 +160,18 @@ final class H3ModelDownloader: ObservableObject {
         var gitSHA1: String? { oid?.lowercased() }
     }
 
-    private enum DownloadError: LocalizedError {
-        case listing(Int)
-        case emptyManifest
-        case badDigest(String)
-        case badSize(String)
-        case http(String, Int)
-        case rangeIgnored
-        case hashMismatch(String)
-
-        var errorDescription: String? {
-            switch self {
-            case .listing(let status): return "Could not list official H3 model files (HTTP \(status))."
-            case .emptyManifest: return "The pinned Ref2VA model manifest was empty."
-            case .badDigest(let path): return "No verifiable checksum was supplied for \(path)."
-            case .badSize(let path): return "Downloaded size did not match the manifest for \(path)."
-            case .http(let path, let status): return "Download failed for \(path) (HTTP \(status))."
-            case .rangeIgnored: return "The model server did not honor a resume request."
-            case .hashMismatch(let path): return "Checksum verification failed for \(path); the incomplete file was discarded."
-            }
-        }
-    }
 
     private static func fetchEntries() async throws -> [Entry] {
         let urlString = "https://huggingface.co/api/models/\(repository)/tree/\(revision)/Ref2VA?recursive=true&expand=true"
-        guard let url = URL(string: urlString) else { throw DownloadError.listing(-1) }
+        guard let url = URL(string: urlString) else { throw H3ModelDownloadError.listing(-1) }
         let (data, response) = try await URLSession.shared.data(from: url)
         guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
-            throw DownloadError.listing((response as? HTTPURLResponse)?.statusCode ?? -1)
+            throw H3ModelDownloadError.listing((response as? HTTPURLResponse)?.statusCode ?? -1)
         }
         let raw = try JSONDecoder().decode([Entry].self, from: data)
         let entries = raw.filter { $0.type == "file" && $0.expectedSize > 0 }
         guard entries.allSatisfy({ $0.sha256 != nil || $0.gitSHA1 != nil }) else {
-            throw DownloadError.emptyManifest
+            throw H3ModelDownloadError.emptyManifest
         }
         return entries
     }
@@ -211,7 +213,7 @@ final class H3ModelDownloader: ObservableObject {
             String($0).addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? String($0)
         }.joined(separator: "/")
         guard let url = URL(string: "https://huggingface.co/\(repository)/resolve/\(revision)/\(encodedPath)") else {
-            throw DownloadError.http(entry.path, -1)
+            throw H3ModelDownloadError.http(entry.path, -1)
         }
         var request = URLRequest(url: url)
         let resuming = size > 0
@@ -234,18 +236,18 @@ final class H3ModelDownloader: ObservableObject {
             } onCancel: {
                 session.invalidateAndCancel()
             }
-        } catch DownloadError.rangeIgnored {
+        } catch H3ModelDownloadError.rangeIgnored {
             try? fm.removeItem(at: finalURL)
             onProgress(-size)
-            throw DownloadError.http(entry.path, 200)
+            throw H3ModelDownloadError.http(entry.path, 200)
         }
 
         let actualSize = (try? fm.attributesOfItem(atPath: finalURL.path)[.size] as? NSNumber)?.int64Value ?? 0
-        guard actualSize == entry.expectedSize else { throw DownloadError.badSize(entry.path) }
+        guard actualSize == entry.expectedSize else { throw H3ModelDownloadError.badSize(entry.path) }
         guard try verify(finalURL, entry: entry) else {
             try? fm.removeItem(at: finalURL)
             onProgress(-actualSize)
-            throw DownloadError.hashMismatch(entry.path)
+            throw H3ModelDownloadError.hashMismatch(entry.path)
         }
     }
 
@@ -258,7 +260,7 @@ final class H3ModelDownloader: ObservableObject {
             let digest = hasher.finalize().map { String(format: "%02x", $0) }.joined()
             return digest == expected
         }
-        guard let expected = entry.gitSHA1 else { throw DownloadError.badDigest(entry.path) }
+        guard let expected = entry.gitSHA1 else { throw H3ModelDownloadError.badDigest(entry.path) }
         var hasher = Insecure.SHA1()
         hasher.update(data: Data("blob \(entry.expectedSize)\0".utf8))
         while let data = try handle.read(upToCount: 8 * 1024 * 1024), !data.isEmpty { hasher.update(data: data) }
@@ -284,17 +286,17 @@ private final class H3StreamDelegate: NSObject, URLSessionDataDelegate, @uncheck
                     completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
         guard let http = response as? HTTPURLResponse else {
             completionHandler(.cancel)
-            finish(DownloadError.http("model file", -1))
+            finish(H3ModelDownloadError.http("model file", -1))
             return
         }
         if expectPartial && http.statusCode != 206 {
             completionHandler(.cancel)
-            finish(DownloadError.rangeIgnored)
+            finish(H3ModelDownloadError.rangeIgnored)
             return
         }
         guard (200..<300).contains(http.statusCode) else {
             completionHandler(.cancel)
-            finish(DownloadError.http("model file", http.statusCode))
+            finish(H3ModelDownloadError.http("model file", http.statusCode))
             return
         }
         completionHandler(.allow)
