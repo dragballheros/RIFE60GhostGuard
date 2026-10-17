@@ -76,6 +76,7 @@ struct VACEVideoEditView: View {
     @State private var selectedBackend: LocalVideoBackend = .wanVACE
     @State private var h3ModelDirectoryURL: URL?
     @State private var isChoosingH3Model = false
+    @State private var h3CancellationToken: H3CancellationToken?
 
     var body: some View {
         NavigationStack {
@@ -192,6 +193,15 @@ struct VACEVideoEditView: View {
                     if isRunning {
                         ProgressView(value: progress)
                         Text(status).font(.caption).foregroundStyle(.secondary)
+                        if selectedBackend == .minimaxH3 {
+                            Button {
+                                h3CancellationToken?.cancel()
+                                status = "Cancellation requested. Waiting for the native H3 engine to reach its next progress checkpoint…"
+                            } label: {
+                                Label("Cancel H3 generation", systemImage: "xmark.circle")
+                            }
+                            .disabled(h3CancellationToken == nil)
+                        }
                     } else {
                         Text(status).font(.caption).foregroundStyle(.secondary)
                     }
@@ -338,7 +348,13 @@ struct VACEVideoEditView: View {
         outputURL = nil
         errorText = nil
         status = "Checking local H3 model and reference video…"
-        defer { isRunning = false }
+        let token = H3CancellationToken()
+        h3CancellationToken = token
+        var h3OutputCandidate: URL?
+        defer {
+            isRunning = false
+            h3CancellationToken = nil
+        }
 
         let hasSecurityScope = modelURL.startAccessingSecurityScopedResource()
         defer { if hasSecurityScope { modelURL.stopAccessingSecurityScopedResource() } }
@@ -348,6 +364,7 @@ struct VACEVideoEditView: View {
                 .appendingPathComponent("MiniMaxH3Exports", isDirectory: true)
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
             let destination = directory.appendingPathComponent("MiniMaxH3-\\(UUID().uuidString).mov")
+            h3OutputCandidate = destination
             status = "Loading the native H3 runtime locally. Large allocations may fail on this device."
             let requestPrompt = prompt
             let modelDirectory = modelURL
@@ -362,7 +379,14 @@ struct VACEVideoEditView: View {
                     height: 256,
                     frames: 56,
                     steps: 20,
-                    seed: 42
+                    seed: 42,
+                    cancellationToken: token,
+                    onProgress: { phase, fraction in
+                        Task { @MainActor in
+                            progress = max(0, min(1, fraction))
+                            status = "H3 \\(phase): \\(Int(fraction * 100))%"
+                        }
+                    }
                 )
             }.value
             let outputAttributes = try? FileManager.default.attributesOfItem(atPath: result.outputURL.path)
@@ -374,8 +398,13 @@ struct VACEVideoEditView: View {
             progress = 1
             status = "H3 reference-conditioned MOV created (\\(result.width) × \\(result.height), \\(result.frames) frames, seed \\(result.seed)). Verify playback and quality on-device."
         } catch {
+            if let h3OutputCandidate {
+                try? FileManager.default.removeItem(at: h3OutputCandidate)
+            }
             errorText = error.localizedDescription
-            status = "H3 stopped without exporting a substitute video. Wan VACE remains available."
+            status = token.isCancelled
+                ? "H3 generation cancelled. Partial output was discarded; Wan VACE remains available."
+                : "H3 stopped without exporting a substitute video. Wan VACE remains available."
         }
     }
 
