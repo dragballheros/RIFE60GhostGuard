@@ -13,10 +13,11 @@ readonly SDK="$(xcrun --sdk iphoneos --show-sdk-path)"
 rm -rf "$H3_DIR" "$OBJ_DIR"
 git clone --quiet --filter=blob:none "$H3_REPO" "$H3_DIR"
 git -C "$H3_DIR" checkout --quiet "$H3_REVISION"
+python3 "$GITHUB_WORKSPACE/Scripts/patch_h3_ios_availability.py" "$H3_DIR/h3_gpu.m"
 mkdir -p "$OBJ_DIR"
 
-echo "Auditing H3cApp native engine revision $H3_REVISION for arm64 iOS 16 SDK compatibility."
-echo "This is a compile-and-link portability probe; it does not assert runtime safety or device memory support."
+echo "Auditing H3cApp native engine revision $H3_REVISION for arm64 iOS SDK compatibility (H3 runtime gated to iOS 18+)."
+echo "The native H3 entry point is patched to fail closed below iOS 18.0; this compile/link probe does not test that guard on-device or prove memory feasibility."
 
 c_sources=(
   h3.c h3_host.c h3_safetensors.c h3_weights.c h3_text_encoder.c
