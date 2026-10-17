@@ -96,6 +96,9 @@ The current public H3 Community License text excludes the United States, Europea
 
 - [x] Existing Wan VACE implementation and UI entry point identified.
 - [x] Official H3 repository, modular workflow model, approximate repository/transformer partition sizes, and license territory terms inspected.
+- [x] Native `antirez/h3.c` runtime identified and pinned for a compile-only iOS SDK audit.
+- [x] Added `Scripts/audit_h3_ios_portability.sh` and `.github/workflows/minimax-h3-ios-port-audit.yml`; audit result has not yet been verified here.
+- [ ] iOS SDK compile audit passes without source compatibility patches.
 - [ ] H3 block export and reference parity.
 - [ ] Quantized/streamed iOS-compatible H3 weights.
 - [ ] H3-specific multimodal conditioning and inference runtime.
