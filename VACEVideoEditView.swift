@@ -147,13 +147,13 @@ struct VACEVideoEditView: View {
                             Text(message).font(.caption).foregroundStyle(.red)
                         }
                         if h3ModelDownloader.state == .completed {
-                            Text("All required FL2VA base and Ref2VA transformer files passed size and checksum verification.")
+                            Text("All required FL2VA base and Ref2VA reference-generation components passed size and checksum verification.")
                                 .font(.caption).foregroundStyle(.secondary)
                             Button("Delete downloaded H3 model and free storage", role: .destructive) {
                                 isConfirmingH3ModelDelete = true
                             }
                         }
-                        Text("The native runtime needs the shared FL2VA base files plus the Ref2VA transformer checkpoint. The required total is calculated from the pinned repository manifest above; it can require hundreds of gigabytes and may exceed this iPhone's available storage. Files download directly to this iPhone with resumable transfers and checksum verification; weights are excluded from device backups and are not bundled in the IPA. Disk streaming reduces the need to keep all DiT weights resident, but does not guarantee inference fits. H3 requires iOS 18 or newer.")
+                        Text("The native runtime requires the FL2VA base plus the complete Ref2VA tokenizer, text encoder, transformer, video VAE, and audio VAE. The required total is calculated from the pinned repository manifest above; it can require hundreds of gigabytes and may exceed this iPhone's available storage. Files download directly to this iPhone with resumable transfers and checksum verification; weights are excluded from device backups and are not bundled in the IPA. Disk streaming reduces the need to keep all DiT weights resident, but does not guarantee inference fits. H3 requires iOS 18 or newer.")
                             .font(.caption).foregroundStyle(.secondary)
                     }
                 }
@@ -296,7 +296,7 @@ struct VACEVideoEditView: View {
                 if newState == .completed {
                     h3ModelDirectoryURL = h3ModelDownloader.destinationURL
                     outputURL = nil
-                    status = "Native H3 FL2VA base and Ref2VA transformer files downloaded and checksum-verified. Device inference is still unverified."
+                    status = "Native H3 FL2VA base and complete Ref2VA components downloaded and checksum-verified. Device inference is still unverified."
                 }
             }
             .onChange(of: videoItem) { item in
