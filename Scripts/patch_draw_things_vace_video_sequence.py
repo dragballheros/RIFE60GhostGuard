@@ -115,7 +115,6 @@ replace_once(PIPELINE, """      let runtimeConfiguration = try configuration.run
         }
       }
       let previewModelVersion = ModelZoo.versionForModel(""")
-)
 
 replace_once(PIPELINE, """                  image: executionInputs.image,
                   mask: executionInputs.mask,
