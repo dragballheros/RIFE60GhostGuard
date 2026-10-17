@@ -250,7 +250,7 @@ replace_once(
     """      let type = ControlNetZoo.typeForModel(file)
       let isPreprocessorDownloaded = ControlNetZoo.preprocessorForModel(file).map {""",
     """      let type = ControlNetZoo.typeForModel(file)
-      let vaceVideoMask = videoMask.map { graph.variable($0.toGPU(0)) }
+      let vaceVideoMask = videoMask
       let isPreprocessorDownloaded = ControlNetZoo.preprocessorForModel(file).map {"""
 )
 
@@ -284,7 +284,7 @@ replace_once(
     """  public func hint(
     batchSize: Int, startHeight: Int, startWidth: Int, image: DynamicGraph.Tensor<FloatType>?,
     graph: DynamicGraph, inputs: [(hint: DynamicGraph.Tensor<FloatType>, weight: Float)],
-    videoMask: DynamicGraph.Tensor<FloatType>? = nil,
+    videoMask: Tensor<FloatType>? = nil,
     cancellation: (@escaping () -> Void) -> Void"""
 )
 
@@ -303,7 +303,7 @@ replace_once(
     else { return nil }
     var packed = Tensor<FloatType>(
       .CPU, .NHWC(latentDepth, height / 8, width / 8, 64))
-    packed.full(0)
+    // Every packed element is assigned by the loops below; Tensor<FloatType> has no full() API.
     for latentFrame in 0..<latentDepth {
       // Matches the upstream VACE nearest-exact temporal resize.
       let sourceFrame = min(
@@ -382,7 +382,7 @@ replace_once(
                 maskShape[0] == firstFrames, maskShape[3] == 1
               else { return [[]] }
 
-              var sourceMask = videoMask
+              var sourceMask = graph.variable(videoMask.toGPU(0))
               if maskShape[1] != startHeight || maskShape[2] != startWidth {
                 sourceMask = Upsample(
                   .nearest,
@@ -423,7 +423,7 @@ replace_once(
                 return [[]]
               }
               packedVideoMask = packVaceMaskTensor(
-                maskFrames.toCPU(), latentDepth: batchSize - refs.count,
+                videoMask, latentDepth: batchSize - refs.count,
                 height: startHeight, width: startWidth)
               guard packedVideoMask != nil else { return [[]] }
             } else {
