@@ -122,7 +122,9 @@ struct VACEVideoEditView: View {
                             Text(h3ModelDirectoryURL.lastPathComponent).font(.caption).foregroundStyle(.secondary)
                         }
                         Link("Review the official MiniMax H3 model license", destination: H3ModelDownloader.licenseURL)
-                        Toggle("I accept the MiniMax H3 model license", isOn: $acceptedH3License)
+                        Text("Territory restriction: the published Community License excludes the United States, European Union, United Kingdom, and South Korea from its standard applicable territory. If you are in an excluded territory, do not download or use these weights unless MiniMax has separately authorized you. Check the current license before proceeding.")
+                            .font(.caption).foregroundStyle(.red)
+                        Toggle("I have verified that my use is authorized by the license, including separate authorization if my territory is excluded", isOn: $acceptedH3License)
                         Button("Check official Ref2VA model files") {
                             h3ModelDownloader.prepare()
                         }
@@ -151,7 +153,7 @@ struct VACEVideoEditView: View {
                                 isConfirmingH3ModelDelete = true
                             }
                         }
-                        Text("The official reference checkpoint is extremely large. Files download directly to this iPhone with resumable transfers and checksum verification; downloaded weights are excluded from device backups and are not included in the IPA. A successful download still does not prove H3 inference will fit or finish on this device. H3 requires iOS 18 or newer.")
+                        Text("The official Ref2VA checkpoint is extremely large (about 134 GiB for the Diffusers task family). Files download directly to this iPhone with resumable transfers and checksum verification; downloaded weights are excluded from device backups and are not included in the IPA. This size exceeds typical free iPhone storage, and a successful download still would not prove inference fits. H3 requires iOS 18 or newer and compatible hardware.")
                             .font(.caption).foregroundStyle(.secondary)
                     }
                 }
