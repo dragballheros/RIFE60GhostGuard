@@ -33,7 +33,7 @@ enum H3RuntimePreflight {
                 return "MiniMax H3 model files are not installed. Select or install a compatible local H3 model directory first."
             }
             if !modelLayoutIsValid {
-                return "The selected folder is not a complete native H3 model layout. This runtime requires the FL2VA base and the Ref2VA tokenizer, text encoder, transformer, video_vae/source, and audio_vae components. A partial download or GGUF-only file is not compatible."
+                return "The selected folder is not a complete native H3 model layout. This runtime requires the FL2VA base components and the Ref2VA transformer checkpoint. A partial download or GGUF-only file is not compatible."
             }
             if !hasMinimumMemory {
                 let availableGiB = Double(availableMemoryBytes) / 1_073_741_824
@@ -50,16 +50,10 @@ enum H3RuntimePreflight {
             isDirectory: &isDirectory
         ) && isDirectory.boolValue
         let requiredFiles = [
-            "model_index.json",
             "FL2VA/transformer/config.json",
             "FL2VA/tokenizer/tokenizer.json",
-            "Ref2VA/model_index.json",
-            "Ref2VA/tokenizer/tokenizer.json",
-            "Ref2VA/text_encoder/config.json",
             "Ref2VA/transformer/config.json",
-            "Ref2VA/transformer/model.safetensors.index.json",
-            "Ref2VA/video_vae/source/config.json",
-            "Ref2VA/audio_vae/config.json"
+            "Ref2VA/transformer/model.safetensors.index.json"
         ]
         let requiredDirectories = [
             "FL2VA/tokenizer",
@@ -67,11 +61,7 @@ enum H3RuntimePreflight {
             "FL2VA/transformer",
             "FL2VA/video_vae/source",
             "FL2VA/audio_vae",
-            "Ref2VA/tokenizer",
-            "Ref2VA/text_encoder",
-            "Ref2VA/transformer",
-            "Ref2VA/video_vae/source",
-            "Ref2VA/audio_vae"
+            "Ref2VA/transformer"
         ]
         let filesArePresent = requiredFiles.allSatisfy { relativePath in
             let candidate = modelDirectory.appendingPathComponent(relativePath)
