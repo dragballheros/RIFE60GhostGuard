@@ -31,6 +31,7 @@ checks = [
     ("H3 model folder is selected locally", '.fileImporter(isPresented: $isChoosingH3Model, allowedContentTypes: [.folder]' in UI),
     ("H3 model downloader is pinned to the official Ref2VA revision and preserves the repository root layout", "42ed227ee7df40d41602854ae760620d6eb651fe" in DOWNLOADER and "tree/\\(revision)?recursive=true&expand=true" in DOWNLOADER and '$0.path.hasPrefix("Ref2VA/")' in DOWNLOADER),
     ("H3 model downloads resume and verify file checksums", 'forHTTPHeaderField: "Range"' in DOWNLOADER and "SHA256()" in DOWNLOADER and "Insecure.SHA1()" in DOWNLOADER),
+    ("H3 model manifest follows every Hub pagination page and rejects duplicate paths", "nextPageURL(from: http)" in DOWNLOADER and "visitedPages" in DOWNLOADER and "uniquePaths.count == entries.count" in DOWNLOADER),
     ("H3 model download requires explicit territorial license authorization confirmation", "I have verified that my use is authorized by the license" in UI and "disabled(!acceptedH3License" in UI and "United States, European Union, United Kingdom, and South Korea" in UI and "MiniMax has separately authorized you" in UI),
     ("H3 generation fails closed on unsupported iOS", "requires iOS 18.0 or newer" in PREFLIGHT and "guard preflight.isOperatingSystemSupported" in RUNTIME),
     ("H3 has an available-memory floor before native loading", "minimumAvailableMemoryBytes: UInt64 = 2 * 1024 * 1024 * 1024" in PREFLIGHT and "guard preflight.hasMinimumMemory" in RUNTIME and "case insufficientMemory(String)" in RUNTIME),
