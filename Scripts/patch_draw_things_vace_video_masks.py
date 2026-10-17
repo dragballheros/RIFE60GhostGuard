@@ -29,12 +29,7 @@ def replace_n(path: Path, old: str, new: str, expected: int) -> None:
     path.write_text(source.replace(old, new), encoding="utf-8")
 
 
-# The execution bridge must dispatch to the local concrete implementation that accepts videoMask.
-replace_once(
-    UTILITIES,
-    "    generator: ImageGenerator,",
-    "    generator: LocalImageGenerator,"
-)
+# Keep the shared execution bridge protocol-typed so remote image generation remains source-compatible.
 
 # Keep the mask out of the legacy single-frame inpainting argument. Convert the temporal masks
 # to FloatType [N,H,W,1] and pass them through the explicit video-mask channel.
@@ -135,7 +130,7 @@ replace_once(
         }
         var temporalVideoMask = Tensor<FloatType>(
           .CPU, .NHWC(decodedMasks.count, targetHeight, targetWidth, 1))
-        temporalVideoMask.full(0)
+        // Every temporal mask element is assigned by the validated loops below.
         for (frameIndex, decodedMask) in decodedMasks.enumerated() {
           guard decodedMask.shape.count == 4, decodedMask.shape[0] == 1,
             decodedMask.shape[1] == targetHeight, decodedMask.shape[2] == targetWidth,
@@ -175,14 +170,76 @@ replace_once(
           image: inputTensor,
           scaleFactor: 1,
           mask: maskTensor,
-          hints: generatorHints,""",
-    """        result = try generator.generateWithVideoMask(
-          trace: ImageGeneratorTrace(fromBridge: true),
-          image: inputTensor,
-          scaleFactor: 1,
-          mask: maskTensor,
-          videoMask: videoMaskTensor,
-          hints: generatorHints,"""
+          hints: generatorHints,
+          text: prompt,
+          negativeText: negativePrompt,
+          configuration: configuration,
+          fileMapping: [:],
+          keywords: [],
+          cancellation: { cancel in
+            cancellationBridge?.setCancellation(cancel)
+          },
+          feedback: { signpost, signposts, tensor in
+            let shouldContinue = feedback(signpost, tensor)
+            if !shouldContinue {
+              wasCancelled = true
+            }
+            return shouldContinue
+          }
+        )""",
+    """        if let videoMaskTensor {
+          guard let localGenerator = generator as? LocalImageGenerator else {
+            completion(.failure(.generationFailed(
+              "Wan VACE temporal video editing requires the local on-device generator.")))
+            return
+          }
+          result = try localGenerator.generateWithVideoMask(
+            trace: ImageGeneratorTrace(fromBridge: true),
+            image: inputTensor,
+            scaleFactor: 1,
+            mask: maskTensor,
+            videoMask: videoMaskTensor,
+            hints: generatorHints,
+            text: prompt,
+            negativeText: negativePrompt,
+            configuration: configuration,
+            fileMapping: [:],
+            keywords: [],
+            cancellation: { cancel in
+              cancellationBridge?.setCancellation(cancel)
+            },
+            feedback: { signpost, signposts, tensor in
+              let shouldContinue = feedback(signpost, tensor)
+              if !shouldContinue {
+                wasCancelled = true
+              }
+              return shouldContinue
+            }
+          )
+        } else {
+          result = try generator.generate(
+            trace: ImageGeneratorTrace(fromBridge: true),
+            image: inputTensor,
+            scaleFactor: 1,
+            mask: maskTensor,
+            hints: generatorHints,
+            text: prompt,
+            negativeText: negativePrompt,
+            configuration: configuration,
+            fileMapping: [:],
+            keywords: [],
+            cancellation: { cancel in
+              cancellationBridge?.setCancellation(cancel)
+            },
+            feedback: { signpost, signposts, tensor in
+              let shouldContinue = feedback(signpost, tensor)
+              if !shouldContinue {
+                wasCancelled = true
+              }
+              return shouldContinue
+            }
+          )
+        }"""
 )
 
 # Add the explicit entry point while preserving the ImageGenerator protocol's original signature.
