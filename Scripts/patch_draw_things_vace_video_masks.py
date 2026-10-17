@@ -218,9 +218,21 @@ replace_once(
 
 replace_once(
     LOCAL_GENERATOR,
-    """    audioContext: AudioConditioningContext?,
+    """  func generate(
+    trace: ImageGeneratorTrace,
+    image: Tensor<FloatType>?, scaleFactor: Int, mask: Tensor<UInt8>?,
+    hints: [(ControlHintType, [(AnyTensor, Float)])],
+    text: String, negativeText: String, configuration: GenerationConfiguration,
+    fileMapping: [String: String], keywords: [String],
+    audioContext: AudioConditioningContext?,
     cancellation: (@escaping () -> Void) -> Void,""",
-    """    audioContext: AudioConditioningContext?,
+    """  func generate(
+    trace: ImageGeneratorTrace,
+    image: Tensor<FloatType>?, scaleFactor: Int, mask: Tensor<UInt8>?,
+    hints: [(ControlHintType, [(AnyTensor, Float)])],
+    text: String, negativeText: String, configuration: GenerationConfiguration,
+    fileMapping: [String: String], keywords: [String],
+    audioContext: AudioConditioningContext?,
     videoMask: Tensor<FloatType>? = nil,
     cancellation: (@escaping () -> Void) -> Void,"""
 )
