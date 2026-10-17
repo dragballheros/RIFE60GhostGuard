@@ -106,6 +106,7 @@ struct VACEVideoEditView: View {
                             .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
+                        .disabled(isRunning)
                     }
                     if selectedBackend == .minimaxH3 {
                         Button {
@@ -113,6 +114,7 @@ struct VACEVideoEditView: View {
                         } label: {
                             Label(h3ModelDirectoryURL == nil ? "Choose local H3 model folder" : "Change local H3 model folder", systemImage: "folder")
                         }
+                        .disabled(isRunning)
                         if let h3ModelDirectoryURL {
                             Text(h3ModelDirectoryURL.lastPathComponent).font(.caption).foregroundStyle(.secondary)
                         }
@@ -126,6 +128,7 @@ struct VACEVideoEditView: View {
                         Label(sourceURL == nil ? "Choose video from Photos" : "Change source video",
                               systemImage: "film")
                     }
+                    .disabled(isRunning)
                     if let sourceURL {
                         Text(sourceURL.lastPathComponent).font(.caption).foregroundStyle(.secondary)
                     }
@@ -134,6 +137,7 @@ struct VACEVideoEditView: View {
                             Label(maskURL == nil ? "Choose edit mask image" : "Change edit mask",
                                   systemImage: "paintbrush.pointed")
                         }
+                        .disabled(isRunning)
                         if let maskURL {
                             Text(maskURL.lastPathComponent).font(.caption).foregroundStyle(.secondary)
                         }
