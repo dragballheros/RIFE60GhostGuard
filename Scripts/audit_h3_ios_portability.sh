@@ -4,8 +4,8 @@ set -euo pipefail
 # Compile-only portability audit. This intentionally does not claim runtime
 # readiness: AVFoundation adapters, model weights, memory, and device execution
 # are separate acceptance gates.
-readonly H3_REPO="https://github.com/antirez/h3.c.git"
-readonly H3_REVISION="8974cc055ea9c02fcd14cc27dfda3e1027c05153"
+readonly H3_REPO="https://github.com/JunzoKamahara/H3cApp.git"
+readonly H3_REVISION="826fafffc84a15283cb7b3f4c234e7aedf07516c"
 readonly H3_DIR="${RUNNER_TEMP:-/tmp}/h3.c"
 readonly OBJ_DIR="${RUNNER_TEMP:-/tmp}/h3-ios-objects"
 readonly SDK="$(xcrun --sdk iphoneos --show-sdk-path)"
@@ -15,16 +15,15 @@ git clone --quiet --filter=blob:none "$H3_REPO" "$H3_DIR"
 git -C "$H3_DIR" checkout --quiet "$H3_REVISION"
 mkdir -p "$OBJ_DIR"
 
-echo "Auditing h3.c revision $H3_REVISION for arm64 iOS 16 SDK compatibility."
-echo "This is a compile-only audit; it does not assert iOS runtime or device memory support."
+echo "Auditing H3cApp native engine revision $H3_REVISION for arm64 iOS 16 SDK compatibility."
+echo "This is a compile-and-link portability probe; it does not assert runtime safety or device memory support."
 
 c_sources=(
   h3.c h3_host.c h3_safetensors.c h3_weights.c h3_text_encoder.c
-  h3_dit_schedule.c h3_dit.c h3_video_vae.c h3_video_encoder.c
-  h3_audio_vae.c h3_ffmpeg.c h3_terminal.c h3_vision_encoder.c
-  h3_multimodal.c
+  h3_dit_schedule.c h3_dit.c h3_lora.c h3_video_vae.c h3_video_encoder.c
+  h3_audio_vae.c h3_vision_encoder.c h3_multimodal.c h3_attention_cache.c
 )
-objc_sources=(h3_metal.m h3_gpu.m h3_tokenizer.m)
+objc_sources=(h3_metal.m h3_gpu.m h3_tokenizer.m h3_av_writer.m h3_av_reader.m)
 
 for source in "${c_sources[@]}"; do
   echo "::group::iOS compile $source"
