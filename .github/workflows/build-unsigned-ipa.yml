@@ -35,6 +35,8 @@ jobs:
         uses: actions/checkout@v4
       - name: Stage pinned MiniMax H3 native runtime
         run: python3 Scripts/vendor_h3_runtime.py
+      - name: Validate MiniMax H3 integration contracts and release gates
+        run: python3 Scripts/validate_h3_integration.py
       - name: Bundle Wan VAE component packages for offline iPhone testing
         if: >-
           (github.event_name == 'pull_request' &&
