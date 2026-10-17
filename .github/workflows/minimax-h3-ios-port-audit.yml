@@ -9,6 +9,7 @@ on:
       - "Scripts/audit_h3_ios_portability.sh"
       - "Scripts/patch_h3_ios_availability.py"
       - "Scripts/test_patch_h3_ios_availability.py"
+      - "H3RuntimePreflight.swift"
       - ".github/workflows/minimax-h3-ios-port-audit.yml"
   pull_request:
     branches:
@@ -34,5 +35,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: Test H3 iOS availability patcher
         run: python3 Scripts/test_patch_h3_ios_availability.py
+      - name: Type-check app-side H3 preflight for iOS 16 deployment
+        run: xcrun --sdk iphoneos swiftc -target arm64-apple-ios16.0 -sdk "$(xcrun --sdk iphoneos --show-sdk-path)" -typecheck H3RuntimePreflight.swift
       - name: Audit native H3 C/Metal source against iOS SDK
         run: bash Scripts/audit_h3_ios_portability.sh
