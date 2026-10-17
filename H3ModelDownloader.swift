@@ -14,7 +14,7 @@ private enum H3ModelDownloadError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .listing(let status): return "Could not list official H3 model files (HTTP \(status))."
-        case .emptyManifest: return "The pinned H3 model manifest did not contain all required native FL2VA/Ref2VA assets or verifiable checksums."
+        case .emptyManifest: return "The pinned H3 model manifest did not contain all required FL2VA base and Ref2VA transformer assets or verifiable checksums."
         case .badDigest(let path): return "No verifiable checksum was supplied for \(path)."
         case .badSize(let path): return "Downloaded size did not match the manifest for \(path)."
         case .http(let path, let status): return "Download failed for \(path) (HTTP \(status))."
@@ -25,7 +25,7 @@ private enum H3ModelDownloadError: LocalizedError {
 }
 
 
-/// Downloads the complete native FL2VA base and Ref2VA task components used by h3_load_dir and reference-conditioned generation. Model weights are never bundled in the IPA.
+/// Downloads the FL2VA base assets plus the Ref2VA transformer used by native reference-conditioned generation. Model weights are never bundled in the IPA.
 /// The model revision is pinned so the listed sizes and digests cannot drift under us.
 @MainActor
 final class H3ModelDownloader: ObservableObject {
@@ -188,7 +188,7 @@ final class H3ModelDownloader: ObservableObject {
 
         // The Hub tree endpoint is paginated. Fetch every page before accepting the
         // manifest; otherwise a first page can look valid while silently omitting
-        // later transformer shards, leaving a multi-hundred-GiB checkpoint unusable.
+        // later transformer shards, leaving an incomplete checkpoint unusable.
         var nextURL: URL? = initialURL
         var visitedPages = Set<String>()
         var raw: [Entry] = []
@@ -207,7 +207,7 @@ final class H3ModelDownloader: ObservableObject {
         }
 
         // h3_load_dir expects the repository root, with the task-specific checkpoint
-        // under Ref2VA/. Do not flatten the subtree into the root; that layout
+        // under Ref2VA/transformer/. Do not flatten the subtree into the root; that layout
         // can pass file hashes but still fail native model discovery.
         let entries = raw.filter {
             guard $0.type == "file", $0.expectedSize > 0 else { return false }
@@ -216,26 +216,21 @@ final class H3ModelDownloader: ObservableObject {
                   components.allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." }),
                   !$0.path.hasPrefix("/"),
                   !$0.path.contains("\\") else { return false }
-            // h3_load_dir requires the FL2VA base inventory, while reference-conditioned
-            // h3_generate switches to Ref2VA tokenizer, text encoder, transformer,
-            // video VAE, and audio VAE paths. Both task trees must therefore be
-            // present; downloading only Ref2VA/transformer passes a shallow check
-            // but fails when the native reference pipeline loads its components.
+            // The pinned native h3_load_dir implementation uses FL2VA for the
+            // shared tokenizer, text encoder, VAEs, and base transformer. For
+            // reference-conditioned generation it inventories only the Ref2VA
+            // transformer checkpoint; it does not load Ref2VA's duplicate tokenizer,
+            // text encoder, or VAEs. Avoid downloading those redundant task assets.
             return $0.path == "model_index.json" ||
                 $0.path.hasPrefix("FL2VA/") ||
-                $0.path.hasPrefix("Ref2VA/")
+                $0.path.hasPrefix("Ref2VA/transformer/")
         }
         let requiredNativeFiles = [
             "model_index.json",
             "FL2VA/transformer/config.json",
             "FL2VA/tokenizer/tokenizer.json",
-            "Ref2VA/model_index.json",
-            "Ref2VA/tokenizer/tokenizer.json",
-            "Ref2VA/text_encoder/config.json",
             "Ref2VA/transformer/config.json",
-            "Ref2VA/transformer/model.safetensors.index.json",
-            "Ref2VA/video_vae/source/config.json",
-            "Ref2VA/audio_vae/config.json"
+            "Ref2VA/transformer/model.safetensors.index.json"
         ]
         guard requiredNativeFiles.allSatisfy({ required in entries.contains(where: { $0.path == required }) }) &&
               entries.allSatisfy({ $0.sha256 != nil || $0.gitSHA1 != nil }) else {
