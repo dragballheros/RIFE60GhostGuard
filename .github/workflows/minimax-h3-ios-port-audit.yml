@@ -8,6 +8,12 @@ on:
     paths:
       - "Scripts/audit_h3_ios_portability.sh"
       - ".github/workflows/minimax-h3-ios-port-audit.yml"
+  pull_request:
+    branches:
+      - feature/wan-vace-iphone-memory-first
+    paths:
+      - "Scripts/audit_h3_ios_portability.sh"
+      - ".github/workflows/minimax-h3-ios-port-audit.yml"
 
 permissions:
   contents: read
