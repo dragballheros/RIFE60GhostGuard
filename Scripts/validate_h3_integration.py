@@ -31,7 +31,7 @@ checks = [
     ("H3 model folder is selected locally", '.fileImporter(isPresented: $isChoosingH3Model, allowedContentTypes: [.folder]' in UI),
     ("H3 model downloader is pinned to the official Ref2VA revision and preserves the repository root layout", "42ed227ee7df40d41602854ae760620d6eb651fe" in DOWNLOADER and "tree/\\(revision)?recursive=true&expand=true" in DOWNLOADER and '$0.path.hasPrefix("Ref2VA/")' in DOWNLOADER),
     ("H3 model downloads resume and verify file checksums", 'forHTTPHeaderField: "Range"' in DOWNLOADER and "SHA256()" in DOWNLOADER and "Insecure.SHA1()" in DOWNLOADER),
-    ("H3 model download requires explicit license acceptance", "I accept the MiniMax H3 model license" in UI and "disabled(!acceptedH3License" in UI),
+    ("H3 model download requires explicit territorial license authorization confirmation", "I have verified that my use is authorized by the license" in UI and "disabled(!acceptedH3License" in UI and "United States, European Union, United Kingdom, and South Korea" in UI and "MiniMax has separately authorized you" in UI),
     ("H3 generation fails closed on unsupported iOS", "requires iOS 18.0 or newer" in PREFLIGHT and "guard preflight.isOperatingSystemSupported" in RUNTIME),
     ("H3 has an available-memory floor before native loading", "minimumAvailableMemoryBytes: UInt64 = 2 * 1024 * 1024 * 1024" in PREFLIGHT and "guard preflight.hasMinimumMemory" in RUNTIME and "case insufficientMemory(String)" in RUNTIME),
     ("H3 rejects incomplete or incompatible model directory layouts before native loading", "modelLayoutIsValid" in PREFLIGHT and "Ref2VA/model_index.json" in PREFLIGHT and "Ref2VA/transformer" in PREFLIGHT and "Ref2VA/video_vae" in PREFLIGHT and "guard preflight.modelLayoutIsValid" in RUNTIME and "partial download or a GGUF-only file is not compatible" in PREFLIGHT),
@@ -68,7 +68,7 @@ else:
 # These gates need runtime/model evidence and are deliberately not represented
 # as passed merely because static code inspection succeeds.
 release_gates = [
-    ("resumable, checksum-verified H3 model asset installer", 'forHTTPHeaderField: "Range"' in DOWNLOADER and "SHA256()" in DOWNLOADER and "Insecure.SHA1()" in DOWNLOADER and "42ed227ee7df40d41602854ae760620d6eb651fe" in DOWNLOADER),
+    ("resumable, checksum-verified H3 model asset installer rejects unsafe paths", 'forHTTPHeaderField: "Range"' in DOWNLOADER and "SHA256()" in DOWNLOADER and "Insecure.SHA1()" in DOWNLOADER and "42ed227ee7df40d41602854ae760620d6eb651fe" in DOWNLOADER and '$0 != ".."' in DOWNLOADER and 'contains("\\\\")' in DOWNLOADER),
     ("native progress and user cancellation connected to the editor", "params.on_progress = h3NativeProgressCallback" in RUNTIME and "Cancel H3 generation" in UI),
     ("successful offline reference-conditioned inference on iPhone 14 Pro Max", False),
     ("playable exported video verified on the target iPhone", False),
