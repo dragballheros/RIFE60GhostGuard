@@ -58,6 +58,7 @@ struct VACERegionFrameInput {
 
 struct VACERegionReconstructionRequest {
     let prompt: String
+    let negativePrompt: String
     let cropPlan: VACERegionCropPlan
     let frames: [VACERegionFrameInput]
     let temporalWindowLength: Int
@@ -119,6 +120,7 @@ final class VACESelectiveVideoPipeline {
     }
 
     func process(sourceURL: URL, destinationURL: URL, prompt: String,
+                 negativePrompt: String = "",
                  progress: Progress? = nil) async throws {
         guard destinationURL.pathExtension.lowercased() == "mov" else {
             throw VACEVideoPipelineError.unsupportedOutputURL
@@ -272,6 +274,7 @@ final class VACESelectiveVideoPipeline {
                 }
                 let request = VACERegionReconstructionRequest(
                     prompt: prompt,
+                    negativePrompt: negativePrompt,
                     cropPlan: cropPlan,
                     frames: inputs,
                     temporalWindowLength: options.temporalWindowLength,
