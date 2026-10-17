@@ -424,7 +424,9 @@ final class VideoProcessorViewModel: ObservableObject {
                         self.progress = 0
                         self.restorationProgress = 0
                         self.upscaleProgress = 0
-                        self.statusText = "Saved checkpoints came from a different configuration • starting fresh"
+                        self.recoveryAvailable = false
+                        self.recoveryStatusText = ""
+                        self.statusText = "Recovery source or settings differ • starting a fresh render"
                     }
                 }
 
@@ -877,6 +879,7 @@ final class VideoProcessorViewModel: ObservableObject {
                     try await validateFinishedVideo(persisted)
                     let attrs = try FileManager.default.attributesOfItem(atPath: persisted.path)
                     let bytes = (attrs[.size] as? NSNumber)?.int64Value ?? 0
+                    LastCompletedVideoStore.recordCompletedVideo(persisted)
                     return (persisted, "Files > \(folder.lastPathComponent) > \(persisted.lastPathComponent)", bytes)
                 } catch {
                     DiagnosticsLogger.shared.log("Selected Files folder write/validation failed while security scope was active: \(error.localizedDescription). Falling back to app Exports folder.")
@@ -895,6 +898,7 @@ final class VideoProcessorViewModel: ObservableObject {
         try await validateFinishedVideo(destination)
         let attrs = try FileManager.default.attributesOfItem(atPath: destination.path)
         let bytes = (attrs[.size] as? NSNumber)?.int64Value ?? 0
+        LastCompletedVideoStore.recordCompletedVideo(destination)
         return (destination, "On My iPhone > RIFE 60 Ghost Guard > Exports > \(destination.lastPathComponent)", bytes)
     }
 
@@ -1042,14 +1046,15 @@ final class VideoProcessorViewModel: ObservableObject {
         inputURL = batchStore.sourceURL(for: item, in: queue)
         watermarkRegions = item.masks
         loadingQueueSelection = false
-        if recoveryAvailable, id == queue.nextItemID, let job = RecoveryStore.existingJob() {
-            inputURL = job.sourceURL
-            progress = job.manifest.progress
-            if item.kind == .gif {
-                inputKind = .video
-                videoToGIFEnabled = true
-            }
-        } else { progress = item.state == .completed ? 1 : 0 }
+        // Never replace the selected queue item's source with the recovery
+        // directory's source copy here. That unconditional override allowed a
+        // stale recovery manifest to make a newly selected video process an old
+        // source. startSingle() verifies byte identity in RecoveryStore.prepare()
+        // before it can reuse checkpoints.
+        if item.kind == .gif {
+            videoToGIFEnabled = true
+        }
+        progress = item.state == .completed ? 1 : 0
         outputURL = item.outputURL
     }
 
