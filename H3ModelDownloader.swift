@@ -194,8 +194,13 @@ final class H3ModelDownloader: ObservableObject {
         // under Ref2VA/. Do not flatten the subtree into the root; that layout
         // can pass file hashes but still fail native model discovery.
         let entries = raw.filter {
-            $0.type == "file" && $0.expectedSize > 0 &&
-            ($0.path == "model_index.json" || $0.path.hasPrefix("Ref2VA/"))
+            guard $0.type == "file", $0.expectedSize > 0 else { return false }
+            let components = $0.path.split(separator: "/", omittingEmptySubsequences: false)
+            guard !components.isEmpty,
+                  components.allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." }),
+                  !$0.path.hasPrefix("/"),
+                  !$0.path.contains("\\") else { return false }
+            return $0.path == "model_index.json" || $0.path.hasPrefix("Ref2VA/")
         }
         guard entries.contains(where: { $0.path == "model_index.json" }) &&
               entries.contains(where: { $0.path == "Ref2VA/model_index.json" }) &&
