@@ -53,7 +53,7 @@ private enum VACEVideoEditInputError: LocalizedError {
     }
 }
 
-private enum LocalVideoBackend: String, CaseIterable {
+private enum LocalVideoBackend: String, CaseIterable, Hashable {
     case wanVACE = "Wan VACE"
     case minimaxH3 = "MiniMax H3"
 }
