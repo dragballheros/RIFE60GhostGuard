@@ -32,7 +32,7 @@ def main() -> None:
 
         # Expected entry point gets one fail-closed guard.
         source = root / "expected.m"
-        source.write_text("prefix\n" + ENTRY + "        // body\n    }\n}\n", encoding="utf-8")
+        source.write_text("prefix\n" + ENTRY + "        NSString *path = [NSString stringWithUTF8String:source_path];\\n        // body\n    }\n}\n", encoding="utf-8")
         run(source, True)
         patched = source.read_text(encoding="utf-8")
         assert patched.count(GUARD) == 1, "guard was not inserted exactly once"
