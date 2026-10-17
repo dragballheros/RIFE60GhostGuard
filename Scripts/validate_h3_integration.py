@@ -27,6 +27,7 @@ checks = [
     ("Wan VACE masked workflow remains wired", "DrawThingsLocalVACEReconstructionEngine()" in UI and "VACESelectiveVideoPipeline(" in UI and "loadMask(url:" in UI),
     ("H3 selection dispatches to its own reference workflow", "await runH3ReferenceEdit()" in UI and "generateReferenceConditionedVideo(" in UI),
     ("H3 workflow does not claim VACE mask semantics", "does not use the VACE mask" in UI and "does not claim pixel-mask preservation" in UI),
+    ("H3 validates Ref2VA video duration and playable track before native loading", "Official Ref2VA accepts reference clips of 2–15 seconds" in UI and "(2.0...15.0).contains(referenceDuration.seconds)" in UI and "loadTracks(withMediaType: .video)" in UI),
     ("H3 model folder is selected locally", '.fileImporter(isPresented: $isChoosingH3Model, allowedContentTypes: [.folder]' in UI),
     ("H3 model downloader is pinned to the official Ref2VA revision and preserves the repository root layout", "42ed227ee7df40d41602854ae760620d6eb651fe" in DOWNLOADER and "tree/\\(revision)?recursive=true&expand=true" in DOWNLOADER and '$0.path.hasPrefix("Ref2VA/")' in DOWNLOADER),
     ("H3 model downloads resume and verify file checksums", 'forHTTPHeaderField: "Range"' in DOWNLOADER and "SHA256()" in DOWNLOADER and "Insecure.SHA1()" in DOWNLOADER),
