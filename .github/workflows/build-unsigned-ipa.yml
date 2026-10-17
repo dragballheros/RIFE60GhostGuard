@@ -561,6 +561,9 @@ jobs:
           test ! -e Models/DeepCreamBar.pb
           test ! -e Models/DeepCreamMosaic.pb
 
+      - name: Stage pinned MiniMax H3 native sources for the iOS target
+        run: bash Scripts/vendor_h3_runtime.sh
+
       - name: Generate Xcode project
         run: xcodegen generate
       - name: Cache Xcode and Swift package build outputs
