@@ -13,6 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 UI = (ROOT / "VACEVideoEditView.swift").read_text(encoding="utf-8")
 RUNTIME = (ROOT / "H3NativeRuntime.swift").read_text(encoding="utf-8")
 PREFLIGHT = (ROOT / "H3RuntimePreflight.swift").read_text(encoding="utf-8")
+DOWNLOADER = (ROOT / "H3ModelDownloader.swift").read_text(encoding="utf-8")
 PROJECT = (ROOT / "project.yml").read_text(encoding="utf-8")
 BRIDGE = (ROOT / "RIFE60GhostGuard-Bridging-Header.h").read_text(encoding="utf-8")
 HEADER_PATH = ROOT / "Vendor" / "minimax-h3" / "h3.h"
@@ -27,6 +28,9 @@ checks = [
     ("H3 selection dispatches to its own reference workflow", "await runH3ReferenceEdit()" in UI and "generateReferenceConditionedVideo(" in UI),
     ("H3 workflow does not claim VACE mask semantics", "does not use the VACE mask" in UI and "does not claim pixel-mask preservation" in UI),
     ("H3 model folder is selected locally", '.fileImporter(isPresented: $isChoosingH3Model, allowedContentTypes: [.folder]' in UI),
+    ("H3 model downloader is pinned to the official Ref2VA revision", "42ed227ee7df40d41602854ae760620d6eb651fe" in DOWNLOADER and "/Ref2VA?recursive=true&expand=true" in DOWNLOADER),
+    ("H3 model downloads resume and verify file checksums", 'forHTTPHeaderField: "Range"' in DOWNLOADER and "SHA256()" in DOWNLOADER and "Insecure.SHA1()" in DOWNLOADER),
+    ("H3 model download requires explicit license acceptance", "I accept the MiniMax H3 model license" in UI and "disabled(!acceptedH3License" in UI),
     ("H3 generation fails closed on unsupported iOS", "requires iOS 18.0 or newer" in PREFLIGHT and "guard preflight.isOperatingSystemSupported" in RUNTIME),
     ("H3 has an available-memory floor before native loading", "minimumAvailableMemoryBytes: UInt64 = 2 * 1024 * 1024 * 1024" in PREFLIGHT and "guard preflight.hasMinimumMemory" in RUNTIME and "case insufficientMemory(String)" in RUNTIME),
     ("H3 uses the video reference C API", "reference.kind = H3_REFERENCE_VIDEO" in RUNTIME and "params.reference_count = 1" in RUNTIME),
