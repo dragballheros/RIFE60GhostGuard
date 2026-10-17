@@ -33,6 +33,7 @@ checks = [
     ("H3 model download requires explicit license acceptance", "I accept the MiniMax H3 model license" in UI and "disabled(!acceptedH3License" in UI),
     ("H3 generation fails closed on unsupported iOS", "requires iOS 18.0 or newer" in PREFLIGHT and "guard preflight.isOperatingSystemSupported" in RUNTIME),
     ("H3 has an available-memory floor before native loading", "minimumAvailableMemoryBytes: UInt64 = 2 * 1024 * 1024 * 1024" in PREFLIGHT and "guard preflight.hasMinimumMemory" in RUNTIME and "case insufficientMemory(String)" in RUNTIME),
+    ("H3 rejects incomplete or incompatible model directory layouts before native loading", "modelLayoutIsValid" in PREFLIGHT and "requiredPaths.allSatisfy" in PREFLIGHT and "partial download or a GGUF-only file is not compatible" in PREFLIGHT),
     ("H3 uses the video reference C API", "reference.kind = H3_REFERENCE_VIDEO" in RUNTIME and "params.reference_count = 1" in RUNTIME),
     ("H3 uses disk-streaming mode", "params.ssd_streaming = 1" in RUNTIME),
     ("native H3 progress callback is wired", "params.on_progress = h3NativeProgressCallback" in RUNTIME and "onProgress: { phase, fraction" in UI),
@@ -66,7 +67,7 @@ else:
 # These gates need runtime/model evidence and are deliberately not represented
 # as passed merely because static code inspection succeeds.
 release_gates = [
-    ("resumable, checksum-verified H3 model asset installer", False),
+    ("resumable, checksum-verified H3 model asset installer", 'forHTTPHeaderField: "Range"' in DOWNLOADER and "SHA256()" in DOWNLOADER and "Insecure.SHA1()" in DOWNLOADER and "42ed227ee7df40d41602854ae760620d6eb651fe" in DOWNLOADER),
     ("native progress and user cancellation connected to the editor", "params.on_progress = h3NativeProgressCallback" in RUNTIME and "Cancel H3 generation" in UI),
     ("successful offline reference-conditioned inference on iPhone 14 Pro Max", False),
     ("playable exported video verified on the target iPhone", False),
