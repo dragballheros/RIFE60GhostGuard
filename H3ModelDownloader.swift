@@ -94,6 +94,10 @@ final class H3ModelDownloader: ObservableObject {
         let root = destinationURL
         do {
             try fileManager.createDirectory(at: root, withIntermediateDirectories: true)
+            var modelRoot = root
+            var resourceValues = URLResourceValues()
+            resourceValues.isExcludedFromBackup = true
+            try modelRoot.setResourceValues(resourceValues)
             let attributes = try fileManager.attributesOfFileSystem(forPath: root.path)
             let free = (attributes[.systemFreeSize] as? NSNumber)?.int64Value ?? 0
             let remaining = max(0, totalBytes - existingBytes())
