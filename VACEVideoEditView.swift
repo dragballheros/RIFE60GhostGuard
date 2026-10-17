@@ -66,7 +66,7 @@ struct VACEVideoEditView: View {
     @State private var maskItem: PhotosPickerItem?
     @State private var sourceURL: URL?
     @State private var maskURL: URL?
-    @State private var prompt = "Replace the white masked area with a coherent natural-looking alternative that matches the scene."
+    @State private var prompt = "Describe the desired change while keeping the overall scene coherent."
     @State private var negativePrompt = "flicker, inconsistent subject, warped geometry, duplicate objects, text, watermark"
     @State private var isRunning = false
     @State private var progress = 0.0
@@ -118,7 +118,7 @@ struct VACEVideoEditView: View {
                         if let h3ModelDirectoryURL {
                             Text(h3ModelDirectoryURL.lastPathComponent).font(.caption).foregroundStyle(.secondary)
                         }
-                        Text("The model must already be installed locally in the native H3 runtime's expected folder layout. Model files are not included in the IPA. H3 requires iOS 18 or newer; successful loading does not guarantee the phone has enough working memory to finish inference.")
+                        Text("The model must already be installed locally in the native H3 runtime's expected folder layout. Model files are not included in the IPA, and this iOS port has not yet passed a real-device generation test. Official H3 reference checkpoints are extremely large; selecting a folder does not verify that all required weights are present or that the phone can complete inference. H3 requires iOS 18 or newer.")
                             .font(.caption).foregroundStyle(.secondary)
                     }
                 }
@@ -152,8 +152,13 @@ struct VACEVideoEditView: View {
                 Section("Generation prompt") {
                     TextField("Positive prompt", text: $prompt, axis: .vertical)
                         .lineLimit(2...5)
-                    TextField("Negative prompt", text: $negativePrompt, axis: .vertical)
-                        .lineLimit(2...4)
+                    if selectedBackend == .wanVACE {
+                        TextField("Negative prompt", text: $negativePrompt, axis: .vertical)
+                            .lineLimit(2...4)
+                    } else {
+                        Text("The current native H3 API does not expose a separate negative-prompt input. Put exclusions directly into the main prompt; this field is only used by Wan VACE.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
                 }
 
                 Section("Explicit model / resolution") {
