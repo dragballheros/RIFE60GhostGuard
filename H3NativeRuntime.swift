@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 
 /// Thread-safe cancellation signal shared by SwiftUI and the native H3 progress callback.
 final class H3CancellationToken: @unchecked Sendable {
@@ -73,6 +74,18 @@ final class H3NativeRuntime {
         }
         guard preflight.hasMinimumMemory else {
             throw RuntimeError.insufficientMemory(preflight.message)
+        }
+
+        // H3's Qwen text encoder streams one transformer layer at a time.
+        // Its macOS-oriented defaults prefetch several large layers in parallel,
+        // which is unsafe on a 6 GB-class iPhone. Disable Qwen layer prefetching
+        // so only the current layer is resident; this trades throughput for peak
+        // memory. These variables are read by the pinned native runtime.
+        guard setenv("H3_QWEN_PREFETCH", "0", 1) == 0,
+              setenv("H3_QWEN_PREFETCH_DEPTH", "1", 1) == 0 else {
+            throw RuntimeError.nativeLoadFailed(
+                "Could not enable the low-memory H3 text-encoder profile on this device."
+            )
         }
 
         // Native model loading may allocate substantial memory and Metal
