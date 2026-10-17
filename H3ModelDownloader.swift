@@ -144,6 +144,19 @@ final class H3ModelDownloader: ObservableObject {
         task?.cancel()
     }
 
+    func deleteDownloadedModel() throws {
+        guard state != .downloading && state != .listing else { return }
+        if fileManager.fileExists(atPath: destinationURL.path) {
+            try fileManager.removeItem(at: destinationURL)
+        }
+        files.removeAll()
+        downloadedBytes = 0
+        totalBytes = 0
+        completedFiles = 0
+        totalFiles = 0
+        state = .idle
+    }
+
     private func existingBytes() -> Int64 {
         files.reduce(into: Int64(0)) { total, entry in
             let path = destinationURL.appendingPathComponent(entry.path).path
