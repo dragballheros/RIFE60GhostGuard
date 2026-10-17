@@ -266,6 +266,8 @@ final class H3NativeRuntime {
                  .invalidRequest(let message),
                  .generationFailed(let message):
                 return message
+            case .cancelled:
+                return "MiniMax H3 generation was cancelled."
             }
         }
     }
