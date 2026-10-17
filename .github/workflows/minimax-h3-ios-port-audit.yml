@@ -1,0 +1,26 @@
+name: MiniMax H3 iOS Portability Audit
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - feature/minimax-h3-ios-runtime
+    paths:
+      - "Scripts/audit_h3_ios_portability.sh"
+      - ".github/workflows/minimax-h3-ios-port-audit.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: minimax-h3-ios-port-audit-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ios-compile-audit:
+    runs-on: macos-26
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Audit native H3 C/Metal source against iOS SDK
+        run: bash Scripts/audit_h3_ios_portability.sh
