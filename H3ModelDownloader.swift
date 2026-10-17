@@ -184,12 +184,28 @@ final class H3ModelDownloader: ObservableObject {
 
     private static func fetchEntries() async throws -> [Entry] {
         let urlString = "https://huggingface.co/api/models/\(repository)/tree/\(revision)?recursive=true&expand=true"
-        guard let url = URL(string: urlString) else { throw H3ModelDownloadError.listing(-1) }
-        let (data, response) = try await URLSession.shared.data(from: url)
-        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
-            throw H3ModelDownloadError.listing((response as? HTTPURLResponse)?.statusCode ?? -1)
+        guard let initialURL = URL(string: urlString) else { throw H3ModelDownloadError.listing(-1) }
+
+        // The Hub tree endpoint is paginated. Fetch every page before accepting the
+        // manifest; otherwise a first page can look valid while silently omitting
+        // later transformer shards, leaving a multi-hundred-GiB checkpoint unusable.
+        var nextURL: URL? = initialURL
+        var visitedPages = Set<String>()
+        var raw: [Entry] = []
+        while let pageURL = nextURL {
+            guard visitedPages.insert(pageURL.absoluteString).inserted,
+                  visitedPages.count <= 10_000 else {
+                throw H3ModelDownloadError.emptyManifest
+            }
+            let (data, response) = try await URLSession.shared.data(from: pageURL)
+            guard let http = response as? HTTPURLResponse,
+                  (200..<300).contains(http.statusCode) else {
+                throw H3ModelDownloadError.listing((response as? HTTPURLResponse)?.statusCode ?? -1)
+            }
+            raw.append(contentsOf: try JSONDecoder().decode([Entry].self, from: data))
+            nextURL = Self.nextPageURL(from: http)
         }
-        let raw = try JSONDecoder().decode([Entry].self, from: data)
+
         // h3_load_dir expects the repository root, with the task-specific checkpoint
         // under Ref2VA/. Do not flatten the subtree into the root; that layout
         // can pass file hashes but still fail native model discovery.
@@ -207,7 +223,24 @@ final class H3ModelDownloader: ObservableObject {
               entries.allSatisfy({ $0.sha256 != nil || $0.gitSHA1 != nil }) else {
             throw H3ModelDownloadError.emptyManifest
         }
+        let uniquePaths = Set(entries.map(\.path))
+        guard uniquePaths.count == entries.count else {
+            throw H3ModelDownloadError.emptyManifest
+        }
         return entries
+    }
+
+    private static func nextPageURL(from response: HTTPURLResponse) -> URL? {
+        guard let linkHeader = response.value(forHTTPHeaderField: "Link") else { return nil }
+        for link in linkHeader.split(separator: ",") {
+            guard link.contains("rel=\"next\"") || link.contains("rel=next"),
+                  let left = link.firstIndex(of: "<"),
+                  let right = link.firstIndex(of: ">"),
+                  left < right else { continue }
+            let target = String(link[link.index(after: left)..<right])
+            return URL(string: target, relativeTo: response.url)?.absoluteURL
+        }
+        return nil
     }
 
     private static func download(_ entry: Entry, root: URL, onProgress: @escaping (Int64) -> Void) async throws {
