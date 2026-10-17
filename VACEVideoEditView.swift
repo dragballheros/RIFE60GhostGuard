@@ -6,7 +6,7 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 /// Copies a selected movie out of the Photos item provider's temporary transfer location.
-private struct PickedVideo: Transferable {
+private struct VACEPickedVideo: Transferable {
     let url: URL
 
     static var transferRepresentation: some TransferRepresentation {
@@ -15,13 +15,13 @@ private struct PickedVideo: Transferable {
             let destination = FileManager.default.temporaryDirectory
                 .appendingPathComponent("WanVACE-Source-\\(UUID().uuidString).\\(ext)")
             try FileManager.default.copyItem(at: received.file, to: destination)
-            return PickedVideo(url: destination)
+            return VACEPickedVideo(url: destination)
         }
     }
 }
 
 /// Copies a selected mask image to a stable local URL without relying on a Photos-only URL.
-private struct PickedImage: Transferable {
+private struct VACEPickedMaskImage: Transferable {
     let url: URL
 
     static var transferRepresentation: some TransferRepresentation {
@@ -30,7 +30,7 @@ private struct PickedImage: Transferable {
             let destination = FileManager.default.temporaryDirectory
                 .appendingPathComponent("WanVACE-Mask-\\(UUID().uuidString).\\(ext)")
             try FileManager.default.copyItem(at: received.file, to: destination)
-            return PickedImage(url: destination)
+            return VACEPickedMaskImage(url: destination)
         }
     }
 }
@@ -148,7 +148,7 @@ struct VACEVideoEditView: View {
                 guard let item else { return }
                 Task {
                     do {
-                        let picked = try await item.loadTransferable(type: PickedVideo.self)
+                        let picked = try await item.loadTransferable(type: VACEPickedVideo.self)
                         await MainActor.run {
                             sourceURL = picked?.url
                             outputURL = nil
@@ -163,7 +163,7 @@ struct VACEVideoEditView: View {
                 guard let item else { return }
                 Task {
                     do {
-                        let picked = try await item.loadTransferable(type: PickedImage.self)
+                        let picked = try await item.loadTransferable(type: VACEPickedMaskImage.self)
                         await MainActor.run {
                             maskURL = picked?.url
                             outputURL = nil
