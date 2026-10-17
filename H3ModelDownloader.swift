@@ -25,7 +25,7 @@ private enum H3ModelDownloadError: LocalizedError {
 }
 
 
-/// Downloads only the Ref2VA task tree. Model weights are never bundled in the IPA.
+/// Downloads the root model index and Ref2VA task tree expected by h3_load_dir. Model weights are never bundled in the IPA.
 /// The model revision is pinned so the listed sizes and digests cannot drift under us.
 @MainActor
 final class H3ModelDownloader: ObservableObject {
@@ -50,7 +50,7 @@ final class H3ModelDownloader: ObservableObject {
 
     var destinationURL: URL {
         fileManager.urls(for: .documentDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("MiniMax-H3-Ref2VA", isDirectory: true)
+            .appendingPathComponent("MiniMax-H3", isDirectory: true)
     }
 
     var progress: Double {
@@ -183,15 +183,23 @@ final class H3ModelDownloader: ObservableObject {
 
 
     private static func fetchEntries() async throws -> [Entry] {
-        let urlString = "https://huggingface.co/api/models/\(repository)/tree/\(revision)/Ref2VA?recursive=true&expand=true"
+        let urlString = "https://huggingface.co/api/models/\(repository)/tree/\(revision)?recursive=true&expand=true"
         guard let url = URL(string: urlString) else { throw H3ModelDownloadError.listing(-1) }
         let (data, response) = try await URLSession.shared.data(from: url)
         guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
             throw H3ModelDownloadError.listing((response as? HTTPURLResponse)?.statusCode ?? -1)
         }
         let raw = try JSONDecoder().decode([Entry].self, from: data)
-        let entries = raw.filter { $0.type == "file" && $0.expectedSize > 0 }
-        guard entries.allSatisfy({ $0.sha256 != nil || $0.gitSHA1 != nil }) else {
+        // h3_load_dir expects the repository root, with the task-specific checkpoint
+        // under Ref2VA/. Do not flatten the subtree into the root; that layout
+        // can pass file hashes but still fail native model discovery.
+        let entries = raw.filter {
+            $0.type == "file" && $0.expectedSize > 0 &&
+            ($0.path == "model_index.json" || $0.path.hasPrefix("Ref2VA/"))
+        }
+        guard entries.contains(where: { $0.path == "model_index.json" }) &&
+              entries.contains(where: { $0.path == "Ref2VA/model_index.json" }) &&
+              entries.allSatisfy({ $0.sha256 != nil || $0.gitSHA1 != nil }) else {
             throw H3ModelDownloadError.emptyManifest
         }
         return entries
