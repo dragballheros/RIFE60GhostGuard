@@ -125,7 +125,7 @@ struct VACEVideoEditView: View {
                         Text("Territory restriction: the published Community License excludes the United States, European Union, United Kingdom, and South Korea from its standard applicable territory. If you are in an excluded territory, do not download or use these weights unless MiniMax has separately authorized you. Check the current license before proceeding.")
                             .font(.caption).foregroundStyle(.red)
                         Toggle("I have verified that my use is authorized by the license, including separate authorization if my territory is excluded", isOn: $acceptedH3License)
-                        Button("Check official Ref2VA model files") {
+                        Button("Check official H3 model files") {
                             h3ModelDownloader.prepare()
                         }
                         .disabled(h3ModelDownloader.state == .listing || h3ModelDownloader.state == .downloading)
@@ -147,13 +147,13 @@ struct VACEVideoEditView: View {
                             Text(message).font(.caption).foregroundStyle(.red)
                         }
                         if h3ModelDownloader.state == .completed {
-                            Text("All Ref2VA files passed size and checksum verification.")
+                            Text("All required FL2VA base and Ref2VA transformer files passed size and checksum verification.")
                                 .font(.caption).foregroundStyle(.secondary)
                             Button("Delete downloaded H3 model and free storage", role: .destructive) {
                                 isConfirmingH3ModelDelete = true
                             }
                         }
-                        Text("The official Ref2VA checkpoint is extremely large (about 134 GiB for the Diffusers task family). Files download directly to this iPhone with resumable transfers and checksum verification; downloaded weights are excluded from device backups and are not included in the IPA. This size exceeds typical free iPhone storage, and a successful download still would not prove inference fits. H3 requires iOS 18 or newer and compatible hardware.")
+                        Text("The native runtime needs the shared FL2VA base files plus the Ref2VA transformer checkpoint. The required total is calculated from the pinned repository manifest above; it can require hundreds of gigabytes and may exceed this iPhone's available storage. Files download directly to this iPhone with resumable transfers and checksum verification; weights are excluded from device backups and are not bundled in the IPA. Disk streaming reduces the need to keep all DiT weights resident, but does not guarantee inference fits. H3 requires iOS 18 or newer.")
                             .font(.caption).foregroundStyle(.secondary)
                     }
                 }
@@ -274,7 +274,7 @@ struct VACEVideoEditView: View {
                 }
                 Button("Cancel", role: .cancel) {}
             } message: {
-                Text("This permanently deletes the downloaded Ref2VA files from this iPhone. It does not delete a separately selected model folder.")
+                Text("This permanently deletes the downloaded H3 FL2VA and Ref2VA files from this iPhone. It does not delete a separately selected model folder.")
             }
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
@@ -296,7 +296,7 @@ struct VACEVideoEditView: View {
                 if newState == .completed {
                     h3ModelDirectoryURL = h3ModelDownloader.destinationURL
                     outputURL = nil
-                    status = "Official Ref2VA files downloaded and checksum-verified. Device inference is still unverified."
+                    status = "Native H3 FL2VA base and Ref2VA transformer files downloaded and checksum-verified. Device inference is still unverified."
                 }
             }
             .onChange(of: videoItem) { item in
