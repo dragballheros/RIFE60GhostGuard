@@ -49,14 +49,19 @@ enum H3RuntimePreflight {
             atPath: modelDirectory.path,
             isDirectory: &isDirectory
         ) && isDirectory.boolValue
-        let requiredPaths = ["model_index.json", "processor", "tokenizer", "text_encoder", "transformer", "visual_vae", "audio_vae"]
-        let layoutIsValid = exists && requiredPaths.allSatisfy { component in
-            let candidate = modelDirectory.appendingPathComponent(component)
-            var componentIsDirectory: ObjCBool = false
-            let present = FileManager.default.fileExists(atPath: candidate.path, isDirectory: &componentIsDirectory)
-            if component == "model_index.json" { return present && !componentIsDirectory.boolValue }
-            return present && componentIsDirectory.boolValue
+        let requiredFiles = ["model_index.json", "Ref2VA/model_index.json"]
+        let requiredDirectories = ["Ref2VA/processor", "Ref2VA/tokenizer", "Ref2VA/text_encoder", "Ref2VA/transformer", "Ref2VA/visual_vae", "Ref2VA/audio_vae"]
+        let filesArePresent = requiredFiles.allSatisfy { relativePath in
+            let candidate = modelDirectory.appendingPathComponent(relativePath)
+            var isDirectory: ObjCBool = false
+            return FileManager.default.fileExists(atPath: candidate.path, isDirectory: &isDirectory) && !isDirectory.boolValue
         }
+        let directoriesArePresent = requiredDirectories.allSatisfy { relativePath in
+            let candidate = modelDirectory.appendingPathComponent(relativePath)
+            var isDirectory: ObjCBool = false
+            return FileManager.default.fileExists(atPath: candidate.path, isDirectory: &isDirectory) && isDirectory.boolValue
+        }
+        let layoutIsValid = exists && filesArePresent && directoriesArePresent
 
         return Report(
             isOperatingSystemSupported: ProcessInfo.processInfo.isOperatingSystemAtLeast(
