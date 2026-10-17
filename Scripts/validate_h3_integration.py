@@ -29,6 +29,8 @@ checks = [
     ("H3 generation fails closed on unsupported iOS", "requires iOS 18.0 or newer" in PREFLIGHT and "guard preflight.isOperatingSystemSupported" in RUNTIME),
     ("H3 uses the video reference C API", "reference.kind = H3_REFERENCE_VIDEO" in RUNTIME and "params.reference_count = 1" in RUNTIME),
     ("H3 uses disk-streaming mode", "params.ssd_streaming = 1" in RUNTIME),
+    ("native H3 progress callback is wired", "params.on_progress = h3NativeProgressCallback" in RUNTIME and "onProgress: { phase, fraction" in UI),
+    ("user cancellation reaches the native progress callback", "H3CancellationToken" in RUNTIME and "Cancel H3 generation" in UI and "return context.cancellationToken?.isCancelled == true ? 1 : 0" in RUNTIME),
     ("H3 output must exist and be non-empty", "outputSize > 0" in UI),
     ("no remote inference client in H3 UI/runtime", "URLSession" not in UI + RUNTIME and "https://" not in UI + RUNTIME),
     ("native H3 header is bundled into the app target", "Vendor/minimax-h3" in PROJECT and '#include "h3.h"' in BRIDGE and HEADER_PATH.is_file()),
@@ -57,7 +59,7 @@ else:
 # as passed merely because static code inspection succeeds.
 release_gates = [
     ("resumable, checksum-verified H3 model asset installer", False),
-    ("native progress and user cancellation connected to the editor", "params.on_progress = nil" not in RUNTIME and "cancel" in UI.lower()),
+    ("native progress and user cancellation connected to the editor", "params.on_progress = h3NativeProgressCallback" in RUNTIME and "Cancel H3 generation" in UI),
     ("successful offline reference-conditioned inference on iPhone 14 Pro Max", False),
     ("playable exported video verified on the target iPhone", False),
     ("peak memory / thermal / watchdog measurements on the target iPhone", False),
