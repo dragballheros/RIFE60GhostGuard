@@ -61,7 +61,9 @@ xcrun --sdk iphoneos clang -std=c11 -target arm64-apple-ios16.0 \
   -Wl,-all_load "$OBJ_DIR/libh3-ios.a" \
   -framework Foundation -framework Metal \
   -framework MetalPerformanceShaders -framework MetalPerformanceShadersGraph \
-  -framework Accelerate -licucore -lm \
+  -framework Accelerate -framework AVFoundation -framework CoreMedia \
+  -framework CoreVideo -framework CoreAudio -framework CoreGraphics \
+  -framework ImageIO -licucore -lm \
   -o "$OBJ_DIR/h3-ios-link-probe"
 
 echo "All selected h3.c translation units compile and the iOS device-target link probe succeeds."
