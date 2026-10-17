@@ -1,0 +1,16 @@
+Command line invocation:
+    /Applications/Xcode_26.6.app/Contents/Developer/usr/bin/xcodebuild -project RIFE60GhostGuard.xcodeproj -scheme RIFE60GhostGuard -configuration Release -sdk iphoneos -destination generic/platform=iOS -derivedDataPath build -jobs 4 SWIFT_COMPILATION_MODE=incremental CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY= build
+
+Build settings from command line:
+    CODE_SIGN_IDENTITY = 
+    CODE_SIGNING_ALLOWED = NO
+    CODE_SIGNING_REQUIRED = NO
+    SDKROOT = iphoneos26.5
+    SWIFT_COMPILATION_MODE = incremental
+
+Resolve Package Graph
+dependency 'yams' is not used by any target
+--- Live snapshot metadata ---
+Workflow run: https://github.com/dragballheros/RIFE60GhostGuard/actions/runs/39074333348
+Snapshot time (UTC): 2026-10-17T22:23:23Z
+Note: these are point-in-time copies; the next snapshot replaces these files.
