@@ -77,6 +77,8 @@ struct VACEVideoEditView: View {
     @State private var h3ModelDirectoryURL: URL?
     @State private var isChoosingH3Model = false
     @State private var h3CancellationToken: H3CancellationToken?
+    @StateObject private var h3ModelDownloader = H3ModelDownloader()
+    @State private var acceptedH3License = false
 
     var body: some View {
         NavigationStack {
@@ -118,7 +120,34 @@ struct VACEVideoEditView: View {
                         if let h3ModelDirectoryURL {
                             Text(h3ModelDirectoryURL.lastPathComponent).font(.caption).foregroundStyle(.secondary)
                         }
-                        Text("The model must already be installed locally in the native H3 runtime's expected folder layout. Model files are not included in the IPA, and this iOS port has not yet passed a real-device generation test. Official H3 reference checkpoints are extremely large; selecting a folder does not verify that all required weights are present or that the phone can complete inference. H3 requires iOS 18 or newer.")
+                        Link("Review the official MiniMax H3 model license", destination: H3ModelDownloader.licenseURL)
+                        Toggle("I accept the MiniMax H3 model license", isOn: $acceptedH3License)
+                        Button("Check official Ref2VA model files") {
+                            h3ModelDownloader.prepare()
+                        }
+                        .disabled(h3ModelDownloader.state == .listing || h3ModelDownloader.state == .downloading)
+                        if h3ModelDownloader.totalBytes > 0 {
+                            Text("\(h3ModelDownloader.totalFiles) files · about \(String(format: "%.1f", h3ModelDownloader.totalGiB)) GiB")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                        Button("Download / resume local H3 model") {
+                            h3ModelDownloader.startDownload()
+                        }
+                        .disabled(!acceptedH3License || !h3ModelDownloader.canStart || isRunning)
+                        if h3ModelDownloader.state == .downloading {
+                            ProgressView(value: h3ModelDownloader.progress)
+                            Text("\(Int(h3ModelDownloader.progress * 100))% · \(String(format: "%.2f", Double(h3ModelDownloader.downloadedBytes) / 1_073_741_824)) / \(String(format: "%.2f", h3ModelDownloader.totalGiB)) GiB")
+                                .font(.caption).foregroundStyle(.secondary)
+                            Button("Pause download") { h3ModelDownloader.cancel() }
+                        }
+                        if case .failed(let message) = h3ModelDownloader.state {
+                            Text(message).font(.caption).foregroundStyle(.red)
+                        }
+                        if h3ModelDownloader.state == .completed {
+                            Text("All Ref2VA files passed size and checksum verification.")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                        Text("The official reference checkpoint is extremely large. Files download directly to this iPhone with resumable transfers and checksum verification; weights are not included in the IPA. A successful download still does not prove H3 inference will fit or finish on this device. H3 requires iOS 18 or newer.")
                             .font(.caption).foregroundStyle(.secondary)
                     }
                 }
@@ -241,6 +270,13 @@ struct VACEVideoEditView: View {
                     status = urls.first == nil ? "No H3 model folder selected." : "Selected local H3 model folder. Native loading will validate its contents."
                 case .failure(let error):
                     errorText = error.localizedDescription
+                }
+            }
+            .onChange(of: h3ModelDownloader.state) { newState in
+                if newState == .completed {
+                    h3ModelDirectoryURL = h3ModelDownloader.destinationURL
+                    outputURL = nil
+                    status = "Official Ref2VA files downloaded and checksum-verified. Device inference is still unverified."
                 }
             }
             .onChange(of: videoItem) { item in
