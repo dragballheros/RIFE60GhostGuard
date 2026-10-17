@@ -234,15 +234,18 @@ replace_once(
     controls: [Control], version: ModelVersion, tiledDiffusion: TiledConfiguration,""",
     """    depth: DynamicGraph.Tensor<FloatType>?, hints: [ControlHintType: AnyTensor],
     custom: Tensor<FloatType>?, shuffles: [(Tensor<FloatType>, Float)], pose: Tensor<FloatType>?,
-    mask: Tensor<FloatType>?, videoMask: Tensor<FloatType>?,
+    mask: Tensor<FloatType>?, videoMask: Tensor<FloatType>? = nil,
     controls: [Control], version: ModelVersion, tiledDiffusion: TiledConfiguration,"""
 )
 
-replace_n(
+# Keep all other generation modes source-compatible; only the main video inference
+# call receives the mask. The optional parameter defaults to nil for all other callers.
+replace_once(
     LOCAL_GENERATOR,
-    "mask: nil, controls: configuration.controls,",
-    "mask: nil, videoMask: videoMask, controls: configuration.controls,",
-    expected=3
+    """        depth: depthImage, hints: hints, custom: custom, shuffles: shuffles, pose: poses.last?.0,
+        mask: nil, controls: configuration.controls, version: modelVersion,""",
+    """        depth: depthImage, hints: hints, custom: custom, shuffles: shuffles, pose: poses.last?.0,
+        mask: nil, videoMask: videoMask, controls: configuration.controls, version: modelVersion,"""
 )
 
 replace_once(
