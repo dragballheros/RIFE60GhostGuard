@@ -250,23 +250,59 @@ replace_once(
     controls: [Control], version: ModelVersion, tiledDiffusion: TiledConfiguration,"""
 )
 
-# Propagate the video mask through both inference passes. The third matching-looking
-# call belongs to a different helper with no temporal-mask argument and must remain unchanged.
+# Carry the optional temporal mask into the actual image-generation route used by
+# Wan VACE, then attach it to that route's native control-conditioning call.
 replace_once(
     LOCAL_GENERATOR,
-    """        image: firstPassImage, depth: firstPassDepthImage, hints: hints, custom: custom,
-        shuffles: shuffles, pose: poses.first?.0, mask: nil, controls: configuration.controls,""",
-    """        image: firstPassImage, depth: firstPassDepthImage, hints: hints, custom: custom,
-        shuffles: shuffles, pose: poses.first?.0, mask: nil, videoMask: videoMask,
-        controls: configuration.controls,"""
+    """  private func generateImageOnly(
+    _ image: Tensor<FloatType>, scaleFactor imageScaleFactor: Int, depth: Tensor<FloatType>?,
+    hints: [ControlHintType: AnyTensor], custom: Tensor<FloatType>?,
+    shuffles: [(Tensor<FloatType>, Float)], poses: [(Tensor<FloatType>, Float)],
+    text: String,
+    negativeText: String, configuration: GenerationConfiguration,
+    denoiserParameterization: Denoiser.Parameterization, sampling: Sampling,
+    colorCalibrationMask: Tensor<UInt8>? = nil,
+    cancellation: (@escaping () -> Void) -> Void,""",
+    """  private func generateImageOnly(
+    _ image: Tensor<FloatType>, scaleFactor imageScaleFactor: Int, depth: Tensor<FloatType>?,
+    hints: [ControlHintType: AnyTensor], custom: Tensor<FloatType>?,
+    shuffles: [(Tensor<FloatType>, Float)], poses: [(Tensor<FloatType>, Float)],
+    text: String,
+    negativeText: String, configuration: GenerationConfiguration,
+    denoiserParameterization: Denoiser.Parameterization, sampling: Sampling,
+    colorCalibrationMask: Tensor<UInt8>? = nil,
+    videoMask: Tensor<FloatType>? = nil,
+    cancellation: (@escaping () -> Void) -> Void,"""
 )
 
 replace_once(
     LOCAL_GENERATOR,
-    """        shuffles: shuffles, pose: poses.last?.0, mask: nil, controls: configuration.controls,
-        version: modelVersion,""",
-    """        shuffles: shuffles, pose: poses.last?.0, mask: nil, videoMask: videoMask,
-        controls: configuration.controls, version: modelVersion,"""
+    """      return generateImageOnly(
+        image, scaleFactor: scaleFactor, depth: depth, hints: hints, custom: custom,
+        shuffles: shuffles, poses: poses, text: text,
+        negativeText: negativeText, configuration: configuration,
+        denoiserParameterization: denoiserParameterization, sampling: sampling,
+        cancellation: cancellation, feedback: feedback)""",
+    """      return generateImageOnly(
+        image, scaleFactor: scaleFactor, depth: depth, hints: hints, custom: custom,
+        shuffles: shuffles, poses: poses, text: text,
+        negativeText: negativeText, configuration: configuration,
+        denoiserParameterization: denoiserParameterization, sampling: sampling,
+        videoMask: videoMask, cancellation: cancellation, feedback: feedback)"""
+)
+
+replace_once(
+    LOCAL_GENERATOR,
+    """      let injectedControls = generateInjectedControls(
+        graph: graph, batchSize: batchSize.0, startHeight: startHeight, startWidth: startWidth,
+        image: image,
+        depth: depthImage, hints: hints, custom: custom, shuffles: shuffles, pose: poses.last?.0,
+        mask: nil, controls: configuration.controls, version: modelVersion,""",
+    """      let injectedControls = generateInjectedControls(
+        graph: graph, batchSize: batchSize.0, startHeight: startHeight, startWidth: startWidth,
+        image: image,
+        depth: depthImage, hints: hints, custom: custom, shuffles: shuffles, pose: poses.last?.0,
+        mask: nil, videoMask: videoMask, controls: configuration.controls, version: modelVersion,"""
 )
 
 replace_once(
