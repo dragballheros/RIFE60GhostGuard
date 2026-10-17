@@ -22,6 +22,7 @@ for label, marker in {
 for label, marker in {
     "Float temporal video masks": "var videoMaskTensor: Tensor<FloatType>? = nil",
     "dedicated generation API": "generateWithVideoMask",
+    "outer generation mask parameter": "videoMask: Tensor<FloatType>? = nil,",
     "white-edit pixel mask condition": "maskFrames.full(1)",
     "inactive source video latents": "frames .* (1 - maskFrames)",
     "reactive masked video latents": "frames .* maskFrames",
