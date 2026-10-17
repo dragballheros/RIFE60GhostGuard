@@ -25,7 +25,7 @@ private enum H3ModelDownloadError: LocalizedError {
 }
 
 
-/// Downloads the root model index, shared FL2VA base assets, and Ref2VA transformer expected by h3_load_dir. Model weights are never bundled in the IPA.
+/// Downloads the complete native FL2VA base and Ref2VA task components used by h3_load_dir and reference-conditioned generation. Model weights are never bundled in the IPA.
 /// The model revision is pinned so the listed sizes and digests cannot drift under us.
 @MainActor
 final class H3ModelDownloader: ObservableObject {
@@ -216,19 +216,26 @@ final class H3ModelDownloader: ObservableObject {
                   components.allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." }),
                   !$0.path.hasPrefix("/"),
                   !$0.path.contains("\\") else { return false }
-            // The pinned native h3_load_dir implementation requires FL2VA as its
-            // shared base runtime and only the Ref2VA transformer checkpoint for
-            // reference-conditioned generation. Downloading Ref2VA's duplicated
-            // Diffusers component tree alone cannot initialize this native engine.
+            // h3_load_dir requires the FL2VA base inventory, while reference-conditioned
+            // h3_generate switches to Ref2VA tokenizer, text encoder, transformer,
+            // video VAE, and audio VAE paths. Both task trees must therefore be
+            // present; downloading only Ref2VA/transformer passes a shallow check
+            // but fails when the native reference pipeline loads its components.
             return $0.path == "model_index.json" ||
                 $0.path.hasPrefix("FL2VA/") ||
-                $0.path.hasPrefix("Ref2VA/transformer/")
+                $0.path.hasPrefix("Ref2VA/")
         }
         let requiredNativeFiles = [
             "model_index.json",
             "FL2VA/transformer/config.json",
             "FL2VA/tokenizer/tokenizer.json",
-            "Ref2VA/transformer/model.safetensors.index.json"
+            "Ref2VA/model_index.json",
+            "Ref2VA/tokenizer/tokenizer.json",
+            "Ref2VA/text_encoder/config.json",
+            "Ref2VA/transformer/config.json",
+            "Ref2VA/transformer/model.safetensors.index.json",
+            "Ref2VA/video_vae/source/config.json",
+            "Ref2VA/audio_vae/config.json"
         ]
         guard requiredNativeFiles.allSatisfy({ required in entries.contains(where: { $0.path == required }) }) &&
               entries.allSatisfy({ $0.sha256 != nil || $0.gitSHA1 != nil }) else {
