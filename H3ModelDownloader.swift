@@ -97,7 +97,11 @@ final class H3ModelDownloader: ObservableObject {
             let attributes = try fileManager.attributesOfFileSystem(forPath: root.path)
             let free = (attributes[.systemFreeSize] as? NSNumber)?.int64Value ?? 0
             let remaining = max(0, totalBytes - existingBytes())
-            guard free == 0 || free >= remaining + Self.diskMargin else {
+            guard free > 0 else {
+                state = .failed("Could not verify free iPhone storage. Free up space and retry after storage information is available.")
+                return
+            }
+            guard free >= remaining + Self.diskMargin else {
                 state = .failed("Not enough free storage. Ref2VA needs about \(String(format: "%.1f", Double(remaining + Self.diskMargin) / 1_073_741_824)) GiB including safety margin.")
                 return
             }
