@@ -53,8 +53,13 @@ private enum VACEVideoEditInputError: LocalizedError {
     }
 }
 
-/// A real local video-edit path. A still mask is propagated across the clip using
-/// on-device Vision optical flow; each 5-frame crop is processed by native Wan VACE.
+private enum LocalVideoBackend: String, CaseIterable {
+    case wanVACE = "Wan VACE"
+    case minimaxH3 = "MiniMax H3"
+}
+
+/// Local video workflows. Wan VACE performs mask-guided edits; MiniMax H3 performs
+/// reference-conditioned regeneration and does not claim pixel-mask preservation.
 struct VACEVideoEditView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var videoItem: PhotosPickerItem?
@@ -68,10 +73,53 @@ struct VACEVideoEditView: View {
     @State private var status = "Choose a video and a matching white-on-black edit mask."
     @State private var errorText: String?
     @State private var outputURL: URL?
+    @State private var selectedBackend: LocalVideoBackend = .wanVACE
+    @State private var h3ModelDirectoryURL: URL?
+    @State private var isChoosingH3Model = false
 
     var body: some View {
         NavigationStack {
             Form {
+                Section("Local model") {
+                    ForEach(LocalVideoBackend.allCases, id: \\.self) { backend in
+                        Button {
+                            selectedBackend = backend
+                            outputURL = nil
+                            errorText = nil
+                            status = backend == .wanVACE
+                                ? "Wan VACE uses the selected white-on-black mask."
+                                : "MiniMax H3 regenerates from the reference video. It does not preserve black-mask pixels."
+                        } label: {
+                            HStack(spacing: 12) {
+                                Image(systemName: selectedBackend == backend ? "checkmark.circle.fill" : "circle")
+                                    .foregroundStyle(selectedBackend == backend ? Color.accentColor : Color.secondary)
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text(backend.rawValue).foregroundStyle(.primary)
+                                    Text(backend == .wanVACE
+                                         ? "Mask-guided local editing"
+                                         : "Local reference-conditioned video regeneration")
+                                        .font(.caption).foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                            }
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    if selectedBackend == .minimaxH3 {
+                        Button {
+                            isChoosingH3Model = true
+                        } label: {
+                            Label(h3ModelDirectoryURL == nil ? "Choose local H3 model folder" : "Change local H3 model folder", systemImage: "folder")
+                        }
+                        if let h3ModelDirectoryURL {
+                            Text(h3ModelDirectoryURL.lastPathComponent).font(.caption).foregroundStyle(.secondary)
+                        }
+                        Text("The model must already be installed locally in the native H3 runtime's expected folder layout. Model files are not included in the IPA. H3 requires iOS 18 or newer; successful loading does not guarantee the phone has enough working memory to finish inference.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+
                 Section("Source video") {
                     PhotosPicker(selection: $videoItem, matching: .videos) {
                         Label(sourceURL == nil ? "Choose video from Photos" : "Change source video",
@@ -80,15 +128,20 @@ struct VACEVideoEditView: View {
                     if let sourceURL {
                         Text(sourceURL.lastPathComponent).font(.caption).foregroundStyle(.secondary)
                     }
-                    PhotosPicker(selection: $maskItem, matching: .images) {
-                        Label(maskURL == nil ? "Choose edit mask image" : "Change edit mask",
-                              systemImage: "paintbrush.pointed")
+                    if selectedBackend == .wanVACE {
+                        PhotosPicker(selection: $maskItem, matching: .images) {
+                            Label(maskURL == nil ? "Choose edit mask image" : "Change edit mask",
+                                  systemImage: "paintbrush.pointed")
+                        }
+                        if let maskURL {
+                            Text(maskURL.lastPathComponent).font(.caption).foregroundStyle(.secondary)
+                        }
+                        Text("Use a black-and-white mask with white over the area to change and black everywhere to preserve. The mask is tracked locally with optical flow; hard scene cuts stop propagation.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    } else {
+                        Text("The selected video is supplied as an H3 video reference. H3 may regenerate content outside any intended region; this mode does not use the VACE mask.")
+                            .font(.caption).foregroundStyle(.secondary)
                     }
-                    if let maskURL {
-                        Text(maskURL.lastPathComponent).font(.caption).foregroundStyle(.secondary)
-                    }
-                    Text("Use a black-and-white mask with white over the area to change and black everywhere to preserve. The mask is tracked locally with optical flow; hard scene cuts stop propagation.")
-                        .font(.caption).foregroundStyle(.secondary)
                 }
 
                 Section("Generation prompt") {
@@ -99,26 +152,42 @@ struct VACEVideoEditView: View {
                 }
 
                 Section("Explicit model / resolution") {
-                    LabeledContent("Local model", value: "Wan 2.1 VACE 1.3B Q8")
-                    LabeledContent("Inference crop", value: "512 × 512")
-                    LabeledContent("Denoising steps", value: "20")
-                    Text("This is an experimental 1.3B profile using Draw Things' native Metal runtime. It is not the requested 14B / 720p model and does not claim equivalent quality. The 14B checkpoint cannot fit in this phone's unified memory.")
-                        .font(.caption).foregroundStyle(.secondary)
-                    Text("Weights are downloaded as local model files when needed. Generation itself always uses the local backend; the sequence API rejects remote inference.")
+                    if selectedBackend == .wanVACE {
+                        LabeledContent("Local model", value: "Wan 2.1 VACE 1.3B Q8")
+                        LabeledContent("Inference crop", value: "512 × 512")
+                        LabeledContent("Denoising steps", value: "20")
+                        Text("This is an experimental 1.3B profile using Draw Things' native Metal runtime. It is not the requested 14B / 720p model and does not claim equivalent quality.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    } else {
+                        LabeledContent("Local model", value: "MiniMax H3 native Metal runtime")
+                        LabeledContent("Output canvas", value: "448 × 256")
+                        LabeledContent("Frames / steps", value: "56 / 20")
+                        Text("The H3 workflow uses the source video as a reference and exports a newly generated MOV. It is not exact masked inpainting. The native engine and checkpoint must be compatible; memory and thermal feasibility still require testing on this iPhone.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                    Text("Generation runs locally. There is no remote inference or fallback to another backend.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
 
                 Section("Run") {
                     Button {
-                        Task { await runEdit() }
+                        Task {
+                            if selectedBackend == .wanVACE {
+                                await runEdit()
+                            } else {
+                                await runH3ReferenceEdit()
+                            }
+                        }
                     } label: {
                         if isRunning {
-                            HStack { ProgressView(); Text("Running local Wan VACE…") }
+                            HStack { ProgressView(); Text(selectedBackend == .wanVACE ? "Running local Wan VACE…" : "Running local MiniMax H3…") }
                         } else {
-                            Label("Generate masked video edit", systemImage: "wand.and.stars")
+                            Label(selectedBackend == .wanVACE ? "Generate masked video edit" : "Generate H3 reference video", systemImage: "wand.and.stars")
                         }
                     }
-                    .disabled(isRunning || sourceURL == nil || maskURL == nil ||
+                    .disabled(isRunning || sourceURL == nil ||
+                              (selectedBackend == .wanVACE && maskURL == nil) ||
+                              (selectedBackend == .minimaxH3 && h3ModelDirectoryURL == nil) ||
                               prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     if isRunning {
                         ProgressView(value: progress)
@@ -137,11 +206,22 @@ struct VACEVideoEditView: View {
                     }
                 }
             }
-            .navigationTitle("Local Wan VACE Edit")
+            .navigationTitle(selectedBackend == .wanVACE ? "Local Wan VACE Edit" : "Local MiniMax H3")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Done") { dismiss() }.disabled(isRunning)
+                }
+            }
+            .fileImporter(isPresented: $isChoosingH3Model, allowedContentTypes: [.folder], allowsMultipleSelection: false) { result in
+                switch result {
+                case .success(let urls):
+                    h3ModelDirectoryURL = urls.first
+                    outputURL = nil
+                    errorText = nil
+                    status = urls.first == nil ? "No H3 model folder selected." : "Selected local H3 model folder. Native loading will validate its contents."
+                case .failure(let error):
+                    errorText = error.localizedDescription
                 }
             }
             .onChange(of: videoItem) { item in
@@ -238,6 +318,63 @@ struct VACEVideoEditView: View {
         } catch {
             errorText = error.localizedDescription
             status = "Stopped without exporting a substitute video."
+        }
+    }
+
+    @MainActor
+    private func runH3ReferenceEdit() async {
+        guard let sourceURL else { errorText = VACEVideoEditInputError.missingVideo.localizedDescription; return }
+        guard let modelURL = h3ModelDirectoryURL else {
+            errorText = "Choose a local MiniMax H3 model folder first."
+            return
+        }
+        guard #available(iOS 18.0, *) else {
+            errorText = "MiniMax H3 requires iOS 18.0 or newer. Wan VACE remains available."
+            return
+        }
+
+        isRunning = true
+        progress = 0
+        outputURL = nil
+        errorText = nil
+        status = "Checking local H3 model and reference video…"
+        defer { isRunning = false }
+
+        let hasSecurityScope = modelURL.startAccessingSecurityScopedResource()
+        defer { if hasSecurityScope { modelURL.stopAccessingSecurityScopedResource() } }
+
+        do {
+            let directory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+                .appendingPathComponent("MiniMaxH3Exports", isDirectory: true)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            let destination = directory.appendingPathComponent("MiniMaxH3-\\(UUID().uuidString).mov")
+            status = "Loading the native H3 runtime locally. Large allocations may fail on this device."
+            let requestPrompt = prompt
+            let modelDirectory = modelURL
+            let referenceVideo = sourceURL
+            let result = try await Task.detached(priority: .userInitiated) {
+                let runtime = try H3NativeRuntime.load(modelDirectory: modelDirectory)
+                return try runtime.generateReferenceConditionedVideo(
+                    prompt: requestPrompt,
+                    referenceVideoURL: referenceVideo,
+                    outputURL: destination,
+                    width: 448,
+                    height: 256,
+                    frames: 56,
+                    steps: 20,
+                    seed: 42
+                )
+            }.value
+            guard FileManager.default.fileExists(atPath: result.outputURL.path),
+                  (try? FileManager.default.attributesOfItem(atPath: result.outputURL.path)[.size] as? NSNumber)?.intValue ?? 0 > 0 else {
+                throw H3NativeRuntime.RuntimeError.generationFailed("H3 returned without creating a non-empty output video.")
+            }
+            outputURL = result.outputURL
+            progress = 1
+            status = "H3 reference-conditioned MOV created (\\(result.width) × \\(result.height), \\(result.frames) frames, seed \\(result.seed)). Verify playback and quality on-device."
+        } catch {
+            errorText = error.localizedDescription
+            status = "H3 stopped without exporting a substitute video. Wan VACE remains available."
         }
     }
 
