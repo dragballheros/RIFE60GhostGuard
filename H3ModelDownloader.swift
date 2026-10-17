@@ -76,7 +76,7 @@ final class H3ModelDownloader: ObservableObject {
                 try Task.checkCancellation()
                 guard !entries.isEmpty else { throw H3ModelDownloadError.emptyManifest }
                 files = entries.sorted { $0.path < $1.path }
-                totalBytes = files.reduce(0) { $0 + $1.size }
+                totalBytes = files.reduce(0) { $0 + $1.expectedSize }
                 totalFiles = files.count
                 downloadedBytes = existingBytes()
                 completedFiles = 0
@@ -161,7 +161,7 @@ final class H3ModelDownloader: ObservableObject {
         files.reduce(into: Int64(0)) { total, entry in
             let path = destinationURL.appendingPathComponent(entry.path).path
             let size = (try? fileManager.attributesOfItem(atPath: path)[.size] as? NSNumber)?.int64Value ?? 0
-            total += min(size, entry.size)
+            total += min(size, entry.expectedSize)
         }
     }
 
