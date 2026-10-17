@@ -365,8 +365,9 @@ struct VACEVideoEditView: View {
                     seed: 42
                 )
             }.value
-            guard FileManager.default.fileExists(atPath: result.outputURL.path),
-                  (try? FileManager.default.attributesOfItem(atPath: result.outputURL.path)[.size] as? NSNumber)?.intValue ?? 0 > 0 else {
+            let outputAttributes = try? FileManager.default.attributesOfItem(atPath: result.outputURL.path)
+            let outputSize = (outputAttributes?[.size] as? NSNumber)?.intValue ?? 0
+            guard FileManager.default.fileExists(atPath: result.outputURL.path), outputSize > 0 else {
                 throw H3NativeRuntime.RuntimeError.generationFailed("H3 returned without creating a non-empty output video.")
             }
             outputURL = result.outputURL
