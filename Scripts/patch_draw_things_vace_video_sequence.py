@@ -335,7 +335,7 @@ replace_once(UTILITIES, """  private static func hintImageDataToTensor(_ data: D
   ) -> Tensor<FloatType>? {
     guard !frames.isEmpty else { return nil }
     var output = Tensor<FloatType>(.CPU, .NHWC(frames.count, height, width, 3))
-    output.full(0)
+    // Every output element is assigned by the validated frame loop below.
     for (index, frame) in frames.enumerated() {
       let shape = frame.shape
       guard shape.count == 4, shape[0] == 1, shape[1] == height,
@@ -352,7 +352,7 @@ replace_once(UTILITIES, """  private static func hintImageDataToTensor(_ data: D
   ) -> Tensor<UInt8>? {
     guard !masks.isEmpty else { return nil }
     var output = Tensor<UInt8>(.CPU, .NHWC(masks.count, height, width, 1))
-    output.full(0)
+    // Every output element is assigned by the validated mask loop below.
     for (index, mask) in masks.enumerated() {
       let shape = mask.shape
       guard shape.count == 4, shape[0] == 1, shape[1] == height,
