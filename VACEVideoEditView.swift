@@ -1,8 +1,39 @@
 import AVFoundation
+import CoreTransferable
 import ImageIO
 import PhotosUI
 import SwiftUI
 import UniformTypeIdentifiers
+
+/// Copies a selected movie out of the Photos item provider's temporary transfer location.
+private struct PickedVideo: Transferable {
+    let url: URL
+
+    static var transferRepresentation: some TransferRepresentation {
+        FileRepresentation(importedContentType: .movie) { received in
+            let ext = received.file.pathExtension.isEmpty ? "mov" : received.file.pathExtension
+            let destination = FileManager.default.temporaryDirectory
+                .appendingPathComponent("WanVACE-Source-\\(UUID().uuidString).\\(ext)")
+            try FileManager.default.copyItem(at: received.file, to: destination)
+            return PickedVideo(url: destination)
+        }
+    }
+}
+
+/// Copies a selected mask image to a stable local URL without relying on a Photos-only URL.
+private struct PickedImage: Transferable {
+    let url: URL
+
+    static var transferRepresentation: some TransferRepresentation {
+        FileRepresentation(importedContentType: .image) { received in
+            let ext = received.file.pathExtension.isEmpty ? "png" : received.file.pathExtension
+            let destination = FileManager.default.temporaryDirectory
+                .appendingPathComponent("WanVACE-Mask-\\(UUID().uuidString).\\(ext)")
+            try FileManager.default.copyItem(at: received.file, to: destination)
+            return PickedImage(url: destination)
+        }
+    }
+}
 
 private enum VACEVideoEditInputError: LocalizedError {
     case missingVideo
