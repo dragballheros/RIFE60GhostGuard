@@ -36,8 +36,9 @@ enum H3RuntimePreflight {
         ) && isDirectory.boolValue
 
         return Report(
-            isOperatingSystemSupported: ProcessInfo.processInfo.operatingSystemVersion
-                .isAtLeast(majorVersion: 18, minorVersion: 0, patchVersion: 0),
+            isOperatingSystemSupported: ProcessInfo.processInfo.isOperatingSystemAtLeast(
+                OperatingSystemVersion(majorVersion: 18, minorVersion: 0, patchVersion: 0)
+            ),
             modelDirectoryExists: exists,
             availableMemoryBytes: UInt64(os_proc_available_memory()),
             modelDirectory: modelDirectory
@@ -45,13 +46,3 @@ enum H3RuntimePreflight {
     }
 }
 
-private extension OperatingSystemVersion {
-    func isAtLeast(majorVersion: Int, minorVersion: Int, patchVersion: Int) -> Bool {
-        let required = OperatingSystemVersion(
-            majorVersion: majorVersion,
-            minorVersion: minorVersion,
-            patchVersion: patchVersion
-        )
-        return self >= required
-    }
-}
