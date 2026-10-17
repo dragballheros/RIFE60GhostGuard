@@ -107,3 +107,12 @@ The current public H3 Community License text excludes the United States, Europea
 - [ ] Visible two-model list wired to two working backends.
 
 Until the unchecked runtime and device gates pass, H3 is a feasibility investigation, not a functional feature.
+
+
+## Follow-up research: native AVFoundation integration candidate (2026-10-17)
+
+A second project, [JunzoKamahara/H3cApp](https://github.com/JunzoKamahara/H3cApp), is a native macOS application built around an H3 C/Metal engine. Its published project description states that media I/O uses AVFoundation/ImageIO rather than requiring an external FFmpeg executable for the app's media path. This is useful evidence that the H3 engine can be separated from its command-line media shell, but the application is explicitly macOS-only and is not an iOS port. Its model notes also describe FL2VA alone as roughly 134 GiB and FL2VA plus Ref2VA as roughly 268 GiB; those figures are checkpoint storage, not a claim that the iPhone can hold or execute the model.
+
+This changes the next engineering step: before writing app integration code, compare the fork's media boundary and upstream H3 engine changes against the pinned revision in `Scripts/audit_h3_ios_portability.sh`. Do not copy the whole macOS app into this iOS repository. Extract only portable inference code and the AVFoundation design where APIs are available on iOS, then compile and link an iOS-targeted static library with an explicit source list. The current compile audit is only a first probe; it does not yet validate linking, API availability at runtime, model compatibility, or device memory.
+
+The GitHub connector did not return any PR-triggered workflow runs for head commit `d309b818ced3806158a4a9018695e4acf69bcd56`. Because that connector only returns PR-triggered runs, this result does **not** establish that the push-triggered audit did not run. The audit status remains **unverified** until the specific Actions run is inspected.
