@@ -14,7 +14,7 @@ private enum H3ModelDownloadError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .listing(let status): return "Could not list official H3 model files (HTTP \(status))."
-        case .emptyManifest: return "The pinned Ref2VA model manifest was empty."
+        case .emptyManifest: return "The pinned H3 model manifest did not contain all required native FL2VA/Ref2VA assets or verifiable checksums."
         case .badDigest(let path): return "No verifiable checksum was supplied for \(path)."
         case .badSize(let path): return "Downloaded size did not match the manifest for \(path)."
         case .http(let path, let status): return "Download failed for \(path) (HTTP \(status))."
@@ -25,7 +25,7 @@ private enum H3ModelDownloadError: LocalizedError {
 }
 
 
-/// Downloads the root model index and Ref2VA task tree expected by h3_load_dir. Model weights are never bundled in the IPA.
+/// Downloads the root model index, shared FL2VA base assets, and Ref2VA transformer expected by h3_load_dir. Model weights are never bundled in the IPA.
 /// The model revision is pinned so the listed sizes and digests cannot drift under us.
 @MainActor
 final class H3ModelDownloader: ObservableObject {
@@ -106,7 +106,7 @@ final class H3ModelDownloader: ObservableObject {
                 return
             }
             guard free >= remaining + Self.diskMargin else {
-                state = .failed("Not enough free storage. Ref2VA needs about \(String(format: "%.1f", Double(remaining + Self.diskMargin) / 1_073_741_824)) GiB including safety margin.")
+                state = .failed("Not enough free storage. The required native H3 model files need about \(String(format: "%.1f", Double(remaining + Self.diskMargin) / 1_073_741_824)) GiB including safety margin.")
                 return
             }
         } catch {
