@@ -216,10 +216,21 @@ final class H3ModelDownloader: ObservableObject {
                   components.allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." }),
                   !$0.path.hasPrefix("/"),
                   !$0.path.contains("\\") else { return false }
-            return $0.path == "model_index.json" || $0.path.hasPrefix("Ref2VA/")
+            // The pinned native h3_load_dir implementation requires FL2VA as its
+            // shared base runtime and only the Ref2VA transformer checkpoint for
+            // reference-conditioned generation. Downloading Ref2VA's duplicated
+            // Diffusers component tree alone cannot initialize this native engine.
+            return $0.path == "model_index.json" ||
+                $0.path.hasPrefix("FL2VA/") ||
+                $0.path.hasPrefix("Ref2VA/transformer/")
         }
-        guard entries.contains(where: { $0.path == "model_index.json" }) &&
-              entries.contains(where: { $0.path == "Ref2VA/model_index.json" }) &&
+        let requiredNativeFiles = [
+            "model_index.json",
+            "FL2VA/transformer/config.json",
+            "FL2VA/tokenizer/tokenizer.json",
+            "Ref2VA/transformer/model.safetensors.index.json"
+        ]
+        guard requiredNativeFiles.allSatisfy({ required in entries.contains(where: { $0.path == required }) }) &&
               entries.allSatisfy({ $0.sha256 != nil || $0.gitSHA1 != nil }) else {
             throw H3ModelDownloadError.emptyManifest
         }
