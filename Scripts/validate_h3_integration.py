@@ -27,6 +27,7 @@ checks = [
     ("H3 workflow does not claim VACE mask semantics", "does not use the VACE mask" in UI and "does not claim pixel-mask preservation" in UI),
     ("H3 model folder is selected locally", '.fileImporter(isPresented: $isChoosingH3Model, allowedContentTypes: [.folder]' in UI),
     ("H3 generation fails closed on unsupported iOS", "requires iOS 18.0 or newer" in PREFLIGHT and "guard preflight.isOperatingSystemSupported" in RUNTIME),
+    ("H3 has an available-memory floor before native loading", "minimumAvailableMemoryBytes: UInt64 = 2 * 1024 * 1024 * 1024" in PREFLIGHT and "guard preflight.hasMinimumMemory" in RUNTIME and "case insufficientMemory(String)" in RUNTIME),
     ("H3 uses the video reference C API", "reference.kind = H3_REFERENCE_VIDEO" in RUNTIME and "params.reference_count = 1" in RUNTIME),
     ("H3 uses disk-streaming mode", "params.ssd_streaming = 1" in RUNTIME),
     ("native H3 progress callback is wired", "params.on_progress = h3NativeProgressCallback" in RUNTIME and "onProgress: { phase, fraction" in UI),
