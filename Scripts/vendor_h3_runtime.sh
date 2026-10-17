@@ -28,10 +28,19 @@ for source in "${c_sources[@]}" "${objc_sources[@]}"; do
   cp "$WORK_DIR/$source" "$DEST_DIR/$source"
 done
 
-test -s "$WORK_DIR/h3.h"
+# These translation units include private sibling headers, not just h3.h.
+# Stage every root-level header from the pinned revision so Xcode's build does
+# not fail on missing h3_internal.h / component interfaces.
+header_count=0
+for header in "$WORK_DIR"/*.h; do
+  test -s "$header"
+  cp "$header" "$DEST_DIR/"
+  header_count=$((header_count + 1))
+done
+test "$header_count" -gt 1
+
 test -s "$WORK_DIR/h3_shaders.metal"
-cp "$WORK_DIR/h3.h" "$DEST_DIR/h3.h"
 cp "$WORK_DIR/h3_shaders.metal" "$DEST_DIR/h3_shaders.metal"
 
 echo "Vendored pinned H3 native source revision $H3_REVISION into $DEST_DIR."
-echo "C/Objective-C source files: ${#c_sources[@]}+${#objc_sources[@]}; model weights are excluded."
+echo "C/Objective-C source files: ${#c_sources[@]}+${#objc_sources[@]}; headers: $header_count; model weights are excluded."
