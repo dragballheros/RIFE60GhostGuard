@@ -44,5 +44,25 @@ for source in "${objc_sources[@]}"; do
   echo "::endgroup::"
 done
 
-echo "All selected h3.c translation units compile against the iOS SDK."
-echo "This does not prove link success, AVFoundation integration, model parity, or target-device feasibility."
+# Build a static archive, then force-load every member into a tiny device-target
+# link probe. This catches unresolved symbols/framework assumptions that a
+# translation-unit-only compile cannot detect. It still does not run on device.
+xcrun --sdk iphoneos ar rcs "$OBJ_DIR/libh3-ios.a" "$OBJ_DIR"/*.o
+cat > "$OBJ_DIR/link_probe.c" <<'EOF'
+#include "h3.h"
+int main(void) {
+    h3_ctx *ctx = h3_load_dir("/nonexistent-h3-model-for-link-probe");
+    if (ctx) h3_free(ctx);
+    return 0;
+}
+EOF
+xcrun --sdk iphoneos clang -std=c11 -target arm64-apple-ios16.0 \
+  -isysroot "$SDK" -I "$H3_DIR" "$OBJ_DIR/link_probe.c" \
+  -Wl,-all_load "$OBJ_DIR/libh3-ios.a" \
+  -framework Foundation -framework Metal \
+  -framework MetalPerformanceShaders -framework MetalPerformanceShadersGraph \
+  -framework Accelerate -licucore -lm \
+  -o "$OBJ_DIR/h3-ios-link-probe"
+
+echo "All selected h3.c translation units compile and the iOS device-target link probe succeeds."
+echo "This does not prove runtime availability safety, AVFoundation integration, model parity, or target-device feasibility."
