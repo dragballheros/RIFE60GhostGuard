@@ -31,7 +31,10 @@ final class H3NativeRuntime {
         // resources. Keep it off the main thread at call sites and catch
         // failures at the UI boundary. The runtime does not promise that a
         // successful load can complete a generation on this device.
-        guard let context = h3_load_dir(modelDirectory.path) else {
+        let loadedContext = modelDirectory.path.withCString { path in
+            h3_load_dir(path)
+        }
+        guard let context = loadedContext else {
             throw RuntimeError.nativeLoadFailed(
                 "The native H3 runtime could not load the selected model directory. Check its files and available memory."
             )
