@@ -1,5 +1,47 @@
 import Foundation
 
+/// Thread-safe cancellation signal shared by SwiftUI and the native H3 progress callback.
+final class H3CancellationToken: @unchecked Sendable {
+    private let lock = NSLock()
+    private var cancelled = false
+
+    func cancel() {
+        lock.lock()
+        cancelled = true
+        lock.unlock()
+    }
+
+    var isCancelled: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return cancelled
+    }
+}
+
+private final class H3ProgressContext {
+    let cancellationToken: H3CancellationToken?
+    let handler: ((String, Double) -> Void)?
+
+    init(cancellationToken: H3CancellationToken?, handler: ((String, Double) -> Void)?) {
+        self.cancellationToken = cancellationToken
+        self.handler = handler
+    }
+}
+
+private func h3NativeProgressCallback(
+    _ phase: UnsafePointer<CChar>?,
+    _ completed: Int32,
+    _ total: Int32,
+    _ opaque: UnsafeMutableRawPointer?
+) -> Int32 {
+    guard let opaque else { return 0 }
+    let context = Unmanaged<H3ProgressContext>.fromOpaque(opaque).takeUnretainedValue()
+    let fraction = total > 0 ? min(1, max(0, Double(completed) / Double(total))) : 0
+    let phaseName = phase.map { String(cString: $0) } ?? "MiniMax H3"
+    context.handler?(phaseName, fraction)
+    return context.cancellationToken?.isCancelled == true ? 1 : 0
+}
+
 /// Owns a native H3 context. This is deliberately separate from the Wan VACE
 /// engine; merely creating a context is not proof that generation will fit in
 /// memory or that a particular model directory contains usable weights.
@@ -123,7 +165,9 @@ final class H3NativeRuntime {
         height: Int = 256,
         frames: Int = 56,
         steps: Int = 20,
-        seed: UInt64 = 42
+        seed: UInt64 = 42,
+        cancellationToken: H3CancellationToken? = nil,
+        onProgress: ((String, Double) -> Void)? = nil
     ) throws -> GenerationResult {
         guard let context else {
             throw RuntimeError.nativeLoadFailed("The H3 runtime context has already been released.")
@@ -152,8 +196,11 @@ final class H3NativeRuntime {
         params.references = nil
         params.reference_count = 0
         params.on_frame = nil
-        params.on_progress = nil
-        params.callback_opaque = nil
+        let progressContext = H3ProgressContext(cancellationToken: cancellationToken, handler: onProgress)
+        let opaque = Unmanaged.passRetained(progressContext).toOpaque()
+        defer { Unmanaged<H3ProgressContext>.fromOpaque(opaque).release() }
+        params.on_progress = h3NativeProgressCallback
+        params.callback_opaque = opaque
 
         let resultPointer = referenceVideoURL.path.withCString { referencePathPointer in
             prompt.withCString { promptPointer in
@@ -174,6 +221,9 @@ final class H3NativeRuntime {
         }
 
         guard let resultPointer else {
+            if cancellationToken?.isCancelled == true {
+                throw RuntimeError.cancelled
+            }
             let message: String
             if let errorPointer = h3_last_error(context) {
                 message = String(cString: errorPointer)
@@ -206,6 +256,7 @@ final class H3NativeRuntime {
         case nativeLoadFailed(String)
         case invalidRequest(String)
         case generationFailed(String)
+        case cancelled
 
         var errorDescription: String? {
             switch self {
