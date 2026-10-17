@@ -35,13 +35,35 @@ replacement = """h3_gpu *h3_gpu_create(const char *shader_source_path,
             return NULL;
         }
 """
-if replacement in source:
-    print("H3 iOS 18.0 initialization guard already applied.")
-    raise SystemExit(0)
-if source.count(needle) != 1:
-    raise SystemExit(
-        "Refusing to patch: expected exactly one h3_gpu_create entry point; "
-        f"found {source.count(needle)}"
-    )
-path.write_text(source.replace(needle, replacement), encoding="utf-8")
-print("Applied fail-closed iOS 18.0 H3 engine initialization guard.")
+guard_present = replacement in source
+if not guard_present:
+    if source.count(needle) != 1:
+        raise SystemExit(
+            "Refusing to patch: expected exactly one h3_gpu_create entry point; "
+            f"found {source.count(needle)}"
+        )
+    source = source.replace(needle, replacement, 1)
+
+shader_needle = 'NSString *path = [NSString stringWithUTF8String:source_path];'
+shader_replacement = """NSString *path = [NSString stringWithUTF8String:source_path];
+        /*
+         * On iOS the process working directory is not the app bundle. Resolve
+         * the runtime's relative shader name against the bundled resource.
+         */
+        if (![path isAbsolutePath] &&
+            ![[NSFileManager defaultManager] fileExistsAtPath:path]) {
+            NSString *bundledShader =
+                [[NSBundle mainBundle] pathForResource:@"h3_shaders" ofType:@"metal"];
+            if (bundledShader) path = bundledShader;
+        }"""
+shader_present = shader_replacement in source
+if not shader_present:
+    if source.count(shader_needle) != 1:
+        raise SystemExit(
+            "Refusing to patch: expected exactly one shader path resolver; "
+            f"found {source.count(shader_needle)}"
+        )
+    source = source.replace(shader_needle, shader_replacement, 1)
+
+path.write_text(source, encoding="utf-8")
+print("H3 iOS runtime patches present: minimum iOS 18 guard and app-bundle shader resolution.")
