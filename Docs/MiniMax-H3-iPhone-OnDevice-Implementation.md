@@ -155,3 +155,10 @@ The native engine reports device physical memory, recommended working set, and M
 Do not yet add H3 as an enabled backend in `VACEVideoEditView`. That screen currently requires a `VACERegionReconstructionEngine` which produces masked, source-sized five-frame patches. H3's `h3_generate` API instead produces a complete generated clip from its own text/reference inputs and does not accept the VACE per-pixel edit mask. Wiring H3 into the existing protocol would either be semantically incorrect or require a mask-conditioned H3 implementation that has not been built.
 
 The next correct step is a separate H3 engine adapter and workflow, preserving the Wan VACE editor untouched: first integrate the native runtime and AVFoundation media adapters, then expose a distinct reference-conditioned generation path, with explicit disclosure that it does not provide Wan VACE's exact mask-preservation semantics. Only after real iPhone memory and inference tests should the H3 action become enabled in the UI.
+
+
+## Progress update — app-side capability boundary
+
+Added `H3RuntimePreflight.swift` to the app target's root Swift source set. It reports whether the OS is iOS 18+, whether a proposed local model directory exists, and the process's currently available-memory estimate. Its message explicitly treats a passed check as permission to *attempt* initialization, not proof of successful generation. The existing app-wide iOS 16 deployment target and Wan VACE path are unchanged.
+
+The H3 portability workflow now type-checks this Swift file against the iOS 16 SDK as well as running the native source audit. This is still a preflight utility only: it is not yet called by an editor screen, does not load model weights, does not link the H3 C/Objective-C sources into the application target, and does not establish that a supported H3 checkpoint fits on the iPhone. The next implementation gate remains vendoring/linking the pinned native runtime and adding a C bridge before any H3 UI can honestly be marked functional.
