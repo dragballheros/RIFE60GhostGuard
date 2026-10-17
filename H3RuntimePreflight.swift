@@ -33,7 +33,7 @@ enum H3RuntimePreflight {
                 return "MiniMax H3 model files are not installed. Select or install a compatible local H3 model directory first."
             }
             if !modelLayoutIsValid {
-                return "The selected folder is not a complete H3 Ref2VA Diffusers checkpoint. Expected model_index.json plus processor, tokenizer, text_encoder, transformer, visual_vae, and audio_vae. A partial download or a GGUF-only file is not compatible with this native runtime."
+                return "The selected folder is not a complete H3 Ref2VA Diffusers checkpoint. Expected model_index.json plus processor, tokenizer, text_encoder, transformer, video_vae, and audio_vae. A partial download or a GGUF-only file is not compatible with this native runtime."
             }
             if !hasMinimumMemory {
                 let availableGiB = Double(availableMemoryBytes) / 1_073_741_824
@@ -50,7 +50,7 @@ enum H3RuntimePreflight {
             isDirectory: &isDirectory
         ) && isDirectory.boolValue
         let requiredFiles = ["model_index.json", "Ref2VA/model_index.json"]
-        let requiredDirectories = ["Ref2VA/processor", "Ref2VA/tokenizer", "Ref2VA/text_encoder", "Ref2VA/transformer", "Ref2VA/visual_vae", "Ref2VA/audio_vae"]
+        let requiredDirectories = ["Ref2VA/processor", "Ref2VA/tokenizer", "Ref2VA/text_encoder", "Ref2VA/transformer", "Ref2VA/video_vae", "Ref2VA/audio_vae"]
         let filesArePresent = requiredFiles.allSatisfy { relativePath in
             let candidate = modelDirectory.appendingPathComponent(relativePath)
             var isDirectory: ObjCBool = false
