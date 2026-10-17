@@ -250,14 +250,23 @@ replace_once(
     controls: [Control], version: ModelVersion, tiledDiffusion: TiledConfiguration,"""
 )
 
-# Keep all other generation modes source-compatible; only the main video inference
-# call receives the mask. The optional parameter defaults to nil for all other callers.
+# Propagate the video mask through both inference passes. The third matching-looking
+# call belongs to a different helper with no temporal-mask argument and must remain unchanged.
 replace_once(
     LOCAL_GENERATOR,
-    """        depth: depthImage, hints: hints, custom: custom, shuffles: shuffles, pose: poses.last?.0,
-        mask: nil, controls: configuration.controls, version: modelVersion,""",
-    """        depth: depthImage, hints: hints, custom: custom, shuffles: shuffles, pose: poses.last?.0,
-        mask: nil, videoMask: videoMask, controls: configuration.controls, version: modelVersion,"""
+    """        image: firstPassImage, depth: firstPassDepthImage, hints: hints, custom: custom,
+        shuffles: shuffles, pose: poses.first?.0, mask: nil, controls: configuration.controls,""",
+    """        image: firstPassImage, depth: firstPassDepthImage, hints: hints, custom: custom,
+        shuffles: shuffles, pose: poses.first?.0, mask: nil, videoMask: videoMask,
+        controls: configuration.controls,"""
+)
+
+replace_once(
+    LOCAL_GENERATOR,
+    """        shuffles: shuffles, pose: poses.last?.0, mask: nil, controls: configuration.controls,
+        version: modelVersion,""",
+    """        shuffles: shuffles, pose: poses.last?.0, mask: nil, videoMask: videoMask,
+        controls: configuration.controls, version: modelVersion,"""
 )
 
 replace_once(
