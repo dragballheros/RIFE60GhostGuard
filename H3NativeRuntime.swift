@@ -114,6 +114,84 @@ final class H3NativeRuntime {
         )
     }
 
+    /// Generates a new video conditioned on an input video reference. This is H3 reference-conditioned regeneration, not VACE-style masked inpainting.
+    func generateReferenceConditionedVideo(
+        prompt: String,
+        referenceVideoURL: URL,
+        outputURL: URL,
+        width: Int = 448,
+        height: Int = 256,
+        frames: Int = 56,
+        steps: Int = 20,
+        seed: UInt64 = 42
+    ) throws -> GenerationResult {
+        guard let context else {
+            throw RuntimeError.nativeLoadFailed("The H3 runtime context has already been released.")
+        }
+        guard !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw RuntimeError.invalidRequest("Enter a non-empty prompt.")
+        }
+        guard FileManager.default.fileExists(atPath: referenceVideoURL.path) else {
+            throw RuntimeError.invalidRequest("The selected reference video is no longer accessible.")
+        }
+        guard width >= 256, height >= 256, width % 32 == 0, height % 32 == 0,
+              frames >= 1, steps >= 1 else {
+            throw RuntimeError.invalidRequest("H3 dimensions must be multiples of 32 and frames/steps must be positive.")
+        }
+
+        var params = h3_params()
+        params.width = Int32(width)
+        params.height = Int32(height)
+        params.frames = Int32(frames)
+        params.steps = Int32(steps)
+        params.seed = seed
+        params.ssd_streaming = 1
+        params.output_path = nil
+        params.first_frame = nil
+        params.last_frame = nil
+        params.references = nil
+        params.reference_count = 0
+        params.on_frame = nil
+        params.on_progress = nil
+        params.callback_opaque = nil
+
+        let resultPointer = referenceVideoURL.path.withCString { referencePathPointer in
+            prompt.withCString { promptPointer in
+                outputURL.path.withCString { outputPathPointer in
+                    var reference = h3_reference()
+                    reference.kind = H3_REFERENCE_VIDEO
+                    reference.path = referencePathPointer
+                    reference.audio_path = nil
+                    reference.include_embedded_audio = 1
+                    return withUnsafePointer(to: &reference) { referencePointer in
+                        params.references = referencePointer
+                        params.reference_count = 1
+                        params.output_path = outputPathPointer
+                        return h3_generate(context, promptPointer, &params)
+                    }
+                }
+            }
+        }
+
+        guard let resultPointer else {
+            let message: String
+            if let errorPointer = h3_last_error(context) {
+                message = String(cString: errorPointer)
+            } else {
+                message = "H3 reference-conditioned generation failed without a native diagnostic."
+            }
+            throw RuntimeError.generationFailed(message)
+        }
+        defer { h3_result_free(resultPointer) }
+        return GenerationResult(
+            outputURL: outputURL,
+            width: Int(resultPointer.pointee.width),
+            height: Int(resultPointer.pointee.height),
+            frames: Int(resultPointer.pointee.frames),
+            seed: resultPointer.pointee.seed
+        )
+    }
+
     struct GenerationResult {
         let outputURL: URL
         let width: Int
