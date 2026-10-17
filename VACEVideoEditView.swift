@@ -82,7 +82,7 @@ struct VACEVideoEditView: View {
         NavigationStack {
             Form {
                 Section("Local model") {
-                    ForEach(LocalVideoBackend.allCases, id: \\.self) { backend in
+                    ForEach(LocalVideoBackend.allCases, id: \.self) { backend in
                         Button {
                             selectedBackend = backend
                             outputURL = nil
