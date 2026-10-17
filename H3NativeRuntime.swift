@@ -68,6 +68,9 @@ final class H3NativeRuntime {
         guard preflight.modelDirectoryExists else {
             throw RuntimeError.missingModelDirectory(preflight.message)
         }
+        guard preflight.modelLayoutIsValid else {
+            throw RuntimeError.missingModelDirectory(preflight.message)
+        }
         guard preflight.hasMinimumMemory else {
             throw RuntimeError.insufficientMemory(preflight.message)
         }
