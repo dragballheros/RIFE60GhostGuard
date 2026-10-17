@@ -18,6 +18,7 @@ PROJECT = (ROOT / "project.yml").read_text(encoding="utf-8")
 BRIDGE = (ROOT / "RIFE60GhostGuard-Bridging-Header.h").read_text(encoding="utf-8")
 HEADER_PATH = ROOT / "Vendor" / "minimax-h3" / "h3.h"
 NATIVE_PATH = ROOT / "Vendor" / "minimax-h3" / "h3_gpu.m"
+NATIVE_CORE_PATH = ROOT / "Vendor" / "minimax-h3" / "h3.c"
 
 checks = [
     ("Swift string interpolation is not double-escaped", "\\\\(" not in UI),
@@ -30,6 +31,7 @@ checks = [
     ("H3 validates Ref2VA video duration and playable track before native loading", "Official Ref2VA accepts reference clips of 2–15 seconds" in UI and "(2.0...15.0).contains(referenceDuration.seconds)" in UI and "loadTracks(withMediaType: .video)" in UI),
     ("H3 model folder is selected locally", '.fileImporter(isPresented: $isChoosingH3Model, allowedContentTypes: [.folder]' in UI),
     ("H3 downloader includes shared FL2VA base assets and the native Ref2VA transformer at a pinned revision", "42ed227ee7df40d41602854ae760620d6eb651fe" in DOWNLOADER and "tree/\\(revision)?recursive=true&expand=true" in DOWNLOADER and '$0.path.hasPrefix("FL2VA/")' in DOWNLOADER and '$0.path.hasPrefix("Ref2VA/transformer/")' in DOWNLOADER and '"FL2VA/transformer/config.json"' in DOWNLOADER and '"Ref2VA/transformer/model.safetensors.index.json"' in DOWNLOADER),
+    ("native h3_load_dir file requirements are represented in downloader and preflight", NATIVE_CORE_PATH.is_file() and all(path in NATIVE_CORE_PATH.read_text(encoding="utf-8") for path in ["FL2VA/transformer/config.json", "FL2VA/tokenizer/tokenizer.json", "FL2VA/text_encoder", "FL2VA/video_vae/source", "FL2VA/audio_vae", "Ref2VA/transformer/model.safetensors.index.json"]) and all(path in DOWNLOADER and path in PREFLIGHT for path in ["FL2VA/transformer/config.json", "FL2VA/tokenizer/tokenizer.json", "Ref2VA/transformer/model.safetensors.index.json"])),
     ("H3 model downloads resume and verify file checksums", 'forHTTPHeaderField: "Range"' in DOWNLOADER and "SHA256()" in DOWNLOADER and "Insecure.SHA1()" in DOWNLOADER),
     ("H3 model manifest follows every Hub pagination page and rejects duplicate paths", "nextPageURL(from: http)" in DOWNLOADER and "visitedPages" in DOWNLOADER and "uniquePaths.count == entries.count" in DOWNLOADER),
     ("H3 model download requires explicit territorial license authorization confirmation", "I have verified that my use is authorized by the license" in UI and "disabled(!acceptedH3License" in UI and "United States, European Union, United Kingdom, and South Korea" in UI and "MiniMax has separately authorized you" in UI),
