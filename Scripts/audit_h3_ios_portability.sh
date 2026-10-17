@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Compile-only portability audit. This intentionally does not claim runtime
-# readiness: AVFoundation adapters, model weights, memory, and device execution
-# are separate acceptance gates.
+# Compile-and-link portability probe for the pinned AVFoundation H3 engine fork.
+# This intentionally does not claim runtime readiness: API availability, app
+# integration, model weights, memory, and device execution remain separate gates.
 readonly H3_REPO="https://github.com/JunzoKamahara/H3cApp.git"
 readonly H3_REVISION="826fafffc84a15283cb7b3f4c234e7aedf07516c"
 readonly H3_DIR="${RUNNER_TEMP:-/tmp}/h3.c"
