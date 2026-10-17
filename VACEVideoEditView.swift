@@ -274,7 +274,7 @@ struct VACEVideoEditView: View {
                 }
                 Button("Cancel", role: .cancel) {}
             } message: {
-                Text("This permanently deletes the downloaded H3 FL2VA and Ref2VA files from this iPhone. It does not delete a separately selected model folder.")
+                Text("This permanently deletes the downloaded H3 FL2VA base and Ref2VA transformer files from this iPhone. It does not delete a separately selected model folder.")
             }
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
@@ -296,7 +296,7 @@ struct VACEVideoEditView: View {
                 if newState == .completed {
                     h3ModelDirectoryURL = h3ModelDownloader.destinationURL
                     outputURL = nil
-                    status = "Native H3 FL2VA base and complete Ref2VA components downloaded and checksum-verified. Device inference is still unverified."
+                    status = "Native H3 FL2VA base and Ref2VA transformer checkpoint downloaded and checksum-verified. Device inference is still unverified."
                 }
             }
             .onChange(of: videoItem) { item in
