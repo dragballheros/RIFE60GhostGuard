@@ -19,7 +19,7 @@ HEADER_PATH = ROOT / "Vendor" / "minimax-h3" / "h3.h"
 NATIVE_PATH = ROOT / "Vendor" / "minimax-h3" / "h3_gpu.m"
 
 checks = [
-    ("Swift string interpolation is not double-escaped", not re.search(r"\\\\\\(", UI)),
+    ("Swift string interpolation is not double-escaped", "\\\\(" not in UI),
     ("H3 and Wan are separate visible backend choices", "case wanVACE" in UI and "case minimaxH3" in UI and "ForEach(LocalVideoBackend.allCases" in UI),
     ("model selection uses checkbox-style indicators", 'Image(systemName: selectedBackend == backend ? "checkmark.circle.fill" : "circle")' in UI),
     ("no dropdown picker in the editor", not re.search(r"\bPicker\s*\(", UI)),
