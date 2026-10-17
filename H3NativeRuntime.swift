@@ -68,6 +68,9 @@ final class H3NativeRuntime {
         guard preflight.modelDirectoryExists else {
             throw RuntimeError.missingModelDirectory(preflight.message)
         }
+        guard preflight.hasMinimumMemory else {
+            throw RuntimeError.insufficientMemory(preflight.message)
+        }
 
         // Native model loading may allocate substantial memory and Metal
         // resources. Keep it off the main thread at call sites and catch
@@ -253,6 +256,7 @@ final class H3NativeRuntime {
     enum RuntimeError: LocalizedError {
         case unsupportedOperatingSystem(String)
         case missingModelDirectory(String)
+        case insufficientMemory(String)
         case nativeLoadFailed(String)
         case invalidRequest(String)
         case generationFailed(String)
@@ -262,6 +266,7 @@ final class H3NativeRuntime {
             switch self {
             case .unsupportedOperatingSystem(let message),
                  .missingModelDirectory(let message),
+                 .insufficientMemory(let message),
                  .nativeLoadFailed(let message),
                  .invalidRequest(let message),
                  .generationFailed(let message):
