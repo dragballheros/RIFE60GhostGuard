@@ -79,6 +79,7 @@ struct VACEVideoEditView: View {
     @State private var h3CancellationToken: H3CancellationToken?
     @StateObject private var h3ModelDownloader = H3ModelDownloader()
     @State private var acceptedH3License = false
+    @State private var isConfirmingH3ModelDelete = false
 
     var body: some View {
         NavigationStack {
@@ -146,8 +147,11 @@ struct VACEVideoEditView: View {
                         if h3ModelDownloader.state == .completed {
                             Text("All Ref2VA files passed size and checksum verification.")
                                 .font(.caption).foregroundStyle(.secondary)
+                            Button("Delete downloaded H3 model and free storage", role: .destructive) {
+                                isConfirmingH3ModelDelete = true
+                            }
                         }
-                        Text("The official reference checkpoint is extremely large. Files download directly to this iPhone with resumable transfers and checksum verification; weights are not included in the IPA. A successful download still does not prove H3 inference will fit or finish on this device. H3 requires iOS 18 or newer.")
+                        Text("The official reference checkpoint is extremely large. Files download directly to this iPhone with resumable transfers and checksum verification; downloaded weights are excluded from device backups and are not included in the IPA. A successful download still does not prove H3 inference will fit or finish on this device. H3 requires iOS 18 or newer.")
                             .font(.caption).foregroundStyle(.secondary)
                     }
                 }
@@ -256,6 +260,20 @@ struct VACEVideoEditView: View {
             }
             .navigationTitle(selectedBackend == .wanVACE ? "Local Wan VACE Edit" : "Local MiniMax H3")
             .navigationBarTitleDisplayMode(.inline)
+            .confirmationDialog("Delete the downloaded MiniMax H3 model?", isPresented: $isConfirmingH3ModelDelete, titleVisibility: .visible) {
+                Button("Delete model and free storage", role: .destructive) {
+                    let downloadedURL = h3ModelDownloader.destinationURL
+                    do {
+                        try h3ModelDownloader.deleteDownloadedModel()
+                        if h3ModelDirectoryURL == downloadedURL { h3ModelDirectoryURL = nil }
+                    } catch {
+                        errorText = "Could not delete the downloaded H3 model: \(error.localizedDescription)"
+                    }
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("This permanently deletes the downloaded Ref2VA files from this iPhone. It does not delete a separately selected model folder.")
+            }
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Done") { dismiss() }.disabled(isRunning)
