@@ -30,6 +30,7 @@ checks = [
     ("H3 uses the video reference C API", "reference.kind = H3_REFERENCE_VIDEO" in RUNTIME and "params.reference_count = 1" in RUNTIME),
     ("H3 uses disk-streaming mode", "params.ssd_streaming = 1" in RUNTIME),
     ("native H3 progress callback is wired", "params.on_progress = h3NativeProgressCallback" in RUNTIME and "onProgress: { phase, fraction" in UI),
+    ("cancellation error is handled exhaustively", "case .cancelled:" in RUNTIME and "MiniMax H3 generation was cancelled." in RUNTIME),
     ("user cancellation reaches the native progress callback", "H3CancellationToken" in RUNTIME and "Cancel H3 generation" in UI and "return context.cancellationToken?.isCancelled == true ? 1 : 0" in RUNTIME),
     ("H3 output must exist and be non-empty", "outputSize > 0" in UI),
     ("no remote inference client in H3 UI/runtime", "URLSession" not in UI + RUNTIME and "https://" not in UI + RUNTIME),
