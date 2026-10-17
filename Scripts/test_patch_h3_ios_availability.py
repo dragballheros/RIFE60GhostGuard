@@ -37,11 +37,14 @@ def main() -> None:
         patched = source.read_text(encoding="utf-8")
         assert patched.count(GUARD) == 1, "guard was not inserted exactly once"
         assert "MiniMax H3 requires iOS 18.0 or newer" in patched
+        assert 'pathForResource:@"h3_shaders" ofType:@"metal"' in patched
         assert patched.index(GUARD) < patched.index("// body"), "guard must precede engine body"
 
         # Re-running is idempotent and must not duplicate the guard.
         run(source, True)
-        assert source.read_text(encoding="utf-8").count(GUARD) == 1
+        rerun = source.read_text(encoding="utf-8")
+        assert rerun.count(GUARD) == 1
+        assert rerun.count('pathForResource:@"h3_shaders" ofType:@"metal"') == 1
 
         # Ambiguous or changed source must fail closed without mutation.
         ambiguous = root / "ambiguous.m"
@@ -58,7 +61,7 @@ def main() -> None:
         assert duplicate.read_text(encoding="utf-8") == before, "ambiguous patch mutated source"
         assert "found 2" in result.stderr
 
-    print("H3 iOS availability patcher tests passed (insert, idempotence, fail-closed ambiguity).")
+    print("H3 iOS patcher tests passed (OS guard, shader bundle lookup, idempotence, fail-closed ambiguity).")
 
 
 if __name__ == "__main__":
