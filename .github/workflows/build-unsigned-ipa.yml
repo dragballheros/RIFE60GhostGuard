@@ -730,6 +730,9 @@ jobs:
           set -e
           exit "$BUILD_STATUS"
 
+      - name: Verify H3 native engine is compiled and linked into the app
+        run: python3 Scripts/verify_h3_native_link.py
+
       - name: Create verified IPA
         run: |
           set -euo pipefail
