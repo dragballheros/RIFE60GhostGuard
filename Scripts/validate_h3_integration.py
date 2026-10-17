@@ -40,6 +40,7 @@ checks = [
     ("H3 preflight requires FL2VA base assets and the Ref2VA transformer used by native reference-conditioned generation", "modelLayoutIsValid" in PREFLIGHT and "FL2VA/transformer/config.json" in PREFLIGHT and "FL2VA/video_vae/source" in PREFLIGHT and all(path in PREFLIGHT for path in ["Ref2VA/transformer/config.json", "Ref2VA/transformer/model.safetensors.index.json"]) and "Ref2VA/text_encoder/config.json" not in PREFLIGHT and "Ref2VA/video_vae/source/config.json" not in PREFLIGHT and "guard preflight.modelLayoutIsValid" in RUNTIME and "GGUF-only file is not compatible" in PREFLIGHT),
     ("H3 uses the video reference C API", "reference.kind = H3_REFERENCE_VIDEO" in RUNTIME and "params.reference_count = 1" in RUNTIME),
     ("H3 uses disk-streaming mode", "params.ssd_streaming = 1" in RUNTIME),
+    ("iPhone H3 profile disables parallel Qwen layer prefetch to limit peak memory", 'setenv("H3_QWEN_PREFETCH", "0", 1)' in RUNTIME and 'setenv("H3_QWEN_PREFETCH_DEPTH", "1", 1)' in RUNTIME),
     ("native H3 progress callback is wired", "params.on_progress = h3NativeProgressCallback" in RUNTIME and "onProgress: { phase, fraction" in UI),
     ("cancellation error is handled exhaustively", "case .cancelled:" in RUNTIME and "MiniMax H3 generation was cancelled." in RUNTIME),
     ("user cancellation reaches the native progress callback", "H3CancellationToken" in RUNTIME and "Cancel H3 generation" in UI and "return context.cancellationToken?.isCancelled == true ? 1 : 0" in RUNTIME),
