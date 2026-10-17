@@ -13,7 +13,7 @@ private struct VACEPickedVideo: Transferable {
         FileRepresentation(importedContentType: .movie) { received in
             let ext = received.file.pathExtension.isEmpty ? "mov" : received.file.pathExtension
             let destination = FileManager.default.temporaryDirectory
-                .appendingPathComponent("WanVACE-Source-\\(UUID().uuidString).\\(ext)")
+                .appendingPathComponent("WanVACE-Source-\(UUID().uuidString).\(ext)")
             try FileManager.default.copyItem(at: received.file, to: destination)
             return VACEPickedVideo(url: destination)
         }
@@ -28,7 +28,7 @@ private struct VACEPickedMaskImage: Transferable {
         FileRepresentation(importedContentType: .image) { received in
             let ext = received.file.pathExtension.isEmpty ? "png" : received.file.pathExtension
             let destination = FileManager.default.temporaryDirectory
-                .appendingPathComponent("WanVACE-Mask-\\(UUID().uuidString).\\(ext)")
+                .appendingPathComponent("WanVACE-Mask-\(UUID().uuidString).\(ext)")
             try FileManager.default.copyItem(at: received.file, to: destination)
             return VACEPickedMaskImage(url: destination)
         }
@@ -372,7 +372,7 @@ struct VACEVideoEditView: View {
             let directory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
                 .appendingPathComponent("MiniMaxH3Exports", isDirectory: true)
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-            let destination = directory.appendingPathComponent("MiniMaxH3-\\(UUID().uuidString).mov")
+            let destination = directory.appendingPathComponent("MiniMaxH3-\(UUID().uuidString).mov")
             h3OutputCandidate = destination
             status = "Loading the native H3 runtime locally. Large allocations may fail on this device."
             let requestPrompt = prompt
@@ -393,7 +393,7 @@ struct VACEVideoEditView: View {
                     onProgress: { phase, fraction in
                         Task { @MainActor in
                             progress = max(0, min(1, fraction))
-                            status = "H3 \\(phase): \\(Int(fraction * 100))%"
+                            status = "H3 \(phase): \(Int(fraction * 100))%"
                         }
                     }
                 )
@@ -411,7 +411,7 @@ struct VACEVideoEditView: View {
             }
             outputURL = result.outputURL
             progress = 1
-            status = "H3 reference-conditioned MOV created (\\(result.width) × \\(result.height), \\(result.frames) frames, seed \\(result.seed)). Verify playback and quality on-device."
+            status = "H3 reference-conditioned MOV created (\(result.width) × \(result.height), \(result.frames) frames, seed \(result.seed)). Verify playback and quality on-device."
         } catch {
             if let h3OutputCandidate {
                 try? FileManager.default.removeItem(at: h3OutputCandidate)
