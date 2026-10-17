@@ -78,13 +78,9 @@ actor DrawThingsLocalVACEReconstructionEngine: VACERegionReconstructionEngine {
             guard let imageData = Self.encode(prepared.image) else {
                 throw DrawThingsVACEEngineError.invalidInputFrame(input.windowPosition)
             }
-            // This app's mask means 0=preserve and 255=edit. Draw Things inpainting masks
-            // use white=preserve and black=edit, so conversion is explicit and reversible.
-            let inverseMask = try VACEMaskPlane(
-                width: prepared.mask.width, height: prepared.mask.height,
-                pixels: prepared.mask.pixels.map { 255 &- $0 }
-            )
-            guard let maskData = Self.encode(try Self.rgbaMaskFrame(inverseMask)) else {
+            // VACE inpaint mask: white=edit (1), black=preserve (0). Keep mask polarity
+            // as selected by the user; the native VACE path builds its 64 mask channels from it.
+            guard let maskData = Self.encode(try Self.rgbaMaskFrame(prepared.mask)) else {
                 throw DrawThingsVACEEngineError.invalidInputMask(input.windowPosition)
             }
             encodedFrames.append(imageData)
