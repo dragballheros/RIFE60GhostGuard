@@ -394,6 +394,12 @@ struct VACEVideoEditView: View {
             guard FileManager.default.fileExists(atPath: result.outputURL.path), outputSize > 0 else {
                 throw H3NativeRuntime.RuntimeError.generationFailed("H3 returned without creating a non-empty output video.")
             }
+            let exportedAsset = AVURLAsset(url: result.outputURL)
+            let exportedVideoTracks = try await exportedAsset.loadTracks(withMediaType: .video)
+            let exportedDuration = try await exportedAsset.load(.duration)
+            guard !exportedVideoTracks.isEmpty, exportedDuration.seconds.isFinite, exportedDuration.seconds > 0 else {
+                throw H3NativeRuntime.RuntimeError.generationFailed("H3 output exists but does not contain a playable video track with a valid duration.")
+            }
             outputURL = result.outputURL
             progress = 1
             status = "H3 reference-conditioned MOV created (\\(result.width) × \\(result.height), \\(result.frames) frames, seed \\(result.seed)). Verify playback and quality on-device."
