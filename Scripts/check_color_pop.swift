@@ -80,7 +80,7 @@ let accentSamples = [
 ]
 
 for strength in [0.5, 1.0] {
-    let grade = ColorPopGrade(strength: strength, skinToneMode: .off)
+    let grade = ColorPopGrade(strength: strength, warmthMode: .off, skinToneMode: .off)
 
     // Neutral pixels and highlight endpoints must not acquire a tint or change.
     for gray in 0...255 {
