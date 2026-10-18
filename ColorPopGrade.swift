@@ -7,8 +7,10 @@ import CoreVideo
 /// strength, create a new instance. No custom shader or additional encode pass.
 final class ColorPopGrade {
     private static let cubeDimension = 33
-    private static let warmthCorrectionDefaultsKey = "automaticWarmthCorrectionEnabled"
+    private static let warmthCorrectionModeDefaultsKey = "automaticWarmthCorrectionMode"
+    private static let legacyWarmthCorrectionDefaultsKey = "automaticWarmthCorrectionEnabled"
     private let strength: Double
+    private let warmthCorrectionMode: AutoWarmthCorrectionMode
     private let colorSpace: CGColorSpace
     private let context: CIContext
     private let filter: CIFilter?
@@ -16,13 +18,11 @@ final class ColorPopGrade {
     private var poolWidth = 0
     private var poolHeight = 0
     private let warmthCorrection = AutoWarmthCorrection()
-    private let warmthCorrectionEnabled: Bool
 
-    init(strength: Double) {
+    init(strength: Double, warmthMode: AutoWarmthCorrectionMode? = nil) {
         let amount = strength.isFinite ? min(max(strength, 0), 1) : 0
         self.strength = amount
-        self.warmthCorrectionEnabled = UserDefaults.standard.object(forKey: Self.warmthCorrectionDefaultsKey) == nil
-            || UserDefaults.standard.bool(forKey: Self.warmthCorrectionDefaultsKey)
+        self.warmthCorrectionMode = warmthMode ?? Self.storedWarmthCorrectionMode()
         let space = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
         self.colorSpace = space
         self.context = CIContext(options: [
@@ -40,30 +40,51 @@ final class ColorPopGrade {
     }
 
     func apply(_ buffer: CVPixelBuffer) throws -> CVPixelBuffer {
-        // Exact bypass: no conversion, allocation, filter or render at zero.
-        guard strength > 0 else { return buffer }
-        guard let filter else { throw ProcessorError.conversionFailed("Color Pop LUT filter unavailable") }
-        let width = CVPixelBufferGetWidth(buffer)
-        let height = CVPixelBufferGetHeight(buffer)
-        try preparePool(width: width, height: height)
-        guard let pool else { throw ProcessorError.conversionFailed("Color Pop buffer pool unavailable") }
-        var destination: CVPixelBuffer?
-        guard CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault, pool, &destination) == kCVReturnSuccess,
-              let destination else { throw ProcessorError.conversionFailed("could not allocate Color Pop BGRA frame") }
+        // Color Pop is optional; warmth correction is independently selectable.
+        // With strength zero, skip LUT creation/rendering but still honor the
+        // selected warmth mode on the final frame.
+        var destination = buffer
+        if strength > 0 {
+            guard let filter else { throw ProcessorError.conversionFailed("Color Pop LUT filter unavailable") }
+            let width = CVPixelBufferGetWidth(buffer)
+            let height = CVPixelBufferGetHeight(buffer)
+            try preparePool(width: width, height: height)
+            guard let pool else { throw ProcessorError.conversionFailed("Color Pop buffer pool unavailable") }
+            var renderedBuffer: CVPixelBuffer?
+            guard CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault, pool, &renderedBuffer) == kCVReturnSuccess,
+                  let renderedBuffer else { throw ProcessorError.conversionFailed("could not allocate Color Pop BGRA frame") }
 
-        // Keep the same explicit SDR color-space interpretation and output
-        // attachment as the existing BT.709 video-writer handoff.
-        filter.setValue(CIImage(cvPixelBuffer: buffer, options: [.colorSpace: colorSpace]), forKey: kCIInputImageKey)
-        // Release the previous input graph promptly; retain the cube for the job.
-        defer { filter.setValue(nil, forKey: kCIInputImageKey) }
-        let bounds = CGRect(x: 0, y: 0, width: width, height: height)
-        guard let image = filter.outputImage else { throw ProcessorError.conversionFailed("Color Pop LUT produced no image") }
-        context.render(image, to: destination, bounds: bounds, colorSpace: colorSpace)
-        CVBufferSetAttachment(destination, kCVImageBufferCGColorSpaceKey, colorSpace, .shouldPropagate)
-        // This preference is captured once per grading job, not read for every frame.
-        // The UI prevents changes while a job is running.
-        guard warmthCorrectionEnabled else { return destination }
-        return try warmthCorrection.apply(reference: buffer, graded: destination)
+            filter.setValue(CIImage(cvPixelBuffer: buffer, options: [.colorSpace: colorSpace]), forKey: kCIInputImageKey)
+            defer { filter.setValue(nil, forKey: kCIInputImageKey) }
+            let bounds = CGRect(x: 0, y: 0, width: width, height: height)
+            guard let image = filter.outputImage else { throw ProcessorError.conversionFailed("Color Pop LUT produced no image") }
+            context.render(image, to: renderedBuffer, bounds: bounds, colorSpace: colorSpace)
+            CVBufferSetAttachment(renderedBuffer, kCVImageBufferCGColorSpaceKey, colorSpace, .shouldPropagate)
+            destination = renderedBuffer
+        }
+
+        guard warmthCorrectionMode != .off else { return destination }
+        return try warmthCorrection.apply(
+            reference: buffer,
+            graded: destination,
+            mode: warmthCorrectionMode
+        )
+    }
+
+    private static func storedWarmthCorrectionMode() -> AutoWarmthCorrectionMode {
+        let defaults = UserDefaults.standard
+        if let rawValue = defaults.string(forKey: warmthCorrectionModeDefaultsKey),
+           let storedMode = AutoWarmthCorrectionMode(rawValue: rawValue) {
+            return storedMode
+        }
+        // Preserve the old toggle for existing installs: false migrates to Off,
+        // true remains the previous full correction behavior. A fresh install
+        // also defaults to the existing full behavior.
+        if defaults.object(forKey: legacyWarmthCorrectionDefaultsKey) != nil,
+           !defaults.bool(forKey: legacyWarmthCorrectionDefaultsKey) {
+            return .off
+        }
+        return .full
     }
 
     private func preparePool(width: Int, height: Int) throws {
