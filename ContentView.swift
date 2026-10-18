@@ -144,40 +144,6 @@ struct ContentView: View {
                         }
                     }
 
-                    mediaQueueSection
-
-                    if vm.recoveryAvailable {
-                        Section("Crash Recovery") {
-                            Label("Recovery data found", systemImage: "arrow.clockwise.circle.fill").foregroundStyle(.orange)
-                            Text(vm.recoveryStatusText).font(.caption)
-                            if !vm.isBusy {
-                                Button { Task { await vm.start() } } label: { Label(vm.upscaleTo4K ? "Resume 2× 60 FPS Render" : "Resume 60 FPS Render", systemImage: "play.fill") }
-                                Button(role: .destructive) { showingClearRecoveryConfirmation = true } label: { Label("Clear Recovery Data", systemImage: "trash") }
-                            }
-                            Text("The batch and its masks are saved. Completed AI passes are kept in persistent storage. If iOS terminates the app, reopening it reuses every completed checkpoint instead of starting the whole render over.").font(.caption).foregroundStyle(.secondary)
-                        }
-                    }
-
-                    Section("RIFE 4.26") {
-                        if vm.inputKind == .image {
-                            Label("Skipped for images", systemImage: "photo")
-                            Text("A single image has no neighbouring frame to interpolate, so images go straight through Compression Guard → Real-CUGAN → Final Sharpie.")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        } else if vm.inputKind == .gif {
-                            Label("Full video pipeline", systemImage: "film.stack")
-                            Text("The GIF is converted to a temporary video, then runs Compression Guard → RIFE HQ → Real-CUGAN → Final Sharpie. The processed video is converted back to an optimized GIF at the end.")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        } else {
-                            LabeledContent("Interpolation quality", value: "High Quality (HQ)")
-                            Toggle("Ghost protection", isOn: $vm.ghostProtection).disabled(vm.queueLocked || vm.isImporting)
-                            Toggle("Scene-cut protection", isOn: $vm.sceneCutProtection).disabled(vm.queueLocked || vm.isImporting)
-                            LabeledContent("Target", value: "60.00 fps")
-                            Text("1080p-class video uses one persistent full-frame HQ stream for maximum speed without dropping RIFE quality.").font(.caption).foregroundStyle(.secondary)
-                        }
-                    }
-
                     Section("Anime Watermark Removal") {
                         Toggle("Remove marked watermarks", isOn: $vm.watermarkRemovalEnabled).disabled(vm.queueLocked || vm.isImporting)
                         if vm.watermarkRemovalEnabled {
@@ -219,6 +185,41 @@ struct ContentView: View {
                             Text(vm.watermarkModel == .lama
                                  ? "Anime/Manga LaMa reconstructs marked areas before RIFE and upscaling. Painted masks apply throughout a video. Use the brush and eraser to preserve the artwork between letters."
                                  : "DeepCream v2 runs locally on-device using its dedicated bar-censor or mosaic-censor weights. Mark only the area to reconstruct.").font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+
+
+                    mediaQueueSection
+
+                    if vm.recoveryAvailable {
+                        Section("Crash Recovery") {
+                            Label("Recovery data found", systemImage: "arrow.clockwise.circle.fill").foregroundStyle(.orange)
+                            Text(vm.recoveryStatusText).font(.caption)
+                            if !vm.isBusy {
+                                Button { Task { await vm.start() } } label: { Label(vm.upscaleTo4K ? "Resume 2× 60 FPS Render" : "Resume 60 FPS Render", systemImage: "play.fill") }
+                                Button(role: .destructive) { showingClearRecoveryConfirmation = true } label: { Label("Clear Recovery Data", systemImage: "trash") }
+                            }
+                            Text("The batch and its masks are saved. Completed AI passes are kept in persistent storage. If iOS terminates the app, reopening it reuses every completed checkpoint instead of starting the whole render over.").font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+
+                    Section("RIFE 4.26") {
+                        if vm.inputKind == .image {
+                            Label("Skipped for images", systemImage: "photo")
+                            Text("A single image has no neighbouring frame to interpolate, so images go straight through Compression Guard → Real-CUGAN → Final Sharpie.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        } else if vm.inputKind == .gif {
+                            Label("Full video pipeline", systemImage: "film.stack")
+                            Text("The GIF is converted to a temporary video, then runs Compression Guard → RIFE HQ → Real-CUGAN → Final Sharpie. The processed video is converted back to an optimized GIF at the end.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        } else {
+                            LabeledContent("Interpolation quality", value: "High Quality (HQ)")
+                            Toggle("Ghost protection", isOn: $vm.ghostProtection).disabled(vm.queueLocked || vm.isImporting)
+                            Toggle("Scene-cut protection", isOn: $vm.sceneCutProtection).disabled(vm.queueLocked || vm.isImporting)
+                            LabeledContent("Target", value: "60.00 fps")
+                            Text("1080p-class video uses one persistent full-frame HQ stream for maximum speed without dropping RIFE quality.").font(.caption).foregroundStyle(.secondary)
                         }
                     }
 
