@@ -37,7 +37,7 @@ struct GIFVideoBridge: Sendable {
         let outputRoot = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("RIFEGIFBridges", isDirectory: true)
         try FileManager.default.createDirectory(at: outputRoot, withIntermediateDirectories: true)
-        let outputURL = outputRoot.appendingPathComponent("GIF-(UUID().uuidString).mp4")
+        let outputURL = outputRoot.appendingPathComponent("GIF-\(UUID().uuidString).mp4")
         try? FileManager.default.removeItem(at: outputURL)
 
         let writer = try AVAssetWriter(outputURL: outputURL, fileType: .mp4)
@@ -138,7 +138,7 @@ struct GIFVideoBridge: Sendable {
 
                 progress(
                     Double(index + 1) / Double(frameCount),
-                    "GIF → video • frame (index + 1)/(frameCount)"
+                    "GIF → video • frame \(index + 1)/\(frameCount)"
                 )
             }
 
@@ -151,7 +151,7 @@ struct GIFVideoBridge: Sendable {
             guard writer.status == .completed, FileManager.default.fileExists(atPath: outputURL.path) else {
                 throw writer.error ?? GIFVideoBridgeError.couldNotFinalizeVideo
             }
-            progress(1, "GIF converted to video • (width)x(height)")
+            progress(1, "GIF converted to video • \(width)x\(height)")
             return outputURL
         } catch {
             writer.cancelWriting()
