@@ -118,11 +118,11 @@ final class ColorPopGrade {
     private let skinToneCorrection = ColorPopSkinToneCorrection()
     private let skinToneMode: ColorPopSkinToneMode
 
-    init(strength: Double, warmthMode: AutoWarmthCorrectionMode? = nil) {
+    init(strength: Double, warmthMode: AutoWarmthCorrectionMode? = nil, skinToneMode: ColorPopSkinToneMode? = nil) {
         let amount = strength.isFinite ? min(max(strength, 0), 1) : 0
         self.strength = amount
         self.warmthCorrectionMode = warmthMode ?? Self.storedWarmthCorrectionMode()
-        self.skinToneMode = ColorPopSkinToneMode.current
+        self.skinToneMode = skinToneMode ?? ColorPopSkinToneMode.current
         let space = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
         self.colorSpace = space
         self.context = CIContext(options: [
@@ -140,6 +140,7 @@ final class ColorPopGrade {
     }
 
     func apply(_ buffer: CVPixelBuffer) throws -> CVPixelBuffer {
+        if strength == 0, warmthCorrectionMode == .off, skinToneMode == .off { return buffer }
         // Color Pop is optional; warmth correction is independently selectable.
         // With strength zero, skip LUT creation/rendering but still honor the
         // selected warmth mode on the final frame.
