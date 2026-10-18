@@ -242,7 +242,8 @@ final class VideoProcessorViewModel: ObservableObject {
     /// Generate a disposable settings preview from the opening frames without setting
     /// isProcessing/isBatchProcessing, touching recovery checkpoints, or locking render controls.
     func generatePreview() {
-        guard let source = inputURL, !isPreviewing, !isBusy, !isImporting, !isBenchmarking else { return }
+        if isPreviewing { cancelPreview(); return }
+        guard let source = inputURL, !isBusy, !isImporting, !isBenchmarking else { return }
         clearPreviewFiles()
         isPreviewing = true
         previewStatus = "Preparing opening-frame preview…"
