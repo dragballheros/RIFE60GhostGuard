@@ -3,6 +3,7 @@ import PhotosUI
 import UniformTypeIdentifiers
 import UIKit
 import AVKit
+import QuickLook
 
 struct ContentView: View {
     @Environment(\.scenePhase) private var scenePhase
