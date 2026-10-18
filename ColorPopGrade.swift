@@ -7,6 +7,7 @@ import CoreVideo
 /// strength, create a new instance. No custom shader or additional encode pass.
 final class ColorPopGrade {
     private static let cubeDimension = 33
+    private static let warmthCorrectionDefaultsKey = "automaticWarmthCorrectionEnabled"
     private let strength: Double
     private let colorSpace: CGColorSpace
     private let context: CIContext
@@ -56,6 +57,11 @@ final class ColorPopGrade {
         guard let image = filter.outputImage else { throw ProcessorError.conversionFailed("Color Pop LUT produced no image") }
         context.render(image, to: destination, bounds: bounds, colorSpace: colorSpace)
         CVBufferSetAttachment(destination, kCVImageBufferCGColorSpaceKey, colorSpace, .shouldPropagate)
+        // Shared preference for stills, video frames, and GIFs. Missing means enabled
+        // so existing installations retain the current correction by default.
+        let warmthEnabled = UserDefaults.standard.object(forKey: Self.warmthCorrectionDefaultsKey) == nil
+            || UserDefaults.standard.bool(forKey: Self.warmthCorrectionDefaultsKey)
+        guard warmthEnabled else { return destination }
         return try warmthCorrection.apply(reference: buffer, graded: destination)
     }
 
