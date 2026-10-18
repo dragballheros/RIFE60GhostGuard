@@ -5,6 +5,7 @@ import UIKit
 
 struct ContentView: View {
     @Environment(\.scenePhase) private var scenePhase
+    @AppStorage("automaticWarmthCorrectionEnabled") private var automaticWarmthCorrectionEnabled = true
     @StateObject private var vm = VideoProcessorViewModel()
     @StateObject private var pipController = ProcessingPiPController()
     @State private var showingImporter = false
@@ -125,6 +126,8 @@ struct ContentView: View {
                         Toggle("Compression Guard", isOn: $vm.compressionProtection).disabled(vm.queueLocked || vm.isImporting)
                         Toggle("Final Sharpie Outline", isOn: $vm.outlineProtection).disabled(vm.queueLocked || vm.isImporting)
                         Toggle("Color Pop", isOn: $vm.colorPopEnabled).disabled(vm.queueLocked || vm.isImporting)
+                        Toggle("Automatic warmth correction", isOn: $automaticWarmthCorrectionEnabled).disabled(vm.queueLocked || vm.isImporting)
+                        Text("When enabled, gently reduces excess warmth after Color Pop. Turn it off for GIFs or images where cooling makes colors look unnatural.").font(.caption).foregroundStyle(.secondary)
                         if vm.colorPopEnabled {
                             HStack { Text("Color Pop strength"); Spacer(); Text(String(format: "%.2f", vm.colorPopStrength)) }
                             Slider(value: $vm.colorPopStrength, in: 0.1...1.0).disabled(vm.queueLocked || vm.isImporting)
