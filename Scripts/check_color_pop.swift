@@ -63,7 +63,7 @@ func assertSkinPreserved(_ source: (Int, Int, Int), output: (Int, Int, Int), lab
 }
 
 let source = try makePatch((240, 190, 160))
-let bypass = try ColorPopGrade(strength: 0).apply(source)
+let bypass = try ColorPopGrade(strength: 0, warmthMode: .off).apply(source)
 precondition(Unmanaged.passUnretained(source).toOpaque() == Unmanaged.passUnretained(bypass).toOpaque(), "zero strength must return the identical buffer")
 
 let skinSamples = [
@@ -125,6 +125,23 @@ precondition(correctedWarmth.0 - correctedWarmth.2 < 20, "automatic warmth corre
 let unchangedWarmth = try AutoWarmthCorrection().apply(reference: warmthReference, graded: warmthReference)
 precondition(Unmanaged.passUnretained(warmthReference).toOpaque() == Unmanaged.passUnretained(unchangedWarmth).toOpaque(), "neutral source/output must bypass warmth correction")
 print("Automatic warmth correction checks passed • warm cast reduced • neutral bypass preserved")
+
+ // The four selectable modes must target distinct warmth sources.
+ let modeReference = try makePatch((120, 120, 120), width: 128, height: 128)
+ let addedWarmth = try makePatch((130, 120, 110), width: 128, height: 128)
+ let originalOnlyAdded = try AutoWarmthCorrection().apply(reference: modeReference, graded: addedWarmth, mode: .originalOnly)
+ precondition(Unmanaged.passUnretained(originalOnlyAdded).toOpaque() == Unmanaged.passUnretained(addedWarmth).toOpaque(), "Original-only mode changed warmth that exists only in the processed result")
+ let processedOnlyAdded = try readPatch(AutoWarmthCorrection().apply(reference: modeReference, graded: addedWarmth, mode: .processedOnly))
+ precondition(processedOnlyAdded.0 - processedOnlyAdded.2 < 20, "Processed-only mode failed to reduce processing-added warmth: \(processedOnlyAdded)")
+ let processedOnlySource = try AutoWarmthCorrection().apply(reference: sourceWarm, graded: sourceWarm, mode: .processedOnly)
+ precondition(Unmanaged.passUnretained(processedOnlySource).toOpaque() == Unmanaged.passUnretained(sourceWarm).toOpaque(), "Processed-only mode altered original warmth without an added processing shift")
+ let originalOnlySource = try readPatch(AutoWarmthCorrection().apply(reference: sourceWarm, graded: sourceWarm, mode: .originalOnly))
+ precondition(originalOnlySource.0 - originalOnlySource.2 < sourceWarmSpreadBefore, "Original-only mode failed to reduce original source warmth")
+ let fullSource = try readPatch(AutoWarmthCorrection().apply(reference: sourceWarm, graded: sourceWarm, mode: .full))
+ precondition(fullSource.0 - fullSource.2 < sourceWarmSpreadBefore, "Full mode no longer reduces original source warmth")
+ let offSource = try AutoWarmthCorrection().apply(reference: sourceWarm, graded: sourceWarm, mode: .off)
+ precondition(Unmanaged.passUnretained(offSource).toOpaque() == Unmanaged.passUnretained(sourceWarm).toOpaque(), "Off mode must be an exact identity bypass")
+ print("Four-mode warmth checks passed • Off / Original / Processed / Full")
 
 // Existing source warmth must also be reduced when the grade itself adds no shift.
 // Use a lightly warm, low-chroma midtone so this checks the source-bias branch,
