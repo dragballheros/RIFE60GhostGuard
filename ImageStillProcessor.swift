@@ -69,16 +69,16 @@ final class ImageStillProcessor {
             try Task.checkCancellation()
         }
 
-        // Automatic quality-first scaling:
-        //   <1080p long edge + 4x fits memory budget -> two native 2x passes.
-        //   otherwise, if 2x fits -> one native 2x pass.
-        //   otherwise preserve the decoded source rather than forcing an unsafe allocation.
+        // Always honor an enabled native 2x Real-CUGAN pass. For small inputs,
+        // a second 2x pass is allowed only when the 4x result fits the pixel budget.
+        // If the first 2x result exceeds the budget, run the native model and then
+        // downsample its result back to the source dimensions to avoid a larger export.
+        let twoXPixelCount = (sourceWidth * 2) * (sourceHeight * 2)
+        let fourXPixelCount = (sourceWidth * 4) * (sourceHeight * 4)
+        let needsReturnToSourceDimensions = twoXPixelCount > Self.maxUpscaledPixels
         let automaticPasses: Int = {
-            let fourX = (sourceWidth * 4) * (sourceHeight * 4)
-            let twoX = (sourceWidth * 2) * (sourceHeight * 2)
-            if max(sourceWidth, sourceHeight) < 1080 && fourX <= Self.maxUpscaledPixels { return 2 }
-            if twoX <= Self.maxUpscaledPixels { return 1 }
-            return 0
+            if max(sourceWidth, sourceHeight) < 1080 && fourXPixelCount <= Self.maxUpscaledPixels { return 2 }
+            return 1
         }()
         let requestedPasses = upscale2x ? automaticPasses : 0
 
@@ -89,6 +89,13 @@ final class ImageStillProcessor {
                 progress(fraction, "Image • Real-CUGAN native 2× pass \(pass)/\(requestedPasses)…")
                 let cugan = RealCUGANPass(intensity: 1.30)
                 buffer = try cugan.upscaleStill(buffer)
+                try Task.checkCancellation()
+            }
+            if needsReturnToSourceDimensions && requestedPasses == 1 {
+                progress(0.66, "Image • Resizing enhanced result to source dimensions…")
+                buffer = try resizeBuffer(buffer, width: sourceWidth, height: sourceHeight)
+                DiagnosticsLogger.shared.log("Image high-resolution safeguard • native 2× Real-CUGAN executed, then resized to source dimensions • source=\(sourceWidth)x\(sourceHeight) • 2× intermediate=\(sourceWidth * 2)x\(sourceHeight * 2) • export dimensions preserved")
+                notes.append("Real-CUGAN ran at native 2×, then the enhanced image was resized back to the original dimensions because the 2× intermediate exceeded 40 megapixels.")
                 try Task.checkCancellation()
             }
             let finalWidth = CVPixelBufferGetWidth(buffer)
@@ -182,6 +189,21 @@ final class ImageStillProcessor {
         let buffer = try makeBGRABuffer(width: width, height: height)
         ciContext.render(flattened, to: buffer, bounds: bounds, colorSpace: colorSpace)
         return buffer
+    }
+
+    private func resizeBuffer(_ source: CVPixelBuffer, width: Int, height: Int) throws -> CVPixelBuffer {
+        let destination = try makeBGRABuffer(width: width, height: height)
+        let sourceImage = CIImage(cvPixelBuffer: source)
+        let sx = CGFloat(width) / CGFloat(CVPixelBufferGetWidth(source))
+        let sy = CGFloat(height) / CGFloat(CVPixelBufferGetHeight(source))
+        let resized = sourceImage.transformed(by: CGAffineTransform(scaleX: sx, y: sy))
+        ciContext.render(
+            resized,
+            to: destination,
+            bounds: CGRect(x: 0, y: 0, width: width, height: height),
+            colorSpace: colorSpace
+        )
+        return destination
     }
 
     private func makeBGRABuffer(width: Int, height: Int) throws -> CVPixelBuffer {
