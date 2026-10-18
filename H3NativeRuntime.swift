@@ -103,6 +103,19 @@ final class H3NativeRuntime {
         return H3NativeRuntime(context: context, modelDirectory: modelDirectory)
     }
 
+    /// Recheck free memory immediately before inference. The model context
+    /// can remain loaded while other apps or iOS consume memory, so the load-time
+    /// preflight alone is not enough to decide whether a generation attempt is safe.
+    private func ensureGenerationMemoryAvailable() throws {
+        let available = UInt64(os_proc_available_memory())
+        guard available >= H3RuntimePreflight.minimumAvailableMemoryBytes else {
+            let availableGiB = Double(available) / 1_073_741_824
+            throw RuntimeError.insufficientMemory(
+                String(format: "MiniMax H3 generation was not started: only %.2f GiB of memory is currently available; at least 2 GiB is required by the low-memory profile. Close other apps and retry. This check still cannot guarantee inference will fit.", availableGiB)
+            )
+        }
+    }
+
     /// Runs a real local H3 text-to-video request. This is intentionally a
     /// distinct workflow from Wan VACE mask editing: H3 does not implement
     /// VACE's white-edit/black-preserve mask semantics here.
@@ -122,6 +135,7 @@ final class H3NativeRuntime {
         guard let context else {
             throw RuntimeError.nativeLoadFailed("The H3 runtime context has already been released.")
         }
+        try ensureGenerationMemoryAvailable()
         guard !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw RuntimeError.invalidRequest("Enter a non-empty prompt.")
         }
@@ -215,6 +229,7 @@ final class H3NativeRuntime {
         guard let context else {
             throw RuntimeError.nativeLoadFailed("The H3 runtime context has already been released.")
         }
+        try ensureGenerationMemoryAvailable()
         guard !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw RuntimeError.invalidRequest("Enter a non-empty prompt.")
         }
