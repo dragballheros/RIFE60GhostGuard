@@ -83,19 +83,19 @@ private final class ColorPopSkinToneCorrection {
             kCVPixelBufferMetalCompatibilityKey as String: true,
             kCVPixelBufferIOSurfacePropertiesKey as String: [:]
         ]
-        guard CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault, tryPool(attrs: attrs), &buffer) == kCVReturnSuccess, let buffer else {
+        guard CVPixelBufferCreate(
+            kCFAllocatorDefault,
+            CVPixelBufferGetWidth(graded),
+            CVPixelBufferGetHeight(graded),
+            kCVPixelFormatType_32BGRA,
+            attrs as CFDictionary,
+            &buffer
+        ) == kCVReturnSuccess, let buffer else {
             throw ProcessorError.conversionFailed("could not allocate Color Pop skin-tone correction buffer")
         }
         context.render(output, to: buffer, bounds: input.extent, colorSpace: colorSpace)
         CVBufferSetAttachment(buffer, kCVImageBufferCGColorSpaceKey, colorSpace, .shouldPropagate)
         return buffer
-    }
-    private func tryPool(attrs: [String: Any]) throws -> CVPixelBufferPool {
-        var pool: CVPixelBufferPool?
-        guard CVPixelBufferPoolCreate(kCFAllocatorDefault, nil, attrs as CFDictionary, &pool) == kCVReturnSuccess, let pool else {
-            throw ProcessorError.conversionFailed("could not create skin-tone correction buffer pool")
-        }
-        return pool
     }
 }
 
