@@ -126,11 +126,35 @@ final class H3NativeRuntime {
             throw RuntimeError.invalidRequest("Enter a non-empty prompt.")
         }
         guard width >= 256, height >= 256, width % 32 == 0, height % 32 == 0,
-              frames >= 1, steps >= 1 else {
+              frames >= 1, steps >= 2, steps <= 1000, frames >= 5, frames <= 362 else {
             throw RuntimeError.invalidRequest("H3 dimensions must be multiples of 32 and frames/steps must be positive.")
         }
 
+        // Swift's zero-initialized imported C struct does NOT apply the
+        // upstream H3_PARAMS_DEFAULT macro. Set the native-required defaults
+        // explicitly; otherwise denoise_reuse/core_reuse/dit_layers remain 0
+        // and h3_generate rejects the request before inference starts.
         var params = h3_params()
+        params.reference_image_size = H3_REFERENCE_IMAGE_MATCH
+        params.denoise_reuse = 1
+        params.dit_layers = 50
+        params.core_reuse = 1
+        params.token_reduction = 0
+        params.use_int8_row_fc2 = 0
+        params.use_reference_rope = 0
+        params.render_width = 0
+        params.render_height = 0
+        params.use_slower_bf16_mlp = 0
+        params.use_slower_bf16_qkv = 0
+        params.use_slower_bf16_attention_output = 0
+        params.use_slower_row_major_attention_output = 0
+        params.use_slower_unfused_int8_inputs = 0
+        params.use_slower_unfused_qkv_rope = 0
+        params.use_slower_scalar_qkv_rms = 0
+        params.use_slower_uncached_int8_scales = 0
+        params.use_slower_dynamic_fc1_k = 0
+        params.use_slower_grouped_quantizer = 0
+        params.preview_denoise = 0
         params.width = Int32(width)
         params.height = Int32(height)
         params.frames = Int32(frames)
@@ -202,7 +226,31 @@ final class H3NativeRuntime {
             throw RuntimeError.invalidRequest("H3 dimensions must be multiples of 32 and frames/steps must be positive.")
         }
 
+        // Swift's zero-initialized imported C struct does NOT apply the
+        // upstream H3_PARAMS_DEFAULT macro. Set the native-required defaults
+        // explicitly; otherwise denoise_reuse/core_reuse/dit_layers remain 0
+        // and h3_generate rejects the request before inference starts.
         var params = h3_params()
+        params.reference_image_size = H3_REFERENCE_IMAGE_MATCH
+        params.denoise_reuse = 1
+        params.dit_layers = 50
+        params.core_reuse = 1
+        params.token_reduction = 0
+        params.use_int8_row_fc2 = 0
+        params.use_reference_rope = 0
+        params.render_width = 0
+        params.render_height = 0
+        params.use_slower_bf16_mlp = 0
+        params.use_slower_bf16_qkv = 0
+        params.use_slower_bf16_attention_output = 0
+        params.use_slower_row_major_attention_output = 0
+        params.use_slower_unfused_int8_inputs = 0
+        params.use_slower_unfused_qkv_rope = 0
+        params.use_slower_scalar_qkv_rms = 0
+        params.use_slower_uncached_int8_scales = 0
+        params.use_slower_dynamic_fc1_k = 0
+        params.use_slower_grouped_quantizer = 0
+        params.preview_denoise = 0
         params.width = Int32(width)
         params.height = Int32(height)
         params.frames = Int32(frames)
