@@ -245,7 +245,8 @@ final class RIFEVideoProcessor {
                 }
 
                 let started = CFAbsoluteTimeGetCurrent()
-                try await checkpoint.append10Bit(currentPB, at: .zero)
+                let firstOutputFrame = try colorPopGrade?.apply(currentPB) ?? currentPB
+                try await checkpoint.append10Bit(firstOutputFrame, at: .zero)
                 encodeSeconds += CFAbsoluteTimeGetCurrent() - started
                 outputFrames += 1
                 try autoreleasepool { try tiledHQ.seed(currentPB) }
@@ -267,7 +268,8 @@ final class RIFEVideoProcessor {
                 let rel = CMTimeGetSeconds(CMTimeSubtract(nextOutputTime, previousTime)) / spanSeconds
                 if rel <= 0.001 {
                     let started = CFAbsoluteTimeGetCurrent()
-                    try await checkpoint.append10Bit(prevPB, at: nextOutputTime)
+                    let repeatedOutputFrame = try colorPopGrade?.apply(prevPB) ?? prevPB
+                    try await checkpoint.append10Bit(repeatedOutputFrame, at: nextOutputTime)
                     encodeSeconds += CFAbsoluteTimeGetCurrent() - started
                     outputFrames += 1
                 } else {
@@ -426,7 +428,8 @@ final class RIFEVideoProcessor {
                 }
 
                 let encodeStarted = CFAbsoluteTimeGetCurrent()
-                try await checkpoint.append10Bit(chosen, at: requestedTimes[index])
+                let finalOutputFrame = try colorPopGrade?.apply(chosen) ?? chosen
+                try await checkpoint.append10Bit(finalOutputFrame, at: requestedTimes[index])
                 encodeSeconds += CFAbsoluteTimeGetCurrent() - encodeStarted
                 outputFrames += 1
                 generated += 1
