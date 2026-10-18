@@ -49,6 +49,10 @@ final class VideoProcessorViewModel: ObservableObject {
     @Published var isProcessing = false
     @Published private(set) var isPaused = false
     @Published var isImporting = false
+    @Published private(set) var isPreviewing = false
+    @Published private(set) var previewURLs: [URL] = []
+    @Published private(set) var previewStatus = ""
+    private var previewTask: Task<Void, Never>?
     @Published var importProgress: Double? = nil
     @Published var ghostProtection = true
     @Published var sceneCutProtection = true
@@ -234,6 +238,73 @@ final class VideoProcessorViewModel: ObservableObject {
     }
 
     func cancelBenchmark() { benchmarkTask?.cancel() }
+
+    /// Generate a disposable settings preview from the opening frames without setting
+    /// isProcessing/isBatchProcessing, touching recovery checkpoints, or locking render controls.
+    func generatePreview() {
+        guard let source = inputURL, !isPreviewing, !isBusy, !isImporting, !isBenchmarking else { return }
+        clearPreviewFiles()
+        isPreviewing = true
+        previewStatus = "Preparing opening-frame preview…"
+        let isGIF = inputKind == .gif
+        let compression = compressionProtection
+        let outline = outlineProtection
+        let upscale = upscaleTo4K
+        let colorPop = colorPopEnabled
+        let gradeStrength = colorPopStrength
+        let watermark = WatermarkConfiguration(
+            enabled: effectiveWatermarkEnabled,
+            regions: watermarkRegions,
+            paddingPixels: Int(watermarkPaddingPixels),
+            model: watermarkModel
+        )
+        previewTask = Task { [weak self] in
+            let secured = source.startAccessingSecurityScopedResource()
+            defer { if secured { source.stopAccessingSecurityScopedResource() } }
+            do {
+                let urls = try await VideoPreviewProcessor.generate(
+                    sourceURL: source,
+                    isGIF: isGIF,
+                    compressionProtection: compression,
+                    outlineProtection: outline,
+                    upscale2x: upscale,
+                    colorPopEnabled: colorPop,
+                    colorPopStrength: gradeStrength,
+                    watermark: watermark
+                )
+                guard !Task.isCancelled, let self else {
+                    urls.forEach { try? FileManager.default.removeItem(at: $0) }
+                    return
+                }
+                self.previewURLs = urls
+                self.previewStatus = "Preview ready • \(urls.count) enhanced sample frames. Adjust settings and preview again; the full render has not started."
+                DiagnosticsLogger.shared.log("Settings preview complete • frames=\(urls.count) • source=\(source.lastPathComponent) • no render/recovery state changed")
+            } catch {
+                guard let self else { return }
+                self.previewStatus = Task.isCancelled ? "Preview cancelled" : "Preview failed • \(error.localizedDescription)"
+                if !Task.isCancelled { DiagnosticsLogger.shared.log("Settings preview failed • \(error.localizedDescription)") }
+            }
+            self?.isPreviewing = false
+            self?.previewTask = nil
+        }
+    }
+
+    func cancelPreview() {
+        previewTask?.cancel()
+        isPreviewing = false
+        previewStatus = "Cancelling preview…"
+    }
+
+    private func clearPreviewFiles() {
+        previewTask?.cancel()
+        let old = previewURLs
+        previewURLs = []
+        previewStatus = ""
+        old.forEach { try? FileManager.default.removeItem(at: $0) }
+        if let first = old.first {
+            try? FileManager.default.removeItem(at: first.deletingLastPathComponent())
+        }
+    }
 
     /// Pause is the only action that requests an incremental checkpoint.
     /// The worker is cancelled immediately, but the active stage writer intercepts
@@ -1102,6 +1173,7 @@ final class VideoProcessorViewModel: ObservableObject {
 
     func start() async {
         guard !isBusy, !isBenchmarking, !isImporting else { return }
+        if isPreviewing { cancelPreview() }
         guard var queue = mediaQueue else { _ = await startSingle(); return }
         guard queue.nextItemID != nil else { return }
         if watermarkRemovalEnabled {
