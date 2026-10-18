@@ -15,6 +15,7 @@ struct ContentView: View {
     @State private var showingVACEVideoEditor = false
     @State private var showingWatermarkEditor = false
     @State private var showingPhotosPicker = false
+    @State private var showingPreview = false
     @State private var showingExportFolderPicker = false
     @State private var showingClearRecoveryConfirmation = false
     @State private var photoItems: [PhotosPickerItem] = []
@@ -82,6 +83,28 @@ struct ContentView: View {
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                             }
+                        }
+                        if vm.inputURL != nil && (vm.inputKind == .video || vm.inputKind == .gif) {
+                            HStack {
+                                Button {
+                                    showingPreview = true
+                                    vm.generatePreview()
+                                } label: {
+                                    Label(vm.isPreviewing ? "Previewing…" : "Preview Opening Frames", systemImage: "play.rectangle")
+                                }
+                                // Intentionally remains enabled during preview.
+                                .disabled(vm.inputURL == nil || vm.isBusy || vm.isImporting || vm.isBenchmarking)
+                                Spacer()
+                                if vm.isPreviewing {
+                                    ProgressView()
+                                    Button("Cancel") { vm.cancelPreview() }
+                                }
+                            }
+                            if !vm.previewStatus.isEmpty {
+                                Text(vm.previewStatus).font(.caption).foregroundStyle(.secondary)
+                            }
+                            Text("Previews up to three opening frames with current still-frame enhancement settings. RIFE motion interpolation is not represented; Process remains available.")
+                                .font(.caption).foregroundStyle(.secondary)
                         }
                     }
 
@@ -499,6 +522,9 @@ struct ContentView: View {
         .sheet(isPresented: $showingVACEVideoEditor) {
             VACEVideoEditView()
         }
+        .sheet(isPresented: $showingPreview) {
+            VideoSettingsPreviewSheet(viewModel: vm)
+        }
         .onDisappear {
             pipController.disarmAndStop()
             cancelPostRenderSleep(restoreDisplay: true)
@@ -611,5 +637,59 @@ struct ContentView: View {
     private func finishTime(after seconds: Double) -> String {
         let formatter = DateFormatter(); formatter.timeStyle = .short
         return formatter.string(from: Date().addingTimeInterval(seconds))
+    }
+}
+
+
+private struct VideoSettingsPreviewSheet: View {
+    @ObservedObject var viewModel: VideoProcessorViewModel
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    Text(viewModel.previewStatus.isEmpty ? "Preview samples the opening frames using your current settings." : viewModel.previewStatus)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    if viewModel.isPreviewing {
+                        ProgressView("Rendering preview frames…")
+                        Button("Cancel Preview") { viewModel.cancelPreview() }
+                            .buttonStyle(.bordered)
+                    }
+                    if viewModel.previewURLs.isEmpty && !viewModel.isPreviewing {
+                        Text("No preview frames yet. Tap Preview Opening Frames after selecting a video or GIF.")
+                            .foregroundStyle(.secondary)
+                    }
+                    ForEach(Array(viewModel.previewURLs.enumerated()), id: \.offset) { index, url in
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Sample frame \(index + 1)").font(.headline)
+                            if let image = UIImage(contentsOfFile: url.path) {
+                                Image(uiImage: image)
+                                    .resizable()
+                                    .scaledToFit()
+                                    .frame(maxWidth: .infinity)
+                                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                            } else {
+                                Text("This preview frame could not be displayed.")
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                    Text("This is a visual settings check, not a 60 FPS motion preview. Change settings on the main screen and run Preview again.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .padding()
+            }
+            .navigationTitle("Video / GIF Preview")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
+        }
+        .presentationDetents([.medium, .large])
     }
 }
