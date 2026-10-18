@@ -19,18 +19,16 @@ enum VideoPreviewProcessor {
         colorPopStrength: Double,
         watermark: WatermarkConfiguration
     ) async throws -> [URL] {
-        try await Task.detached(priority: .userInitiated) {
-            try generateSync(
-                sourceURL: sourceURL,
-                isGIF: isGIF,
-                compressionProtection: compressionProtection,
-                outlineProtection: outlineProtection,
-                upscale2x: upscale2x,
-                colorPopEnabled: colorPopEnabled,
-                colorPopStrength: colorPopStrength,
-                watermark: watermark
-            )
-        }.value
+        try await generateSync(
+            sourceURL: sourceURL,
+            isGIF: isGIF,
+            compressionProtection: compressionProtection,
+            outlineProtection: outlineProtection,
+            upscale2x: upscale2x,
+            colorPopEnabled: colorPopEnabled,
+            colorPopStrength: colorPopStrength,
+            watermark: watermark
+        )
     }
 
     private static func generateSync(
@@ -42,7 +40,7 @@ enum VideoPreviewProcessor {
         colorPopEnabled: Bool,
         colorPopStrength: Double,
         watermark: WatermarkConfiguration
-    ) throws -> [URL] {
+    ) async throws -> [URL] {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("RIFE60-Preview-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         var completed: [URL] = []
