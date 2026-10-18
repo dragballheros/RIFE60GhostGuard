@@ -100,7 +100,7 @@ for strength in [0.5, 1.0] {
         let output = try readPatch(grade.apply(makePatch(sample)))
         let before = metrics(sample), after = metrics(output)
         precondition(after.saturation > before.saturation + 0.008, "\(label) failed to gain vibrance: \(sample) -> \(output)")
-        precondition(abs(after.luma - before.luma) < 0.018, "\(label) luminance moved too far: \(sample) -> \(output)")
+        precondition(abs(after.luma - before.luma) < 0.006, "\(label) luminance shifted despite chroma-only grading: \(sample) -> \(output)")
         precondition(hueDistance(after.hue, before.hue) < 4.0, "\(label) hue shifted: \(sample) -> \(output)")
         print("strength=\(strength) \(label) \(sample) -> \(output)")
     }
