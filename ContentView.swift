@@ -68,17 +68,6 @@ struct ContentView: View {
                                 .buttonStyle(.bordered)
                                 .disabled(vm.isBusy || vm.isImporting || vm.isBenchmarking)
                             }
-                            if !vm.isBusy && !vm.isPaused && !vm.recoveryAvailable {
-                                Button { Task { await vm.start() } } label: {
-                                    Label(createButtonTitle, systemImage: "play.fill")
-                                        .font(.headline)
-                                        .frame(maxWidth: .infinity)
-                                        .padding(.vertical, 5)
-                                }
-                                .buttonStyle(.borderedProminent)
-                                .tint(.blue)
-                                .disabled(vm.inputURL == nil || vm.isBenchmarking || vm.isImporting || (vm.mediaQueue != nil && !vm.queueHasRemaining))
-                            }
                         }
                         .padding(.vertical, 6)
                     } header: {
@@ -372,6 +361,41 @@ struct ContentView: View {
                         }
                     }
                     if let err = vm.errorText { Section("Error") { Text(err).foregroundStyle(.red) } }
+                }
+                .safeAreaInset(edge: .bottom, spacing: 0) {
+                    if !vm.isBusy && !vm.isPaused && !vm.recoveryAvailable {
+                        VStack(spacing: 8) {
+                            HStack {
+                                Label(vm.inputURL == nil ? "No media selected" : vm.inputURL!.lastPathComponent,
+                                      systemImage: vm.inputKind == .image ? "photo" : vm.inputKind == .gif ? "livephoto" : "film")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                                Spacer(minLength: 8)
+                                if vm.inputURL != nil {
+                                    Text(vm.inputKind == .image ? (vm.upscaleTo4K ? "2× output" : "Enhance") : (vm.videoToGIFEnabled || vm.inputKind == .gif ? "GIF output" : "60 FPS"))
+                                        .font(.caption.weight(.semibold))
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                            Button {
+                                Task { await vm.start() }
+                            } label: {
+                                Label(createButtonTitle, systemImage: "play.fill")
+                                    .font(.headline)
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.vertical, 7)
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .tint(Color(red: 0.04, green: 0.52, blue: 1.0))
+                            .disabled(vm.inputURL == nil || vm.isBenchmarking || vm.isImporting || (vm.mediaQueue != nil && !vm.queueHasRemaining))
+                        }
+                        .padding(.horizontal, 16)
+                        .padding(.top, 12)
+                        .padding(.bottom, 8)
+                        .background(.ultraThinMaterial)
+                        .overlay(alignment: .top) { Rectangle().fill(.white.opacity(0.08)).frame(height: 1) }
+                    }
                 }
                 .navigationTitle("RIFE 60")
                 .scrollContentBackground(.hidden)
