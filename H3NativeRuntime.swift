@@ -140,7 +140,7 @@ final class H3NativeRuntime {
             throw RuntimeError.invalidRequest("Enter a non-empty prompt.")
         }
         guard width >= 256, height >= 256, width % 32 == 0, height % 32 == 0,
-              frames >= 1, steps >= 2, steps <= 1000, frames >= 5, frames <= 362 else {
+              steps >= 2, steps <= 1000, frames >= 5, frames <= 362 else {
             throw RuntimeError.invalidRequest("H3 dimensions must be multiples of 32 and frames/steps must be positive.")
         }
 
@@ -237,7 +237,7 @@ final class H3NativeRuntime {
             throw RuntimeError.invalidRequest("The selected reference video is no longer accessible.")
         }
         guard width >= 256, height >= 256, width % 32 == 0, height % 32 == 0,
-              frames >= 1, steps >= 1 else {
+              steps >= 2, steps <= 1000, frames >= 5, frames <= 362 else {
             throw RuntimeError.invalidRequest("H3 dimensions must be multiples of 32 and frames/steps must be positive.")
         }
 
