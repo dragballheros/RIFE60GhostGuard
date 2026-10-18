@@ -16,10 +16,13 @@ final class ColorPopGrade {
     private var poolWidth = 0
     private var poolHeight = 0
     private let warmthCorrection = AutoWarmthCorrection()
+    private let warmthCorrectionEnabled: Bool
 
     init(strength: Double) {
         let amount = strength.isFinite ? min(max(strength, 0), 1) : 0
         self.strength = amount
+        self.warmthCorrectionEnabled = UserDefaults.standard.object(forKey: Self.warmthCorrectionDefaultsKey) == nil
+            || UserDefaults.standard.bool(forKey: Self.warmthCorrectionDefaultsKey)
         let space = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
         self.colorSpace = space
         self.context = CIContext(options: [
@@ -57,11 +60,9 @@ final class ColorPopGrade {
         guard let image = filter.outputImage else { throw ProcessorError.conversionFailed("Color Pop LUT produced no image") }
         context.render(image, to: destination, bounds: bounds, colorSpace: colorSpace)
         CVBufferSetAttachment(destination, kCVImageBufferCGColorSpaceKey, colorSpace, .shouldPropagate)
-        // Shared preference for stills, video frames, and GIFs. Missing means enabled
-        // so existing installations retain the current correction by default.
-        let warmthEnabled = UserDefaults.standard.object(forKey: Self.warmthCorrectionDefaultsKey) == nil
-            || UserDefaults.standard.bool(forKey: Self.warmthCorrectionDefaultsKey)
-        guard warmthEnabled else { return destination }
+        // This preference is captured once per grading job, not read for every frame.
+        // The UI prevents changes while a job is running.
+        guard warmthCorrectionEnabled else { return destination }
         return try warmthCorrection.apply(reference: buffer, graded: destination)
     }
 
