@@ -76,6 +76,8 @@ final class VideoProcessorViewModel: ObservableObject {
     @Published var preserveAudio = true
     @Published var redditMode = false
     @Published var videoToGIFEnabled = false
+    @Published var frameRateMode = "60"
+    var selectedTargetFPS: Double { frameRateMode == "off" ? 0 : (Double(frameRateMode) ?? 60) }
     @Published var renderPowerMode = true
     @Published var telemetry = PerformanceTelemetry()
     @Published var processingScreenAwake = false
