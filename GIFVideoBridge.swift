@@ -191,7 +191,7 @@ struct GIFVideoBridge: Sendable {
 
                 progress(
                     Double(index + 1) / Double(frameCount),
-                    "GIF → video • frame (index + 1)/(frameCount)"
+                    "GIF → video • frame \(index + 1)/\(frameCount)"
                 )
             }
             input.markAsFinished()
