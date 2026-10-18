@@ -126,6 +126,20 @@ let unchangedWarmth = try AutoWarmthCorrection().apply(reference: warmthReferenc
 precondition(Unmanaged.passUnretained(warmthReference).toOpaque() == Unmanaged.passUnretained(unchangedWarmth).toOpaque(), "neutral source/output must bypass warmth correction")
 print("Automatic warmth correction checks passed • warm cast reduced • neutral bypass preserved")
 
+
+// Existing source warmth must also be reduced when the grade itself adds no shift.
+// Use a lightly warm, low-chroma midtone so this checks the source-bias branch,
+// not the grade-added branch tested above. Skin/accent protections are checked
+// independently below; this sample must show a measurable, conservative change.
+let sourceWarm = try makePatch((160, 154, 148), width: 128, height: 128)
+let sourceWarmOutput = try readPatch(AutoWarmthCorrection().apply(reference: sourceWarm, graded: sourceWarm))
+let sourceWarmBefore = try readPatch(sourceWarm)
+let sourceWarmSpreadBefore = sourceWarmBefore.0 - sourceWarmBefore.2
+let sourceWarmSpreadAfter = sourceWarmOutput.0 - sourceWarmOutput.2
+print("Source warmth regression RGB=\(sourceWarmOutput), red-blue spread=\(sourceWarmSpreadBefore)->\(sourceWarmSpreadAfter)")
+precondition(sourceWarmSpreadAfter < sourceWarmSpreadBefore, "automatic warmth correction did not reduce existing source warmth: \(sourceWarmBefore) -> \(sourceWarmOutput)")
+precondition(sourceWarmSpreadBefore - sourceWarmSpreadAfter >= 1, "existing source warmth reduction was not measurable: \(sourceWarmBefore) -> \(sourceWarmOutput)")
+
  // The four selectable modes must target distinct warmth sources.
  let modeReference = try makePatch((120, 120, 120), width: 128, height: 128)
  let addedWarmth = try makePatch((130, 120, 110), width: 128, height: 128)
@@ -142,19 +156,6 @@ print("Automatic warmth correction checks passed • warm cast reduced • neutr
  let offSource = try AutoWarmthCorrection().apply(reference: sourceWarm, graded: sourceWarm, mode: .off)
  precondition(Unmanaged.passUnretained(offSource).toOpaque() == Unmanaged.passUnretained(sourceWarm).toOpaque(), "Off mode must be an exact identity bypass")
  print("Four-mode warmth checks passed • Off / Original / Processed / Full")
-
-// Existing source warmth must also be reduced when the grade itself adds no shift.
-// Use a lightly warm, low-chroma midtone so this checks the source-bias branch,
-// not the grade-added branch tested above. Skin/accent protections are checked
-// independently below; this sample must show a measurable, conservative change.
-let sourceWarm = try makePatch((160, 154, 148), width: 128, height: 128)
-let sourceWarmOutput = try readPatch(AutoWarmthCorrection().apply(reference: sourceWarm, graded: sourceWarm))
-let sourceWarmBefore = try readPatch(sourceWarm)
-let sourceWarmSpreadBefore = sourceWarmBefore.0 - sourceWarmBefore.2
-let sourceWarmSpreadAfter = sourceWarmOutput.0 - sourceWarmOutput.2
-print("Source warmth regression RGB=\(sourceWarmOutput), red-blue spread=\(sourceWarmSpreadBefore)->\(sourceWarmSpreadAfter)")
-precondition(sourceWarmSpreadAfter < sourceWarmSpreadBefore, "automatic warmth correction did not reduce existing source warmth: \(sourceWarmBefore) -> \(sourceWarmOutput)")
-precondition(sourceWarmSpreadBefore - sourceWarmSpreadAfter >= 1, "existing source warmth reduction was not measurable: \(sourceWarmBefore) -> \(sourceWarmOutput)")
 
 
 print("Color Pop checks passed")
