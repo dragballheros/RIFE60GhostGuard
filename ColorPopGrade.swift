@@ -267,14 +267,13 @@ final class ColorPopGrade {
         let skinGreenBlue = smoothstep(1.00, 1.09, greenBlue) * (1 - smoothstep(2.65, 3.10, greenBlue))
         let skinWeight = skinHue * skinSaturation * skinLuma * skinRedGreen * skinGreenBlue
 
-        // Fade the grade out near black and near peak white. The tiny S-curve
-        // improves midtone separation but is disabled for skin-like pixels.
+        // Fade the grade out near black and near peak white. Color Pop is
+        // strictly chroma-only: it must not lift or lower pixel luminance.
+        // Brightness/tone changes belong to an explicit separate control.
         let shadowWeight = smoothstep(0.015, 0.075, y)
         let highlightWeight = 1 - smoothstep(0.84, 0.97, y)
         let usableWeight = chromaWeight * shadowWeight * highlightWeight
-        let contrastWeight = usableWeight * (1 - skinWeight)
-        let contrastAmount = 0.035 * s * contrastWeight
-        let targetY = clamp(y + contrastAmount * (y - 0.5) * 4 * y * (1 - y))
+        let targetY = y
 
         // Hue-family weighting gives anime reds/pinks, blues and teal accents
         // a slightly stronger lift than generic low-saturation vibrance.
@@ -298,8 +297,8 @@ final class ColorPopGrade {
         let proposedGain = 1 + s * (mutedColorLift + familyAccent) * usableWeight
             * (1 - 0.92 * skinWeight)
 
-        // First apply the very small luma curve with a uniform channel scale,
-        // then expand chroma around targetY. Luma remains targetY by construction.
+        // Expand chroma around the original luma. This keeps perceived
+        // luminance anchored to the source instead of brightening midtones.
         let toneRatio = targetY / y
         let tr = r * toneRatio
         let tg = g * toneRatio
