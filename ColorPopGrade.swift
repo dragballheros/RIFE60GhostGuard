@@ -38,6 +38,9 @@ enum ColorPopSkinToneMode: String, CaseIterable, Identifiable {
 private final class ColorPopSkinToneCorrection {
     private let colorSpace = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
     private let context: CIContext
+    private var pool: CVPixelBufferPool?
+    private var poolWidth = 0
+    private var poolHeight = 0
     private let kernel: CIColorKernel? = CIColorKernel(source: """
         kernel vec4 correctSkinLightness(__sample source, __sample graded, float originalOnly, float processedOnly) {
             vec3 s = source.rgb;
@@ -75,27 +78,36 @@ private final class ColorPopSkinToneCorrection {
         guard let output = kernel.apply(extent: input.extent, arguments: [source, input, originalOnly, processedOnly]) else {
             throw ProcessorError.conversionFailed("Color Pop skin-tone correction produced no image")
         }
+        let width = CVPixelBufferGetWidth(graded)
+        let height = CVPixelBufferGetHeight(graded)
+        try preparePool(width: width, height: height)
+        guard let pool else { return graded }
         var buffer: CVPixelBuffer?
-        let attrs: [String: Any] = [
-            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
-            kCVPixelBufferWidthKey as String: CVPixelBufferGetWidth(graded),
-            kCVPixelBufferHeightKey as String: CVPixelBufferGetHeight(graded),
-            kCVPixelBufferMetalCompatibilityKey as String: true,
-            kCVPixelBufferIOSurfacePropertiesKey as String: [:]
-        ]
-        guard CVPixelBufferCreate(
-            kCFAllocatorDefault,
-            CVPixelBufferGetWidth(graded),
-            CVPixelBufferGetHeight(graded),
-            kCVPixelFormatType_32BGRA,
-            attrs as CFDictionary,
-            &buffer
-        ) == kCVReturnSuccess, let buffer else {
+        guard CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault, pool, &buffer) == kCVReturnSuccess, let buffer else {
             throw ProcessorError.conversionFailed("could not allocate Color Pop skin-tone correction buffer")
         }
         context.render(output, to: buffer, bounds: input.extent, colorSpace: colorSpace)
         CVBufferSetAttachment(buffer, kCVImageBufferCGColorSpaceKey, colorSpace, .shouldPropagate)
         return buffer
+    }
+
+    private func preparePool(width: Int, height: Int) throws {
+        if pool != nil, poolWidth == width, poolHeight == height { return }
+        let attributes: [String: Any] = [
+            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
+            kCVPixelBufferWidthKey as String: width,
+            kCVPixelBufferHeightKey as String: height,
+            kCVPixelBufferMetalCompatibilityKey as String: true,
+            kCVPixelBufferIOSurfacePropertiesKey as String: [:]
+        ]
+        var newPool: CVPixelBufferPool?
+        guard CVPixelBufferPoolCreate(kCFAllocatorDefault, nil, attributes as CFDictionary, &newPool) == kCVReturnSuccess,
+              let newPool else {
+            throw ProcessorError.conversionFailed("could not create Color Pop skin-tone buffer pool")
+        }
+        pool = newPool
+        poolWidth = width
+        poolHeight = height
     }
 }
 
