@@ -219,7 +219,12 @@ final class TwoPassVideoProcessor {
                     preserveAudio: false,
                     targetFPS: config.targetFPS
                 )
-                let rife = RIFEVideoProcessor(configuration: pass2Config, colorPopStrength: (!upscaleTo4K && !config.outlineProtection) ? colorPopStrength : 0)
+                let rifeIsFinalVisualStage = (!upscaleTo4K || automaticCuganPasses == 0) && !config.outlineProtection
+                let rife = RIFEVideoProcessor(
+                    configuration: pass2Config,
+                    colorPopStrength: rifeIsFinalVisualStage ? colorPopStrength : 0,
+                    applyWarmthCorrection: rifeIsFinalVisualStage
+                )
                 let generated = try await rife.process(
                     sourceURL: rifeInput,
                     progress: { p, message in
@@ -275,7 +280,12 @@ final class TwoPassVideoProcessor {
                         autoreleasepool { }
                         try await thermalHandoff(progress: progress, position: 0.40, next: "Real-CUGAN native 2×")
                         progress(0.41, "Pass 3/4 • Loading Real-CUGAN Anime native 2×…")
-                        let cugan = RealCUGANPass(intensity: 1.30, colorPopStrength: (!config.outlineProtection && automaticCuganPasses == 1) ? colorPopStrength : 0)
+                        let cuganIsFinalVisualStage = !config.outlineProtection && automaticCuganPasses == 1
+                        let cugan = RealCUGANPass(
+                            intensity: 1.30,
+                            colorPopStrength: cuganIsFinalVisualStage ? colorPopStrength : 0,
+                            applyWarmthCorrection: cuganIsFinalVisualStage
+                        )
                         let generated = try await cugan.run(
                             sourceURL: firstPassInput,
                             finalAudioBitrate: audioBitrate,
@@ -321,7 +331,12 @@ final class TwoPassVideoProcessor {
                         }
                         try await thermalHandoff(progress: progress, position: 0.62, next: "Real-CUGAN automatic 4×")
                         progress(0.63, "Pass 4/4 • Real-CUGAN automatic second 2× pass…")
-                        let cuganSecond = RealCUGANPass(intensity: 1.30, colorPopStrength: (!config.outlineProtection && automaticCuganPasses == 2) ? colorPopStrength : 0)
+                        let cuganSecondIsFinalVisualStage = !config.outlineProtection && automaticCuganPasses == 2
+                        let cuganSecond = RealCUGANPass(
+                            intensity: 1.30,
+                            colorPopStrength: cuganSecondIsFinalVisualStage ? colorPopStrength : 0,
+                            applyWarmthCorrection: cuganSecondIsFinalVisualStage
+                        )
                         let generated4x = try await cuganSecond.run(
                             sourceURL: firstPassOutput,
                             finalAudioBitrate: audioBitrate,
@@ -515,7 +530,7 @@ final class TwoPassVideoProcessor {
                     // change order on recovery: reject and retain completed checkpoints.
                     try requireUpscaleFirstMemory(width: outputWidth, height: outputHeight)
                     let settings = ProcessorConfiguration(quality: config.quality, ghostProtection: config.ghostProtection, sceneCutProtection: config.sceneCutProtection, compressionProtection: false, outlineProtection: false, ghostSensitivity: config.ghostSensitivity, preserveAudio: false, targetFPS: config.targetFPS)
-                    generated = try await RIFEVideoProcessor(configuration: settings, colorPopStrength: config.outlineProtection ? 0 : colorPopStrength, guardUpscaleFirstMemory: true).process(sourceURL: inputURL, progress: { p, message in publish(p / 0.95, message) }, telemetry: { sample in
+                    generated = try await RIFEVideoProcessor(configuration: settings, colorPopStrength: config.outlineProtection ? 0 : colorPopStrength, guardUpscaleFirstMemory: true, applyWarmthCorrection: !config.outlineProtection).process(sourceURL: inputURL, progress: { p, message in publish(p / 0.95, message) }, telemetry: { sample in
                         let saved = combined
                         combined = sample; combined.compressionMsPerFrame = saved.compressionMsPerFrame; combined.upscaledFrames = saved.upscaledFrames; combined.cuganMsPerFrame = saved.cuganMsPerFrame; combined.upscaleFPS = saved.upscaleFPS
                         telemetry(combined)
