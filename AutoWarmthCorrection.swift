@@ -32,6 +32,19 @@ enum AutoWarmthCorrectionMode: String, CaseIterable, Identifiable {
             return "Current behavior: reduces both original excess warmth and additional warmth introduced by processing."
         }
     }
+
+    static var current: AutoWarmthCorrectionMode {
+        let defaults = UserDefaults.standard
+        if let rawValue = defaults.string(forKey: "automaticWarmthCorrectionMode"),
+           let mode = AutoWarmthCorrectionMode(rawValue: rawValue) {
+            return mode
+        }
+        if defaults.object(forKey: "automaticWarmthCorrectionEnabled") != nil,
+           !defaults.bool(forKey: "automaticWarmthCorrectionEnabled") {
+            return .off
+        }
+        return .full
+    }
 }
 
 /// Adaptive warmth correction for Color Pop.
