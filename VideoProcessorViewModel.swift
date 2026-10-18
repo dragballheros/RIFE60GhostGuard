@@ -456,6 +456,7 @@ final class VideoProcessorViewModel: ObservableObject {
         let upscale = upscaleTo4K
         let upscaleBeforeRIFE = upscaleFirst && upscale
         let modelCompute = computePreference.rawValue
+        let selectedTargetFPS = self.selectedTargetFPS
         let configKey = ["pipeline-v6-deepcream-model", "hq", "ghost=\(guardEnabled)", "cuts=\(cuts)", "compression=\(compressionEnabled)", "outline=\(outlineEnabled)", "colorpop=\(colorPop)", "colorpopStrength=\(gradeStrength)", "warmthMode=\(warmthMode)", "skinToneMode=\(skinToneMode)", "watermark=\(watermark.enabled)", "watermarkMasks=\(watermark.serializedRegions)", "watermarkPadding=\(watermark.paddingPixels)", "watermarkModel=\(watermark.model.rawValue)", String(format: "sensitivity=%.2f", sensitivity), "audio=\(audio)", "reddit=\(redditMode)", "videoToGIF=\(videoToGIFEnabled)", "upscale=\(upscale)", "upscaleFirst=\(upscaleBeforeRIFE)", "computeUnits=\(modelCompute)", "fps=60"].joined(separator: "|")
         DiagnosticsLogger.shared.log("Render requested • \(configKey)")
 
