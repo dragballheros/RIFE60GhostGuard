@@ -404,10 +404,13 @@ struct ContentView: View {
                 .onAppear {
                     // Migrate the old boolean setting once so the segmented picker
                     // and the renderer agree on the same persisted mode.
-                    if UserDefaults.standard.object(forKey: "automaticWarmthCorrectionMode") == nil {
-                        if let legacyValue = UserDefaults.standard.object(forKey: "automaticWarmthCorrectionEnabled") as? Bool {
+                    let warmthDefaults = UserDefaults.standard
+                    let warmthMigrationKey = "automaticWarmthCorrectionModeMigrationComplete"
+                    if !warmthDefaults.bool(forKey: warmthMigrationKey) {
+                        if let legacyValue = warmthDefaults.object(forKey: "automaticWarmthCorrectionEnabled") as? Bool {
                             automaticWarmthCorrectionModeRawValue = legacyValue ? AutoWarmthCorrectionMode.full.rawValue : AutoWarmthCorrectionMode.off.rawValue
                         }
+                        warmthDefaults.set(true, forKey: warmthMigrationKey)
                     }
                     if lastCompletedVideoURL == nil { lastCompletedVideoURL = LastCompletedVideoStore.latestCompletedVideo() }
                     if vm.isBusy { pipController.arm() }
