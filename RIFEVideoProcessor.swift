@@ -59,6 +59,15 @@ final class RIFEVideoProcessor {
             throw ProcessorError.missingVideoTrack
         }
 
+        // Off is a true model bypass: preserve source cadence and audio; downstream enhancement can continue.
+        if config.targetFPS <= 0 {
+            progress(0.01, "RIFE Off • preserving source frame cadence…")
+            let output = try await exportWithoutRIFE(sourceURL: sourceURL)
+            progress(1, "RIFE Off • source cadence preserved")
+            telemetry(PerformanceTelemetry())
+            return output
+        }
+
         let duration = try await asset.load(.duration)
         let naturalSize = try await track.load(.naturalSize)
         let transform = try await track.load(.preferredTransform)
@@ -508,6 +517,29 @@ final class RIFEVideoProcessor {
         guard adaptor.append(destination, withPresentationTime: time) else {
             throw ProcessorError.writer("failed appending 10-bit frame at \\(CMTimeGetSeconds(time)) s")
         }
+    }
+
+    private func exportWithoutRIFE(sourceURL: URL) async throws -> URL {
+        let asset = AVURLAsset(url: sourceURL)
+        let outputURL = FileManager.default.temporaryDirectory.appendingPathComponent("rife-off-\(UUID().uuidString).mov")
+        try? FileManager.default.removeItem(at: outputURL)
+        guard let session = AVAssetExportSession(asset: asset, presetName: AVAssetExportPresetPassthrough) else {
+            throw ProcessorError.writer("Could not create a passthrough export session for RIFE Off.")
+        }
+        session.outputURL = outputURL
+        session.outputFileType = .mov
+        session.shouldOptimizeForNetworkUse = true
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            session.exportAsynchronously {
+                switch session.status {
+                case .completed: continuation.resume(returning: ())
+                case .cancelled: continuation.resume(throwing: CancellationError())
+                case .failed: continuation.resume(throwing: ProcessorError.writer(session.error?.localizedDescription ?? "RIFE-off passthrough export failed."))
+                default: continuation.resume(throwing: ProcessorError.writer("RIFE-off passthrough export ended unexpectedly (\(session.status.rawValue))."))
+                }
+            }
+        }
+        return outputURL
     }
 
     private func addOriginalAudio(videoURL: URL, sourceAsset: AVAsset) async throws -> URL {
