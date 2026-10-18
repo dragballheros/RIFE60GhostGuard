@@ -90,14 +90,13 @@ struct ContentView: View {
                                     showingPreview = true
                                     vm.generatePreview()
                                 } label: {
-                                    Label(vm.isPreviewing ? "Previewing…" : "Preview Opening Frames", systemImage: "play.rectangle")
+                                    Label(vm.isPreviewing ? "Cancel Preview" : "Preview Opening Frames", systemImage: vm.isPreviewing ? "xmark.circle" : "play.rectangle")
                                 }
                                 // Intentionally remains enabled during preview.
                                 .disabled(vm.inputURL == nil || vm.isBusy || vm.isImporting || vm.isBenchmarking)
                                 Spacer()
                                 if vm.isPreviewing {
                                     ProgressView()
-                                    Button("Cancel") { vm.cancelPreview() }
                                 }
                             }
                             if !vm.previewStatus.isEmpty {
