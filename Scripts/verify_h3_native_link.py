@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fail the IPA workflow unless the pinned H3 engine is compiled and linked."""
+"""Verify H3 object compilation and native API resolution for the iOS app."""
 from pathlib import Path
 import subprocess
 import sys
@@ -27,17 +27,27 @@ if missing:
 if not binary.is_file():
     raise SystemExit(f"FAIL: built app executable not found: {binary}")
 
-nm = subprocess.run(
-    ["xcrun", "nm", "-gU", str(binary)],
-    check=False, capture_output=True, text=True,
-)
-if nm.returncode != 0:
-    raise SystemExit("FAIL: unable to inspect app executable symbols with xcrun nm: " + nm.stderr[-2000:])
-symbols = nm.stdout
-required_symbols = ["_h3_load_dir", "_h3_generate", "_h3_free"]
-missing_symbols = [symbol for symbol in required_symbols if symbol not in symbols]
-if missing_symbols:
-    raise SystemExit("FAIL: H3 native API symbols are not linked into the app executable: " + ", ".join(missing_symbols))
+def nm(*args):
+    result = subprocess.run(["xcrun", "nm", *args], check=False, capture_output=True, text=True)
+    if result.returncode != 0:
+        raise SystemExit("FAIL: unable to inspect native H3 object symbols: " + result.stderr[-2000:])
+    return result.stdout
 
-print("PASS: H3 Swift runtime and native C/Objective-C engine objects are compiled into the iOS app.")
-print("PASS: h3_load_dir, h3_generate, and h3_free are present in the linked app executable.")
+# Release app binaries may have their symbol table stripped by Xcode. Inspect
+# the unstripped object files instead: the C implementation must define the
+# public API, Swift must reference it, and the successful xcodebuild link above
+# must have resolved those references into the final app.
+api_symbols = ["_h3_load_dir", "_h3_generate", "_h3_free", "_h3_last_error", "_h3_result_free"]
+definitions = nm("-gU", str(objects / "h3.o"))
+swift_references = nm("-u", str(objects / "H3NativeRuntime.o"))
+missing_definitions = [symbol for symbol in api_symbols if symbol not in definitions]
+missing_references = [symbol for symbol in api_symbols if symbol not in swift_references]
+
+if missing_definitions:
+    raise SystemExit("FAIL: H3 implementation object does not define required API symbols: " + ", ".join(missing_definitions))
+if missing_references:
+    raise SystemExit("FAIL: Swift H3 runtime does not reference expected native API symbols: " + ", ".join(missing_references))
+
+print("PASS: H3 Swift runtime and native C/Objective-C engine objects were compiled into the iOS app target.")
+print("PASS: H3 implementation definitions match the Swift runtime's native API references.")
+print("PASS: xcodebuild linked the app successfully; object-level symbol checks are used because release executable symbols may be stripped.")
