@@ -327,7 +327,7 @@ struct RedditMediaOptimizer: Sendable {
                     // The transition is deliberately short to limit visible ghosting.
                     let firstRequested = CMTimeMakeWithSeconds(0, preferredTimescale: 600)
                     let firstFrame = try imageGenerator.copyCGImage(at: firstRequested, actualTime: nil)
-                    let seamFrameCount = min(4, max(0, frameCount / 12))
+                    let seamFrameCount = frameCount > 2 ? min(4, max(1, Int((fps * 0.067).rounded()))) : 0
                     let candidate = try encodeGIF(
                         outputURL: candidateURL,
                         frameCount: frameCount,
