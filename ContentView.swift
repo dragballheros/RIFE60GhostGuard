@@ -19,6 +19,7 @@ struct ContentView: View {
     @State private var showingMaskCopyConfirmation = false
     @State private var lastCompletedVideoURL: URL?
     @State private var previewPlayer: AVPlayer?
+    @State private var quickLookURL: URL?
     @State private var postRenderSleepTask: Task<Void, Never>?
     @State private var postRenderScreenDimmed = false
     @State private var postRenderSavedBrightness: CGFloat?
@@ -348,7 +349,12 @@ struct ContentView: View {
                             if !vm.saveStatusText.isEmpty { Text(vm.saveStatusText).font(.caption) }
                             if out.pathExtension.lowercased() == "gif" {
                                 Label("Animated GIF ready", systemImage: "livephoto")
-                                Text("The GIF is saved and ready to share. Use Share Output to preview it in a compatible app.")
+                                Button {
+                                    quickLookURL = out
+                                } label: {
+                                    Label("Preview animated GIF", systemImage: "play.rectangle")
+                                }
+                                Text("GIF exports are encoded to loop continuously and are validated after saving.")
                                     .font(.caption).foregroundStyle(.secondary)
                             } else if let previewPlayer {
                                 VideoPlayer(player: previewPlayer)
@@ -371,6 +377,7 @@ struct ContentView: View {
                 .scrollContentBackground(.hidden)
                 .background(Color(red: 0.035, green: 0.045, blue: 0.075))
                 .preferredColorScheme(.dark)
+                .quickLookPreview($quickLookURL)
                 .fullScreenCover(isPresented: $showingAIImageStudio) {
                     AIImageStudioView(
                         canUpscale: !vm.queueLocked && !vm.isImporting && !vm.isBenchmarking,
