@@ -6,6 +6,7 @@ import UIKit
 struct ContentView: View {
     @Environment(\.scenePhase) private var scenePhase
     @AppStorage("automaticWarmthCorrectionMode") private var automaticWarmthCorrectionModeRawValue = "full"
+    @AppStorage("colorPopSkinToneCorrectionMode") private var colorPopSkinToneCorrectionModeRawValue = "processedOnly"
     @StateObject private var vm = VideoProcessorViewModel()
     @StateObject private var pipController = ProcessingPiPController()
     @State private var showingImporter = false
@@ -174,6 +175,18 @@ struct ContentView: View {
                         .pickerStyle(.segmented)
                         .disabled(vm.queueLocked || vm.isImporting)
                         if let mode = AutoWarmthCorrectionMode(rawValue: automaticWarmthCorrectionModeRawValue) {
+                            Text(mode.explanation)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        Picker("Color Pop skin tone", selection: $colorPopSkinToneCorrectionModeRawValue) {
+                            ForEach(ColorPopSkinToneMode.allCases) { mode in
+                                Text(mode.title).tag(mode.rawValue)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+                        .disabled(vm.queueLocked || vm.isImporting)
+                        if let mode = ColorPopSkinToneMode(rawValue: colorPopSkinToneCorrectionModeRawValue) {
                             Text(mode.explanation)
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
