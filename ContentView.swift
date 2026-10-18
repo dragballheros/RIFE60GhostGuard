@@ -66,8 +66,45 @@ struct ContentView: View {
                     }
 
                     Section("Input") {
-                        Button { showingPhotosPicker = true } label: { Label("Select media from Photos", systemImage: "photo.on.rectangle") }.disabled(vm.isBusy || vm.isImporting || vm.isBenchmarking)
-                        Button { showingImporter = true } label: { Label("Select media from Files", systemImage: "folder") }.disabled(vm.isBusy || vm.isImporting || vm.isBenchmarking)
+                        VStack(alignment: .leading, spacing: 12) {
+                            HStack(spacing: 12) {
+                                Image(systemName: "wand.and.stars")
+                                    .font(.system(size: 23, weight: .semibold))
+                                    .foregroundStyle(.cyan)
+                                    .frame(width: 46, height: 46)
+                                    .background(.cyan.opacity(0.13), in: RoundedRectangle(cornerRadius: 13))
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text("Processing Recipe").font(.headline)
+                                    Text(vm.inputURL?.lastPathComponent ?? "Choose a video, GIF, or image")
+                                        .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                                }
+                                Spacer(minLength: 0)
+                            }
+                            HStack(spacing: 8) {
+                                Text(vm.inputKind == .image ? "Still image" : vm.inputKind == .gif ? "Animated GIF" : "Video")
+                                Text("•")
+                                Text(vm.inputKind == .image ? (vm.upscaleTo4K ? "2× upscale" : "Enhance") : "HQ RIFE")
+                                if vm.inputKind != .image { Text("• 60 FPS") }
+                            }
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            Toggle("Real-CUGAN 2× upscale", isOn: $vm.upscaleTo4K)
+                                .disabled(vm.queueLocked || vm.isImporting || vm.isBusy || vm.isBenchmarking)
+                            HStack(spacing: 10) {
+                                Button { showingPhotosPicker = true } label: {
+                                    Label("Photos", systemImage: "photo.on.rectangle").frame(maxWidth: .infinity)
+                                }
+                                .buttonStyle(.bordered)
+                                .disabled(vm.isBusy || vm.isImporting || vm.isBenchmarking)
+                                Button { showingImporter = true } label: {
+                                    Label("Files", systemImage: "folder").frame(maxWidth: .infinity)
+                                }
+                                .buttonStyle(.bordered)
+                                .disabled(vm.isBusy || vm.isImporting || vm.isBenchmarking)
+                            }
+                        }
+                        .padding(.vertical, 6)
                         if vm.isImporting {
                             VStack(alignment: .leading, spacing: 6) {
                                 if let importProgress = vm.importProgress { ProgressView(value: importProgress) } else { ProgressView() }
