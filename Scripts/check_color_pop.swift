@@ -63,7 +63,7 @@ func assertSkinPreserved(_ source: (Int, Int, Int), output: (Int, Int, Int), lab
 }
 
 let source = try makePatch((240, 190, 160))
-let bypass = try ColorPopGrade(strength: 0, warmthMode: .off).apply(source)
+let bypass = try ColorPopGrade(strength: 0, warmthMode: .off, skinToneMode: .off).apply(source)
 precondition(Unmanaged.passUnretained(source).toOpaque() == Unmanaged.passUnretained(bypass).toOpaque(), "zero strength must return the identical buffer")
 
 let skinSamples = [
@@ -80,7 +80,7 @@ let accentSamples = [
 ]
 
 for strength in [0.5, 1.0] {
-    let grade = ColorPopGrade(strength: strength)
+    let grade = ColorPopGrade(strength: strength, skinToneMode: .off)
 
     // Neutral pixels and highlight endpoints must not acquire a tint or change.
     for gray in 0...255 {
