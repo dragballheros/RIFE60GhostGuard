@@ -39,9 +39,12 @@ final class RIFEVideoProcessor {
     private let colorPopGrade: ColorPopGrade?
     private let guardUpscaleFirstMemory: Bool
 
-    init(configuration: ProcessorConfiguration, colorPopStrength: Double = 0, guardUpscaleFirstMemory: Bool = false) {
+    init(configuration: ProcessorConfiguration, colorPopStrength: Double = 0, guardUpscaleFirstMemory: Bool = false, applyWarmthCorrection: Bool? = nil) {
         self.guardUpscaleFirstMemory = guardUpscaleFirstMemory
-        self.colorPopGrade = colorPopStrength > 0 ? ColorPopGrade(strength: colorPopStrength) : nil
+        let shouldApplyWarmth = applyWarmthCorrection ?? (colorPopStrength > 0)
+        self.colorPopGrade = (colorPopStrength > 0 || shouldApplyWarmth)
+            ? ColorPopGrade(strength: colorPopStrength, warmthMode: applyWarmthCorrection == false ? .off : nil)
+            : nil
         self.config = configuration
     }
 
