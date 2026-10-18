@@ -321,13 +321,10 @@ struct RedditMediaOptimizer: Sendable {
 
                 let candidateURL = temporaryGIFURL()
                 do {
-                    // Cache the exact first output frame, then blend only the final
-                    // 4 frames toward it. This softens the last-to-first discontinuity
-                    // without changing total duration or adding duplicate tail frames.
-                    // The transition is deliberately short to limit visible ghosting.
-                    let firstRequested = CMTimeMakeWithSeconds(0, preferredTimescale: 600)
-                    let firstFrame = try imageGenerator.copyCGImage(at: firstRequested, actualTime: nil)
-                    let seamFrameCount = frameCount > 2 ? min(4, max(1, Int((fps * 0.067).rounded()))) : 0
+                    // Do not crossfade the tail into the first frame. A dissolve
+                    // changes the actual animation and creates ghosting. Export the
+                    // processed temporal sequence faithfully; seamless looping must
+                    // come from cyclic processing context, not synthetic blended frames.
                     let candidate = try encodeGIF(
                         outputURL: candidateURL,
                         frameCount: frameCount,
@@ -338,11 +335,6 @@ struct RedditMediaOptimizer: Sendable {
                             )
                             let requested = CMTimeMakeWithSeconds(time, preferredTimescale: 600)
                             let image = try imageGenerator.copyCGImage(at: requested, actualTime: nil)
-                            let seamStart = frameCount - seamFrameCount
-                            if seamFrameCount > 0, index >= seamStart {
-                                let progress = CGFloat(index - seamStart + 1) / CGFloat(seamFrameCount)
-                                return (Self.blendLoopSeam(current: image, first: firstFrame, amount: progress), outputFrameDelay(index: index, fps: fps))
-                            }
                             return (image, outputFrameDelay(index: index, fps: fps))
                         }
                     )
@@ -399,29 +391,6 @@ struct RedditMediaOptimizer: Sendable {
             result.append(value)
         }
         return result
-    }
-
-    /// Creates a short crossfade into the first frame at the end of the GIF.
-    /// Both frames are rendered to the current frame's dimensions before blending.
-    private static func blendLoopSeam(current: CGImage, first: CGImage, amount: CGFloat) -> CGImage {
-        let width = current.width
-        let height = current.height
-        guard let context = CGContext(
-            data: nil,
-            width: width,
-            height: height,
-            bitsPerComponent: 8,
-            bytesPerRow: 0,
-            space: CGColorSpaceCreateDeviceRGB(),
-            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
-        ) else { return current }
-        let bounds = CGRect(x: 0, y: 0, width: width, height: height)
-        context.interpolationQuality = .high
-        context.setAlpha(1)
-        context.draw(current, in: bounds)
-        context.setAlpha(min(max(amount, 0), 1))
-        context.draw(first, in: bounds)
-        return context.makeImage() ?? current
     }
 
     private static func qualityLabel(forLongEdge dimension: Int) -> String {
