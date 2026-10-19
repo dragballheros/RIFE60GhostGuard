@@ -66,6 +66,18 @@ final class FastMotionGhostGuard {
         var edgeSamples = 0
         var sampleCount = 0
 
+        // Regional counters prevent a small, severely damaged part of an
+        // otherwise acceptable frame from disappearing in whole-frame averages.
+        let regionColumns = 8
+        let regionRows = 6
+        let regionCount = regionColumns * regionRows
+        var regionalMotion = [Double](repeating: 0, count: regionCount)
+        var regionalHighMotion = [Int](repeating: 0, count: regionCount)
+        var regionalRangeViolations = [Int](repeating: 0, count: regionCount)
+        var regionalBlurCollapses = [Int](repeating: 0, count: regionCount)
+        var regionalEdgeSamples = [Int](repeating: 0, count: regionCount)
+        var regionalSamples = [Int](repeating: 0, count: regionCount)
+
         let xStep = max(1, width / sampleColumns)
         let yStep = max(1, height / sampleRows)
         let xOffset = xStep / 2
@@ -88,6 +100,10 @@ final class FastMotionGhostGuard {
 
             for column in 0..<sampleColumns {
                 let x = min(width - 2, xOffset + column * xStep)
+                let regionColumn = column / (sampleColumns / regionColumns)
+                let regionRow = row / (sampleRows / regionRows)
+                let regionIndex = regionRow * regionColumns + regionColumn
+                regionalSamples[regionIndex] += 1
                 let offset = x * 4
                 let leftOffset = max(0, x - 1) * 4
                 let rightOffset = min(width - 1, x + 1) * 4
@@ -98,12 +114,19 @@ final class FastMotionGhostGuard {
 
                 let endpointMotion = abs(cl - pl)
                 motionSum += endpointMotion
-                if endpointMotion > 0.12 { highMotionSamples += 1 }
+                regionalMotion[regionIndex] += endpointMotion
+                if endpointMotion > 0.12 {
+                    highMotionSamples += 1
+                    regionalHighMotion[regionIndex] += 1
+                }
 
                 let low = min(pl, cl)
                 let high = max(pl, cl)
                 let outside = max(low - gl, gl - high)
-                if outside > 0.10 { rangeViolations += 1 }
+                if outside > 0.10 {
+                    rangeViolations += 1
+                    regionalRangeViolations[regionIndex] += 1
+                }
 
                 let pg = gradient(pRow, pRowUp, pRowDown, leftOffset, rightOffset, offset)
                 let gg = gradient(gRow, gRowUp, gRowDown, leftOffset, rightOffset, offset)
@@ -111,7 +134,11 @@ final class FastMotionGhostGuard {
                 let endpointEdge = max(pg, cg)
                 if endpointEdge > 0.20 {
                     edgeSamples += 1
-                    if gg < endpointEdge * 0.45 { blurCollapses += 1 }
+                    regionalEdgeSamples[regionIndex] += 1
+                    if gg < endpointEdge * 0.45 {
+                        blurCollapses += 1
+                        regionalBlurCollapses[regionIndex] += 1
+                    }
                 }
                 sampleCount += 1
             }
@@ -131,25 +158,58 @@ final class FastMotionGhostGuard {
             return Result(fastMotion: false, reject: false, recoveryRecommended: false, motionScore: motionScore, artifactScore: 0)
         }
 
-        // Broken RIFE frames in fast motion tend to either push pixels outside
-        // both temporal endpoints (smearing/warping) or lose a large amount of
-        // edge structure. Require both signals together so ordinary fast motion
-        // is not flattened into duplicate source frames.
+        // Keep the existing global signal, then inspect each spatial region
+        // independently. A frame with one good half and one badly warped half
+        // must not pass simply because the unaffected pixels dilute the average.
         let rangeSignal = min(rangeViolationFraction / 0.20, 1.0)
         let blurSignal = min(blurCollapseFraction / 0.28, 1.0)
-        let artifactScore = 0.58 * rangeSignal + 0.42 * blurSignal
-        // "Recovery recommended" is intentionally less strict than "reject".
+        let globalArtifactScore = 0.58 * rangeSignal + 0.42 * blurSignal
+
+        var peakRegionalScore = 0.0
+        var regionalRecoveryRecommended = false
+        var regionalReject = false
+        for region in 0..<regionCount {
+            let count = Double(max(regionalSamples[region], 1))
+            let localRange = Double(regionalRangeViolations[region]) / count
+            let localEdgeCount = regionalEdgeSamples[region]
+            let localBlur = localEdgeCount > 0
+                ? Double(regionalBlurCollapses[region]) / Double(localEdgeCount)
+                : 0.0
+            let localRangeSignal = min(localRange / 0.20, 1.0)
+            let localBlurSignal = min(localBlur / 0.28, 1.0)
+            let localScore = 0.58 * localRangeSignal + 0.42 * localBlurSignal
+            peakRegionalScore = max(peakRegionalScore, localScore)
+
+            if localRange >= 0.06 || localBlur >= 0.16 {
+                regionalRecoveryRecommended = true
+            }
+
+            // Hard-reject only a concentrated, high-severity defect. This avoids
+            // flattening normal motion while catching a locally broken patch even
+            // when it affects just one of the 48 analysis regions.
+            let severeRangePatch = localRange >= 0.20 && localScore >= max(0.54, artifactGate - 0.08)
+            let severeWarpPatch = localBlur >= 0.60 &&
+                localScore >= 0.40 &&
+                (regionalHighMotion[region] > 0 || regionalMotion[region] / count >= motionGate * 0.25)
+            if severeRangePatch || severeWarpPatch {
+                regionalReject = true
+            }
+        }
+
+        let artifactScore = max(globalArtifactScore, peakRegionalScore)
         // A frame can be visibly difficult without crossing the hard rejection
-        // threshold. The processor uses this signal to spend extra RIFE work
-        // on suspicious fast-motion frames while still preserving every
-        // requested 60 FPS timestamp.
+        // threshold. Extra RIFE work is spent when either global or local evidence
+        // suggests a partial-frame failure.
         let recoveryRecommended =
             artifactScore >= max(0.42, artifactGate - 0.18) ||
             rangeViolationFraction >= 0.08 ||
-            blurCollapseFraction >= 0.12
+            blurCollapseFraction >= 0.12 ||
+            regionalRecoveryRecommended
 
-        let reject = artifactScore >= artifactGate &&
+        let reject = regionalReject || (
+            globalArtifactScore >= artifactGate &&
             (rangeViolationFraction >= 0.14 || blurCollapseFraction >= 0.20)
+        )
 
         return Result(
             fastMotion: true,

@@ -266,6 +266,14 @@ jobs:
           swiftc -swift-version 5 -I /tmp/adaptive-rife-check -L /tmp/adaptive-rife-check -lRifeMetal TiledHQInterpolator.swift RIFEBandPlan.swift /tmp/adaptive-rife-check/main.swift -o /tmp/adaptive-rife-check/check
           DYLD_LIBRARY_PATH=/tmp/adaptive-rife-check /tmp/adaptive-rife-check/check
 
+      - name: Verify localized fast-motion artifact detection
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/fast-motion-region-check
+          cp Scripts/check_fast_motion_regions.swift /tmp/fast-motion-region-check/main.swift
+          swiftc -swift-version 5 -framework CoreVideo FastMotionGhostGuard.swift /tmp/fast-motion-region-check/main.swift -o /tmp/fast-motion-region-check/check
+          /tmp/fast-motion-region-check/check
+
       - name: Verify localized color artifact detection and repair
         run: |
           set -euo pipefail
