@@ -23,6 +23,13 @@ targets:
         includes:
           - "*.swift"
           - "*.mm"
+      - path: Vendor/minimax-h3
+        includes:
+          - "*.c"
+          - "*.m"
+      - path: Vendor/minimax-h3/h3_shaders.metal
+        type: file
+        buildPhase: resources
       - path: Assets.xcassets
       - path: Models/DeepCreamBar.mlpackage
       - path: Models/DeepCreamMosaic.mlpackage
@@ -42,6 +49,7 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.za.rife60ghostguard
         SWIFT_OBJC_BRIDGING_HEADER: "$(SRCROOT)/RIFE60GhostGuard-Bridging-Header.h"
         HEADER_SEARCH_PATHS:
+          - "$(SRCROOT)/Vendor/minimax-h3"
         LIBRARY_SEARCH_PATHS:
         OTHER_LDFLAGS:
           - "-framework"
