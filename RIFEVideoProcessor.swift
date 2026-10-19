@@ -368,15 +368,13 @@ final class RIFEVideoProcessor {
                         colorArtifactGuard.inspect(previous: prevPB, candidate: chosen, next: currentPB, progress: t)
                     }
                     if colorInspection.isAnomaly {
-                        if let repaired = autoreleasepool(body: {
-                            colorArtifactGuard.repair(
-                                previous: prevPB,
-                                candidate: chosen,
-                                next: currentPB,
-                                progress: t,
-                                inspection: colorInspection
-                            )
-                        }) {
+                        if let repaired = colorArtifactGuard.repair(
+                            previous: prevPB,
+                            candidate: chosen,
+                            next: currentPB,
+                            progress: t,
+                            inspection: colorInspection
+                        ) {
                             chosen = repaired
                             let verification = colorArtifactGuard.inspect(
                                 previous: prevPB, candidate: chosen, next: currentPB, progress: t
