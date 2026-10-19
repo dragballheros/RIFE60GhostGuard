@@ -7,7 +7,7 @@ struct GhostGuardResult {
 }
 
 struct GhostGuard {
-    var sensitivity: Double = 1.0
+    var sensitivity: Double = 1.35
     var enableSceneCuts: Bool = true
 
     func inspect(previous: CVPixelBuffer, generated: CVPixelBuffer, current: CVPixelBuffer,
