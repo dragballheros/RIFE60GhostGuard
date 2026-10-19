@@ -1,0 +1,34 @@
+name: Recovery Source Identity Regression Tests
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - feature/wan-vace-iphone-memory-first
+    paths:
+      - "SourceFileIdentity.swift"
+      - "Scripts/test_source_file_identity.swift"
+      - "DiagnosticsAndRecovery.swift"
+      - "VideoProcessorViewModel.swift"
+      - "ContentView.swift"
+      - ".github/workflows/recovery-source-identity-check.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: recovery-source-identity-check-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  source-identity:
+    runs-on: macos-26
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Parse source identity helper
+        run: swiftc -frontend -parse SourceFileIdentity.swift Scripts/test_source_file_identity.swift
+      - name: Compile and run source identity regression tests
+        run: |
+          swiftc -swift-version 5 SourceFileIdentity.swift Scripts/test_source_file_identity.swift -o /tmp/source-identity-tests
+          /tmp/source-identity-tests

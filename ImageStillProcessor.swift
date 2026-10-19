@@ -107,9 +107,14 @@ final class ImageStillProcessor {
             try Task.checkCancellation()
         }
 
-        if colorPopStrength > 0 {
-            DiagnosticsLogger.shared.log("Color Pop active • strength=\(String(format: "%.2f", colorPopStrength)) • image grade after upscale and final polish")
-            progress(0.88, "Image • Color Pop…")
+        if colorPopStrength > 0 || AutoWarmthCorrectionMode.current != .off {
+            if colorPopStrength > 0 {
+                DiagnosticsLogger.shared.log("Color Pop active • strength=\(String(format: "%.2f", colorPopStrength)) • image grade after upscale and final polish")
+                progress(0.88, "Image • Color Pop and warmth…")
+            } else {
+                DiagnosticsLogger.shared.log("Automatic warmth correction active without Color Pop • final still-image stage")
+                progress(0.88, "Image • Automatic warmth correction…")
+            }
             // Keep the exact pre-grade frame as the reference. Automatic warmth
             // correction must compare the graded result against this frame and
             // run after Color Pop, never against the original low-resolution input.

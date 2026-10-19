@@ -67,9 +67,23 @@ final class DeepCreamWatermarkRemover: WatermarkRemovalApplying {
             .insetBy(dx: -padding, dy: -padding).integral.intersection(bounds)
         guard !target.isNull, target.width >= 1, target.height >= 1 else { return source }
 
-        let side = Int(ceil(max(256, max(target.width, target.height) * 2)))
-        let crop = CGRect(x: floor(target.midX - CGFloat(side) / 2),
-                          y: floor(target.midY - CGFloat(side) / 2),
+        let side = DeepCreamInputPreprocessor.contextCropSide(
+            targetWidth: target.width,
+            targetHeight: target.height,
+            frameWidth: width,
+            frameHeight: height
+        )
+        var cropX = floor(target.midX - CGFloat(side) / 2)
+        var cropY = floor(target.midY - CGFloat(side) / 2)
+        // If the square context crop fits on an axis, shift it inside the frame
+        // instead of repeating the frame edge via clampedToExtent().
+        if side <= width {
+            cropX = min(max(0, cropX), CGFloat(width - side))
+        }
+        if side <= height {
+            cropY = min(max(0, cropY), CGFloat(height - side))
+        }
+        let crop = CGRect(x: cropX, y: cropY,
                           width: CGFloat(side), height: CGFloat(side))
         let scale = CGFloat(modelSize) / CGFloat(side)
         let cropped = CIImage(cvPixelBuffer: source, options: [.colorSpace: colorSpace])
@@ -122,7 +136,11 @@ final class DeepCreamWatermarkRemover: WatermarkRemovalApplying {
                         let offset = batch * modelSize * modelSize * 3 + pixel + channel
                         originalPtr[offset] = value
                         maskPtr[offset] = known
-                        maskedPtr[offset] = known == 0 ? -1.0 : value
+                        maskedPtr[offset] = DeepCreamInputPreprocessor.maskedInputPixel(
+                            sourceValue: value,
+                            knownMaskValue: known,
+                            model: configuration.model
+                        )
                     }
                 }
             }
@@ -163,7 +181,32 @@ final class DeepCreamWatermarkRemover: WatermarkRemovalApplying {
         ) else {
             throw ProcessorError.conversionFailed("DeepCream could not extract the reconstructed target region")
         }
-        let replacement = try Self.rgbaBytes(from: targetPatch, width: Int(target.width), height: Int(target.height))
+        var replacement = try Self.rgbaBytes(from: targetPatch, width: Int(target.width), height: Int(target.height))
+        // Mosaic reconstruction needs both scales: the local crop retains the
+        // mosaic texture and fine boundaries, while a second prediction sees
+        // the entire frame so pose, limb direction, clothing, and scene layout
+        // can guide the fill. Blend only inside the selected target; the source
+        // outside the mask remains byte-identical.
+        if configuration.model == .deepCreamMosaic,
+           let globalContext = try? predictGlobalContextPatch(
+                source: source,
+                target: target,
+                brushPixels: brushPixels,
+                width: width,
+                height: height
+           ) {
+            let globalWeight: Float = 0.55
+            for index in 0..<(Int(target.width) * Int(target.height)) {
+                for channel in 0..<3 {
+                    let offset = index * 4 + channel
+                    let localValue = Float(replacement[offset])
+                    let globalValue = Float(globalContext[offset])
+                    replacement[offset] = UInt8(min(255, max(0,
+                        (localValue * (1 - globalWeight) + globalValue * globalWeight).rounded()
+                    )))
+                }
+            }
+        }
         let destination = try Self.allocate(resultPool)
         CVPixelBufferLockBaseAddress(source, .readOnly)
         CVPixelBufferLockBaseAddress(destination, [])
@@ -200,6 +243,109 @@ final class DeepCreamWatermarkRemover: WatermarkRemovalApplying {
         }
         CVBufferPropagateAttachments(source, destination)
         return destination
+    }
+
+
+    /// Whole-frame context pass for mosaic removal. The checkpoint is fixed at
+    /// 256x256, so the full image is aspect-fitted into that canvas with clamped
+    /// edge padding. This pass is deliberately fused with the local high-detail
+    /// crop rather than used alone: the global pass supplies scene/pose context,
+    /// while the local pass preserves more detail around the mosaic.
+    private func predictGlobalContextPatch(
+        source: CVPixelBuffer,
+        target: CGRect,
+        brushPixels: [UInt8]?,
+        width: Int,
+        height: Int
+    ) throws -> [UInt8] {
+        let side = CGFloat(max(width, height))
+        let crop = CGRect(
+            x: (CGFloat(width) - side) / 2,
+            y: (CGFloat(height) - side) / 2,
+            width: side,
+            height: side
+        )
+        let scale = CGFloat(modelSize) / side
+        let fitted = CIImage(cvPixelBuffer: source, options: [.colorSpace: colorSpace])
+            .clampedToExtent().cropped(to: crop)
+            .transformed(by: CGAffineTransform(translationX: -crop.minX, y: -crop.minY))
+            .transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+        guard let inputCG = context.createCGImage(
+            fitted,
+            from: CGRect(x: 0, y: 0, width: modelSize, height: modelSize)
+        ) else {
+            throw ProcessorError.conversionFailed("DeepCream could not prepare whole-frame context")
+        }
+        let rgba = try Self.rgbaBytes(from: inputCG, width: modelSize, height: modelSize)
+        let batchSize = 8
+        let shape: [NSNumber] = [
+            NSNumber(value: batchSize), NSNumber(value: modelSize),
+            NSNumber(value: modelSize), NSNumber(value: 3)
+        ]
+        let maskedInput = try MLMultiArray(shape: shape, dataType: .float32)
+        let originalInput = try MLMultiArray(shape: shape, dataType: .float32)
+        let maskInput = try MLMultiArray(shape: shape, dataType: .float32)
+        let sampleCount = batchSize * modelSize * modelSize * 3
+        let maskedPtr = maskedInput.dataPointer.bindMemory(to: Float.self, capacity: sampleCount)
+        let originalPtr = originalInput.dataPointer.bindMemory(to: Float.self, capacity: sampleCount)
+        let maskPtr = maskInput.dataPointer.bindMemory(to: Float.self, capacity: sampleCount)
+        for row in 0..<modelSize {
+            for col in 0..<modelSize {
+                let xCI = crop.minX + (CGFloat(col) + 0.5) / scale
+                let yCI = crop.maxY - (CGFloat(row) + 0.5) / scale
+                let sx = min(max(Int(xCI.rounded(.down)), 0), width - 1)
+                let sy = min(max(Int((CGFloat(height) - yCI).rounded(.down)), 0), height - 1)
+                let selected = brushPixels.map { $0[sy * width + sx] != 0 }
+                    ?? target.contains(CGPoint(x: xCI, y: yCI))
+                let known: Float = selected ? 0 : 1
+                let pixel = (row * modelSize + col) * 3
+                for channel in 0..<3 {
+                    let value = Float(rgba[(row * modelSize + col) * 4 + channel]) / 255 * 2 - 1
+                    for batch in 0..<batchSize {
+                        let offset = batch * modelSize * modelSize * 3 + pixel + channel
+                        originalPtr[offset] = value
+                        maskPtr[offset] = known
+                        maskedPtr[offset] = DeepCreamInputPreprocessor.maskedInputPixel(
+                            sourceValue: value,
+                            knownMaskValue: known,
+                            model: configuration.model
+                        )
+                    }
+                }
+            }
+        }
+        let features = try MLDictionaryFeatureProvider(dictionary: [
+            "Placeholder": MLFeatureValue(multiArray: maskedInput),
+            "Placeholder_1": MLFeatureValue(multiArray: originalInput),
+            "Placeholder_2": MLFeatureValue(multiArray: maskInput)
+        ])
+        let prediction = try model.prediction(from: features)
+        guard let output = prediction.featureValue(for: "add")?.multiArrayValue,
+              output.count >= sampleCount else {
+            throw ProcessorError.conversionFailed("DeepCream whole-frame context prediction was invalid")
+        }
+        let outputPtr = output.dataPointer.bindMemory(to: Float.self, capacity: sampleCount)
+        var outputRGBA = [UInt8](repeating: 255, count: modelSize * modelSize * 4)
+        for index in 0..<(modelSize * modelSize) {
+            for channel in 0..<3 {
+                let value = min(max((Double(outputPtr[index * 3 + channel]) + 1) * 0.5, 0), 1)
+                outputRGBA[index * 4 + channel] = UInt8((value * 255).rounded())
+            }
+        }
+        guard let outputCG = Self.makeCGImage(rgba: outputRGBA, width: modelSize, height: modelSize) else {
+            throw ProcessorError.conversionFailed("DeepCream could not decode whole-frame context prediction")
+        }
+        let restored = CIImage(cgImage: outputCG)
+            .transformed(by: CGAffineTransform(scaleX: side / CGFloat(modelSize), y: side / CGFloat(modelSize)))
+            .transformed(by: CGAffineTransform(translationX: crop.minX - target.minX,
+                                               y: crop.minY - target.minY))
+        guard let patch = context.createCGImage(
+            restored,
+            from: CGRect(x: 0, y: 0, width: Int(target.width), height: Int(target.height))
+        ) else {
+            throw ProcessorError.conversionFailed("DeepCream could not extract whole-frame context patch")
+        }
+        return try Self.rgbaBytes(from: patch, width: Int(target.width), height: Int(target.height))
     }
 
     private static func makePool(width: Int, height: Int) throws -> CVPixelBufferPool {

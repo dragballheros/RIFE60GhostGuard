@@ -63,7 +63,7 @@ func assertSkinPreserved(_ source: (Int, Int, Int), output: (Int, Int, Int), lab
 }
 
 let source = try makePatch((240, 190, 160))
-let bypass = try ColorPopGrade(strength: 0).apply(source)
+let bypass = try ColorPopGrade(strength: 0, warmthMode: .off, skinToneMode: .off).apply(source)
 precondition(Unmanaged.passUnretained(source).toOpaque() == Unmanaged.passUnretained(bypass).toOpaque(), "zero strength must return the identical buffer")
 
 let skinSamples = [
@@ -80,7 +80,7 @@ let accentSamples = [
 ]
 
 for strength in [0.5, 1.0] {
-    let grade = ColorPopGrade(strength: strength)
+    let grade = ColorPopGrade(strength: strength, warmthMode: .off, skinToneMode: .off)
 
     // Neutral pixels and highlight endpoints must not acquire a tint or change.
     for gray in 0...255 {
@@ -100,7 +100,7 @@ for strength in [0.5, 1.0] {
         let output = try readPatch(grade.apply(makePatch(sample)))
         let before = metrics(sample), after = metrics(output)
         precondition(after.saturation > before.saturation + 0.008, "\(label) failed to gain vibrance: \(sample) -> \(output)")
-        precondition(abs(after.luma - before.luma) < 0.018, "\(label) luminance moved too far: \(sample) -> \(output)")
+        precondition(abs(after.luma - before.luma) < 0.006, "\(label) luminance shifted despite chroma-only grading: \(sample) -> \(output)")
         precondition(hueDistance(after.hue, before.hue) < 4.0, "\(label) hue shifted: \(sample) -> \(output)")
         print("strength=\(strength) \(label) \(sample) -> \(output)")
     }
@@ -126,6 +126,7 @@ let unchangedWarmth = try AutoWarmthCorrection().apply(reference: warmthReferenc
 precondition(Unmanaged.passUnretained(warmthReference).toOpaque() == Unmanaged.passUnretained(unchangedWarmth).toOpaque(), "neutral source/output must bypass warmth correction")
 print("Automatic warmth correction checks passed • warm cast reduced • neutral bypass preserved")
 
+
 // Existing source warmth must also be reduced when the grade itself adds no shift.
 // Use a lightly warm, low-chroma midtone so this checks the source-bias branch,
 // not the grade-added branch tested above. Skin/accent protections are checked
@@ -138,6 +139,41 @@ let sourceWarmSpreadAfter = sourceWarmOutput.0 - sourceWarmOutput.2
 print("Source warmth regression RGB=\(sourceWarmOutput), red-blue spread=\(sourceWarmSpreadBefore)->\(sourceWarmSpreadAfter)")
 precondition(sourceWarmSpreadAfter < sourceWarmSpreadBefore, "automatic warmth correction did not reduce existing source warmth: \(sourceWarmBefore) -> \(sourceWarmOutput)")
 precondition(sourceWarmSpreadBefore - sourceWarmSpreadAfter >= 1, "existing source warmth reduction was not measurable: \(sourceWarmBefore) -> \(sourceWarmOutput)")
+
+ // The four selectable modes must target distinct warmth sources.
+ let modeReference = try makePatch((120, 120, 120), width: 128, height: 128)
+ let addedWarmth = try makePatch((130, 120, 110), width: 128, height: 128)
+ let originalOnlyAdded = try AutoWarmthCorrection().apply(reference: modeReference, graded: addedWarmth, mode: .originalOnly)
+ precondition(Unmanaged.passUnretained(originalOnlyAdded).toOpaque() == Unmanaged.passUnretained(addedWarmth).toOpaque(), "Original-only mode changed warmth that exists only in the processed result")
+ let processedOnlyAdded = try readPatch(AutoWarmthCorrection().apply(reference: modeReference, graded: addedWarmth, mode: .processedOnly))
+ precondition(processedOnlyAdded.0 - processedOnlyAdded.2 < 20, "Processed-only mode failed to reduce processing-added warmth: \(processedOnlyAdded)")
+ let processedOnlySource = try AutoWarmthCorrection().apply(reference: sourceWarm, graded: sourceWarm, mode: .processedOnly)
+ precondition(Unmanaged.passUnretained(processedOnlySource).toOpaque() == Unmanaged.passUnretained(sourceWarm).toOpaque(), "Processed-only mode altered original warmth without an added processing shift")
+ let originalOnlySource = try readPatch(AutoWarmthCorrection().apply(reference: sourceWarm, graded: sourceWarm, mode: .originalOnly))
+ precondition(originalOnlySource.0 - originalOnlySource.2 < sourceWarmSpreadBefore, "Original-only mode failed to reduce original source warmth")
+ let gradeOriginalOnly = try readPatch(ColorPopGrade(strength: 0, warmthMode: .originalOnly).apply(sourceWarm))
+ precondition(gradeOriginalOnly.0 - gradeOriginalOnly.2 < sourceWarmSpreadBefore, "Zero-strength Color Pop grade did not apply Original-only warmth correction")
+ let gradeOff = try ColorPopGrade(strength: 0, warmthMode: .off, skinToneMode: .off).apply(sourceWarm)
+ precondition(Unmanaged.passUnretained(gradeOff).toOpaque() == Unmanaged.passUnretained(sourceWarm).toOpaque(), "Zero-strength Color Pop grade must preserve exact input in Off mode")
+ let fullSource = try readPatch(AutoWarmthCorrection().apply(reference: sourceWarm, graded: sourceWarm, mode: .full))
+ precondition(fullSource.0 - fullSource.2 < sourceWarmSpreadBefore, "Full mode no longer reduces original source warmth")
+ let offSource = try AutoWarmthCorrection().apply(reference: sourceWarm, graded: sourceWarm, mode: .off)
+ precondition(Unmanaged.passUnretained(offSource).toOpaque() == Unmanaged.passUnretained(sourceWarm).toOpaque(), "Off mode must be an exact identity bypass")
+ print("Four-mode warmth checks passed • Off / Original / Processed / Full")
+
+let brightSkin = try makePatch((250, 210, 185), width: 128, height: 128)
+let brightSkinBefore = metrics(try readPatch(brightSkin)).luma
+let skinOff = try ColorPopGrade(strength: 0, warmthMode: .off, skinToneMode: .off).apply(brightSkin)
+precondition(Unmanaged.passUnretained(skinOff).toOpaque() == Unmanaged.passUnretained(brightSkin).toOpaque(), "Color Pop skin correction Off must be an exact identity bypass")
+let skinOriginalOnly = try readPatch(ColorPopGrade(strength: 0, warmthMode: .off, skinToneMode: .originalOnly).apply(brightSkin))
+precondition(metrics(skinOriginalOnly).luma < brightSkinBefore - 0.002, "Original-only skin correction did not lower already-bright source skin")
+let skinProcessedOnly = try readPatch(ColorPopGrade(strength: 0, warmthMode: .off, skinToneMode: .processedOnly).apply(brightSkin))
+precondition(abs(metrics(skinProcessedOnly).luma - brightSkinBefore) < 0.002, "Processed-only skin correction changed source skin without a Color Pop brightness increase")
+let skinFull = try readPatch(ColorPopGrade(strength: 0, warmthMode: .off, skinToneMode: .full).apply(brightSkin))
+precondition(metrics(skinFull).luma < brightSkinBefore - 0.002, "Full skin correction did not correct bright source skin")
+print("Color Pop skin-tone modes passed • Off / Original / Processed / Full")
+
+
 
 
 print("Color Pop checks passed")
