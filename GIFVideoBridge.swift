@@ -37,7 +37,7 @@ struct GIFVideoBridge: Sendable {
         let outputRoot = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("RIFEGIFBridges", isDirectory: true)
         try FileManager.default.createDirectory(at: outputRoot, withIntermediateDirectories: true)
-        let outputURL = outputRoot.appendingPathComponent("GIF-(UUID().uuidString).mp4")
+        let outputURL = outputRoot.appendingPathComponent("GIF-\(UUID().uuidString).mp4")
         try? FileManager.default.removeItem(at: outputURL)
 
         let writer = try AVAssetWriter(outputURL: outputURL, fileType: .mp4)
@@ -138,7 +138,7 @@ struct GIFVideoBridge: Sendable {
 
                 progress(
                     Double(index + 1) / Double(frameCount),
-                    "GIF → video • frame (index + 1)/(frameCount)"
+                    "GIF → video • frame \(index + 1)/\(frameCount)"
                 )
             }
 
@@ -151,7 +151,7 @@ struct GIFVideoBridge: Sendable {
             guard writer.status == .completed, FileManager.default.fileExists(atPath: outputURL.path) else {
                 throw writer.error ?? GIFVideoBridgeError.couldNotFinalizeVideo
             }
-            progress(1, "GIF converted to video • (width)x(height)")
+            progress(1, "GIF converted to video • \(width)×\(height)")
             return outputURL
         } catch {
             writer.cancelWriting()
@@ -174,13 +174,13 @@ enum GIFVideoBridgeError: LocalizedError {
         case .invalidGIF:
             return "The GIF could not be decoded into an animation."
         case .invalidFrame(let index):
-            return "GIF frame (index + 1) could not be decoded."
+            return "GIF frame \(index + 1) could not be decoded."
         case .couldNotCreateVideo:
             return "The GIF could not be converted to the temporary video format."
         case .couldNotCreatePixelBuffer:
             return "The GIF-to-video converter could not allocate a video frame buffer."
         case .writerRejectedFrame(let index):
-            return "The temporary video writer rejected GIF frame (index + 1)."
+            return "The temporary video writer rejected GIF frame \(index + 1)."
         case .couldNotFinalizeVideo:
             return "The temporary GIF video could not be finalized."
         }

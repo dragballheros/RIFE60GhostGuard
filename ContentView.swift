@@ -2,6 +2,8 @@ import SwiftUI
 import PhotosUI
 import UniformTypeIdentifiers
 import UIKit
+import AVKit
+import QuickLook
 
 struct ContentView: View {
     @Environment(\.scenePhase) private var scenePhase
@@ -17,6 +19,8 @@ struct ContentView: View {
     @State private var photoItems: [PhotosPickerItem] = []
     @State private var showingMaskCopyConfirmation = false
     @State private var lastCompletedVideoURL: URL?
+    @State private var previewPlayer: AVPlayer?
+    @State private var quickLookURL: URL?
     @State private var postRenderSleepTask: Task<Void, Never>?
     @State private var postRenderScreenDimmed = false
     @State private var postRenderSavedBrightness: CGFloat?
@@ -31,6 +35,48 @@ struct ContentView: View {
 
             NavigationStack {
                 Form {
+                    Section {
+                        VStack(alignment: .leading, spacing: 14) {
+                            HStack(spacing: 12) {
+                                Image(systemName: "wand.and.stars")
+                                    .font(.system(size: 24, weight: .semibold))
+                                    .foregroundStyle(.cyan)
+                                    .frame(width: 48, height: 48)
+                                    .background(.cyan.opacity(0.13), in: RoundedRectangle(cornerRadius: 14))
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text("Recipe").font(.title3.weight(.bold))
+                                    Text(vm.inputURL?.lastPathComponent ?? "Choose a video, GIF, or image")
+                                        .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                                }
+                                Spacer(minLength: 0)
+                            }
+                            HStack(spacing: 8) {
+                                recipeChip(vm.inputKind == .image ? "Still image" : vm.inputKind == .gif ? "Animated GIF" : "Video", symbol: vm.inputKind == .image ? "photo" : vm.inputKind == .gif ? "livephoto" : "film")
+                                recipeChip(vm.inputKind == .image ? (vm.upscaleTo4K ? "2× upscale" : "Enhance") : "HQ RIFE", symbol: "sparkles")
+                                if vm.inputKind != .image { recipeChip("60 FPS", symbol: "speedometer") }
+                            }
+                            Toggle("Real-CUGAN 2× upscale", isOn: $vm.upscaleTo4K)
+                                .disabled(vm.queueLocked || vm.isImporting || vm.isBusy || vm.isBenchmarking)
+                            HStack(spacing: 10) {
+                                Button { showingPhotosPicker = true } label: {
+                                    Label("Photos", systemImage: "photo.on.rectangle").frame(maxWidth: .infinity)
+                                }
+                                .buttonStyle(.bordered)
+                                .disabled(vm.isBusy || vm.isImporting || vm.isBenchmarking)
+                                Button { showingImporter = true } label: {
+                                    Label("Files", systemImage: "folder").frame(maxWidth: .infinity)
+                                }
+                                .buttonStyle(.bordered)
+                                .disabled(vm.isBusy || vm.isImporting || vm.isBenchmarking)
+                            }
+                        }
+                        .padding(.vertical, 6)
+                    } header: {
+                        Text("Processing Recipe")
+                    } footer: {
+                        Text("Tune the full processing pipeline below. Your selected media runs through the existing on-device engines.")
+                    }
+
                     Section("AI Image Studio") {
                         Button { showingAIImageStudio = true } label: {
                             Label("Open AI Image Studio", systemImage: "sparkles")
@@ -271,10 +317,6 @@ struct ContentView: View {
                             LabeledContent("Rejected", value: "\(vm.telemetry.rejectedFrames)")
                         }
                         }
-                    } else if !vm.recoveryAvailable {
-                        Section {
-                            Button { Task { await vm.start() } } label: { Label(createButtonTitle, systemImage: "wand.and.stars") }.disabled(vm.inputURL == nil || vm.isBenchmarking || vm.isImporting || (vm.mediaQueue != nil && !vm.queueHasRemaining))
-                        }
                     }
 
                     Section("Diagnostics") {
@@ -293,15 +335,74 @@ struct ContentView: View {
                     }
 
                     if let out = vm.outputURL {
-                        Section("Finished") {
+                        Section("Finished Output") {
                             if !vm.saveStatusText.isEmpty { Text(vm.saveStatusText).font(.caption) }
+                            if out.pathExtension.lowercased() == "gif" {
+                                Label("Animated GIF ready", systemImage: "livephoto")
+                                Button {
+                                    quickLookURL = out
+                                } label: {
+                                    Label("Preview animated GIF", systemImage: "play.rectangle")
+                                }
+                                Text("GIF exports are encoded to loop continuously and are validated after saving.")
+                                    .font(.caption).foregroundStyle(.secondary)
+                            } else if let previewPlayer {
+                                VideoPlayer(player: previewPlayer)
+                                    .frame(height: 230)
+                                    .clipShape(RoundedRectangle(cornerRadius: 16))
+                            } else {
+                                Button {
+                                    previewPlayer = AVPlayer(url: out)
+                                } label: {
+                                    Label("Load playable video preview", systemImage: "play.rectangle")
+                                }
+                            }
                             ShareLink(item: out) { Label("Share Output", systemImage: "square.and.arrow.up") }
                             Text(out.lastPathComponent).font(.caption).foregroundStyle(.secondary)
                         }
                     }
                     if let err = vm.errorText { Section("Error") { Text(err).foregroundStyle(.red) } }
                 }
+                .safeAreaInset(edge: .bottom, spacing: 0) {
+                    if !vm.isBusy && !vm.isPaused && !vm.recoveryAvailable {
+                        VStack(spacing: 8) {
+                            HStack {
+                                Label(vm.inputURL == nil ? "No media selected" : vm.inputURL!.lastPathComponent,
+                                      systemImage: vm.inputKind == .image ? "photo" : vm.inputKind == .gif ? "livephoto" : "film")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                                Spacer(minLength: 8)
+                                if vm.inputURL != nil {
+                                    Text(vm.inputKind == .image ? (vm.upscaleTo4K ? "2× output" : "Enhance") : (vm.videoToGIFEnabled || vm.inputKind == .gif ? "GIF output" : "60 FPS"))
+                                        .font(.caption.weight(.semibold))
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                            Button {
+                                Task { await vm.start() }
+                            } label: {
+                                Label(createButtonTitle, systemImage: "play.fill")
+                                    .font(.headline)
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.vertical, 7)
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .tint(Color(red: 0.04, green: 0.52, blue: 1.0))
+                            .disabled(vm.inputURL == nil || vm.isBenchmarking || vm.isImporting || (vm.mediaQueue != nil && !vm.queueHasRemaining))
+                        }
+                        .padding(.horizontal, 16)
+                        .padding(.top, 12)
+                        .padding(.bottom, 8)
+                        .background(.ultraThinMaterial)
+                        .overlay(alignment: .top) { Rectangle().fill(.white.opacity(0.08)).frame(height: 1) }
+                    }
+                }
                 .navigationTitle("RIFE 60")
+                .scrollContentBackground(.hidden)
+                .background(Color(red: 0.035, green: 0.045, blue: 0.075))
+                .preferredColorScheme(.dark)
+                .quickLookPreview($quickLookURL)
                 .fullScreenCover(isPresented: $showingAIImageStudio) {
                     AIImageStudioView(
                         canUpscale: !vm.queueLocked && !vm.isImporting && !vm.isBenchmarking,
@@ -356,7 +457,12 @@ struct ContentView: View {
                 .onChange(of: vm.statusText) { _ in refreshPiPStatus() }
                 .onChange(of: vm.etaSeconds) { _ in refreshPiPStatus() }
                 .onChange(of: vm.outputURL) { newURL in
-                    if let newURL { lastCompletedVideoURL = newURL }
+                    if let newURL {
+                        lastCompletedVideoURL = newURL
+                        previewPlayer = newURL.pathExtension.lowercased() == "gif" ? nil : AVPlayer(url: newURL)
+                    } else {
+                        previewPlayer = nil
+                    }
                     schedulePostRenderSleepIfNeeded()
                 }
                 .confirmationDialog("Copy mask to other media?", isPresented: $showingMaskCopyConfirmation, titleVisibility: .visible) {
@@ -429,12 +535,23 @@ struct ContentView: View {
         }
     }
 
+
+    private func recipeChip(_ title: String, symbol: String) -> some View {
+        Label(title, systemImage: symbol)
+            .font(.caption.weight(.semibold))
+            .padding(.horizontal, 10)
+            .padding(.vertical, 7)
+            .background(.white.opacity(0.07), in: Capsule())
+            .overlay(Capsule().stroke(.white.opacity(0.08), lineWidth: 1))
+            .lineLimit(1)
+    }
+
     private var createButtonTitle: String {
         if let queue = vm.mediaQueue, queue.items.count > 1 {
             return queue.settingsKey == nil ? "Process \(queue.items.count) Media in Order" : "Resume Media Queue"
         }
         if vm.inputKind == .gif {
-            return vm.redditMode ? "Prepare Reddit GIF" : "Process GIF as Image"
+            return vm.redditMode ? "Prepare Reddit GIF" : "Process GIF • Full Pipeline"
         }
         if vm.inputKind == .image { return vm.upscaleTo4K ? "Create 2× Image" : "Create Enhanced Image" }
         return vm.upscaleTo4K ? "Create 2× 60 FPS Video" : "Create 60 FPS Video"
