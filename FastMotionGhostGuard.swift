@@ -19,7 +19,7 @@ final class FastMotionGhostGuard {
     private let sampleRows = 36
 
     init(sensitivity: Double) {
-        self.sensitivity = min(max(sensitivity.isFinite ? sensitivity : 0.5, 0), 1)
+        self.sensitivity = min(max(sensitivity.isFinite ? sensitivity : 1.35, 0.65), 1.35)
     }
 
     func inspect(previous: CVPixelBuffer,
