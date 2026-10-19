@@ -270,7 +270,8 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p /tmp/color-artifact-check
-          swiftc -swift-version 5 -framework CoreVideo LocalizedColorArtifactGuard.swift Scripts/check_localized_color_artifacts.swift -o /tmp/color-artifact-check/check
+          cp Scripts/check_localized_color_artifacts.swift /tmp/color-artifact-check/main.swift
+          swiftc -swift-version 5 -framework CoreVideo LocalizedColorArtifactGuard.swift /tmp/color-artifact-check/main.swift -o /tmp/color-artifact-check/check
           /tmp/color-artifact-check/check
 
       - name: Verify persistent mixed media queue and strict serial scheduling

@@ -35,7 +35,7 @@ final class LocalizedColorArtifactGuard {
             return Inspection(regions: [], score: 0, reason: "color analysis unavailable")
         }
 
-        let t = min(max(progress.isFinite ? progress : 0.5, 0), 1)
+        let t = Float(min(max(progress.isFinite ? progress : 0.5, 0), 1))
         let tileWidth = sampleColumns / tileColumns
         let tileHeight = sampleRows / tileRows
         var suspicious: [Region] = []
