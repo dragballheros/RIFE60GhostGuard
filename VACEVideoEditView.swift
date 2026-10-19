@@ -13,7 +13,7 @@ private struct VACEPickedVideo: Transferable {
         FileRepresentation(importedContentType: .movie) { received in
             let ext = received.file.pathExtension.isEmpty ? "mov" : received.file.pathExtension
             let destination = FileManager.default.temporaryDirectory
-                .appendingPathComponent("WanVACE-Source-\\(UUID().uuidString).\\(ext)")
+                .appendingPathComponent("WanVACE-Source-\(UUID().uuidString).\(ext)")
             try FileManager.default.copyItem(at: received.file, to: destination)
             return VACEPickedVideo(url: destination)
         }
@@ -28,7 +28,7 @@ private struct VACEPickedMaskImage: Transferable {
         FileRepresentation(importedContentType: .image) { received in
             let ext = received.file.pathExtension.isEmpty ? "png" : received.file.pathExtension
             let destination = FileManager.default.temporaryDirectory
-                .appendingPathComponent("WanVACE-Mask-\\(UUID().uuidString).\\(ext)")
+                .appendingPathComponent("WanVACE-Mask-\(UUID().uuidString).\(ext)")
             try FileManager.default.copyItem(at: received.file, to: destination)
             return VACEPickedMaskImage(url: destination)
         }
@@ -53,76 +53,199 @@ private enum VACEVideoEditInputError: LocalizedError {
     }
 }
 
-/// A real local video-edit path. A still mask is propagated across the clip using
-/// on-device Vision optical flow; each 5-frame crop is processed by native Wan VACE.
+private enum LocalVideoBackend: String, CaseIterable, Hashable {
+    case wanVACE = "Wan VACE"
+    case minimaxH3 = "MiniMax H3"
+}
+
+/// Local video workflows. Wan VACE performs mask-guided edits; MiniMax H3 performs
+/// reference-conditioned regeneration and does not claim pixel-mask preservation.
 struct VACEVideoEditView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var videoItem: PhotosPickerItem?
     @State private var maskItem: PhotosPickerItem?
     @State private var sourceURL: URL?
     @State private var maskURL: URL?
-    @State private var prompt = "Replace the white masked area with a coherent natural-looking alternative that matches the scene."
+    @State private var prompt = "Describe the desired change while keeping the overall scene coherent."
     @State private var negativePrompt = "flicker, inconsistent subject, warped geometry, duplicate objects, text, watermark"
     @State private var isRunning = false
     @State private var progress = 0.0
     @State private var status = "Choose a video and a matching white-on-black edit mask."
     @State private var errorText: String?
     @State private var outputURL: URL?
+    @State private var selectedBackend: LocalVideoBackend = .wanVACE
+    @State private var h3ModelDirectoryURL: URL?
+    @State private var isChoosingH3Model = false
+    @State private var h3CancellationToken: H3CancellationToken?
+    @StateObject private var h3ModelDownloader = H3ModelDownloader()
+    @State private var acceptedH3License = false
+    @State private var isConfirmingH3ModelDelete = false
 
     var body: some View {
         NavigationStack {
             Form {
+                Section("Local model") {
+                    ForEach(LocalVideoBackend.allCases, id: \.self) { backend in
+                        Button {
+                            selectedBackend = backend
+                            outputURL = nil
+                            errorText = nil
+                            status = backend == .wanVACE
+                                ? "Wan VACE uses the selected white-on-black mask."
+                                : "MiniMax H3 regenerates from the reference video. It does not preserve black-mask pixels."
+                        } label: {
+                            HStack(spacing: 12) {
+                                Image(systemName: selectedBackend == backend ? "checkmark.circle.fill" : "circle")
+                                    .foregroundStyle(selectedBackend == backend ? Color.accentColor : Color.secondary)
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text(backend.rawValue).foregroundStyle(.primary)
+                                    Text(backend == .wanVACE
+                                         ? "Mask-guided local editing"
+                                         : "Local reference-conditioned video regeneration")
+                                        .font(.caption).foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                            }
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(isRunning)
+                    }
+                    if selectedBackend == .minimaxH3 {
+                        Button {
+                            isChoosingH3Model = true
+                        } label: {
+                            Label(h3ModelDirectoryURL == nil ? "Choose local H3 model folder" : "Change local H3 model folder", systemImage: "folder")
+                        }
+                        .disabled(isRunning)
+                        if let h3ModelDirectoryURL {
+                            Text(h3ModelDirectoryURL.lastPathComponent).font(.caption).foregroundStyle(.secondary)
+                        }
+                        Link("Review the official MiniMax H3 model license", destination: H3ModelDownloader.licenseURL)
+                        Text("Territory restriction: the published Community License excludes the United States, European Union, United Kingdom, and South Korea from its standard applicable territory. If you are in an excluded territory, do not download or use these weights unless MiniMax has separately authorized you. Check the current license before proceeding.")
+                            .font(.caption).foregroundStyle(.red)
+                        Toggle("I have verified that my use is authorized by the license, including separate authorization if my territory is excluded", isOn: $acceptedH3License)
+                        Button("Check official H3 model files") {
+                            h3ModelDownloader.prepare()
+                        }
+                        .disabled(h3ModelDownloader.state == .listing || h3ModelDownloader.state == .downloading)
+                        if h3ModelDownloader.totalBytes > 0 {
+                            Text("\(h3ModelDownloader.totalFiles) files · about \(String(format: "%.1f", h3ModelDownloader.totalGiB)) GiB")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                        Button("Download / resume local H3 model") {
+                            h3ModelDownloader.startDownload()
+                        }
+                        .disabled(!acceptedH3License || !h3ModelDownloader.canStart || isRunning)
+                        if h3ModelDownloader.state == .downloading {
+                            ProgressView(value: h3ModelDownloader.progress)
+                            Text("\(Int(h3ModelDownloader.progress * 100))% · \(String(format: "%.2f", Double(h3ModelDownloader.downloadedBytes) / 1_073_741_824)) / \(String(format: "%.2f", h3ModelDownloader.totalGiB)) GiB")
+                                .font(.caption).foregroundStyle(.secondary)
+                            Button("Pause download") { h3ModelDownloader.cancel() }
+                        }
+                        if case .failed(let message) = h3ModelDownloader.state {
+                            Text(message).font(.caption).foregroundStyle(.red)
+                        }
+                        if h3ModelDownloader.state == .completed {
+                            Text("All required FL2VA base and Ref2VA transformer files passed size and checksum verification.")
+                                .font(.caption).foregroundStyle(.secondary)
+                            Button("Delete downloaded H3 model and free storage", role: .destructive) {
+                                isConfirmingH3ModelDelete = true
+                            }
+                        }
+                        Text("The native runtime requires the FL2VA base plus the Ref2VA transformer checkpoint. The required total is calculated from the pinned repository manifest above and can still exceed 100 GB; confirm available iPhone storage before starting. Files download directly to this iPhone with resumable transfers and checksum verification; weights are excluded from device backups and are not bundled in the IPA. Disk streaming reduces the need to keep all DiT weights resident, but does not guarantee inference fits. H3 requires iOS 18 or newer.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+
                 Section("Source video") {
                     PhotosPicker(selection: $videoItem, matching: .videos) {
                         Label(sourceURL == nil ? "Choose video from Photos" : "Change source video",
                               systemImage: "film")
                     }
+                    .disabled(isRunning)
                     if let sourceURL {
                         Text(sourceURL.lastPathComponent).font(.caption).foregroundStyle(.secondary)
                     }
-                    PhotosPicker(selection: $maskItem, matching: .images) {
-                        Label(maskURL == nil ? "Choose edit mask image" : "Change edit mask",
-                              systemImage: "paintbrush.pointed")
+                    if selectedBackend == .wanVACE {
+                        PhotosPicker(selection: $maskItem, matching: .images) {
+                            Label(maskURL == nil ? "Choose edit mask image" : "Change edit mask",
+                                  systemImage: "paintbrush.pointed")
+                        }
+                        .disabled(isRunning)
+                        if let maskURL {
+                            Text(maskURL.lastPathComponent).font(.caption).foregroundStyle(.secondary)
+                        }
+                        Text("Use a black-and-white mask with white over the area to change and black everywhere to preserve. The mask is tracked locally with optical flow; hard scene cuts stop propagation.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    } else {
+                        Text("The selected video is supplied as an H3 video reference. H3 may regenerate content outside any intended region; this mode does not use the VACE mask.")
+                            .font(.caption).foregroundStyle(.secondary)
                     }
-                    if let maskURL {
-                        Text(maskURL.lastPathComponent).font(.caption).foregroundStyle(.secondary)
-                    }
-                    Text("Use a black-and-white mask with white over the area to change and black everywhere to preserve. The mask is tracked locally with optical flow; hard scene cuts stop propagation.")
-                        .font(.caption).foregroundStyle(.secondary)
                 }
 
                 Section("Generation prompt") {
                     TextField("Positive prompt", text: $prompt, axis: .vertical)
                         .lineLimit(2...5)
-                    TextField("Negative prompt", text: $negativePrompt, axis: .vertical)
-                        .lineLimit(2...4)
+                    if selectedBackend == .wanVACE {
+                        TextField("Negative prompt", text: $negativePrompt, axis: .vertical)
+                            .lineLimit(2...4)
+                    } else {
+                        Text("The current native H3 API does not expose a separate negative-prompt input. Put exclusions directly into the main prompt; this field is only used by Wan VACE.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
                 }
 
                 Section("Explicit model / resolution") {
-                    LabeledContent("Local model", value: "Wan 2.1 VACE 1.3B Q8")
-                    LabeledContent("Inference crop", value: "512 × 512")
-                    LabeledContent("Denoising steps", value: "20")
-                    Text("This is an experimental 1.3B profile using Draw Things' native Metal runtime. It is not the requested 14B / 720p model and does not claim equivalent quality. The 14B checkpoint cannot fit in this phone's unified memory.")
-                        .font(.caption).foregroundStyle(.secondary)
-                    Text("Weights are downloaded as local model files when needed. Generation itself always uses the local backend; the sequence API rejects remote inference.")
+                    if selectedBackend == .wanVACE {
+                        LabeledContent("Local model", value: "Wan 2.1 VACE 1.3B Q8")
+                        LabeledContent("Inference crop", value: "512 × 512")
+                        LabeledContent("Denoising steps", value: "20")
+                        Text("This is an experimental 1.3B profile using Draw Things' native Metal runtime. It is not the requested 14B / 720p model and does not claim equivalent quality.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    } else {
+                        LabeledContent("Local model", value: "MiniMax H3 native Metal runtime")
+                        LabeledContent("Output canvas", value: "448 × 256")
+                        LabeledContent("Frames / steps", value: "56 / 20")
+                        Text("The H3 workflow uses the source video as a reference and exports a newly generated MOV. It is not exact masked inpainting. The native engine and checkpoint must be compatible; memory and thermal feasibility still require testing on this iPhone.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                    Text("Generation runs locally. There is no remote inference or fallback to another backend.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
 
                 Section("Run") {
                     Button {
-                        Task { await runEdit() }
+                        Task {
+                            if selectedBackend == .wanVACE {
+                                await runEdit()
+                            } else {
+                                await runH3ReferenceEdit()
+                            }
+                        }
                     } label: {
                         if isRunning {
-                            HStack { ProgressView(); Text("Running local Wan VACE…") }
+                            HStack { ProgressView(); Text(selectedBackend == .wanVACE ? "Running local Wan VACE…" : "Running local MiniMax H3…") }
                         } else {
-                            Label("Generate masked video edit", systemImage: "wand.and.stars")
+                            Label(selectedBackend == .wanVACE ? "Generate masked video edit" : "Generate H3 reference video", systemImage: "wand.and.stars")
                         }
                     }
-                    .disabled(isRunning || sourceURL == nil || maskURL == nil ||
+                    .disabled(isRunning || sourceURL == nil ||
+                              (selectedBackend == .wanVACE && maskURL == nil) ||
+                              (selectedBackend == .minimaxH3 && h3ModelDirectoryURL == nil) ||
                               prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     if isRunning {
                         ProgressView(value: progress)
                         Text(status).font(.caption).foregroundStyle(.secondary)
+                        if selectedBackend == .minimaxH3 {
+                            Button {
+                                h3CancellationToken?.cancel()
+                                status = "Cancellation requested. Waiting for the native H3 engine to reach its next progress checkpoint…"
+                            } label: {
+                                Label("Cancel H3 generation", systemImage: "xmark.circle")
+                            }
+                            .disabled(h3CancellationToken == nil)
+                        }
                     } else {
                         Text(status).font(.caption).foregroundStyle(.secondary)
                     }
@@ -137,11 +260,43 @@ struct VACEVideoEditView: View {
                     }
                 }
             }
-            .navigationTitle("Local Wan VACE Edit")
+            .navigationTitle(selectedBackend == .wanVACE ? "Local Wan VACE Edit" : "Local MiniMax H3")
             .navigationBarTitleDisplayMode(.inline)
+            .confirmationDialog("Delete the downloaded MiniMax H3 model?", isPresented: $isConfirmingH3ModelDelete, titleVisibility: .visible) {
+                Button("Delete model and free storage", role: .destructive) {
+                    let downloadedURL = h3ModelDownloader.destinationURL
+                    do {
+                        try h3ModelDownloader.deleteDownloadedModel()
+                        if h3ModelDirectoryURL == downloadedURL { h3ModelDirectoryURL = nil }
+                    } catch {
+                        errorText = "Could not delete the downloaded H3 model: \(error.localizedDescription)"
+                    }
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("This permanently deletes the downloaded H3 FL2VA base and Ref2VA transformer files from this iPhone. It does not delete a separately selected model folder.")
+            }
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Done") { dismiss() }.disabled(isRunning)
+                }
+            }
+            .fileImporter(isPresented: $isChoosingH3Model, allowedContentTypes: [.folder], allowsMultipleSelection: false) { result in
+                switch result {
+                case .success(let urls):
+                    h3ModelDirectoryURL = urls.first
+                    outputURL = nil
+                    errorText = nil
+                    status = urls.first == nil ? "No H3 model folder selected." : "Selected local H3 model folder. Native loading will validate its contents."
+                case .failure(let error):
+                    errorText = error.localizedDescription
+                }
+            }
+            .onChange(of: h3ModelDownloader.state) { newState in
+                if newState == .completed {
+                    h3ModelDirectoryURL = h3ModelDownloader.destinationURL
+                    outputURL = nil
+                    status = "Native H3 FL2VA base and Ref2VA transformer checkpoint downloaded and checksum-verified. Device inference is still unverified."
                 }
             }
             .onChange(of: videoItem) { item in
@@ -238,6 +393,101 @@ struct VACEVideoEditView: View {
         } catch {
             errorText = error.localizedDescription
             status = "Stopped without exporting a substitute video."
+        }
+    }
+
+    @MainActor
+    private func runH3ReferenceEdit() async {
+        guard let sourceURL else { errorText = VACEVideoEditInputError.missingVideo.localizedDescription; return }
+        guard let modelURL = h3ModelDirectoryURL else {
+            errorText = "Choose a local MiniMax H3 model folder first."
+            return
+        }
+        guard #available(iOS 18.0, *) else {
+            errorText = "MiniMax H3 requires iOS 18.0 or newer. Wan VACE remains available."
+            return
+        }
+
+        isRunning = true
+        progress = 0
+        outputURL = nil
+        errorText = nil
+        status = "Checking local H3 model and reference video…"
+        let token = H3CancellationToken()
+        h3CancellationToken = token
+        var h3OutputCandidate: URL?
+        defer {
+            isRunning = false
+            h3CancellationToken = nil
+        }
+
+        let hasSecurityScope = modelURL.startAccessingSecurityScopedResource()
+        defer { if hasSecurityScope { modelURL.stopAccessingSecurityScopedResource() } }
+
+        do {
+            // Official Ref2VA accepts reference clips of 2–15 seconds. Validate
+            // before native model loading so invalid input cannot trigger a huge allocation.
+            let referenceAsset = AVURLAsset(url: sourceURL)
+            let referenceDuration = try await referenceAsset.load(.duration)
+            let referenceTracks = try await referenceAsset.loadTracks(withMediaType: .video)
+            guard !referenceTracks.isEmpty,
+                  referenceDuration.seconds.isFinite,
+                  (2.0...15.0).contains(referenceDuration.seconds) else {
+                throw H3NativeRuntime.RuntimeError.invalidRequest(
+                    "H3 Ref2VA requires a playable reference video between 2 and 15 seconds. Trim the clip and retry; Wan VACE remains available for longer videos."
+                )
+            }
+            let directory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+                .appendingPathComponent("MiniMaxH3Exports", isDirectory: true)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            let destination = directory.appendingPathComponent("MiniMaxH3-\(UUID().uuidString).mov")
+            h3OutputCandidate = destination
+            status = "Loading the native H3 runtime locally. Large allocations may fail on this device."
+            let requestPrompt = prompt
+            let modelDirectory = modelURL
+            let referenceVideo = sourceURL
+            let result = try await Task.detached(priority: .userInitiated) {
+                let runtime = try H3NativeRuntime.load(modelDirectory: modelDirectory)
+                return try runtime.generateReferenceConditionedVideo(
+                    prompt: requestPrompt,
+                    referenceVideoURL: referenceVideo,
+                    outputURL: destination,
+                    width: 448,
+                    height: 256,
+                    frames: 56,
+                    steps: 20,
+                    seed: 42,
+                    cancellationToken: token,
+                    onProgress: { phase, fraction in
+                        Task { @MainActor in
+                            progress = max(0, min(1, fraction))
+                            status = "H3 \(phase): \(Int(fraction * 100))%"
+                        }
+                    }
+                )
+            }.value
+            let outputAttributes = try? FileManager.default.attributesOfItem(atPath: result.outputURL.path)
+            let outputSize = (outputAttributes?[.size] as? NSNumber)?.intValue ?? 0
+            guard FileManager.default.fileExists(atPath: result.outputURL.path), outputSize > 0 else {
+                throw H3NativeRuntime.RuntimeError.generationFailed("H3 returned without creating a non-empty output video.")
+            }
+            let exportedAsset = AVURLAsset(url: result.outputURL)
+            let exportedVideoTracks = try await exportedAsset.loadTracks(withMediaType: .video)
+            let exportedDuration = try await exportedAsset.load(.duration)
+            guard !exportedVideoTracks.isEmpty, exportedDuration.seconds.isFinite, exportedDuration.seconds > 0 else {
+                throw H3NativeRuntime.RuntimeError.generationFailed("H3 output exists but does not contain a playable video track with a valid duration.")
+            }
+            outputURL = result.outputURL
+            progress = 1
+            status = "H3 reference-conditioned MOV created (\(result.width) × \(result.height), \(result.frames) frames, seed \(result.seed)). Verify playback and quality on-device."
+        } catch {
+            if let h3OutputCandidate {
+                try? FileManager.default.removeItem(at: h3OutputCandidate)
+            }
+            errorText = error.localizedDescription
+            status = token.isCancelled
+                ? "H3 generation cancelled. Partial output was discarded; Wan VACE remains available."
+                : "H3 stopped without exporting a substitute video. Wan VACE remains available."
         }
     }
 

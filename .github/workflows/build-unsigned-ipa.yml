@@ -17,9 +17,9 @@ concurrency:
 on:
   workflow_dispatch:
   pull_request:
-    branches: [main, feature/wan-vace-ondevice-component-test]
+    branches: [main, feature/wan-vace-ondevice-component-test, feature/wan-vace-iphone-memory-first]
   push:
-    branches: [main, feature/wan-vace-iphone-memory-first]
+    branches: [main, feature/wan-vace-iphone-memory-first, feature/minimax-h3-ios-runtime]
 
 permissions:
   contents: write
@@ -33,6 +33,10 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+      - name: Stage pinned MiniMax H3 native runtime
+        run: python3 Scripts/vendor_h3_runtime.py
+      - name: Validate MiniMax H3 integration contracts and release gates
+        run: python3 Scripts/validate_h3_integration.py
       - name: Bundle Wan VAE component packages for offline iPhone testing
         if: >-
           (github.event_name == 'pull_request' &&
@@ -557,6 +561,9 @@ jobs:
           test ! -e Models/DeepCreamBar.pb
           test ! -e Models/DeepCreamMosaic.pb
 
+      - name: Stage pinned MiniMax H3 native sources for the iOS target
+        run: bash Scripts/vendor_h3_runtime.sh
+
       - name: Generate Xcode project
         run: xcodegen generate
       - name: Cache Xcode and Swift package build outputs
@@ -722,6 +729,9 @@ jobs:
           wait "$MONITOR_PID"
           set -e
           exit "$BUILD_STATUS"
+
+      - name: Verify H3 native engine is compiled and linked into the app
+        run: python3 Scripts/verify_h3_native_link.py
 
       - name: Create verified IPA
         run: |

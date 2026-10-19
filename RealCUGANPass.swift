@@ -41,9 +41,12 @@ final class RealCUGANPass {
     private var predictionSeconds = 0.0
     private var stitchSeconds = 0.0
 
-    init(intensity: Double = 1.30, colorPopStrength: Double = 0) {
+    init(intensity: Double = 1.30, colorPopStrength: Double = 0, applyWarmthCorrection: Bool? = nil) {
         self.intensity = intensity
-        self.colorPopGrade = colorPopStrength > 0 ? ColorPopGrade(strength: colorPopStrength) : nil
+        let shouldApplyWarmth = applyWarmthCorrection ?? (colorPopStrength > 0)
+        self.colorPopGrade = (colorPopStrength > 0 || shouldApplyWarmth)
+            ? ColorPopGrade(strength: colorPopStrength, warmthMode: applyWarmthCorrection == false ? .off : nil)
+            : nil
     }
 
     func run(

@@ -5,6 +5,8 @@ import UIKit
 
 struct ContentView: View {
     @Environment(\.scenePhase) private var scenePhase
+    @AppStorage("automaticWarmthCorrectionMode") private var automaticWarmthCorrectionModeRawValue = "full"
+    @AppStorage("colorPopSkinToneCorrectionMode") private var colorPopSkinToneCorrectionModeRawValue = "processedOnly"
     @StateObject private var vm = VideoProcessorViewModel()
     @StateObject private var pipController = ProcessingPiPController()
     @State private var showingImporter = false
@@ -13,6 +15,7 @@ struct ContentView: View {
     @State private var showingVACEVideoEditor = false
     @State private var showingWatermarkEditor = false
     @State private var showingPhotosPicker = false
+    @State private var showingPreview = false
     @State private var showingExportFolderPicker = false
     @State private var showingClearRecoveryConfirmation = false
     @State private var photoItems: [PhotosPickerItem] = []
@@ -80,6 +83,27 @@ struct ContentView: View {
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                             }
+                        }
+                        if vm.inputURL != nil && (vm.inputKind == .video || vm.inputKind == .gif) {
+                            HStack {
+                                Button {
+                                    showingPreview = true
+                                    vm.generatePreview()
+                                } label: {
+                                    Label(vm.isPreviewing ? "Cancel Preview" : "Preview Opening Frames", systemImage: vm.isPreviewing ? "xmark.circle" : "play.rectangle")
+                                }
+                                // Intentionally remains enabled during preview.
+                                .disabled(vm.inputURL == nil || vm.isBusy || vm.isImporting || vm.isBenchmarking)
+                                Spacer()
+                                if vm.isPreviewing {
+                                    ProgressView()
+                                }
+                            }
+                            if !vm.previewStatus.isEmpty {
+                                Text(vm.previewStatus).font(.caption).foregroundStyle(.secondary)
+                            }
+                            Text("Previews up to three opening frames with current still-frame enhancement settings. RIFE motion interpolation is not represented; Process remains available.")
+                                .font(.caption).foregroundStyle(.secondary)
                         }
                     }
 
@@ -165,6 +189,30 @@ struct ContentView: View {
                         Toggle("Compression Guard", isOn: $vm.compressionProtection).disabled(vm.queueLocked || vm.isImporting)
                         Toggle("Final Sharpie Outline", isOn: $vm.outlineProtection).disabled(vm.queueLocked || vm.isImporting)
                         Toggle("Color Pop", isOn: $vm.colorPopEnabled).disabled(vm.queueLocked || vm.isImporting)
+                        Picker("Automatic warmth", selection: $automaticWarmthCorrectionModeRawValue) {
+                            ForEach(AutoWarmthCorrectionMode.allCases) { mode in
+                                Text(mode.title).tag(mode.rawValue)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+                        .disabled(vm.queueLocked || vm.isImporting)
+                        if let mode = AutoWarmthCorrectionMode(rawValue: automaticWarmthCorrectionModeRawValue) {
+                            Text(mode.explanation)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        Picker("Color Pop skin tone", selection: $colorPopSkinToneCorrectionModeRawValue) {
+                            ForEach(ColorPopSkinToneMode.allCases) { mode in
+                                Text(mode.title).tag(mode.rawValue)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+                        .disabled(vm.queueLocked || vm.isImporting)
+                        if let mode = ColorPopSkinToneMode(rawValue: colorPopSkinToneCorrectionModeRawValue) {
+                            Text(mode.explanation)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
                         if vm.colorPopEnabled {
                             HStack { Text("Color Pop strength"); Spacer(); Text(String(format: "%.2f", vm.colorPopStrength)) }
                             Slider(value: $vm.colorPopStrength, in: 0.1...1.0).disabled(vm.queueLocked || vm.isImporting)
@@ -389,6 +437,16 @@ struct ContentView: View {
                     lastCompletedVideoURL = LastCompletedVideoStore.latestCompletedVideo() ?? lastCompletedVideoURL
                 }
                 .onAppear {
+                    // Migrate the old boolean setting once so the segmented picker
+                    // and the renderer agree on the same persisted mode.
+                    let warmthDefaults = UserDefaults.standard
+                    let warmthMigrationKey = "automaticWarmthCorrectionModeMigrationComplete"
+                    if !warmthDefaults.bool(forKey: warmthMigrationKey) {
+                        if let legacyValue = warmthDefaults.object(forKey: "automaticWarmthCorrectionEnabled") as? Bool {
+                            automaticWarmthCorrectionModeRawValue = legacyValue ? AutoWarmthCorrectionMode.full.rawValue : AutoWarmthCorrectionMode.off.rawValue
+                        }
+                        warmthDefaults.set(true, forKey: warmthMigrationKey)
+                    }
                     if lastCompletedVideoURL == nil { lastCompletedVideoURL = LastCompletedVideoStore.latestCompletedVideo() }
                     if vm.isBusy { pipController.arm() }
                     refreshPiPStatus(force: true)
@@ -462,6 +520,9 @@ struct ContentView: View {
         }
         .sheet(isPresented: $showingVACEVideoEditor) {
             VACEVideoEditView()
+        }
+        .sheet(isPresented: $showingPreview) {
+            VideoSettingsPreviewSheet(viewModel: vm)
         }
         .onDisappear {
             pipController.disarmAndStop()
@@ -575,5 +636,59 @@ struct ContentView: View {
     private func finishTime(after seconds: Double) -> String {
         let formatter = DateFormatter(); formatter.timeStyle = .short
         return formatter.string(from: Date().addingTimeInterval(seconds))
+    }
+}
+
+
+private struct VideoSettingsPreviewSheet: View {
+    @ObservedObject var viewModel: VideoProcessorViewModel
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    Text(viewModel.previewStatus.isEmpty ? "Preview samples the opening frames using your current settings." : viewModel.previewStatus)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    if viewModel.isPreviewing {
+                        ProgressView("Rendering preview frames…")
+                        Button("Cancel Preview") { viewModel.cancelPreview() }
+                            .buttonStyle(.bordered)
+                    }
+                    if viewModel.previewURLs.isEmpty && !viewModel.isPreviewing {
+                        Text("No preview frames yet. Tap Preview Opening Frames after selecting a video or GIF.")
+                            .foregroundStyle(.secondary)
+                    }
+                    ForEach(Array(viewModel.previewURLs.enumerated()), id: \.offset) { index, url in
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Sample frame \(index + 1)").font(.headline)
+                            if let image = UIImage(contentsOfFile: url.path) {
+                                Image(uiImage: image)
+                                    .resizable()
+                                    .scaledToFit()
+                                    .frame(maxWidth: .infinity)
+                                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                            } else {
+                                Text("This preview frame could not be displayed.")
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                    Text("This is a visual settings check, not a 60 FPS motion preview. Change settings on the main screen and run Preview again.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .padding()
+            }
+            .navigationTitle("Video / GIF Preview")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
+        }
+        .presentationDetents([.medium, .large])
     }
 }

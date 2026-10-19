@@ -39,9 +39,12 @@ final class RIFEVideoProcessor {
     private let colorPopGrade: ColorPopGrade?
     private let guardUpscaleFirstMemory: Bool
 
-    init(configuration: ProcessorConfiguration, colorPopStrength: Double = 0, guardUpscaleFirstMemory: Bool = false) {
+    init(configuration: ProcessorConfiguration, colorPopStrength: Double = 0, guardUpscaleFirstMemory: Bool = false, applyWarmthCorrection: Bool? = nil) {
         self.guardUpscaleFirstMemory = guardUpscaleFirstMemory
-        self.colorPopGrade = colorPopStrength > 0 ? ColorPopGrade(strength: colorPopStrength) : nil
+        let shouldApplyWarmth = applyWarmthCorrection ?? (colorPopStrength > 0)
+        self.colorPopGrade = (colorPopStrength > 0 || shouldApplyWarmth)
+            ? ColorPopGrade(strength: colorPopStrength, warmthMode: applyWarmthCorrection == false ? .off : nil)
+            : nil
         self.config = configuration
     }
 
@@ -54,6 +57,15 @@ final class RIFEVideoProcessor {
         let asset = AVURLAsset(url: sourceURL)
         guard let track = try await asset.loadTracks(withMediaType: .video).first else {
             throw ProcessorError.missingVideoTrack
+        }
+
+        // Off is a true model bypass: preserve source cadence and audio; downstream enhancement can continue.
+        if config.targetFPS <= 0 {
+            progress(0.01, "RIFE Off • preserving source frame cadence…")
+            let output = try await exportWithoutRIFE(sourceURL: sourceURL)
+            progress(1, "RIFE Off • source cadence preserved")
+            telemetry(PerformanceTelemetry())
+            return output
         }
 
         let duration = try await asset.load(.duration)
@@ -242,7 +254,8 @@ final class RIFEVideoProcessor {
                 }
 
                 let started = CFAbsoluteTimeGetCurrent()
-                try await checkpoint.append10Bit(currentPB, at: .zero)
+                let firstOutputFrame = try colorPopGrade?.apply(currentPB) ?? currentPB
+                try await checkpoint.append10Bit(firstOutputFrame, at: .zero)
                 encodeSeconds += CFAbsoluteTimeGetCurrent() - started
                 outputFrames += 1
                 try autoreleasepool { try tiledHQ.seed(currentPB) }
@@ -264,7 +277,8 @@ final class RIFEVideoProcessor {
                 let rel = CMTimeGetSeconds(CMTimeSubtract(nextOutputTime, previousTime)) / spanSeconds
                 if rel <= 0.001 {
                     let started = CFAbsoluteTimeGetCurrent()
-                    try await checkpoint.append10Bit(prevPB, at: nextOutputTime)
+                    let repeatedOutputFrame = try colorPopGrade?.apply(prevPB) ?? prevPB
+                    try await checkpoint.append10Bit(repeatedOutputFrame, at: nextOutputTime)
                     encodeSeconds += CFAbsoluteTimeGetCurrent() - started
                     outputFrames += 1
                 } else {
@@ -423,7 +437,8 @@ final class RIFEVideoProcessor {
                 }
 
                 let encodeStarted = CFAbsoluteTimeGetCurrent()
-                try await checkpoint.append10Bit(chosen, at: requestedTimes[index])
+                let finalOutputFrame = try colorPopGrade?.apply(chosen) ?? chosen
+                try await checkpoint.append10Bit(finalOutputFrame, at: requestedTimes[index])
                 encodeSeconds += CFAbsoluteTimeGetCurrent() - encodeStarted
                 outputFrames += 1
                 generated += 1
@@ -502,6 +517,29 @@ final class RIFEVideoProcessor {
         guard adaptor.append(destination, withPresentationTime: time) else {
             throw ProcessorError.writer("failed appending 10-bit frame at \\(CMTimeGetSeconds(time)) s")
         }
+    }
+
+    private func exportWithoutRIFE(sourceURL: URL) async throws -> URL {
+        let asset = AVURLAsset(url: sourceURL)
+        let outputURL = FileManager.default.temporaryDirectory.appendingPathComponent("rife-off-\(UUID().uuidString).mov")
+        try? FileManager.default.removeItem(at: outputURL)
+        guard let session = AVAssetExportSession(asset: asset, presetName: AVAssetExportPresetPassthrough) else {
+            throw ProcessorError.writer("Could not create a passthrough export session for RIFE Off.")
+        }
+        session.outputURL = outputURL
+        session.outputFileType = .mov
+        session.shouldOptimizeForNetworkUse = true
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            session.exportAsynchronously {
+                switch session.status {
+                case .completed: continuation.resume(returning: ())
+                case .cancelled: continuation.resume(throwing: CancellationError())
+                case .failed: continuation.resume(throwing: ProcessorError.writer(session.error?.localizedDescription ?? "RIFE-off passthrough export failed."))
+                default: continuation.resume(throwing: ProcessorError.writer("RIFE-off passthrough export ended unexpectedly (\(session.status.rawValue))."))
+                }
+            }
+        }
+        return outputURL
     }
 
     private func addOriginalAudio(videoURL: URL, sourceAsset: AVAsset) async throws -> URL {

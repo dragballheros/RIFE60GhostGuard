@@ -49,6 +49,10 @@ final class VideoProcessorViewModel: ObservableObject {
     @Published var isProcessing = false
     @Published private(set) var isPaused = false
     @Published var isImporting = false
+    @Published private(set) var isPreviewing = false
+    @Published private(set) var previewURLs: [URL] = []
+    @Published private(set) var previewStatus = ""
+    private var previewTask: Task<Void, Never>?
     @Published var importProgress: Double? = nil
     @Published var ghostProtection = true
     @Published var sceneCutProtection = true
@@ -72,6 +76,8 @@ final class VideoProcessorViewModel: ObservableObject {
     @Published var preserveAudio = true
     @Published var redditMode = false
     @Published var videoToGIFEnabled = false
+    @Published var frameRateMode = "60"
+    var selectedTargetFPS: Double { frameRateMode == "off" ? 0 : (Double(frameRateMode) ?? 60) }
     @Published var renderPowerMode = true
     @Published var telemetry = PerformanceTelemetry()
     @Published var processingScreenAwake = false
@@ -235,6 +241,74 @@ final class VideoProcessorViewModel: ObservableObject {
 
     func cancelBenchmark() { benchmarkTask?.cancel() }
 
+    /// Generate a disposable settings preview from the opening frames without setting
+    /// isProcessing/isBatchProcessing, touching recovery checkpoints, or locking render controls.
+    func generatePreview() {
+        if isPreviewing { cancelPreview(); return }
+        guard let source = inputURL, !isBusy, !isImporting, !isBenchmarking else { return }
+        clearPreviewFiles()
+        isPreviewing = true
+        previewStatus = "Preparing opening-frame preview…"
+        let isGIF = inputKind == .gif
+        let compression = compressionProtection
+        let outline = outlineProtection
+        let upscale = upscaleTo4K
+        let colorPop = colorPopEnabled
+        let gradeStrength = colorPopStrength
+        let watermark = WatermarkConfiguration(
+            enabled: effectiveWatermarkEnabled,
+            regions: watermarkRegions,
+            paddingPixels: Int(watermarkPaddingPixels),
+            model: watermarkModel
+        )
+        previewTask = Task { [weak self] in
+            let secured = source.startAccessingSecurityScopedResource()
+            defer { if secured { source.stopAccessingSecurityScopedResource() } }
+            do {
+                let urls = try await VideoPreviewProcessor.generate(
+                    sourceURL: source,
+                    isGIF: isGIF,
+                    compressionProtection: compression,
+                    outlineProtection: outline,
+                    upscale2x: upscale,
+                    colorPopEnabled: colorPop,
+                    colorPopStrength: gradeStrength,
+                    watermark: watermark
+                )
+                guard !Task.isCancelled, let self else {
+                    urls.forEach { try? FileManager.default.removeItem(at: $0) }
+                    return
+                }
+                self.previewURLs = urls
+                self.previewStatus = "Preview ready • \(urls.count) enhanced sample frames. Adjust settings and preview again; the full render has not started."
+                DiagnosticsLogger.shared.log("Settings preview complete • frames=\(urls.count) • source=\(source.lastPathComponent) • no render/recovery state changed")
+            } catch {
+                guard let self else { return }
+                self.previewStatus = Task.isCancelled ? "Preview cancelled" : "Preview failed • \(error.localizedDescription)"
+                if !Task.isCancelled { DiagnosticsLogger.shared.log("Settings preview failed • \(error.localizedDescription)") }
+            }
+            self?.isPreviewing = false
+            self?.previewTask = nil
+        }
+    }
+
+    func cancelPreview() {
+        previewTask?.cancel()
+        isPreviewing = false
+        previewStatus = "Cancelling preview…"
+    }
+
+    private func clearPreviewFiles() {
+        previewTask?.cancel()
+        let old = previewURLs
+        previewURLs = []
+        previewStatus = ""
+        old.forEach { try? FileManager.default.removeItem(at: $0) }
+        if let first = old.first {
+            try? FileManager.default.removeItem(at: first.deletingLastPathComponent())
+        }
+    }
+
     /// Pause is the only action that requests an incremental checkpoint.
     /// The worker is cancelled immediately, but the active stage writer intercepts
     /// that cancellation and finalizes its current encoded progress before returning.
@@ -376,11 +450,14 @@ final class VideoProcessorViewModel: ObservableObject {
         let sensitivity = ghostSensitivity
         let colorPop = colorPopEnabled
         let gradeStrength = colorPopStrength
+        let warmthMode = AutoWarmthCorrectionMode.current.rawValue
+        let skinToneMode = ColorPopSkinToneMode.current.rawValue
         let audio = preserveAudio
         let upscale = upscaleTo4K
         let upscaleBeforeRIFE = upscaleFirst && upscale
         let modelCompute = computePreference.rawValue
-        let configKey = ["pipeline-v6-deepcream-model", "hq", "ghost=\(guardEnabled)", "cuts=\(cuts)", "compression=\(compressionEnabled)", "outline=\(outlineEnabled)", "colorpop=\(colorPop)", "colorpopStrength=\(gradeStrength)", "watermark=\(watermark.enabled)", "watermarkMasks=\(watermark.serializedRegions)", "watermarkPadding=\(watermark.paddingPixels)", "watermarkModel=\(watermark.model.rawValue)", String(format: "sensitivity=%.2f", sensitivity), "audio=\(audio)", "reddit=\(redditMode)", "videoToGIF=\(videoToGIFEnabled)", "upscale=\(upscale)", "upscaleFirst=\(upscaleBeforeRIFE)", "computeUnits=\(modelCompute)", "fps=60"].joined(separator: "|")
+        let selectedTargetFPS = self.selectedTargetFPS
+        let configKey = ["pipeline-v6-deepcream-model", "hq", "ghost=\(guardEnabled)", "cuts=\(cuts)", "compression=\(compressionEnabled)", "outline=\(outlineEnabled)", "colorpop=\(colorPop)", "colorpopStrength=\(gradeStrength)", "warmthMode=\(warmthMode)", "skinToneMode=\(skinToneMode)", "watermark=\(watermark.enabled)", "watermarkMasks=\(watermark.serializedRegions)", "watermarkPadding=\(watermark.paddingPixels)", "watermarkModel=\(watermark.model.rawValue)", String(format: "sensitivity=%.2f", sensitivity), "audio=\(audio)", "reddit=\(redditMode)", "videoToGIF=\(videoToGIFEnabled)", "upscale=\(upscale)", "upscaleFirst=\(upscaleBeforeRIFE)", "computeUnits=\(modelCompute)", "fps=60"].joined(separator: "|")
         DiagnosticsLogger.shared.log("Render requested • \(configKey)")
 
         currentTask = Task.detached(priority: .userInitiated) { [weak self] in
@@ -1100,6 +1177,7 @@ final class VideoProcessorViewModel: ObservableObject {
 
     func start() async {
         guard !isBusy, !isBenchmarking, !isImporting else { return }
+        if isPreviewing { cancelPreview() }
         guard var queue = mediaQueue else { _ = await startSingle(); return }
         guard queue.nextItemID != nil else { return }
         if watermarkRemovalEnabled {
@@ -1155,10 +1233,12 @@ final class VideoProcessorViewModel: ObservableObject {
         let guardEnabled = ghostProtection, cuts = sceneCutProtection
         let compressionEnabled = compressionProtection, outlineEnabled = outlineProtection
         let colorPop = colorPopEnabled, gradeStrength = colorPopStrength
+        let warmthMode = AutoWarmthCorrectionMode.current.rawValue
+        let skinToneMode = ColorPopSkinToneMode.current.rawValue
         let sensitivity = ghostSensitivity, audio = preserveAudio, upscale = upscaleTo4K
         let upscaleBeforeRIFE = upscaleFirst && upscale, modelCompute = computePreference.rawValue
         let watermark = WatermarkConfiguration(enabled: watermarkRemovalEnabled, regions: watermarkRegions, paddingPixels: Int(watermarkPaddingPixels), model: watermarkModel)
-        return ["pipeline-v5-colorpop", "hq", "ghost=\(guardEnabled)", "cuts=\(cuts)", "compression=\(compressionEnabled)", "outline=\(outlineEnabled)", "colorpop=\(colorPop)", "colorpopStrength=\(gradeStrength)", "watermark=\(watermark.enabled)", "watermarkMasks=\(watermark.serializedRegions)", "watermarkPadding=\(watermark.paddingPixels)", "watermarkModel=\(WatermarkConfiguration.modelID)", String(format: "sensitivity=%.2f", sensitivity), "audio=\(audio)", "reddit=\(redditMode)", "videoToGIF=\(videoToGIFEnabled)", "upscale=\(upscale)", "upscaleFirst=\(upscaleBeforeRIFE)", "computeUnits=\(modelCompute)", "fps=60"].joined(separator: "|")
+        return ["pipeline-v5-colorpop", "hq", "ghost=\(guardEnabled)", "cuts=\(cuts)", "compression=\(compressionEnabled)", "outline=\(outlineEnabled)", "colorpop=\(colorPop)", "colorpopStrength=\(gradeStrength)", "warmthMode=\(warmthMode)", "skinToneMode=\(skinToneMode)", "watermark=\(watermark.enabled)", "watermarkMasks=\(watermark.serializedRegions)", "watermarkPadding=\(watermark.paddingPixels)", "watermarkModel=\(WatermarkConfiguration.modelID)", String(format: "sensitivity=%.2f", sensitivity), "audio=\(audio)", "reddit=\(redditMode)", "videoToGIF=\(videoToGIFEnabled)", "upscale=\(upscale)", "upscaleFirst=\(upscaleBeforeRIFE)", "computeUnits=\(modelCompute)", "fps=60"].joined(separator: "|")
     }
 
 }

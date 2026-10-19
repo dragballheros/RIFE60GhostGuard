@@ -37,7 +37,7 @@ struct GIFVideoBridge: Sendable {
         let outputRoot = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("RIFEGIFBridges", isDirectory: true)
         try FileManager.default.createDirectory(at: outputRoot, withIntermediateDirectories: true)
-        let outputURL = outputRoot.appendingPathComponent("GIF-(UUID().uuidString).mp4")
+        let outputURL = outputRoot.appendingPathComponent("GIF-\(UUID().uuidString).mp4")
         try? FileManager.default.removeItem(at: outputURL)
 
         let writer = try AVAssetWriter(outputURL: outputURL, fileType: .mp4)
@@ -79,10 +79,66 @@ struct GIFVideoBridge: Sendable {
 
         var timestamp = 0.0
         do {
+            guard let canvasContext = CGContext(
+                data: nil,
+                width: width,
+                height: height,
+                bitsPerComponent: 8,
+                bytesPerRow: width * 4,
+                space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGBitmapInfo.byteOrder32Little.rawValue | CGImageAlphaInfo.premultipliedFirst.rawValue
+            ) else {
+                throw GIFVideoBridgeError.couldNotCreatePixelBuffer
+            }
+            canvasContext.setFillColor(CGColor(gray: 0, alpha: 1))
+            canvasContext.fill(CGRect(x: 0, y: 0, width: width, height: height))
+            canvasContext.interpolationQuality = .high
+
+            var previousDisposal = 1
+            var previousRect = CGRect.zero
+            var canvasBeforePreviousFrame: CGImage?
+
             for index in 0..<frameCount {
                 try Task.checkCancellation()
+
+                // Apply the previous frame's disposal instruction before drawing
+                // this frame's patch onto the persistent full-canvas image.
+                if index > 0 {
+                    switch previousDisposal {
+                    case 2: // Restore to background.
+                        canvasContext.clear(previousRect)
+                        canvasContext.setFillColor(CGColor(gray: 0, alpha: 1))
+                        canvasContext.fill(previousRect)
+                    case 3: // Restore to the canvas before the previous frame.
+                        if let saved = canvasBeforePreviousFrame {
+                            canvasContext.setBlendMode(.copy)
+                            canvasContext.draw(saved, in: CGRect(x: 0, y: 0, width: width, height: height))
+                            canvasContext.setBlendMode(.normal)
+                        }
+                    default:
+                        break // Keep the previous composited frame.
+                    }
+                }
+
                 guard let image = CGImageSourceCreateImageAtIndex(source, index, nil) else {
                     throw GIFVideoBridgeError.invalidFrame(index)
+                }
+                let properties = CGImageSourceCopyPropertiesAtIndex(source, index, nil) as? [CFString: Any]
+                let gif = properties?[kCGImagePropertyGIFDictionary] as? [CFString: Any]
+                let left = max(0, (gif?["ImageLeft" as CFString] as? NSNumber)?.intValue ?? 0)
+                let top = max(0, (gif?["ImageTop" as CFString] as? NSNumber)?.intValue ?? 0)
+                let frameRect = CGRect(
+                    x: left,
+                    y: height - top - image.height,
+                    width: image.width,
+                    height: image.height
+                ).intersection(CGRect(x: 0, y: 0, width: width, height: height))
+
+                // Save the canvas state before this frame for disposal method 3.
+                canvasBeforePreviousFrame = canvasContext.makeImage()
+                canvasContext.draw(image, in: frameRect)
+                guard let compositedFrame = canvasContext.makeImage() else {
+                    throw GIFVideoBridgeError.couldNotCreatePixelBuffer
                 }
 
                 while !input.isReadyForMoreMediaData {
@@ -104,44 +160,40 @@ struct GIFVideoBridge: Sendable {
                 guard let baseAddress = CVPixelBufferGetBaseAddress(buffer) else {
                     throw GIFVideoBridgeError.couldNotCreatePixelBuffer
                 }
-
-                let bytesPerRow = CVPixelBufferGetBytesPerRow(buffer)
-                guard let context = CGContext(
+                guard let outputContext = CGContext(
                     data: baseAddress,
                     width: width,
                     height: height,
                     bitsPerComponent: 8,
-                    bytesPerRow: bytesPerRow,
+                    bytesPerRow: CVPixelBufferGetBytesPerRow(buffer),
                     space: CGColorSpaceCreateDeviceRGB(),
                     bitmapInfo: CGBitmapInfo.byteOrder32Little.rawValue | CGImageAlphaInfo.premultipliedFirst.rawValue
                 ) else {
                     throw GIFVideoBridgeError.couldNotCreatePixelBuffer
                 }
-
-                context.setFillColor(CGColor(gray: 0, alpha: 1))
-                context.fill(CGRect(x: 0, y: 0, width: width, height: height))
-                context.interpolationQuality = .high
-                context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+                outputContext.setFillColor(CGColor(gray: 0, alpha: 1))
+                outputContext.fill(CGRect(x: 0, y: 0, width: width, height: height))
+                outputContext.interpolationQuality = .high
+                outputContext.draw(compositedFrame, in: CGRect(x: 0, y: 0, width: width, height: height))
 
                 let presentationTime = CMTime(seconds: timestamp, preferredTimescale: 600)
                 guard adaptor.append(buffer, withPresentationTime: presentationTime) else {
                     throw writer.error ?? GIFVideoBridgeError.writerRejectedFrame(index)
                 }
 
-                let properties = CGImageSourceCopyPropertiesAtIndex(source, index, nil) as? [CFString: Any]
-                let gif = properties?[kCGImagePropertyGIFDictionary] as? [CFString: Any]
                 let unclamped = gif?[kCGImagePropertyGIFUnclampedDelayTime] as? Double
                 let clamped = gif?[kCGImagePropertyGIFDelayTime] as? Double
                 let rawDelay = unclamped ?? clamped ?? 0.1
                 let delay = rawDelay.isFinite && rawDelay > 0.001 ? min(rawDelay, 655.35) : 0.1
                 timestamp += delay
+                previousRect = frameRect
+                previousDisposal = (gif?["DisposalMethod" as CFString] as? NSNumber)?.intValue ?? 1
 
                 progress(
                     Double(index + 1) / Double(frameCount),
                     "GIF → video • frame (index + 1)/(frameCount)"
                 )
             }
-
             input.markAsFinished()
             let semaphore = DispatchSemaphore(value: 0)
             writer.finishWriting { semaphore.signal() }
@@ -151,7 +203,7 @@ struct GIFVideoBridge: Sendable {
             guard writer.status == .completed, FileManager.default.fileExists(atPath: outputURL.path) else {
                 throw writer.error ?? GIFVideoBridgeError.couldNotFinalizeVideo
             }
-            progress(1, "GIF converted to video • (width)x(height)")
+            progress(1, "GIF converted to video • \(width)x\(height)")
             return outputURL
         } catch {
             writer.cancelWriting()
