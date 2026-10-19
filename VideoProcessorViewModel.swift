@@ -68,7 +68,7 @@ final class VideoProcessorViewModel: ObservableObject {
     @Published var benchmarkStatus = ""
     @Published var benchmarkReport = ""
     private var benchmarkTask: Task<Void, Never>?
-    @Published var ghostSensitivity = 1.0
+    @Published var ghostSensitivity = 1.35
     @Published var preserveAudio = true
     @Published var redditMode = false
     @Published var videoToGIFEnabled = false
@@ -525,7 +525,7 @@ final class VideoProcessorViewModel: ObservableObject {
             case "upscaleFirst": upscaleFirst = enabled
             case "computeUnits": computePreference = ModelComputePreference(rawValue: pair[1]) ?? .auto
             case "upscale": upscaleTo4K = enabled
-            case "sensitivity": if let value = Double(pair[1]) { ghostSensitivity = value }
+            case "sensitivity": if let value = Double(pair[1]), value.isFinite { ghostSensitivity = min(max(value, 0.65), 1.35) }
             default: break
             }
         }
