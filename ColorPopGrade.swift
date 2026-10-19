@@ -2,13 +2,124 @@ import Foundation
 import CoreImage
 import CoreVideo
 
+
+enum ColorPopSkinToneMode: String, CaseIterable, Identifiable {
+    case off
+    case originalOnly
+    case processedOnly
+    case full
+
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .off: return "Off"
+        case .originalOnly: return "Original"
+        case .processedOnly: return "Processed"
+        case .full: return "Full"
+        }
+    }
+    var explanation: String {
+        switch self {
+        case .off: return "No automatic skin-lightness correction."
+        case .originalOnly: return "Gently lowers overly bright skin already present in the source."
+        case .processedOnly: return "Corrects extra skin brightening introduced by Color Pop."
+        case .full: return "Corrects both source skin over-brightness and extra Color Pop brightening."
+        }
+    }
+    static var current: ColorPopSkinToneMode {
+        guard let raw = UserDefaults.standard.string(forKey: "colorPopSkinToneCorrectionMode"),
+              let mode = ColorPopSkinToneMode(rawValue: raw) else { return .processedOnly }
+        return mode
+    }
+}
+
+/// Conservative skin-luminance guard. It scales RGB uniformly, so it lowers
+/// brightness without shifting the skin hue or increasing saturation.
+private final class ColorPopSkinToneCorrection {
+    private let colorSpace = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
+    private let context: CIContext
+    private var pool: CVPixelBufferPool?
+    private var poolWidth = 0
+    private var poolHeight = 0
+    private let kernel: CIColorKernel? = CIColorKernel(source: """
+        kernel vec4 correctSkinLightness(__sample source, __sample graded, float originalOnly, float processedOnly) {
+            vec3 s = source.rgb;
+            vec3 g = graded.rgb;
+            float sy = dot(s, vec3(0.2126, 0.7152, 0.0722));
+            float gy = dot(g, vec3(0.2126, 0.7152, 0.0722));
+            float rg = s.r - s.g;
+            float gb = s.g - s.b;
+            float skin = smoothstep(0.012, 0.075, rg)
+                       * smoothstep(0.004, 0.065, gb)
+                       * (1.0 - smoothstep(0.20, 0.34, rg))
+                       * (1.0 - smoothstep(0.18, 0.34, gb))
+                       * smoothstep(0.16, 0.28, sy)
+                       * (1.0 - smoothstep(0.96, 0.995, sy));
+            float sourceExcess = min(max(sy - 0.76, 0.0) * 0.14, 0.025) * originalOnly;
+            float processingLift = min(max(gy - sy, 0.0) * 0.85, 0.035) * processedOnly;
+            float correction = (sourceExcess + processingLift) * skin;
+            float targetY = max(0.0, gy - correction);
+            float scale = targetY / max(gy, 0.001);
+            return vec4(clamp(g * scale, 0.0, 1.0), graded.a);
+        }
+        """)
+    init() {
+        context = CIContext(options: [.cacheIntermediates: false, .workingColorSpace: colorSpace, .outputColorSpace: colorSpace])
+    }
+    func apply(reference: CVPixelBuffer, graded: CVPixelBuffer, mode: ColorPopSkinToneMode) throws -> CVPixelBuffer {
+        guard mode != .off,
+              CVPixelBufferGetWidth(reference) == CVPixelBufferGetWidth(graded),
+              CVPixelBufferGetHeight(reference) == CVPixelBufferGetHeight(graded),
+              let kernel else { return graded }
+        let input = CIImage(cvPixelBuffer: graded, options: [.colorSpace: colorSpace])
+        let source = CIImage(cvPixelBuffer: reference, options: [.colorSpace: colorSpace])
+        let originalOnly: CGFloat = (mode == .originalOnly || mode == .full) ? 1 : 0
+        let processedOnly: CGFloat = (mode == .processedOnly || mode == .full) ? 1 : 0
+        guard let output = kernel.apply(extent: input.extent, arguments: [source, input, originalOnly, processedOnly]) else {
+            throw ProcessorError.conversionFailed("Color Pop skin-tone correction produced no image")
+        }
+        let width = CVPixelBufferGetWidth(graded)
+        let height = CVPixelBufferGetHeight(graded)
+        try preparePool(width: width, height: height)
+        guard let pool else { return graded }
+        var buffer: CVPixelBuffer?
+        guard CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault, pool, &buffer) == kCVReturnSuccess, let buffer else {
+            throw ProcessorError.conversionFailed("could not allocate Color Pop skin-tone correction buffer")
+        }
+        context.render(output, to: buffer, bounds: input.extent, colorSpace: colorSpace)
+        CVBufferSetAttachment(buffer, kCVImageBufferCGColorSpaceKey, colorSpace, .shouldPropagate)
+        return buffer
+    }
+
+    private func preparePool(width: Int, height: Int) throws {
+        if pool != nil, poolWidth == width, poolHeight == height { return }
+        let attributes: [String: Any] = [
+            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
+            kCVPixelBufferWidthKey as String: width,
+            kCVPixelBufferHeightKey as String: height,
+            kCVPixelBufferMetalCompatibilityKey as String: true,
+            kCVPixelBufferIOSurfacePropertiesKey as String: [:]
+        ]
+        var newPool: CVPixelBufferPool?
+        guard CVPixelBufferPoolCreate(kCFAllocatorDefault, nil, attributes as CFDictionary, &newPool) == kCVReturnSuccess,
+              let newPool else {
+            throw ProcessorError.conversionFailed("could not create Color Pop skin-tone buffer pool")
+        }
+        pool = newPool
+        poolWidth = width
+        poolHeight = height
+    }
+}
+
 /// SDR selective grade. One instance belongs to one serial pipeline stage/job:
 /// its immutable strength builds one LUT, never one LUT per frame. To change
 /// strength, create a new instance. No custom shader or additional encode pass.
 final class ColorPopGrade {
     private static let cubeDimension = 33
-    private static let warmthCorrectionDefaultsKey = "automaticWarmthCorrectionEnabled"
+    private static let warmthCorrectionModeDefaultsKey = "automaticWarmthCorrectionMode"
+    private static let legacyWarmthCorrectionDefaultsKey = "automaticWarmthCorrectionEnabled"
     private let strength: Double
+    private let warmthCorrectionMode: AutoWarmthCorrectionMode
     private let colorSpace: CGColorSpace
     private let context: CIContext
     private let filter: CIFilter?
@@ -16,13 +127,14 @@ final class ColorPopGrade {
     private var poolWidth = 0
     private var poolHeight = 0
     private let warmthCorrection = AutoWarmthCorrection()
-    private let warmthCorrectionEnabled: Bool
+    private let skinToneCorrection = ColorPopSkinToneCorrection()
+    private let skinToneMode: ColorPopSkinToneMode
 
-    init(strength: Double) {
+    init(strength: Double, warmthMode: AutoWarmthCorrectionMode? = nil, skinToneMode: ColorPopSkinToneMode? = nil) {
         let amount = strength.isFinite ? min(max(strength, 0), 1) : 0
         self.strength = amount
-        self.warmthCorrectionEnabled = UserDefaults.standard.object(forKey: Self.warmthCorrectionDefaultsKey) == nil
-            || UserDefaults.standard.bool(forKey: Self.warmthCorrectionDefaultsKey)
+        self.warmthCorrectionMode = warmthMode ?? Self.storedWarmthCorrectionMode()
+        self.skinToneMode = skinToneMode ?? ColorPopSkinToneMode.current
         let space = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
         self.colorSpace = space
         self.context = CIContext(options: [
@@ -40,30 +152,54 @@ final class ColorPopGrade {
     }
 
     func apply(_ buffer: CVPixelBuffer) throws -> CVPixelBuffer {
-        // Exact bypass: no conversion, allocation, filter or render at zero.
-        guard strength > 0 else { return buffer }
-        guard let filter else { throw ProcessorError.conversionFailed("Color Pop LUT filter unavailable") }
-        let width = CVPixelBufferGetWidth(buffer)
-        let height = CVPixelBufferGetHeight(buffer)
-        try preparePool(width: width, height: height)
-        guard let pool else { throw ProcessorError.conversionFailed("Color Pop buffer pool unavailable") }
-        var destination: CVPixelBuffer?
-        guard CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault, pool, &destination) == kCVReturnSuccess,
-              let destination else { throw ProcessorError.conversionFailed("could not allocate Color Pop BGRA frame") }
+        if strength == 0, warmthCorrectionMode == .off, skinToneMode == .off { return buffer }
+        // Color Pop is optional; warmth correction is independently selectable.
+        // With strength zero, skip LUT creation/rendering but still honor the
+        // selected warmth mode on the final frame.
+        var destination = buffer
+        if strength > 0 {
+            guard let filter else { throw ProcessorError.conversionFailed("Color Pop LUT filter unavailable") }
+            let width = CVPixelBufferGetWidth(buffer)
+            let height = CVPixelBufferGetHeight(buffer)
+            try preparePool(width: width, height: height)
+            guard let pool else { throw ProcessorError.conversionFailed("Color Pop buffer pool unavailable") }
+            var renderedBuffer: CVPixelBuffer?
+            guard CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault, pool, &renderedBuffer) == kCVReturnSuccess,
+                  let renderedBuffer else { throw ProcessorError.conversionFailed("could not allocate Color Pop BGRA frame") }
 
-        // Keep the same explicit SDR color-space interpretation and output
-        // attachment as the existing BT.709 video-writer handoff.
-        filter.setValue(CIImage(cvPixelBuffer: buffer, options: [.colorSpace: colorSpace]), forKey: kCIInputImageKey)
-        // Release the previous input graph promptly; retain the cube for the job.
-        defer { filter.setValue(nil, forKey: kCIInputImageKey) }
-        let bounds = CGRect(x: 0, y: 0, width: width, height: height)
-        guard let image = filter.outputImage else { throw ProcessorError.conversionFailed("Color Pop LUT produced no image") }
-        context.render(image, to: destination, bounds: bounds, colorSpace: colorSpace)
-        CVBufferSetAttachment(destination, kCVImageBufferCGColorSpaceKey, colorSpace, .shouldPropagate)
-        // This preference is captured once per grading job, not read for every frame.
-        // The UI prevents changes while a job is running.
-        guard warmthCorrectionEnabled else { return destination }
-        return try warmthCorrection.apply(reference: buffer, graded: destination)
+            filter.setValue(CIImage(cvPixelBuffer: buffer, options: [.colorSpace: colorSpace]), forKey: kCIInputImageKey)
+            defer { filter.setValue(nil, forKey: kCIInputImageKey) }
+            let bounds = CGRect(x: 0, y: 0, width: width, height: height)
+            guard let image = filter.outputImage else { throw ProcessorError.conversionFailed("Color Pop LUT produced no image") }
+            context.render(image, to: renderedBuffer, bounds: bounds, colorSpace: colorSpace)
+            CVBufferSetAttachment(renderedBuffer, kCVImageBufferCGColorSpaceKey, colorSpace, .shouldPropagate)
+            destination = renderedBuffer
+        }
+
+        if warmthCorrectionMode != .off {
+            destination = try warmthCorrection.apply(
+                reference: buffer,
+                graded: destination,
+                mode: warmthCorrectionMode
+            )
+        }
+        return try skinToneCorrection.apply(reference: buffer, graded: destination, mode: skinToneMode)
+    }
+
+    private static func storedWarmthCorrectionMode() -> AutoWarmthCorrectionMode {
+        let defaults = UserDefaults.standard
+        if let rawValue = defaults.string(forKey: warmthCorrectionModeDefaultsKey),
+           let storedMode = AutoWarmthCorrectionMode(rawValue: rawValue) {
+            return storedMode
+        }
+        // Preserve the old toggle for existing installs: false migrates to Off,
+        // true remains the previous full correction behavior. A fresh install
+        // also defaults to the existing full behavior.
+        if defaults.object(forKey: legacyWarmthCorrectionDefaultsKey) != nil,
+           !defaults.bool(forKey: legacyWarmthCorrectionDefaultsKey) {
+            return .off
+        }
+        return .full
     }
 
     private func preparePool(width: Int, height: Int) throws {
@@ -131,14 +267,13 @@ final class ColorPopGrade {
         let skinGreenBlue = smoothstep(1.00, 1.09, greenBlue) * (1 - smoothstep(2.65, 3.10, greenBlue))
         let skinWeight = skinHue * skinSaturation * skinLuma * skinRedGreen * skinGreenBlue
 
-        // Fade the grade out near black and near peak white. The tiny S-curve
-        // improves midtone separation but is disabled for skin-like pixels.
+        // Fade the grade out near black and near peak white. Color Pop is
+        // strictly chroma-only: it must not lift or lower pixel luminance.
+        // Brightness/tone changes belong to an explicit separate control.
         let shadowWeight = smoothstep(0.015, 0.075, y)
         let highlightWeight = 1 - smoothstep(0.84, 0.97, y)
         let usableWeight = chromaWeight * shadowWeight * highlightWeight
-        let contrastWeight = usableWeight * (1 - skinWeight)
-        let contrastAmount = 0.035 * s * contrastWeight
-        let targetY = clamp(y + contrastAmount * (y - 0.5) * 4 * y * (1 - y))
+        let targetY = y
 
         // Hue-family weighting gives anime reds/pinks, blues and teal accents
         // a slightly stronger lift than generic low-saturation vibrance.
@@ -162,8 +297,8 @@ final class ColorPopGrade {
         let proposedGain = 1 + s * (mutedColorLift + familyAccent) * usableWeight
             * (1 - 0.92 * skinWeight)
 
-        // First apply the very small luma curve with a uniform channel scale,
-        // then expand chroma around targetY. Luma remains targetY by construction.
+        // Expand chroma around the original luma. This keeps perceived
+        // luminance anchored to the source instead of brightening midtones.
         let toneRatio = targetY / y
         let tr = r * toneRatio
         let tg = g * toneRatio

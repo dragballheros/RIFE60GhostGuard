@@ -67,9 +67,23 @@ final class DeepCreamWatermarkRemover: WatermarkRemovalApplying {
             .insetBy(dx: -padding, dy: -padding).integral.intersection(bounds)
         guard !target.isNull, target.width >= 1, target.height >= 1 else { return source }
 
-        let side = Int(ceil(max(256, max(target.width, target.height) * 2)))
-        let crop = CGRect(x: floor(target.midX - CGFloat(side) / 2),
-                          y: floor(target.midY - CGFloat(side) / 2),
+        let side = DeepCreamInputPreprocessor.contextCropSide(
+            targetWidth: target.width,
+            targetHeight: target.height,
+            frameWidth: width,
+            frameHeight: height
+        )
+        var cropX = floor(target.midX - CGFloat(side) / 2)
+        var cropY = floor(target.midY - CGFloat(side) / 2)
+        // If the square context crop fits on an axis, shift it inside the frame
+        // instead of repeating the frame edge via clampedToExtent().
+        if side <= width {
+            cropX = min(max(0, cropX), CGFloat(width - side))
+        }
+        if side <= height {
+            cropY = min(max(0, cropY), CGFloat(height - side))
+        }
+        let crop = CGRect(x: cropX, y: cropY,
                           width: CGFloat(side), height: CGFloat(side))
         let scale = CGFloat(modelSize) / CGFloat(side)
         let cropped = CIImage(cvPixelBuffer: source, options: [.colorSpace: colorSpace])
@@ -122,7 +136,11 @@ final class DeepCreamWatermarkRemover: WatermarkRemovalApplying {
                         let offset = batch * modelSize * modelSize * 3 + pixel + channel
                         originalPtr[offset] = value
                         maskPtr[offset] = known
-                        maskedPtr[offset] = known == 0 ? -1.0 : value
+                        maskedPtr[offset] = DeepCreamInputPreprocessor.maskedInputPixel(
+                            sourceValue: value,
+                            knownMaskValue: known,
+                            model: configuration.model
+                        )
                     }
                 }
             }

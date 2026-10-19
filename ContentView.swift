@@ -7,13 +7,17 @@ import QuickLook
 
 struct ContentView: View {
     @Environment(\.scenePhase) private var scenePhase
-    @AppStorage("automaticWarmthCorrectionEnabled") private var automaticWarmthCorrectionEnabled = true
+    @AppStorage("automaticWarmthCorrectionMode") private var automaticWarmthCorrectionModeRawValue = "full"
+    @AppStorage("colorPopSkinToneCorrectionMode") private var colorPopSkinToneCorrectionModeRawValue = "processedOnly"
     @StateObject private var vm = VideoProcessorViewModel()
     @StateObject private var pipController = ProcessingPiPController()
     @State private var showingImporter = false
     @State private var showingAIImageStudio = false
+    @State private var showingVACEComponentTest = false
+    @State private var showingVACEVideoEditor = false
     @State private var showingWatermarkEditor = false
     @State private var showingPhotosPicker = false
+    @State private var showingPreview = false
     @State private var showingExportFolderPicker = false
     @State private var showingClearRecoveryConfirmation = false
     @State private var photoItems: [PhotosPickerItem] = []
@@ -77,6 +81,26 @@ struct ContentView: View {
                         Text("Tune the full processing pipeline below. Your selected media runs through the existing on-device engines.")
                     }
 
+                    Section("Wan VACE — Local Video Editing") {
+                        Button { showingVACEVideoEditor = true } label: {
+                            Label("Open Local Wan VACE Video Editor", systemImage: "wand.and.stars")
+                        }
+                        .disabled(vm.isBusy || vm.isImporting || vm.isBenchmarking)
+                        Text("Imports a source video and white-on-black edit mask, tracks the mask locally with Vision optical flow, runs native local Wan VACE on 5-frame temporal windows, then exports a reconstructed MOV with the original audio. The explicitly selected experimental profile is 1.3B Q8 at 512×512 inference, not the unavailable 14B/720p path.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    Section("Wan VACE — On-device Component Test") {
+                        Button { showingVACEComponentTest = true } label: {
+                            Label("Open VACE Component Test Lab", systemImage: "cpu")
+                        }
+                        .disabled(vm.isBusy || vm.isImporting || vm.isBenchmarking)
+                        Text("Experimental local Core ML smoke test for exported Wan VAE components. This does not perform VACE video editing and does not contain the 14B transformer.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+
                     Section("AI Image Studio") {
                         Button { showingAIImageStudio = true } label: {
                             Label("Open AI Image Studio", systemImage: "sparkles")
@@ -105,6 +129,27 @@ struct ContentView: View {
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                             }
+                        }
+                        if vm.inputURL != nil && (vm.inputKind == .video || vm.inputKind == .gif) {
+                            HStack {
+                                Button {
+                                    showingPreview = true
+                                    vm.generatePreview()
+                                } label: {
+                                    Label(vm.isPreviewing ? "Cancel Preview" : "Preview Opening Frames", systemImage: vm.isPreviewing ? "xmark.circle" : "play.rectangle")
+                                }
+                                // Intentionally remains enabled during preview.
+                                .disabled(vm.inputURL == nil || vm.isBusy || vm.isImporting || vm.isBenchmarking)
+                                Spacer()
+                                if vm.isPreviewing {
+                                    ProgressView()
+                                }
+                            }
+                            if !vm.previewStatus.isEmpty {
+                                Text(vm.previewStatus).font(.caption).foregroundStyle(.secondary)
+                            }
+                            Text("Previews up to three opening frames with current still-frame enhancement settings. RIFE motion interpolation is not represented; Process remains available.")
+                                .font(.caption).foregroundStyle(.secondary)
                         }
                     }
 
@@ -145,12 +190,30 @@ struct ContentView: View {
                     Section("Anime Watermark Removal") {
                         Toggle("Remove marked watermarks", isOn: $vm.watermarkRemovalEnabled).disabled(vm.queueLocked || vm.isImporting)
                         if vm.watermarkRemovalEnabled {
-                            Picker("Inpainting model", selection: $vm.watermarkModel) {
+                            VStack(alignment: .leading, spacing: 0) {
+                                Text("Inpainting model")
+                                    .font(.subheadline)
+                                    .foregroundStyle(.secondary)
+                                    .padding(.bottom, 6)
                                 ForEach(WatermarkModel.allCases) { model in
-                                    Text(model.title).tag(model)
+                                    Button {
+                                        guard !vm.queueLocked && !vm.isImporting else { return }
+                                        vm.watermarkModel = model
+                                    } label: {
+                                        HStack(spacing: 12) {
+                                            Text(model.title).foregroundStyle(.primary)
+                                            Spacer(minLength: 8)
+                                            Image(systemName: vm.watermarkModel == model ? "checkmark.circle.fill" : "circle")
+                                                .foregroundStyle(vm.watermarkModel == model ? Color.accentColor : Color.secondary)
+                                        }
+                                        .contentShape(Rectangle())
+                                        .padding(.vertical, 8)
+                                    }
+                                    .buttonStyle(.plain)
+                                    .disabled(vm.queueLocked || vm.isImporting)
+                                    .accessibilityAddTraits(vm.watermarkModel == model ? .isSelected : [])
                                 }
                             }
-                            .disabled(vm.queueLocked || vm.isImporting)
                             if let item = vm.selectedQueueItem, (vm.mediaQueue?.items.count ?? 0) > 1 {
                                 Text("Mask for: \(item.displayName)").font(.caption)
                                 Toggle("Remove watermark on this item", isOn: Binding(get: { vm.selectedQueueItem?.removeWatermark ?? true }, set: { vm.setSelectedWatermarkRemoval($0) })).disabled(vm.queueLocked || vm.isImporting)
@@ -172,8 +235,30 @@ struct ContentView: View {
                         Toggle("Compression Guard", isOn: $vm.compressionProtection).disabled(vm.queueLocked || vm.isImporting)
                         Toggle("Final Sharpie Outline", isOn: $vm.outlineProtection).disabled(vm.queueLocked || vm.isImporting)
                         Toggle("Color Pop", isOn: $vm.colorPopEnabled).disabled(vm.queueLocked || vm.isImporting)
-                        Toggle("Automatic warmth correction", isOn: $automaticWarmthCorrectionEnabled).disabled(vm.queueLocked || vm.isImporting)
-                        Text("When enabled, gently reduces excess warmth after Color Pop. Turn it off for GIFs or images where cooling makes colors look unnatural.").font(.caption).foregroundStyle(.secondary)
+                        Picker("Automatic warmth", selection: $automaticWarmthCorrectionModeRawValue) {
+                            ForEach(AutoWarmthCorrectionMode.allCases) { mode in
+                                Text(mode.title).tag(mode.rawValue)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+                        .disabled(vm.queueLocked || vm.isImporting)
+                        if let mode = AutoWarmthCorrectionMode(rawValue: automaticWarmthCorrectionModeRawValue) {
+                            Text(mode.explanation)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        Picker("Color Pop skin tone", selection: $colorPopSkinToneCorrectionModeRawValue) {
+                            ForEach(ColorPopSkinToneMode.allCases) { mode in
+                                Text(mode.title).tag(mode.rawValue)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+                        .disabled(vm.queueLocked || vm.isImporting)
+                        if let mode = ColorPopSkinToneMode(rawValue: colorPopSkinToneCorrectionModeRawValue) {
+                            Text(mode.explanation)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
                         if vm.colorPopEnabled {
                             HStack { Text("Color Pop strength"); Spacer(); Text(String(format: "%.2f", vm.colorPopStrength)) }
                             Slider(value: $vm.colorPopStrength, in: 0.1...1.0).disabled(vm.queueLocked || vm.isImporting)
@@ -184,9 +269,30 @@ struct ContentView: View {
 
                     Section("2× Anime Upscale") {
                         Toggle("Real-CUGAN Native 2×", isOn: $vm.upscaleTo4K).disabled(vm.queueLocked || vm.isImporting)
-                        Picker("Model compute units", selection: $vm.computePreference) {
-                            ForEach(ModelComputePreference.allCases) { option in Text(option.title).tag(option) }
-                        }.disabled(vm.queueLocked || vm.isBusy || vm.isBenchmarking)
+                        VStack(alignment: .leading, spacing: 0) {
+                            Text("Model compute units")
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                                .padding(.bottom, 6)
+                            ForEach(ModelComputePreference.allCases) { option in
+                                Button {
+                                    guard !vm.queueLocked && !vm.isBusy && !vm.isBenchmarking else { return }
+                                    vm.computePreference = option
+                                } label: {
+                                    HStack(spacing: 12) {
+                                        Text(option.title).foregroundStyle(.primary)
+                                        Spacer(minLength: 8)
+                                        Image(systemName: vm.computePreference == option ? "checkmark.circle.fill" : "circle")
+                                            .foregroundStyle(vm.computePreference == option ? Color.accentColor : Color.secondary)
+                                    }
+                                    .contentShape(Rectangle())
+                                    .padding(.vertical, 8)
+                                }
+                                .buttonStyle(.plain)
+                                .disabled(vm.queueLocked || vm.isBusy || vm.isBenchmarking)
+                                .accessibilityAddTraits(vm.computePreference == option ? .isSelected : [])
+                            }
+                        }
                         Text("Auto preserves the current Core ML policy. GPU may use more memory. GPU and Neural Engine modes both allow CPU fallback; benchmark first.").font(.caption).foregroundStyle(.secondary)
                         if vm.inputKind == .video {
                             Toggle("Upscale before interpolation (faster)", isOn: $vm.upscaleFirst)
@@ -327,7 +433,16 @@ struct ContentView: View {
                             Button("Cancel Benchmark", role: .destructive) { vm.cancelBenchmark() }
                         }
                         if !vm.benchmarkStatus.isEmpty { Text(vm.benchmarkStatus).font(.caption) }
-                        if !vm.benchmarkReport.isEmpty { Text(vm.benchmarkReport).font(.system(.caption, design: .monospaced)).textSelection(.enabled) }
+                        if !vm.benchmarkReport.isEmpty {
+                            Text(vm.benchmarkReport)
+                                .font(.system(.caption, design: .monospaced))
+                                .textSelection(.disabled)
+                            Button {
+                                UIPasteboard.general.string = vm.benchmarkReport
+                            } label: {
+                                Label("Copy Benchmark Report", systemImage: "doc.on.doc")
+                            }
+                        }
                         Text("Keep the app open and cool. Tests 2 warm-ups and 5 timed predictions per model/policy. Results are device measurements; no preference is changed automatically.").font(.caption).foregroundStyle(.secondary)
                         Button { vm.copyErrorLogs() } label: { Label("Copy Error Logs", systemImage: "doc.on.doc") }
                         if !vm.diagnosticsCopyStatus.isEmpty { Text(vm.diagnosticsCopyStatus).font(.caption).foregroundStyle(.secondary) }
@@ -423,6 +538,16 @@ struct ContentView: View {
                     lastCompletedVideoURL = LastCompletedVideoStore.latestCompletedVideo() ?? lastCompletedVideoURL
                 }
                 .onAppear {
+                    // Migrate the old boolean setting once so the segmented picker
+                    // and the renderer agree on the same persisted mode.
+                    let warmthDefaults = UserDefaults.standard
+                    let warmthMigrationKey = "automaticWarmthCorrectionModeMigrationComplete"
+                    if !warmthDefaults.bool(forKey: warmthMigrationKey) {
+                        if let legacyValue = warmthDefaults.object(forKey: "automaticWarmthCorrectionEnabled") as? Bool {
+                            automaticWarmthCorrectionModeRawValue = legacyValue ? AutoWarmthCorrectionMode.full.rawValue : AutoWarmthCorrectionMode.off.rawValue
+                        }
+                        warmthDefaults.set(true, forKey: warmthMigrationKey)
+                    }
                     if lastCompletedVideoURL == nil { lastCompletedVideoURL = LastCompletedVideoStore.latestCompletedVideo() }
                     if vm.isBusy { pipController.arm() }
                     refreshPiPStatus(force: true)
@@ -457,9 +582,10 @@ struct ContentView: View {
                 .onChange(of: vm.statusText) { _ in refreshPiPStatus() }
                 .onChange(of: vm.etaSeconds) { _ in refreshPiPStatus() }
                 .onChange(of: vm.outputURL) { newURL in
-                    if let newURL {
+                    if let newURL,
+                       ["mov", "mp4", "m4v"].contains(newURL.pathExtension.lowercased()) {
                         lastCompletedVideoURL = newURL
-                        previewPlayer = newURL.pathExtension.lowercased() == "gif" ? nil : AVPlayer(url: newURL)
+                        previewPlayer = AVPlayer(url: newURL)
                     } else {
                         previewPlayer = nil
                     }
@@ -490,6 +616,15 @@ struct ContentView: View {
             }
         }
         .simultaneousGesture(DragGesture(minimumDistance: 0).onChanged { _ in registerPostRenderInteraction() })
+        .sheet(isPresented: $showingVACEComponentTest) {
+            VACEComponentTestView()
+        }
+        .sheet(isPresented: $showingVACEVideoEditor) {
+            VACEVideoEditView()
+        }
+        .sheet(isPresented: $showingPreview) {
+            VideoSettingsPreviewSheet(viewModel: vm)
+        }
         .onDisappear {
             pipController.disarmAndStop()
             cancelPostRenderSleep(restoreDisplay: true)
@@ -613,5 +748,59 @@ struct ContentView: View {
     private func finishTime(after seconds: Double) -> String {
         let formatter = DateFormatter(); formatter.timeStyle = .short
         return formatter.string(from: Date().addingTimeInterval(seconds))
+    }
+}
+
+
+private struct VideoSettingsPreviewSheet: View {
+    @ObservedObject var viewModel: VideoProcessorViewModel
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    Text(viewModel.previewStatus.isEmpty ? "Preview samples the opening frames using your current settings." : viewModel.previewStatus)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    if viewModel.isPreviewing {
+                        ProgressView("Rendering preview frames…")
+                        Button("Cancel Preview") { viewModel.cancelPreview() }
+                            .buttonStyle(.bordered)
+                    }
+                    if viewModel.previewURLs.isEmpty && !viewModel.isPreviewing {
+                        Text("No preview frames yet. Tap Preview Opening Frames after selecting a video or GIF.")
+                            .foregroundStyle(.secondary)
+                    }
+                    ForEach(Array(viewModel.previewURLs.enumerated()), id: \.offset) { index, url in
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Sample frame \(index + 1)").font(.headline)
+                            if let image = UIImage(contentsOfFile: url.path) {
+                                Image(uiImage: image)
+                                    .resizable()
+                                    .scaledToFit()
+                                    .frame(maxWidth: .infinity)
+                                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                            } else {
+                                Text("This preview frame could not be displayed.")
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                    Text("This is a visual settings check, not a 60 FPS motion preview. Change settings on the main screen and run Preview again.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .padding()
+            }
+            .navigationTitle("Video / GIF Preview")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
+        }
+        .presentationDetents([.medium, .large])
     }
 }

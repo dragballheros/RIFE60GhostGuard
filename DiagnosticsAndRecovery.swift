@@ -127,17 +127,26 @@ enum RecoveryStore {
         defer { lock.unlock() }
 
         if let data = try? Data(contentsOf: manifestURL),
-           let existing = try? JSONDecoder().decode(RecoveryManifest.self, from: data),
-           comparableConfiguration(existing.configurationKey) == comparableConfiguration(configurationKey) {
+           let existing = try? JSONDecoder().decode(RecoveryManifest.self, from: data) {
             let existingSource = currentDirectory.appendingPathComponent(existing.sourceFilename)
-            if fm.fileExists(atPath: existingSource.path) && source.standardizedFileURL == existingSource.standardizedFileURL {
+            let sameConfiguration = comparableConfiguration(existing.configurationKey) == comparableConfiguration(configurationKey)
+            let sourceExists = fm.fileExists(atPath: existingSource.path)
+            let sameSource = sourceExists && SourceFileIdentity.filesMatch(source, existingSource)
+
+            if sameConfiguration && sameSource {
                 var resumed = existing
                 resumed.status = "running"
                 resumed.configurationKey = configurationKey
                 resumed.updatedAt = Date()
                 try writeManifestLocked(resumed)
-                DiagnosticsLogger.shared.log("Resuming recovery job at \(Int(resumed.progress * 100))%: \(resumed.lastMessage)")
+                DiagnosticsLogger.shared.log("Resuming recovery job for verified identical source at \(Int(resumed.progress * 100))%: \(resumed.lastMessage)")
                 return RecoveryJob(directory: currentDirectory, sourceURL: existingSource, manifest: resumed, resumed: true)
+            }
+
+            if sourceExists && !sameSource {
+                DiagnosticsLogger.shared.log("Recovery source mismatch • requested=\(source.lastPathComponent) • saved=\(existingSource.lastPathComponent) • saved checkpoints will not be reused.")
+            } else if !sameConfiguration {
+                DiagnosticsLogger.shared.log("Recovery configuration mismatch • saved=\(existing.configurationKey) • requested=\(configurationKey) • discarding saved checkpoints.")
             }
         }
 
