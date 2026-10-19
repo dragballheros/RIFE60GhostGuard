@@ -188,7 +188,11 @@ final class FastMotionGhostGuard {
             // flattening normal motion while catching a locally broken patch even
             // when it affects just one of the 48 analysis regions.
             let severeRangePatch = localRange >= 0.20 && localScore >= max(0.54, artifactGate - 0.08)
-            let severeWarpPatch = localBlur >= 0.60 &&
+            // A uniform loss of edge energy can be valid at a temporal midpoint
+            // when opposing endpoint detail cancels. Only classify blur as a
+            // localized warp when this region is materially worse than the
+            // frame-wide blur rate; concentrated damaged patches still qualify.
+            let severeWarpPatch = localBlur >= max(0.60, blurCollapseFraction + 0.18) &&
                 localScore >= 0.40 &&
                 (regionalHighMotion[region] > 0 || regionalMotion[region] / count >= motionGate * 0.25)
             if severeRangePatch || severeWarpPatch {
