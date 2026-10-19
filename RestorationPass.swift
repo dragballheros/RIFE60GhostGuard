@@ -106,6 +106,7 @@ final class RestorationPass {
         var watermarkSeconds = 0.0
 
         let sourceOutlierGuard = SourceFrameOutlierGuard()
+        let colorArtifactGuard = LocalizedColorArtifactGuard()
         var pendingFrame: CVPixelBuffer?
         var pendingPTS: CMTime?
         var previousFrame: CVPixelBuffer?
@@ -177,12 +178,34 @@ final class RestorationPass {
             }
 
             var correctedB = b
+            let total = max(CMTimeGetSeconds(CMTimeSubtract(pts, aPTS)), 0.0001)
+            let position = min(max(CMTimeGetSeconds(CMTimeSubtract(bPTS, aPTS)) / total, 0), 1)
+
+            // Source-frame analysis now includes localized chroma outliers in
+            // addition to whole-frame luminance flashes. Repair only affected
+            // regions when their luma trajectory remains temporally consistent.
+            let colorInspection = autoreleasepool {
+                colorArtifactGuard.inspect(previous: a, candidate: b, next: frame, progress: position)
+            }
+            if colorInspection.isAnomaly,
+               let repaired = colorArtifactGuard.repair(
+                    previous: a,
+                    candidate: b,
+                    next: frame,
+                    progress: position,
+                    inspection: colorInspection
+               ) {
+                correctedB = repaired
+                outlierCount += 1
+                DiagnosticsLogger.shared.log(
+                    "Layer 1 localized color artifact corrected • frame=\(sourceFrames - 1) • regions=\(colorInspection.regions.count) • score=\(String(format: "%.3f", colorInspection.score))"
+                )
+            }
+
             let check = autoreleasepool {
                 sourceOutlierGuard.inspect(previous: a, candidate: b, next: frame)
             }
             if check.isOutlier {
-                let total = max(CMTimeGetSeconds(CMTimeSubtract(pts, aPTS)), 0.0001)
-                let position = min(max(CMTimeGetSeconds(CMTimeSubtract(bPTS, aPTS)) / total, 0), 1)
                 if let bridge = sourceOutlierGuard.bridge(previous: a, next: frame, progress: position) {
                     correctedB = bridge
                     outlierCount += 1

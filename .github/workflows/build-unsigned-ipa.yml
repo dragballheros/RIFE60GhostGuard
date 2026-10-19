@@ -266,6 +266,13 @@ jobs:
           swiftc -swift-version 5 -I /tmp/adaptive-rife-check -L /tmp/adaptive-rife-check -lRifeMetal TiledHQInterpolator.swift RIFEBandPlan.swift /tmp/adaptive-rife-check/main.swift -o /tmp/adaptive-rife-check/check
           DYLD_LIBRARY_PATH=/tmp/adaptive-rife-check /tmp/adaptive-rife-check/check
 
+      - name: Verify localized color artifact detection and repair
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/color-artifact-check
+          swiftc -swift-version 5 -framework CoreVideo LocalizedColorArtifactGuard.swift Scripts/check_localized_color_artifacts.swift -o /tmp/color-artifact-check/check
+          /tmp/color-artifact-check/check
+
       - name: Verify persistent mixed media queue and strict serial scheduling
         run: |
           set -euo pipefail

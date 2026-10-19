@@ -144,6 +144,7 @@ final class RIFEVideoProcessor {
             ? FastMotionGhostGuard(sensitivity: config.ghostSensitivity)
             : nil
         let compressionGuard = config.compressionProtection ? CompressionGuard() : nil
+        let colorArtifactGuard = LocalizedColorArtifactGuard()
 
         let outlineEnhancer: OutlineEnhancer?
         if config.outlineProtection {
@@ -284,65 +285,72 @@ final class RIFEVideoProcessor {
                 throw ProcessorError.conversionFailed("Streaming tiled HQ RIFE returned an unexpected frame count")
             }
 
-            // Fast-motion recovery is deliberately per-timestamp. We keep a
-            // cached midpoint for this source span so multiple difficult 60 FPS
-            // timestamps do not repeat the first half of the recovery work.
-            var retryMidpoint: CVPixelBuffer?
-            var retryMidpointAttempted = false
+            // Cache recursive temporal midpoints across this source span. A difficult
+            // 24→60 FPS transition can require a much smaller temporal interval than
+            // one midpoint split, so flagged frames may descend up to four levels.
+            var recoveryMidpoints: [String: CVPixelBuffer] = [:]
+
+            func cachedRecoveryMidpoint(previous: CVPixelBuffer,
+                                        current: CVPixelBuffer,
+                                        path: String) throws -> CVPixelBuffer? {
+                if let cached = recoveryMidpoints[path] { return cached }
+                let started = CFAbsoluteTimeGetCurrent()
+                let frames = try autoreleasepool {
+                    try interpolator.interpolate(previous: previous, current: current, timesteps: [0.5])
+                }
+                rifeSeconds += CFAbsoluteTimeGetCurrent() - started
+                guard let midpoint = frames.first else { return nil }
+                recoveryMidpoints[path] = midpoint
+                return midpoint
+            }
 
             func motionAwareRetry(t: Double) throws -> CVPixelBuffer? {
-                guard let fastMotionGuard else { return nil }
+                guard fastMotionGuard != nil else { return nil }
 
-                if !retryMidpointAttempted {
-                    retryMidpointAttempted = true
-                    let midpointStarted = CFAbsoluteTimeGetCurrent()
-                    let midpoint = try autoreleasepool {
-                        let frames = try interpolator.interpolate(
-                            previous: prevPB,
-                            current: currentPB,
-                            timesteps: [0.5]
-                        )
-                        return frames.first
+                var lower = 0.0
+                var upper = 1.0
+                var leftFrame = prevPB
+                var rightFrame = currentPB
+                var path = ""
+
+                for _ in 0..<4 {
+                    let midpointTime = (lower + upper) * 0.5
+                    guard let midpoint = try cachedRecoveryMidpoint(
+                        previous: leftFrame,
+                        current: rightFrame,
+                        path: path
+                    ) else { return nil }
+
+                    if abs(t - midpointTime) <= 0.001 { return midpoint }
+                    if t < midpointTime {
+                        upper = midpointTime
+                        rightFrame = midpoint
+                        path += "L"
+                    } else {
+                        lower = midpointTime
+                        leftFrame = midpoint
+                        path += "R"
                     }
-                    rifeSeconds += CFAbsoluteTimeGetCurrent() - midpointStarted
-                    retryMidpoint = midpoint
+
+                    // After narrowing to 1/8 of the original span, a final RIFE
+                    // inference is sufficiently local for the requested timestamp.
+                    if upper - lower <= 0.125 { break }
                 }
 
-                guard let midpoint = retryMidpoint else { return nil }
+                let localT = (t - lower) / max(upper - lower, 0.001)
+                if localT <= 0.001 { return leftFrame }
+                if localT >= 0.999 { return rightFrame }
 
-                // Replace one large A→B jump with two smaller temporal
-                // problems. This follows RIFE's recursive interpolation idea:
-                // difficult motion is easier when the target is reconstructed
-                // from a nearer temporal neighbor.
-                if abs(t - 0.5) <= 0.001 {
-                    return midpoint
-                }
-
-                let retryPrevious: CVPixelBuffer
-                let retryCurrent: CVPixelBuffer
-                let retryT: Float
-
-                if t < 0.5 {
-                    retryPrevious = prevPB
-                    retryCurrent = midpoint
-                    retryT = Float(min(max(t * 2.0, 0.001), 0.999))
-                } else {
-                    retryPrevious = midpoint
-                    retryCurrent = currentPB
-                    retryT = Float(min(max((t - 0.5) * 2.0, 0.001), 0.999))
-                }
-
-                let retryStarted = CFAbsoluteTimeGetCurrent()
-                let result = try autoreleasepool {
-                    let frames = try interpolator.interpolate(
-                        previous: retryPrevious,
-                        current: retryCurrent,
-                        timesteps: [retryT]
+                let started = CFAbsoluteTimeGetCurrent()
+                let frames = try autoreleasepool {
+                    try interpolator.interpolate(
+                        previous: leftFrame,
+                        current: rightFrame,
+                        timesteps: [Float(min(max(localT, 0.001), 0.999))]
                     )
-                    return frames.first
                 }
-                rifeSeconds += CFAbsoluteTimeGetCurrent() - retryStarted
-                return result
+                rifeSeconds += CFAbsoluteTimeGetCurrent() - started
+                return frames.first
             }
 
             for index in synthesized.indices {
@@ -351,20 +359,47 @@ final class RIFEVideoProcessor {
                 let t = Double(requestedTimesteps[index])
                 var chosen: CVPixelBuffer = synth
                 var existingGuardRejected = false
+                var unresolvedColorAnomaly = false
                 var fastCheck: FastMotionGhostGuard.Result?
 
                 if config.ghostProtection {
                     let started = CFAbsoluteTimeGetCurrent()
+                    let colorInspection = autoreleasepool {
+                        colorArtifactGuard.inspect(previous: prevPB, candidate: chosen, next: currentPB, progress: t)
+                    }
+                    if colorInspection.isAnomaly {
+                        if let repaired = autoreleasepool(body: {
+                            colorArtifactGuard.repair(
+                                previous: prevPB,
+                                candidate: chosen,
+                                next: currentPB,
+                                progress: t,
+                                inspection: colorInspection
+                            )
+                        }) {
+                            chosen = repaired
+                            let verification = colorArtifactGuard.inspect(
+                                previous: prevPB, candidate: chosen, next: currentPB, progress: t
+                            )
+                            unresolvedColorAnomaly = verification.isAnomaly
+                            DiagnosticsLogger.shared.log(
+                                "Localized chroma repair • regions=\(colorInspection.regions.count) • score=\(String(format: "%.3f", colorInspection.score)) • t=\(String(format: "%.3f", t))"
+                            )
+                        } else {
+                            unresolvedColorAnomaly = true
+                        }
+                    }
+
                     let check = autoreleasepool {
-                        guarder.inspect(previous: prevPB, generated: synth, current: currentPB, previousContext: previousPreviousPB)
+                        guarder.inspect(previous: prevPB, generated: chosen, current: currentPB, previousContext: previousPreviousPB)
                     }
                     ghostSeconds += CFAbsoluteTimeGetCurrent() - started
-                    existingGuardRejected = check.reject
+                    existingGuardRejected = check.reject || unresolvedColorAnomaly
 
                     if let fastMotionGuard {
                         let fastStarted = CFAbsoluteTimeGetCurrent()
                         let result = autoreleasepool {
-                            fastMotionGuard.inspect(previous: prevPB, generated: synth, current: currentPB)
+                            fastMotionGuard.inspect(previous: prevPB, generated: chosen, current: currentPB)
                         }
                         ghostSeconds += CFAbsoluteTimeGetCurrent() - fastStarted
                         fastCheck = result
@@ -384,17 +419,34 @@ final class RIFEVideoProcessor {
                        fastCheck.fastMotion,
                        (existingGuardRejected || fastCheck.reject || fastCheck.recoveryRecommended),
                        let retry = try motionAwareRetry(t: t) {
+                        var retryChosen = retry
+                        let retryColorInspection = colorArtifactGuard.inspect(
+                            previous: prevPB, candidate: retryChosen, next: currentPB, progress: t
+                        )
+                        if retryColorInspection.isAnomaly,
+                           let repairedRetry = colorArtifactGuard.repair(
+                                previous: prevPB,
+                                candidate: retryChosen,
+                                next: currentPB,
+                                progress: t,
+                                inspection: retryColorInspection
+                           ) {
+                            retryChosen = repairedRetry
+                        }
+                        let retryColorStillInvalid = colorArtifactGuard.inspect(
+                            previous: prevPB, candidate: retryChosen, next: currentPB, progress: t
+                        ).isAnomaly
                         let retryGuard = autoreleasepool {
-                            guarder.inspect(previous: prevPB, generated: retry, current: currentPB, previousContext: previousPreviousPB)
+                            guarder.inspect(previous: prevPB, generated: retryChosen, current: currentPB, previousContext: previousPreviousPB)
                         }
                         let retryFastGuard = fastMotionGuard.inspect(
                             previous: prevPB,
-                            generated: retry,
+                            generated: retryChosen,
                             current: currentPB
                         )
 
-                        if !retryGuard.reject && !retryFastGuard.reject {
-                            chosen = retry
+                        if !retryGuard.reject && !retryFastGuard.reject && !retryColorStillInvalid {
+                            chosen = retryChosen
                             DiagnosticsLogger.shared.log(
                                 "Fast-motion Ghost Guard recovered • motion=\(String(format: "%.3f", fastCheck.motionScore)) • originalArtifact=\(String(format: "%.3f", fastCheck.artifactScore)) • t=\(String(format: "%.3f", t))"
                             )

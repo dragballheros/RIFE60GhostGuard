@@ -83,6 +83,31 @@ final class CompressionGuard {
         return CIKernel(source: source)
     }()
 
+    // Localized chroma denoising: compare a 3x3 median with the original,
+    // suppressing isolated color noise in locally stable luminance areas while
+    // preserving luma, line art, and most of the source chroma.
+    private static let localizedChromaNoiseKernel: CIKernel? = {
+        let source = """
+        kernel vec4 localizedChromaNoise(sampler original, sampler median) {
+            vec2 p = samplerCoord(original);
+            vec4 o = sample(original, p);
+            vec4 m = sample(median, samplerTransform(median, destCoord()));
+            const vec3 lumaW = vec3(0.2126, 0.7152, 0.0722);
+            float y = dot(o.rgb, lumaW);
+            float ym = dot(m.rgb, lumaW);
+            vec3 chroma = o.rgb - vec3(y);
+            vec3 medianChroma = m.rgb - vec3(ym);
+            float lumaDelta = abs(y - ym);
+            float chromaDelta = length(chroma - medianChroma);
+            float flatRegion = 1.0 - smoothstep(0.020, 0.070, lumaDelta);
+            float isolatedChroma = smoothstep(0.018, 0.075, chromaDelta);
+            float amount = 0.32 * flatRegion * isolatedChroma;
+            return vec4(clamp(vec3(y) + mix(chroma, medianChroma, amount), 0.0, 1.0), o.a);
+        }
+        """
+        return CIKernel(source: source)
+    }()
+
     private func allocateLike(_ input: CVPixelBuffer) throws -> (CVPixelBuffer, CGRect) {
         let width = CVPixelBufferGetWidth(input)
         let height = CVPixelBufferGetHeight(input)
@@ -171,9 +196,35 @@ final class CompressionGuard {
         }
     }
 
+    private func cleanLocalizedChromaNoise(_ input: CVPixelBuffer) throws -> CVPixelBuffer {
+        try autoreleasepool {
+            let (output, extent) = try allocateLike(input)
+            let original = CIImage(cvPixelBuffer: input)
+            var image = original
+
+            if let medianFilter = CIFilter(name: "CIMedianFilter") {
+                medianFilter.setValue(original, forKey: kCIInputImageKey)
+                if let median = medianFilter.outputImage?.cropped(to: extent),
+                   let kernel = Self.localizedChromaNoiseKernel,
+                   let cleaned = kernel.apply(
+                        extent: extent,
+                        roiCallback: { index, rect in index == 1 ? rect.insetBy(dx: -1, dy: -1) : rect },
+                        arguments: [original, median]
+                   ) {
+                    image = cleaned.cropped(to: extent)
+                }
+            }
+
+            context.render(image.cropped(to: extent), to: output, bounds: extent, colorSpace: colorSpace)
+            context.clearCaches()
+            return output
+        }
+    }
+
     // Earlier Compression Guard remains Build 115-compatible; clarity is not doubled.
     func clean(_ input: CVPixelBuffer) throws -> CVPixelBuffer {
         let shadowCleaned = try cleanShadowChromaOnly(input)
-        return try cleanFinalCompression(shadowCleaned)
+        let chromaDenoised = try cleanLocalizedChromaNoise(shadowCleaned)
+        return try cleanFinalCompression(chromaDenoised)
     }
 }
