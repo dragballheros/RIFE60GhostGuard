@@ -1,9 +1,11 @@
 name: Build Unsigned IPA
+# Build verification after correcting native VACE temporal mask parameter scope
 # Fresh IPA delivery rebuild 715 (artifact/release refresh; no app-code changes)
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: false
+  # Only supersede stale PR builds. Do not auto-cancel a main-branch release build.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 # Rebuild trigger after reverting mobile compression restoration
 # Color Pop skin-state preservation fix build trigger
@@ -15,9 +17,9 @@ concurrency:
 on:
   workflow_dispatch:
   pull_request:
-    branches: [main]
+    branches: [main, feature/wan-vace-ondevice-component-test, feature/wan-vace-iphone-memory-first]
   push:
-    branches: [main]
+    branches: [main, feature/wan-vace-iphone-memory-first, feature/minimax-h3-ios-runtime]
 
 permissions:
   contents: write
@@ -31,6 +33,236 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+      - name: Stage pinned MiniMax H3 native runtime
+        run: python3 Scripts/vendor_h3_runtime.py
+      - name: Validate MiniMax H3 integration contracts and release gates
+        run: python3 Scripts/validate_h3_integration.py
+      - name: Bundle Wan VAE component packages for offline iPhone testing
+        if: >-
+          (github.event_name == 'pull_request' &&
+          github.event.pull_request.head.ref == 'feature/wan-vace-ondevice-component-test') ||
+          github.ref == 'refs/heads/feature/wan-vace-ondevice-component-test'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+          import shutil
+          import time
+          import urllib.error
+          import urllib.parse
+          import urllib.request
+          import zipfile
+          from pathlib import Path
+
+          repo = os.environ["GITHUB_REPOSITORY"]
+          sha = os.environ["TARGET_SHA"]
+          token = os.environ["GH_TOKEN"]
+          headers = {
+              "Accept": "application/vnd.github+json",
+              "Authorization": f"Bearer {token}",
+              "X-GitHub-Api-Version": "2022-11-28",
+              "User-Agent": "RIFE60GhostGuard-CI",
+          }
+
+          def fetch_json(url):
+              request = urllib.request.Request(url, headers=headers)
+              with urllib.request.urlopen(request, timeout=45) as response:
+                  return json.load(response)
+
+          deadline = time.monotonic() + 900
+          artifact_id = None
+          export_run_id = None
+          last_problem = "no successful VAE export run/artifact found for this commit"
+
+          while time.monotonic() < deadline and artifact_id is None:
+              try:
+                  # Reuse a successful component artifact from this branch only when
+                  # every VAE export input is byte-for-byte the same as the target
+                  # commit. Swift/UI-only fixes need not wait for another expensive
+                  # export, but changes to the converter or export workflow invalidate it.
+                  runs_url = (
+                      f"https://api.github.com/repos/{repo}/actions/runs"
+                      "?branch=feature%2Fwan-vace-ondevice-component-test&per_page=100"
+                  )
+                  runs = fetch_json(runs_url).get("workflow_runs", [])
+                  export_inputs = (
+                      # Hash only the code that affects the converted graphs.
+                      # The workflow itself may change triggers/concurrency without
+                      # changing model output; treating that as an export input
+                      # needlessly blocks IPA bundling on another macOS conversion.
+                      "Scripts/probe_wan_vae_coreml.py",
+                      "Scripts/probe_wan_vae_decoder_coreml.py",
+                      "Scripts/probe_vace_attention_coreml.py",
+                      "Scripts/probe_wan_vae_temporal_cache.py",
+                  )
+                  tree_cache = {}
+
+                  def tree_files(commit_sha):
+                      if commit_sha not in tree_cache:
+                          tree_url = (
+                              f"https://api.github.com/repos/{repo}/git/trees/"
+                              f"{commit_sha}?recursive=1"
+                          )
+                          tree = fetch_json(tree_url).get("tree", [])
+                          tree_cache[commit_sha] = {
+                              item["path"]: item.get("sha")
+                              for item in tree
+                              if item.get("type") == "blob"
+                          }
+                      return tree_cache[commit_sha]
+
+                  target_tree = tree_files(sha)
+                  missing_inputs = [path for path in export_inputs if path not in target_tree]
+                  if missing_inputs:
+                      raise SystemExit(
+                          "Missing required VAE export inputs in target commit: "
+                          + ", ".join(missing_inputs)
+                      )
+
+                  successful_runs = sorted(
+                      (
+                          run for run in runs
+                          if run.get("name") == "Wan VAE Core ML Export Probe"
+                          and run.get("head_branch") == "feature/wan-vace-ondevice-component-test"
+                          and run.get("conclusion") == "success"
+                      ),
+                      key=lambda run: run.get("created_at", ""),
+                      reverse=True,
+                  )
+                  compatible_runs = []
+                  for run in successful_runs:
+                      candidate_tree = tree_files(run["head_sha"])
+                      if all(
+                          target_tree.get(path) == candidate_tree.get(path)
+                          for path in export_inputs
+                      ):
+                          compatible_runs.append(run)
+
+                  for run in compatible_runs:
+                      export_run_id = run["id"]
+                      artifacts_url = (
+                          f"https://api.github.com/repos/{repo}/actions/runs/"
+                          f"{export_run_id}/artifacts?per_page=100"
+                      )
+                      artifacts = fetch_json(artifacts_url).get("artifacts", [])
+                      match = next((
+                          item for item in artifacts
+                          if item.get("name") == "wan-vace-ondevice-coreml-components"
+                          and not item.get("expired", False)
+                      ), None)
+                      if match:
+                          artifact_id = match["id"]
+                          print(
+                              f"Reusing validated VAE component artifact from run {export_run_id}; "
+                              "export inputs match the target commit.",
+                              flush=True,
+                          )
+                          break
+                  if artifact_id is None:
+                      last_problem = (
+                          f"waiting for wan-vace-ondevice-coreml-components for "
+                          f"commit {sha}; latest candidate run: {export_run_id}"
+                      )
+                      print(last_problem, flush=True)
+              except Exception as error:
+                  last_problem = f"temporary GitHub Actions artifact lookup failure: {error}"
+                  print(last_problem, flush=True)
+              if artifact_id is None:
+                  time.sleep(15)
+
+          if artifact_id is None:
+              raise SystemExit(
+                  "Could not obtain the matching Wan VAE component artifact within 15 minutes. "
+                  + last_problem
+              )
+
+          artifact_url = (
+              f"https://api.github.com/repos/{repo}/actions/artifacts/{artifact_id}/zip"
+          )
+          archive_path = Path("/tmp/wan-vace-coreml-components-artifact.zip")
+          request = urllib.request.Request(artifact_url, headers=headers)
+
+          # GitHub redirects artifact downloads to a short-lived signed storage
+          # URL. Do not forward the GitHub bearer token to that other host.
+          class StopRedirect(urllib.request.HTTPRedirectHandler):
+              def redirect_request(self, req, fp, code, msg, response_headers, newurl):
+                  return None
+
+          github_opener = urllib.request.build_opener(StopRedirect)
+          try:
+              response = github_opener.open(request, timeout=45)
+          except urllib.error.HTTPError as redirect:
+              if redirect.code not in (301, 302, 303, 307, 308):
+                  raise
+              download_url = redirect.headers.get("Location")
+              redirect.close()
+              if not download_url:
+                  raise SystemExit("GitHub artifact endpoint returned a redirect without a Location header.")
+              parsed = urllib.parse.urlparse(download_url)
+              if parsed.scheme != "https" or not parsed.netloc:
+                  raise SystemExit("GitHub artifact redirect was not a valid HTTPS URL.")
+              storage_request = urllib.request.Request(
+                  download_url,
+                  headers={"User-Agent": headers["User-Agent"], "Accept": "application/octet-stream"},
+              )
+              with urllib.request.urlopen(storage_request, timeout=300) as storage_response, archive_path.open("wb") as output:
+                  shutil.copyfileobj(storage_response, output)
+          else:
+              with response, archive_path.open("wb") as output:
+                  shutil.copyfileobj(response, output)
+
+          extract_root = Path("/tmp/wan-vace-coreml-components")
+          shutil.rmtree(extract_root, ignore_errors=True)
+          extract_root.mkdir(parents=True, exist_ok=True)
+          with zipfile.ZipFile(archive_path) as archive:
+              root = extract_root.resolve()
+              for item in archive.infolist():
+                  target = (extract_root / item.filename).resolve()
+                  if target != root and root not in target.parents:
+                      raise SystemExit(f"Unsafe artifact archive path: {item.filename}")
+              archive.extractall(extract_root)
+
+          model_names = ("WanVAEEncoder-5x64", "WanVAEDecoder-5x8")
+          # Keep the folder references at the project root. This avoids XcodeGen's
+          # nested-folder reference path issue for type: folder resources.
+          for model_name in model_names:
+              package_name = model_name + ".mlpackage"
+              manifests = [
+                  item for item in extract_root.rglob("Manifest.json")
+                  if item.parent.name == package_name
+              ]
+              if len(manifests) != 1:
+                  raise SystemExit(
+                      f"Expected one {package_name}/Manifest.json in the CI artifact; "
+                      f"found {len(manifests)}"
+                  )
+              destination = Path(package_name)
+              shutil.rmtree(destination, ignore_errors=True)
+              shutil.copytree(manifests[0].parent, destination)
+              print(f"Prepared bundled test model: {destination}", flush=True)
+
+          project_path = Path("project.yml")
+          project = project_path.read_text(encoding="utf-8")
+          marker = "      - path: Models/DeepCreamMosaic.mlpackage\n"
+          additions = (
+              marker
+              + "      - path: WanVAEEncoder-5x64.mlpackage\n"
+              + "        type: folder\n"
+              + "        buildPhase: resources\n"
+              + "      - path: WanVAEDecoder-5x8.mlpackage\n"
+              + "        type: folder\n"
+              + "        buildPhase: resources\n"
+          )
+          if project.count(marker) != 1:
+              raise SystemExit("Could not uniquely locate the model resource list in project.yml")
+          project_path.write_text(project.replace(marker, additions), encoding="utf-8")
+          print("VAE component packages are ready to be embedded in this test IPA.", flush=True)
+          PY
+
 
       - name: Fetch pinned on-device diffusion engine
         run: |
@@ -38,6 +270,9 @@ jobs:
           git clone https://github.com/drawthingsai/draw-things-community.git Vendor/draw-things-community
           git -C Vendor/draw-things-community checkout 4f288803ac898525012c0fe8d998c85bcb920b70
           python3 Scripts/patch_draw_things_memory.py
+          python3 Scripts/patch_draw_things_vace_video_sequence.py
+          python3 Scripts/patch_draw_things_vace_video_masks.py
+          python3 Scripts/test_wan_vace_video_bridge.py
           python3 - <<'PY'
           from pathlib import Path
           path = Path("Vendor/draw-things-community/Package.swift")
@@ -249,6 +484,14 @@ jobs:
           swiftc -swift-version 5 WatermarkConfiguration.swift WatermarkBrushMask.swift AnimeWatermarkRemover.swift /tmp/anime-inpaint-check/main.swift -o /tmp/anime-inpaint-check/check
           /tmp/anime-inpaint-check/check CompiledModels/AnimeWatermarkLaMa512.mlmodelc
 
+      - name: Verify DeepCream bar and mosaic preprocessing
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/deepcream-preprocessing-check
+          cp Scripts/check_deepcream_preprocessing.swift /tmp/deepcream-preprocessing-check/main.swift
+          swiftc -swift-version 5 WatermarkConfiguration.swift WatermarkBrushMask.swift DeepCreamInputPreprocessor.swift /tmp/deepcream-preprocessing-check/main.swift -o /tmp/deepcream-preprocessing-check/check
+          /tmp/deepcream-preprocessing-check/check
+
       - name: Verify speed options and checkpoint planning
         run: |
           set -euo pipefail
@@ -333,6 +576,9 @@ jobs:
           test -f Models/DeepCreamMosaic.mlpackage/Manifest.json
           test ! -e Models/DeepCreamBar.pb
           test ! -e Models/DeepCreamMosaic.pb
+
+      - name: Stage pinned MiniMax H3 native sources for the iOS target
+        run: bash Scripts/vendor_h3_runtime.sh
 
       - name: Generate Xcode project
         run: xcodegen generate
@@ -500,6 +746,9 @@ jobs:
           set -e
           exit "$BUILD_STATUS"
 
+      - name: Verify H3 native engine is compiled and linked into the app
+        run: python3 Scripts/verify_h3_native_link.py
+
       - name: Create verified IPA
         run: |
           set -euo pipefail
@@ -522,6 +771,20 @@ jobs:
           zip -qry RIFE60GhostGuard-verified-unsigned.ipa Payload
           unzip -t RIFE60GhostGuard-verified-unsigned.ipa >/dev/null
 
+      - name: Verify bundled Wan VAE test packages inside IPA
+        if: >-
+          (github.event_name == 'pull_request' &&
+          github.event.pull_request.head.ref == 'feature/wan-vace-ondevice-component-test') ||
+          github.ref == 'refs/heads/feature/wan-vace-ondevice-component-test'
+        run: |
+          set -euo pipefail
+          APP="Payload/RIFE60GhostGuard.app"
+          test -f "$APP/WanVAEEncoder-5x64.mlpackage/Manifest.json"
+          test -f "$APP/WanVAEDecoder-5x8.mlpackage/Manifest.json"
+          unzip -Z1 RIFE60GhostGuard-verified-unsigned.ipa | grep -Fxq "Payload/RIFE60GhostGuard.app/WanVAEEncoder-5x64.mlpackage/Manifest.json"
+          unzip -Z1 RIFE60GhostGuard-verified-unsigned.ipa | grep -Fxq "Payload/RIFE60GhostGuard.app/WanVAEDecoder-5x8.mlpackage/Manifest.json"
+          echo "Both bundled VAE component packages are present in the IPA."
+
       # Keep the normal Actions artifact ZIP as well as publishing the raw .ipa to Releases.
       - name: Upload verified IPA artifact
         uses: actions/upload-artifact@v4
@@ -542,7 +805,7 @@ jobs:
           TAG="ipa-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           gh release create "$TAG" RIFE60GhostGuard-verified-unsigned.ipa \
             --title "RIFE60GhostGuard IPA — build ${GITHUB_RUN_NUMBER}" \
-            --notes "Verified unsigned IPA from GitHub Actions run ${GITHUB_RUN_ID}. This release is persistent; download link remains available until the release is manually removed."
+            --notes "Verified unsigned IPA from GitHub Actions run ${GITHUB_RUN_ID}. This temporary release is automatically removed 15 minutes after upload; download the IPA before it expires."
           RELEASE_URL="$(gh release view "$TAG" --json url --jq .url)"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "url=$RELEASE_URL" >> "$GITHUB_OUTPUT"
@@ -551,9 +814,19 @@ jobs:
             echo
             echo "Download: [$TAG]($RELEASE_URL)"
             echo
-            echo "This release is persistent and will not be automatically deleted."
+            echo "This release is temporary and will be automatically deleted after 15 minutes. Download the IPA before it expires."
           } >> "$GITHUB_STEP_SUMMARY"
           echo "Published IPA release: $RELEASE_URL"
+
+      - name: Delete temporary IPA release after 15 minutes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.publish_ipa_release.outputs.tag }}
+        run: |
+          set -euo pipefail
+          sleep 900
+          gh release delete "$TAG" --yes --cleanup-tag
+          echo "Deleted temporary IPA release $TAG after 15 minutes." >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload build diagnostics
         if: always()

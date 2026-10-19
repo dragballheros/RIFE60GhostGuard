@@ -176,12 +176,15 @@ worst quality, low quality, score_1, score_2, artist name, blurry, jpeg artifact
         NavigationStack {
             Form {
                 Section {
-                    Picker("Studio", selection: $activeTab) {
-                        Text("Generate").tag("Generate")
-                        Text("LoRA Trainer").tag("Train")
-                        Text("Settings").tag("Settings")
+                    VStack(alignment: .leading, spacing: 0) {
+                        Text("Studio section")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                            .padding(.bottom, 6)
+                        studioOptionRow("Generate", value: "Generate")
+                        studioOptionRow("LoRA Trainer", value: "Train")
+                        studioOptionRow("Settings", value: "Settings")
                     }
-                    .pickerStyle(.segmented)
                 }
 
                 if activeTab == "Generate" {
@@ -220,6 +223,41 @@ worst quality, low quality, score_1, score_2, artist name, blurry, jpeg artifact
                 Button("OK", role: .cancel) {}
             } message: { Text(saveMessage) }
         }
+    }
+
+    private func studioOptionRow(_ title: String, value: String) -> some View {
+        Button {
+            activeTab = value
+        } label: {
+            HStack(spacing: 12) {
+                Text(title).foregroundStyle(.primary)
+                Spacer(minLength: 8)
+                Image(systemName: activeTab == value ? "checkmark.circle.fill" : "circle")
+                    .foregroundStyle(activeTab == value ? Color.accentColor : Color.secondary)
+            }
+            .contentShape(Rectangle())
+            .padding(.vertical, 8)
+        }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(activeTab == value ? .isSelected : [])
+    }
+
+    private func samplerOptionRow(_ title: String, value: String) -> some View {
+        Button {
+            samplerName = value
+            saveGenerationDraft()
+        } label: {
+            HStack(spacing: 12) {
+                Text(title).foregroundStyle(.primary)
+                Spacer(minLength: 8)
+                Image(systemName: samplerName == value ? "checkmark.circle.fill" : "circle")
+                    .foregroundStyle(samplerName == value ? Color.accentColor : Color.secondary)
+            }
+            .contentShape(Rectangle())
+            .padding(.vertical, 8)
+        }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(samplerName == value ? .isSelected : [])
     }
 
     private var generationSections: some View {
@@ -369,14 +407,17 @@ worst quality, low quality, score_1, score_2, artist name, blurry, jpeg artifact
             Section("Generation Settings") {
                 Text("Sampler selection is passed to the local engine. DPM++ SDE Karras is the closest available engine sampler to the Civitai GPU sampler, but it is not guaranteed to be numerically identical.")
                     .font(.caption).foregroundStyle(.secondary)
-                Picker("Sampler", selection: $samplerName) {
-                    Text("Euler a").tag("Euler a")
-                    Text("DPM++ SDE Karras (closest)").tag("DPM++ SDE Karras (closest to Civitai GPU sampler)")
-                    Text("DPM++ 2M Karras").tag("DPM++ 2M Karras")
-                    Text("DDIM").tag("DDIM")
-                    Text("UniPC").tag("UniPC")
+                VStack(alignment: .leading, spacing: 0) {
+                    Text("Sampler")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .padding(.bottom, 6)
+                    samplerOptionRow("Euler a", value: "Euler a")
+                    samplerOptionRow("DPM++ SDE Karras (closest)", value: "DPM++ SDE Karras (closest to Civitai GPU sampler)")
+                    samplerOptionRow("DPM++ 2M Karras", value: "DPM++ 2M Karras")
+                    samplerOptionRow("DDIM", value: "DDIM")
+                    samplerOptionRow("UniPC", value: "UniPC")
                 }
-                .onChange(of: samplerName) { _ in saveGenerationDraft() }
                 if settings.localModelID == OnDeviceImageGenerator.animaModelID {
                     HStack { Text("Shift"); Spacer(); Text(String(format: "%.1f", shift)).monospacedDigit() }
                     Slider(value: $shift, in: 0.1...12, step: 0.1)
