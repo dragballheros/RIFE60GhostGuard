@@ -39,7 +39,7 @@ struct ContentView: View {
 
             NavigationStack {
                 Form {
-                    Section {
+                    Section("Input") {
                         VStack(alignment: .leading, spacing: 14) {
                             HStack(spacing: 12) {
                                 Image(systemName: "wand.and.stars")
@@ -48,7 +48,7 @@ struct ContentView: View {
                                     .frame(width: 48, height: 48)
                                     .background(.cyan.opacity(0.13), in: RoundedRectangle(cornerRadius: 14))
                                 VStack(alignment: .leading, spacing: 3) {
-                                    Text("Recipe").font(.title3.weight(.bold))
+                                    Text("Processing Recipe").font(.title3.weight(.bold))
                                     Text(vm.inputURL?.lastPathComponent ?? "Choose a video, GIF, or image")
                                         .font(.caption).foregroundStyle(.secondary).lineLimit(1)
                                 }
@@ -61,57 +61,9 @@ struct ContentView: View {
                             }
                             Toggle("Real-CUGAN 2× upscale", isOn: $vm.upscaleTo4K)
                                 .disabled(vm.queueLocked || vm.isImporting || vm.isBusy || vm.isBenchmarking)
-                            HStack(spacing: 10) {
-                                Button { showingPhotosPicker = true } label: {
-                                    Label("Photos", systemImage: "photo.on.rectangle").frame(maxWidth: .infinity)
-                                }
-                                .buttonStyle(.bordered)
-                                .disabled(vm.isBusy || vm.isImporting || vm.isBenchmarking)
-                                Button { showingImporter = true } label: {
-                                    Label("Files", systemImage: "folder").frame(maxWidth: .infinity)
-                                }
-                                .buttonStyle(.bordered)
-                                .disabled(vm.isBusy || vm.isImporting || vm.isBenchmarking)
-                            }
                         }
                         .padding(.vertical, 6)
-                    } header: {
-                        Text("Processing Recipe")
-                    } footer: {
-                        Text("Tune the full processing pipeline below. Your selected media runs through the existing on-device engines.")
-                    }
-
-                    Section("Wan VACE — Local Video Editing") {
-                        Button { showingVACEVideoEditor = true } label: {
-                            Label("Open Local Wan VACE Video Editor", systemImage: "wand.and.stars")
-                        }
-                        .disabled(vm.isBusy || vm.isImporting || vm.isBenchmarking)
-                        Text("Imports a source video and white-on-black edit mask, tracks the mask locally with Vision optical flow, runs native local Wan VACE on 5-frame temporal windows, then exports a reconstructed MOV with the original audio. The explicitly selected experimental profile is 1.3B Q8 at 512×512 inference, not the unavailable 14B/720p path.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-
-                    Section("Wan VACE — On-device Component Test") {
-                        Button { showingVACEComponentTest = true } label: {
-                            Label("Open VACE Component Test Lab", systemImage: "cpu")
-                        }
-                        .disabled(vm.isBusy || vm.isImporting || vm.isBenchmarking)
-                        Text("Experimental local Core ML smoke test for exported Wan VAE components. This does not perform VACE video editing and does not contain the 14B transformer.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-
-                    Section("AI Image Studio") {
-                        Button { showingAIImageStudio = true } label: {
-                            Label("Open AI Image Studio", systemImage: "sparkles")
-                        }
-                        .disabled(vm.isBusy || vm.isImporting || vm.isBenchmarking)
-                        Text("Generate anime images locally on the iPhone. To protect memory, AI Image Studio cannot open while video processing, importing, or model benchmarking is active. Generated stills can then go through this app's Real-CUGAN upscale and final Sharpie pipeline.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-
-                    Section("Input") {
+                        Divider().padding(.vertical, 4)
                         Button { showingPhotosPicker = true } label: { Label("Select media from Photos", systemImage: "photo.on.rectangle") }.disabled(vm.isBusy || vm.isImporting || vm.isBenchmarking)
                         Button { showingImporter = true } label: { Label("Select media from Files", systemImage: "folder") }.disabled(vm.isBusy || vm.isImporting || vm.isBenchmarking)
                         if vm.isImporting {
@@ -152,6 +104,38 @@ struct ContentView: View {
                                 .font(.caption).foregroundStyle(.secondary)
                         }
                     }
+
+
+                    Section("Wan VACE — Local Video Editing") {
+                        Button { showingVACEVideoEditor = true } label: {
+                            Label("Open Local Wan VACE Video Editor", systemImage: "wand.and.stars")
+                        }
+                        .disabled(vm.isBusy || vm.isImporting || vm.isBenchmarking)
+                        Text("Imports a source video and white-on-black edit mask, tracks the mask locally with Vision optical flow, runs native local Wan VACE on 5-frame temporal windows, then exports a reconstructed MOV with the original audio. The explicitly selected experimental profile is 1.3B Q8 at 512×512 inference, not the unavailable 14B/720p path.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    Section("Wan VACE — On-device Component Test") {
+                        Button { showingVACEComponentTest = true } label: {
+                            Label("Open VACE Component Test Lab", systemImage: "cpu")
+                        }
+                        .disabled(vm.isBusy || vm.isImporting || vm.isBenchmarking)
+                        Text("Experimental local Core ML smoke test for exported Wan VAE components. This does not perform VACE video editing and does not contain the 14B transformer.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    Section("AI Image Studio") {
+                        Button { showingAIImageStudio = true } label: {
+                            Label("Open AI Image Studio", systemImage: "sparkles")
+                        }
+                        .disabled(vm.isBusy || vm.isImporting || vm.isBenchmarking)
+                        Text("Generate anime images locally on the iPhone. To protect memory, AI Image Studio cannot open while video processing, importing, or model benchmarking is active. Generated stills can then go through this app's Real-CUGAN upscale and final Sharpie pipeline.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+
 
                     mediaQueueSection
 
