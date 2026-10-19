@@ -17,8 +17,10 @@ final class FinalOutlinePass {
 
     private let colorPopGrade: ColorPopGrade?
 
-    init(colorPopStrength: Double = 0) {
-        self.colorPopGrade = colorPopStrength > 0 ? ColorPopGrade(strength: colorPopStrength) : nil
+    init(colorPopStrength: Double = 0, applyWarmthCorrection: Bool = true) {
+        self.colorPopGrade = (colorPopStrength > 0 || applyWarmthCorrection)
+            ? ColorPopGrade(strength: colorPopStrength, warmthMode: applyWarmthCorrection ? nil : .off)
+            : nil
     }
 
     // Use a slightly higher-resolution style map so the Sharpie line expands less
