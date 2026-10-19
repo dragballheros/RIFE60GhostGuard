@@ -393,6 +393,22 @@ worst quality, low quality, score_1, score_2, artist name, blurry, jpeg artifact
                 HStack { Text("Height"); Spacer(); Text("\(Int(height)) px").monospacedDigit() }
                 Slider(value: $height, in: 512...1536, step: 64)
                 TextField("Seed", text: $seedText).keyboardType(.numberPad)
+                HStack(spacing: 12) {
+                    Button {
+                        UIPasteboard.general.string = seedText
+                    } label: {
+                        Label("Copy Seed", systemImage: "doc.on.doc")
+                    }
+                    .buttonStyle(.bordered)
+                    Button {
+                        guard let clipboardText = UIPasteboard.general.string,
+                              !clipboardText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+                        seedText = clipboardText.trimmingCharacters(in: .whitespacesAndNewlines)
+                    } label: {
+                        Label("Paste Seed", systemImage: "clipboard")
+                    }
+                    .buttonStyle(.bordered)
+                }
                 Text("This engine accepts a 32-bit seed. Larger Civitai seeds are reduced modulo 2³² and will not reproduce the same image exactly.")
                     .font(.caption).foregroundStyle(.secondary)
                 Toggle("Random seed", isOn: $randomSeed)
