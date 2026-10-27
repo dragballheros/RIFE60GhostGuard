@@ -247,8 +247,8 @@ enum RealCUGANBatchTensor {
     }
 
     static func maxRoundTripDelta(width: Int, height: Int) -> Int {
-        let stride = width * 4
-        var source = [UInt8](repeating: 0, count: stride * height)
+        let rowBytes = width * 4
+        var source = [UInt8](repeating: 0, count: rowBytes * height)
         for index in 0..<source.count {
             source[index] = UInt8((index * 17 + 3) & 0xFF)
         }
@@ -257,12 +257,12 @@ enum RealCUGANBatchTensor {
         var restored = [UInt8](repeating: 0, count: source.count)
         source.withUnsafeBufferPointer { sourceBuffer in
             floats.withUnsafeMutableBufferPointer { floatBuffer in
-                pack(bgra: sourceBuffer.baseAddress!, stride: stride, width: width, height: height, destination: floatBuffer.baseAddress!, planeFloats: plane)
+                pack(bgra: sourceBuffer.baseAddress!, stride: rowBytes, width: width, height: height, destination: floatBuffer.baseAddress!, planeFloats: plane)
             }
         }
         floats.withUnsafeBufferPointer { floatBuffer in
             restored.withUnsafeMutableBufferPointer { restoredBuffer in
-                unpack(source: floatBuffer.baseAddress!, planeFloats: plane, width: width, height: height, bgra: restoredBuffer.baseAddress!, stride: stride)
+                unpack(source: floatBuffer.baseAddress!, planeFloats: plane, width: width, height: height, bgra: restoredBuffer.baseAddress!, stride: rowBytes)
             }
         }
         var maxDelta = 0
