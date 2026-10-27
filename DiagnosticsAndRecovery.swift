@@ -22,9 +22,10 @@ struct RecoveryJob: Sendable {
 
 final class DiagnosticsLogger: @unchecked Sendable {
     static let shared = DiagnosticsLogger()
-    private let lock = NSLock()
+    private let queue = DispatchQueue(label: "RIFE60.DiagnosticsLogger")
     private let fm = FileManager.default
     private let maxBytes = 1_500_000
+    private let formatter = ISO8601DateFormatter()
 
     private var directory: URL {
         let documents = fm.urls(for: .documentDirectory, in: .userDomainMask)[0]
@@ -38,44 +39,41 @@ final class DiagnosticsLogger: @unchecked Sendable {
     }
 
     func log(_ message: String) {
-        lock.lock()
-        defer { lock.unlock() }
-        try? fm.createDirectory(at: directory, withIntermediateDirectories: true)
-        let stamp = ISO8601DateFormatter().string(from: Date())
-        let line = "[\(stamp)] \(message)\n"
-        if !fm.fileExists(atPath: logURL.path) {
-            try? Data(line.utf8).write(to: logURL, options: .atomic)
-        } else if let handle = try? FileHandle(forWritingTo: logURL) {
-            defer { try? handle.close() }
-            try? handle.seekToEnd()
-            try? handle.write(contentsOf: Data(line.utf8))
+        queue.async {
+            let stamp = self.formatter.string(from: Date())
+            let line = "[\(stamp)] \(message)\n"
+            let directory = self.directory
+            let logURL = self.logURL
+            try? self.fm.createDirectory(at: directory, withIntermediateDirectories: true)
+            if !self.fm.fileExists(atPath: logURL.path) {
+                try? Data(line.utf8).write(to: logURL, options: .atomic)
+            } else if let handle = try? FileHandle(forWritingTo: logURL) {
+                defer { try? handle.close() }
+                try? handle.seekToEnd()
+                try? handle.write(contentsOf: Data(line.utf8))
+            }
+            guard let attrs = try? self.fm.attributesOfItem(atPath: logURL.path),
+                  let size = attrs[.size] as? NSNumber,
+                  size.intValue > self.maxBytes,
+                  let data = try? Data(contentsOf: logURL) else { return }
+            try? Data(data.suffix(self.maxBytes / 2)).write(to: logURL, options: .atomic)
         }
-        trimIfNeeded()
     }
 
     func text() -> String {
-        lock.lock()
-        defer { lock.unlock() }
-        let header = """
-        RIFE 60 Ghost Guard diagnostics
-        Device: \(UIDevice.current.model)
-        iOS: \(UIDevice.current.systemVersion)
-        App: \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?") (\(Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "?"))
-        Thermal: \(currentThermalStateName())
-        Date: \(ISO8601DateFormatter().string(from: Date()))
+        queue.sync {
+            let header = """
+            RIFE 60 Ghost Guard diagnostics
+            Device: \(UIDevice.current.model)
+            iOS: \(UIDevice.current.systemVersion)
+            App: \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?") (\(Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "?"))
+            Thermal: \(currentThermalStateName())
+            Date: \(formatter.string(from: Date()))
 
-        """
-        let body = (try? String(contentsOf: logURL, encoding: .utf8)) ?? "No diagnostic events have been recorded yet.\n"
-        return header + body
-    }
-
-    private func trimIfNeeded() {
-        guard let attrs = try? fm.attributesOfItem(atPath: logURL.path),
-              let size = attrs[.size] as? NSNumber,
-              size.intValue > maxBytes,
-              let data = try? Data(contentsOf: logURL) else { return }
-        let keep = data.suffix(maxBytes / 2)
-        try? Data(keep).write(to: logURL, options: .atomic)
+            """
+            let body = (try? String(contentsOf: logURL, encoding: .utf8)) ?? "No diagnostic events have been recorded yet.\n"
+            return header + body
+        }
     }
 }
 

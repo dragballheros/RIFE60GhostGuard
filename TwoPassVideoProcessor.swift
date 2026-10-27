@@ -1,6 +1,26 @@
 import Foundation
 import AVFoundation
 
+private final class StageTelemetryBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var restorationValue = PerformanceTelemetry()
+    private var rifeValue = PerformanceTelemetry()
+    private var cuganValue = PerformanceTelemetry()
+
+    var restoration: PerformanceTelemetry {
+        get { lock.lock(); defer { lock.unlock() }; return restorationValue }
+        set { lock.lock(); restorationValue = newValue; lock.unlock() }
+    }
+    var rife: PerformanceTelemetry {
+        get { lock.lock(); defer { lock.unlock() }; return rifeValue }
+        set { lock.lock(); rifeValue = newValue; lock.unlock() }
+    }
+    var cugan: PerformanceTelemetry {
+        get { lock.lock(); defer { lock.unlock() }; return cuganValue }
+        set { lock.lock(); cuganValue = newValue; lock.unlock() }
+    }
+}
+
 final class TwoPassVideoProcessor {
     private let config: ProcessorConfiguration
     private let upscaleTo4K: Bool
@@ -29,9 +49,7 @@ final class TwoPassVideoProcessor {
         if upscaleFirst {
             return try await processUpscaleFirst(sourceURL: sourceURL, recoveryDirectory: recoveryDirectory, progress: progress, telemetry: telemetry)
         }
-        var restorationTelemetry = PerformanceTelemetry()
-        var rifeTelemetry = PerformanceTelemetry()
-        var cuganTelemetry = PerformanceTelemetry()
+        let stageTelemetry = StageTelemetryBox()
         var transientURLs: [URL] = []
         defer {
             for url in transientURLs { try? FileManager.default.removeItem(at: url) }
@@ -175,7 +193,7 @@ final class TwoPassVideoProcessor {
                             progress(local * 0.10, renamed)
                         },
                         telemetry: { t in
-                            restorationTelemetry = t
+                            stageTelemetry.restoration = t
                             telemetry(t)
                         }
                     )
@@ -232,10 +250,10 @@ final class TwoPassVideoProcessor {
                         progress(0.11 + local * 0.29, "Pass 2/4 • \(message)")
                     },
                     telemetry: { pass2 in
-                        rifeTelemetry = pass2
+                        stageTelemetry.rife = pass2
                         var combined = pass2
-                        combined.sourceFrames = max(pass2.sourceFrames, restorationTelemetry.sourceFrames)
-                        combined.compressionMsPerFrame = restorationTelemetry.compressionMsPerFrame
+                        combined.sourceFrames = max(pass2.sourceFrames, stageTelemetry.restoration.sourceFrames)
+                        combined.compressionMsPerFrame = stageTelemetry.restoration.compressionMsPerFrame
                         combined.outlineMsPerFrame = 0
                         telemetry(combined)
                     }
@@ -294,10 +312,10 @@ final class TwoPassVideoProcessor {
                                 progress(0.41 + local * (cuganEnd - 0.41), message.replacingOccurrences(of: "Pass 3/3", with: "Pass 3/4"))
                             },
                             telemetry: { sample in
-                                cuganTelemetry = sample
-                                var combined = rifeTelemetry
-                                combined.sourceFrames = max(rifeTelemetry.sourceFrames, restorationTelemetry.sourceFrames)
-                                combined.compressionMsPerFrame = restorationTelemetry.compressionMsPerFrame
+                                stageTelemetry.cugan = sample
+                                var combined = stageTelemetry.rife
+                                combined.sourceFrames = max(stageTelemetry.rife.sourceFrames, stageTelemetry.restoration.sourceFrames)
+                                combined.compressionMsPerFrame = stageTelemetry.restoration.compressionMsPerFrame
                                 combined.outlineMsPerFrame = 0
                                 combined.upscaledFrames = sample.upscaledFrames
                                 combined.cuganMsPerFrame = sample.cuganMsPerFrame
@@ -345,9 +363,9 @@ final class TwoPassVideoProcessor {
                                 progress(0.63 + local * (cuganEnd - 0.63), message.replacingOccurrences(of: "Pass 3/3", with: "Pass 4/4"))
                             },
                             telemetry: { sample in
-                                cuganTelemetry = sample
-                                var combined = rifeTelemetry
-                                combined.sourceFrames = max(rifeTelemetry.sourceFrames, restorationTelemetry.sourceFrames)
+                                stageTelemetry.cugan = sample
+                                var combined = stageTelemetry.rife
+                                combined.sourceFrames = max(stageTelemetry.rife.sourceFrames, stageTelemetry.restoration.sourceFrames)
                                 combined.outlineMsPerFrame = 0
                                 combined.upscaledFrames = sample.upscaledFrames
                                 combined.cuganMsPerFrame = sample.cuganMsPerFrame
@@ -407,13 +425,13 @@ final class TwoPassVideoProcessor {
                         progress(outlineStart + local * (0.97 - outlineStart), message)
                     },
                     telemetry: { outlineSample in
-                        var combined = rifeTelemetry
-                        combined.sourceFrames = max(rifeTelemetry.sourceFrames, restorationTelemetry.sourceFrames)
-                        combined.compressionMsPerFrame = restorationTelemetry.compressionMsPerFrame
+                        var combined = stageTelemetry.rife
+                        combined.sourceFrames = max(stageTelemetry.rife.sourceFrames, stageTelemetry.restoration.sourceFrames)
+                        combined.compressionMsPerFrame = stageTelemetry.restoration.compressionMsPerFrame
                         combined.outlineMsPerFrame = outlineSample.outlineMsPerFrame
-                        combined.upscaledFrames = cuganTelemetry.upscaledFrames
-                        combined.cuganMsPerFrame = cuganTelemetry.cuganMsPerFrame
-                        combined.upscaleFPS = cuganTelemetry.upscaleFPS
+                        combined.upscaledFrames = stageTelemetry.cugan.upscaledFrames
+                        combined.cuganMsPerFrame = stageTelemetry.cugan.cuganMsPerFrame
+                        combined.upscaleFPS = stageTelemetry.cugan.upscaleFPS
                         combined.encodeMsPerOutputFrame = outlineSample.encodeMsPerOutputFrame
                         combined.thermalState = outlineSample.thermalState
                         combined.performanceMode = outlineSample.performanceMode

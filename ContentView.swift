@@ -466,7 +466,7 @@ struct ContentView: View {
                     if !vm.isBusy && !vm.isPaused && !vm.recoveryAvailable {
                         VStack(spacing: 8) {
                             HStack {
-                                Label(vm.inputURL == nil ? "No media selected" : vm.inputURL!.lastPathComponent,
+                                Label(vm.inputURL?.lastPathComponent ?? "No media selected",
                                       systemImage: vm.inputKind == .image ? "photo" : vm.inputKind == .gif ? "livephoto" : "film")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)

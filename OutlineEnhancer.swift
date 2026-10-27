@@ -241,7 +241,9 @@ final class OutlineEnhancer {
             return Double(maskPtr[my * maskRow + mx]) / 255.0
         }
 
-        for y in 1..<(height - 1) {
+        let rowCount = max(0, height - 2)
+        DispatchQueue.concurrentPerform(iterations: rowCount) { offset in
+            let y = offset + 1
             for x in 1..<(width - 1) {
                 let i = y * srcRow + x * 4
                 let di = y * dstRow + x * 4
@@ -309,6 +311,7 @@ final class OutlineEnhancer {
                 dst[di + 1] = UInt8((sg + (eg - sg) * Double(amount)) * 255.0)
                 dst[di + dbOff] = UInt8((sb + (eb - sb) * Double(amount)) * 255.0)
             }
+        }
         }
     }
 
