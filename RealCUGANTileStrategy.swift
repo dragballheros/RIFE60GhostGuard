@@ -141,10 +141,10 @@ enum RealCUGANStrategyStore {
         if let deviceModelOverride { return deviceModelOverride }
         var system = utsname()
         uname(&system)
-        return withUnsafePointer(to: &system.machine) {
-            $0.withMemoryRebound(to: CChar.self, capacity: MemoryLayout.size(ofValue: system.machine)) {
-                String(cString: $0)
-            }
+        let machine = system.machine
+        return withUnsafeBytes(of: machine) { raw in
+            let bytes = raw.bindMemory(to: CChar.self)
+            return String(cString: bytes.baseAddress!)
         }
     }
 
