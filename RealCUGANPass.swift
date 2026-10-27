@@ -239,7 +239,13 @@ final class RealCUGANPass {
         let stillAlpha = try MLMultiArray(shape: [1], dataType: .float16)
         stillAlpha[0] = NSNumber(value: Float(1.0 / max(intensity, 0.01)))
         DiagnosticsLogger.shared.log("Real-CUGAN still image • \(stillWidth)x\(stillHeight) -> \(stillWidth * 2)x\(stillHeight * 2) • tile=\(stillProfile.width)x\(stillProfile.height)")
-        return try upscaleNative2x(source, model: stillModel, alpha: stillAlpha, frameNumber: 1, profile: stillProfile)
+        do {
+            return try upscaleNative2x(source, model: stillModel, alpha: stillAlpha, frameNumber: 1, profile: stillProfile)
+        } catch {
+            outputBackingRejected = true
+            DiagnosticsLogger.shared.log("Image Real-CUGAN pass failed (\(error.localizedDescription)); retrying the known-good per-tile copy")
+            return try upscaleNative2x(source, model: stillModel, alpha: stillAlpha, frameNumber: 1, profile: stillProfile)
+        }
     }
 
     private func loadModel(named name: String, preferNeuralEngine: Bool = false) throws -> MLModel {
@@ -344,8 +350,6 @@ final class RealCUGANPass {
 
         var tileIndex = 0
         let totalTiles = Int(ceil(Double(sourceWidth) / Double(profile.stepX))) * Int(ceil(Double(sourceHeight) / Double(profile.stepY)))
-        let options = MLPredictionOptions()
-        options.outputBackings = ["output": MLFeatureValue(pixelBuffer: outputBuffer)]
 
         var y = 0
         while y < sourceHeight {
@@ -372,9 +376,8 @@ final class RealCUGANPass {
                     "image": MLFeatureValue(pixelBuffer: tileBuffer),
                     "alpha": MLFeatureValue(multiArray: alpha)
                 ])
-                let batch = MLArrayBatchProvider(array: [provider])
                 let predictionStart = CFAbsoluteTimeGetCurrent()
-                _ = try model.predictions(from: batch, options: options)
+                try predictTile(model: model, provider: provider, outputBuffer: outputBuffer)
                 predictionSeconds += CFAbsoluteTimeGetCurrent() - predictionStart
                 CVPixelBufferLockBaseAddress(outputBuffer, .readOnly)
                 defer { CVPixelBufferUnlockBaseAddress(outputBuffer, []) }
@@ -408,6 +411,53 @@ final class RealCUGANPass {
             throw ProcessorError.conversionFailed("Real-CUGAN stitched frame size mismatch")
         }
         return stitched
+    }
+
+    /// Core ML rejects output backings on a batch prediction. Reuse the pooled
+    /// tile with one single-feature prediction. If that backing is refused, copy
+    /// the returned image into the same pool buffer so the stitch stays on the
+    /// known-good per-tile path.
+    private var outputBackingRejected = false
+
+    private func predictTile(model: MLModel, provider: MLFeatureProvider, outputBuffer: CVPixelBuffer) throws {
+        if !outputBackingRejected {
+            let options = MLPredictionOptions()
+            options.outputBackings = ["output": MLFeatureValue(pixelBuffer: outputBuffer)]
+            do {
+                _ = try model.prediction(from: provider, options: options)
+                return
+            } catch {
+                outputBackingRejected = true
+                DiagnosticsLogger.shared.log("Real-CUGAN output backing rejected (\(error.localizedDescription)); using per-tile prediction copy")
+            }
+        }
+        let result = try model.prediction(from: provider)
+        guard let image = result.featureValue(for: "output")?.imageBufferValue else {
+            throw ProcessorError.conversionFailed("Real-CUGAN prediction did not return an output image")
+        }
+        try copyPixelBuffer(image, into: outputBuffer)
+    }
+
+    private func copyPixelBuffer(_ source: CVPixelBuffer, into destination: CVPixelBuffer) throws {
+        CVPixelBufferLockBaseAddress(source, .readOnly)
+        CVPixelBufferLockBaseAddress(destination, [])
+        defer {
+            CVPixelBufferUnlockBaseAddress(destination, [])
+            CVPixelBufferUnlockBaseAddress(source, .readOnly)
+        }
+        guard let sourceBase = CVPixelBufferGetBaseAddress(source),
+              let destinationBase = CVPixelBufferGetBaseAddress(destination) else {
+            throw ProcessorError.conversionFailed("Real-CUGAN fallback tile addresses are unavailable")
+        }
+        let height = min(CVPixelBufferGetHeight(source), CVPixelBufferGetHeight(destination))
+        let sourceStride = CVPixelBufferGetBytesPerRow(source)
+        let destinationStride = CVPixelBufferGetBytesPerRow(destination)
+        let rowBytes = min(sourceStride, destinationStride)
+        let src = sourceBase.assumingMemoryBound(to: UInt8.self)
+        let dst = destinationBase.assumingMemoryBound(to: UInt8.self)
+        for row in 0..<height {
+            dst.advanced(by: row * destinationStride).update(from: src.advanced(by: row * sourceStride), count: rowBytes)
+        }
     }
 
     private func append10Bit(_ source: CVPixelBuffer, at time: CMTime, input: AVAssetWriterInput, adaptor: AVAssetWriterInputPixelBufferAdaptor, pool: CVPixelBufferPool, writer: AVAssetWriter) async throws {

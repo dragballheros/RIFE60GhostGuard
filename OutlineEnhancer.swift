@@ -30,6 +30,13 @@ final class OutlineEnhancer {
     private let model: MLModel
     private static let maxWorkers = 3
     private let inputArrays: [MLMultiArray]
+    private let outputArrays: [MLMultiArray]
+    private let timingLock = NSLock()
+    private var backingRejected = false
+    private(set) var lastPackSeconds = 0.0
+    private(set) var lastPredictSeconds = 0.0
+    private(set) var lastUnpackSeconds = 0.0
+    private(set) var lastRefineSeconds = 0.0
     private var outputPool: CVPixelBufferPool?
     private var outputPoolSize: (Int, Int) = (0, 0)
 
@@ -42,16 +49,22 @@ final class OutlineEnhancer {
     init() throws {
         let modelURL = try Self.compiledModelURL()
         let configuration = MLModelConfiguration()
-        // .all lets Core ML select ANE/GPU/CPU per operation instead of forbidding GPU.
-        // This does not alter weights or model math.
-        configuration.computeUnits = ModelComputePreference.current.units
+        // Auto prefers the Neural Engine. `.all` has been scheduling this 256 tile
+        // on GPU/CPU. Explicit GPU or Neural Engine choices are left unchanged.
+        // Weights and model math stay the same.
+        let preference = ModelComputePreference.current
+        configuration.computeUnits = preference == .auto ? .cpuAndNeuralEngine : preference.units
         configuration.allowLowPrecisionAccumulationOnGPU = true
         self.model = try MLModel(contentsOf: modelURL, configuration: configuration)
+        DiagnosticsLogger.shared.log("Sharpie compute policy • requested=\(configuration.computeUnits.rawValue) • preference=\(preference.rawValue)")
         var arrays: [MLMultiArray] = []
+        var outputs: [MLMultiArray] = []
         for _ in 0..<Self.maxWorkers {
             arrays.append(try MLMultiArray(shape: [1, 3, 256, 256], dataType: .float32))
+            outputs.append(try MLMultiArray(shape: [1, 3, 256, 256], dataType: .float32))
         }
         self.inputArrays = arrays
+        self.outputArrays = outputs
         let segmentation = VNGeneratePersonSegmentationRequest()
         segmentation.qualityLevel = .fast
         segmentation.outputPixelFormat = kCVPixelFormatType_OneComponent8
@@ -130,6 +143,11 @@ final class OutlineEnhancer {
         let tilesAcross = (width + core - 1) / core
         let tilesDown = (height + core - 1) / core
         let tileCount = tilesAcross * tilesDown
+        timingLock.lock()
+        lastPackSeconds = 0
+        lastPredictSeconds = 0
+        lastUnpackSeconds = 0
+        timingLock.unlock()
 
         // Tiles write to disjoint core regions of the destination and only READ the source, so they
         // can run in parallel. Previously ~120 tiles per 4K frame ran strictly one after another,
@@ -154,6 +172,7 @@ final class OutlineEnhancer {
 
         DispatchQueue.concurrentPerform(iterations: workers) { worker in
             let input = inputArrays[worker]
+            let output = outputArrays[worker]
             var tileIndex = worker
             while tileIndex < tileCount {
                 if failure.hasError { return }
@@ -163,7 +182,7 @@ final class OutlineEnhancer {
                     try processTile(
                         coreX: coreX, coreY: coreY, width: width, height: height,
                         src: src, dst: dst, srcRow: srcRow, dstRow: dstRow,
-                        isBGRA: isBGRA, input: input
+                        isBGRA: isBGRA, input: input, output: output
                     )
                 } catch {
                     failure.record(error)
@@ -174,7 +193,9 @@ final class OutlineEnhancer {
         }
         try failure.rethrowIfNeeded()
         segmentation.wait()
+        let refineStart = CFAbsoluteTimeGetCurrent()
         refineContentAwareOutlines(source: source, destination: destination)
+        lastRefineSeconds = CFAbsoluteTimeGetCurrent() - refineStart
         return destination
     }
 
@@ -216,12 +237,10 @@ final class OutlineEnhancer {
             let t = clamp01((x - a) / max(b - a, 0.000001))
             return t * t * (3 - 2 * t)
         }
+        let rOff = srcBGRA ? 2 : 0
+        let bOff = srcBGRA ? 0 : 2
         @inline(__always) func lumaAt(_ x: Int, _ y: Int) -> Double {
-            let xx = min(max(x, 0), width - 1)
-            let yy = min(max(y, 0), height - 1)
-            let i = yy * srcRow + xx * 4
-            let rOff = srcBGRA ? 2 : 0
-            let bOff = srcBGRA ? 0 : 2
+            let i = y * srcRow + x * 4
             let r = Double(src[i + rOff]) / 255.0
             let g = Double(src[i + 1]) / 255.0
             let b = Double(src[i + bOff]) / 255.0
@@ -240,8 +259,6 @@ final class OutlineEnhancer {
             for x in 1..<(width - 1) {
                 let i = y * srcRow + x * 4
                 let di = y * dstRow + x * 4
-                let rOff = srcBGRA ? 2 : 0
-                let bOff = srcBGRA ? 0 : 2
                 let drOff = dstBGRA ? 2 : 0
                 let dbOff = dstBGRA ? 0 : 2
 
@@ -310,38 +327,74 @@ final class OutlineEnhancer {
     private func processTile(
         coreX: Int, coreY: Int, width: Int, height: Int,
         src: UnsafeMutablePointer<UInt8>, dst: UnsafeMutablePointer<UInt8>,
-        srcRow: Int, dstRow: Int, isBGRA: Bool, input: MLMultiArray
+        srcRow: Int, dstRow: Int, isBGRA: Bool, input: MLMultiArray, output: MLMultiArray
     ) throws {
         let core = tile - shrink * 2
         let rOff = isBGRA ? 2 : 0
         let bOff = isBGRA ? 0 : 2
         let inv255: Float32 = 1.0 / 255.0
+        let interior = coreX >= shrink && coreY >= shrink
+            && coreX + tile - shrink <= width && coreY + tile - shrink <= height
 
         let inPtr = input.dataPointer.assumingMemoryBound(to: Float32.self)
         let inS1 = input.strides[1].intValue
         let inS2 = input.strides[2].intValue
         let inS3 = input.strides[3].intValue
 
-        for y in 0..<tile {
-            let sy = min(max(coreY + y - shrink, 0), height - 1)
-            let rowOffset = sy * srcRow
-            let planeY = y * inS2
-            for x in 0..<tile {
-                let sx = min(max(coreX + x - shrink, 0), width - 1)
-                let i = rowOffset + sx * 4
-                let idx = planeY + x * inS3
-                inPtr[idx] = Float32(src[i + rOff]) * inv255
-                inPtr[inS1 + idx] = Float32(src[i + 1]) * inv255
-                inPtr[2 * inS1 + idx] = Float32(src[i + bOff]) * inv255
+        let packStart = CFAbsoluteTimeGetCurrent()
+        if interior {
+            for y in 0..<tile {
+                let rowOffset = (coreY + y - shrink) * srcRow
+                let planeY = y * inS2
+                for x in 0..<tile {
+                    let i = rowOffset + (coreX + x - shrink) * 4
+                    let idx = planeY + x * inS3
+                    inPtr[idx] = Float32(src[i + rOff]) * inv255
+                    inPtr[inS1 + idx] = Float32(src[i + 1]) * inv255
+                    inPtr[2 * inS1 + idx] = Float32(src[i + bOff]) * inv255
+                }
+            }
+        } else {
+            for y in 0..<tile {
+                let sy = min(max(coreY + y - shrink, 0), height - 1)
+                let rowOffset = sy * srcRow
+                let planeY = y * inS2
+                for x in 0..<tile {
+                    let sx = min(max(coreX + x - shrink, 0), width - 1)
+                    let i = rowOffset + sx * 4
+                    let idx = planeY + x * inS3
+                    inPtr[idx] = Float32(src[i + rOff]) * inv255
+                    inPtr[inS1 + idx] = Float32(src[i + 1]) * inv255
+                    inPtr[2 * inS1 + idx] = Float32(src[i + bOff]) * inv255
+                }
             }
         }
+        let packSeconds = CFAbsoluteTimeGetCurrent() - packStart
 
+        let predictStart = CFAbsoluteTimeGetCurrent()
         let predicted: MLMultiArray = try autoreleasepool {
             let provider = try MLDictionaryFeatureProvider(dictionary: [inputName: MLFeatureValue(multiArray: input)])
-            let output = try model.prediction(from: provider)
-            guard let array = output.featureValue(for: outputName)?.multiArrayValue else { throw OutlineError.badModelInterface("missing output \(outputName)") }
+            timingLock.lock()
+            let rejected = backingRejected
+            timingLock.unlock()
+            if !rejected {
+                let options = MLPredictionOptions()
+                options.outputBackings = [outputName: MLFeatureValue(multiArray: output)]
+                do {
+                    _ = try model.prediction(from: provider, options: options)
+                    return output
+                } catch {
+                    timingLock.lock()
+                    backingRejected = true
+                    timingLock.unlock()
+                    DiagnosticsLogger.shared.log("Sharpie output backing rejected (\(error.localizedDescription)); using returned prediction arrays")
+                }
+            }
+            let predictedOutput = try model.prediction(from: provider)
+            guard let array = predictedOutput.featureValue(for: outputName)?.multiArrayValue else { throw OutlineError.badModelInterface("missing output \(outputName)") }
             return array
         }
+        let predictSeconds = CFAbsoluteTimeGetCurrent() - predictStart
         guard predicted.dataType == .float32, predicted.shape.count == 4 else { throw OutlineError.badModelInterface("expected Float32 NCHW output") }
 
         let outPtr = predicted.dataPointer.assumingMemoryBound(to: Float32.self)
@@ -377,6 +430,12 @@ final class OutlineEnhancer {
                 dst[di + 3] = 255
             }
         }
+        let unpackSeconds = CFAbsoluteTimeGetCurrent() - predictStart - predictSeconds
+        timingLock.lock()
+        lastPackSeconds += packSeconds
+        lastPredictSeconds += predictSeconds
+        lastUnpackSeconds += unpackSeconds
+        timingLock.unlock()
     }
 }
 

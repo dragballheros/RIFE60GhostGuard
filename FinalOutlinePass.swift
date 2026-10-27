@@ -137,10 +137,18 @@ final class FinalOutlinePass {
             shadowSeconds += CFAbsoluteTimeGetCurrent() - shadowStart
 
             let outlineStart = CFAbsoluteTimeGetCurrent()
+            let resizeStart = CFAbsoluteTimeGetCurrent()
             let working = scale < 0.999 ? try resize(preSharpie, width: workingWidth, height: workingHeight, pool: workingPool) : preSharpie
+            let downscaleSeconds = CFAbsoluteTimeGetCurrent() - resizeStart
             let enhancedWorking = try autoreleasepool { try enhancer.enhance(working) }
-            let enhancedFull = scale < 0.999 ? try resize(enhancedWorking, width: width, height: height, pool: fullOutlinePool) : enhancedWorking
-            let narrowed = try narrowTowardOriginal(enhanced: enhancedFull, original: preSharpie)
+            let blendStart = CFAbsoluteTimeGetCurrent()
+            // One CI render for the 4K return: scale the style map and dissolve
+            // toward the pre-Sharpie master at the same 0.82 weight. This skips
+            // the extra full-frame render that used to sit between those steps.
+            let narrowed = scale < 0.999
+                ? try chainUpscaleAndDissolve(enhanced: enhancedWorking, original: preSharpie, width: width, height: height)
+                : try narrowTowardOriginal(enhanced: enhancedWorking, original: preSharpie)
+            let blendSeconds = CFAbsoluteTimeGetCurrent() - blendStart
             outlineSeconds += CFAbsoluteTimeGetCurrent() - outlineStart
 
             // Only the light general compression polish remains after Sharpie.
@@ -162,6 +170,7 @@ final class FinalOutlinePass {
 
             if frames == 1 || frames % 10 == 0 {
                 DiagnosticsLogger.shared.log("Final polish frame \(frames) • shadowPreSharpie=\(String(format: "%.1f", shadowSeconds*1000/Double(frames)))ms • Sharpie=\(String(format: "%.1f", outlineSeconds*1000/Double(frames)))ms • finalCompression=\(String(format: "%.1f", finalCompressionSeconds*1000/Double(frames)))ms • shadowCleaned=\(shadowCleanedFrames) • finalCleaned=\(finalCleanedFrames) • thermal=\(currentThermalStateName())")
+                DiagnosticsLogger.shared.log(String(format: "Sharpie split • downscale=%.1fms • pack=%.1fms • predict=%.1fms • unpack=%.1fms • visionRefine=%.1fms • upscaleDissolve=%.1fms", downscaleSeconds * 1000, enhancer.lastPackSeconds * 1000, enhancer.lastPredictSeconds * 1000, enhancer.lastUnpackSeconds * 1000, enhancer.lastRefineSeconds * 1000, blendSeconds * 1000))
             }
             if frames % 3 == 0 {
                 var t = PerformanceTelemetry()

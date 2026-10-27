@@ -481,6 +481,9 @@ jobs:
           swiftc -swift-version 5 RealCUGANTileCopy.swift /tmp/cugan-tile-check/main.swift -o /tmp/cugan-tile-check/check
           /tmp/cugan-tile-check/check
 
+      - name: Reject output backings on batch predictions
+        run: python3 Scripts/check_no_batch_output_backings.py
+
       - name: Verify anime inpainting inference and mask geometry
         run: |
           set -euo pipefail
