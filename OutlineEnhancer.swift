@@ -145,6 +145,12 @@ final class OutlineEnhancer {
         let cpuLimit = max(ProcessInfo.processInfo.activeProcessorCount - 1, 1)
         let workers = max(1, min(desiredWorkers, inputArrays.count, tileCount, cpuLimit))
         let failure = TileFailure()
+        let segmentation = DispatchGroup()
+        segmentation.enter()
+        DispatchQueue.global(qos: .userInitiated).async { [segmentationHandler, personSegmentationRequest] in
+            defer { segmentation.leave() }
+            try? segmentationHandler.perform([personSegmentationRequest], on: source)
+        }
 
         DispatchQueue.concurrentPerform(iterations: workers) { worker in
             let input = inputArrays[worker]
@@ -167,26 +173,14 @@ final class OutlineEnhancer {
             }
         }
         try failure.rethrowIfNeeded()
-
-        // The Sharpie model is intentionally allowed to draw on both characters
-        // and hard-edged objects. This final gate only changes how much of those
-        // model-generated differences are retained. It uses a soft person matte
-        // when Vision can find one, plus a strong source-edge test for background
-        // structures. This avoids the old binary "character vs background" idea:
-        // a table corner can still receive an outline, while grass/paint texture
-        // needs substantially stronger source structure before it survives.
+        segmentation.wait()
         refineContentAwareOutlines(source: source, destination: destination)
         return destination
     }
 
     private func refineContentAwareOutlines(source: CVPixelBuffer, destination: CVPixelBuffer) {
         let mask: CVPixelBuffer?
-        do {
-            try segmentationHandler.perform([personSegmentationRequest], on: source)
-            mask = personSegmentationRequest.results?.first?.pixelBuffer
-        } catch {
-            mask = nil
-        }
+        mask = personSegmentationRequest.results?.first?.pixelBuffer
 
         let width = CVPixelBufferGetWidth(source)
         let height = CVPixelBufferGetHeight(source)

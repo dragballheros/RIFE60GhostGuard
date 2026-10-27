@@ -161,7 +161,7 @@ final class LocalizedColorArtifactGuard {
         for y in 0..<height {
             let source = cBase.advanced(by: y * cRowBytes).assumingMemoryBound(to: UInt8.self)
             let destination = oBase.advanced(by: y * oRowBytes).assumingMemoryBound(to: UInt8.self)
-            for x in 0..<(width * 4) { destination[x] = source[x] }
+            destination.update(from: source, count: width * 4)
         }
 
         let t = Float(min(max(progress.isFinite ? progress : 0.5, 0), 1))

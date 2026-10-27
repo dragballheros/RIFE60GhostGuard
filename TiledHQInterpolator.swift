@@ -193,24 +193,28 @@ final class TiledHQInterpolator {
         }
     }
 
+    private var bufferPools: [String: CVPixelBufferPool] = [:]
+
     private func makeBuffer(width: Int, height: Int) throws -> CVPixelBuffer {
-        let attrs: [CFString: Any] = [
-            kCVPixelBufferPixelFormatTypeKey: kCVPixelFormatType_32BGRA,
-            kCVPixelBufferWidthKey: width,
-            kCVPixelBufferHeightKey: height,
-            kCVPixelBufferMetalCompatibilityKey: true,
-            kCVPixelBufferIOSurfacePropertiesKey: [:]
-        ]
+        let key = "\(width)x\(height)"
+        if bufferPools[key] == nil {
+            let attrs: [String: Any] = [
+                kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
+                kCVPixelBufferWidthKey as String: width,
+                kCVPixelBufferHeightKey as String: height,
+                kCVPixelBufferMetalCompatibilityKey as String: true,
+                kCVPixelBufferIOSurfacePropertiesKey as String: [:]
+            ]
+            var pool: CVPixelBufferPool?
+            guard CVPixelBufferPoolCreate(kCFAllocatorDefault, nil, attrs as CFDictionary, &pool) == kCVReturnSuccess, let pool else {
+                throw ProcessorError.conversionFailed("could not allocate tiled HQ frame")
+            }
+            bufferPools[key] = pool
+        }
         var buffer: CVPixelBuffer?
-        let status = CVPixelBufferCreate(
-            kCFAllocatorDefault,
-            width,
-            height,
-            kCVPixelFormatType_32BGRA,
-            attrs as CFDictionary,
-            &buffer
-        )
-        guard status == kCVReturnSuccess, let buffer else {
+        guard let pool = bufferPools[key],
+              CVPixelBufferPoolCreatePixelBuffer(nil, pool, &buffer) == kCVReturnSuccess,
+              let buffer else {
             throw ProcessorError.conversionFailed("could not allocate tiled HQ frame")
         }
         return buffer

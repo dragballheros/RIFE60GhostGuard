@@ -9,7 +9,8 @@ import VideoToolbox
 /// cleaned master, then only the light final compression polish is allowed after it.
 final class FinalOutlinePass {
     private var transferSession: VTPixelTransferSession?
-    private let ciContext = CIContext(options: [.cacheIntermediates: false])
+    private let ciContext = FinalOutlinePass.sharedContext
+    static let sharedContext = CIContext(options: [.cacheIntermediates: false])
     private let colorSpace = CGColorSpaceCreateDeviceRGB()
     private var blendPool: CVPixelBufferPool?
     private var workingPool: CVPixelBufferPool?
@@ -205,12 +206,14 @@ final class FinalOutlinePass {
         var working = preSharpie
         if needsResize { working = try resize(preSharpie, width: workingWidth, height: workingHeight, pool: workingPool) }
         let enhancedWorking = try autoreleasepool { try enhancer.enhance(working) }
-        var enhancedFull = enhancedWorking
-        if needsResize { enhancedFull = try resize(enhancedWorking, width: width, height: height, pool: fullOutlinePool) }
-        let narrowed = try narrowTowardOriginal(enhanced: enhancedFull, original: preSharpie)
-
-        if let polished = try? compressionGuard.cleanFinalCompression(narrowed) { return polished }
-        return narrowed
+        let enhancedFull: CVPixelBuffer
+        if needsResize {
+            enhancedFull = try chainUpscaleAndDissolve(enhanced: enhancedWorking, original: preSharpie, width: width, height: height)
+        } else {
+            enhancedFull = try narrowTowardOriginal(enhanced: enhancedWorking, original: preSharpie)
+        }
+        if let polished = try? compressionGuard.cleanFinalCompression(enhancedFull) { return polished }
+        return enhancedFull
     }
 
     private func makePool(width: Int, height: Int) throws -> CVPixelBufferPool {
@@ -230,6 +233,25 @@ final class FinalOutlinePass {
         blendPool = try makePool(width: fullWidth, height: fullHeight)
         fullOutlinePool = try makePool(width: fullWidth, height: fullHeight)
         workingPool = try makePool(width: workingWidth, height: workingHeight)
+    }
+
+    private func chainUpscaleAndDissolve(enhanced: CVPixelBuffer, original: CVPixelBuffer, width: Int, height: Int) throws -> CVPixelBuffer {
+        guard let blendPool else { throw ProcessorError.conversionFailed("final outline blend pool unavailable") }
+        var destination: CVPixelBuffer?
+        guard CVPixelBufferPoolCreatePixelBuffer(nil, blendPool, &destination) == kCVReturnSuccess, let destination else {
+            throw ProcessorError.conversionFailed("could not allocate final outline blend frame")
+        }
+        let sx = CGFloat(width) / CGFloat(CVPixelBufferGetWidth(enhanced))
+        let sy = CGFloat(height) / CGFloat(CVPixelBufferGetHeight(enhanced))
+        let scaled = CIImage(cvPixelBuffer: enhanced).transformed(by: CGAffineTransform(scaleX: sx, y: sy))
+        let extent = CGRect(x: 0, y: 0, width: width, height: height)
+        guard let filter = CIFilter(name: "CIDissolveTransition") else { throw ProcessorError.conversionFailed("final outline blend filter unavailable") }
+        filter.setValue(CIImage(cvPixelBuffer: original), forKey: kCIInputImageKey)
+        filter.setValue(scaled, forKey: kCIInputTargetImageKey)
+        filter.setValue(enhancedWeight, forKey: kCIInputTimeKey)
+        guard let blended = filter.outputImage?.cropped(to: extent) else { throw ProcessorError.conversionFailed("final outline blend failed") }
+        ciContext.render(blended, to: destination, bounds: extent, colorSpace: colorSpace)
+        return destination
     }
 
     private func resize(_ source: CVPixelBuffer, width: Int, height: Int, pool: CVPixelBufferPool?) throws -> CVPixelBuffer {

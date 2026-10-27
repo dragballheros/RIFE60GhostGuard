@@ -180,6 +180,7 @@ final class TwoPassVideoProcessor {
                 } else {
                     if let restoredCheckpoint { try? fm.removeItem(at: restoredCheckpoint) }
                     progress(0.001, "Pass 1/4 • Starting \(restorationName)…")
+                    stageTimer.begin(watermark.enabled ? "deepcream" : "restoration")
                     let restoration = RestorationPass(
                         compressionEnabled: config.compressionProtection,
                         outlineEnabled: false,
@@ -199,6 +200,7 @@ final class TwoPassVideoProcessor {
                             telemetry(t)
                         }
                     )
+                    stageTimer.end(watermark.enabled ? "deepcream" : "restoration")
 
                     if let restoredCheckpoint {
                         try persistCheckpoint(from: result.url, to: restoredCheckpoint)
@@ -422,6 +424,7 @@ final class TwoPassVideoProcessor {
                 try await thermalHandoff(progress: progress, position: upscaleTo4K ? 0.84 : 0.40, next: "final Sharpie outline")
                 let outlineStart = upscaleTo4K ? 0.85 : 0.41
                 progress(outlineStart, upscaleTo4K ? "Pass 4/4 • Applying final Sharpie after Real-CUGAN…" : "Pass 3/3 • Applying final Sharpie after RIFE…")
+                stageTimer.begin("sharpie")
                 let finalOutline = FinalOutlinePass(colorPopStrength: colorPopStrength)
                 let generated = try await finalOutline.run(
                     sourceURL: outlineInput,
@@ -447,6 +450,7 @@ final class TwoPassVideoProcessor {
                     },
                     recoveryDirectory: recoveryDirectory
                 )
+                stageTimer.end("sharpie")
 
                 if let outlineCheckpoint {
                     try persistCheckpoint(from: generated, to: outlineCheckpoint)

@@ -25,6 +25,7 @@ final class RealCUGANPass {
     private let fast1080Profile = TileProfile(width: 704, height: 608, overlap: 32, modelName: "RealCUGAN2xNoise3_Tile704x608")
 
     private var tileInputPool: CVPixelBufferPool?
+    private var tileOutputPool: CVPixelBufferPool?
     private var stitchedFramePool: CVPixelBufferPool?
     // Keep the compiled 704x608 profile and reuse IOSurface-backed pixel-buffer pools.
     // Do not flush Core Image or pixel-buffer caches during normal CUGAN processing:
@@ -160,6 +161,7 @@ final class RealCUGANPass {
         var inferenceSeconds = 0.0
         var encodeSeconds = 0.0
         let passStart = CFAbsoluteTimeGetCurrent()
+        var encodeTask: Task<Void, Error>?
 
         while let sample = output.copyNextSampleBuffer() {
             try await checkpoint.checkCancellation()
@@ -176,10 +178,13 @@ final class RealCUGANPass {
             let upscaled = try upscaleNative2x(decodedFrame, model: model, alpha: alpha, frameNumber: frameNumber, profile: profile)
             inferenceSeconds += CFAbsoluteTimeGetCurrent() - inferenceStart
 
+            if let encodeTask { try await encodeTask.value }
             let encodeStart = CFAbsoluteTimeGetCurrent()
-            try await checkpoint.append10Bit(upscaled, at: pts)
-            encodeSeconds += CFAbsoluteTimeGetCurrent() - encodeStart
+            encodeTask = Task {
+                try await checkpoint.append10Bit(upscaled, at: pts)
+            }
             frames += 1
+            encodeSeconds += CFAbsoluteTimeGetCurrent() - encodeStart
 
             if frames == 1 || frames % 20 == 0 {
                 DiagnosticsLogger.shared.log(String(format: "Real-CUGAN breakdown (running averages) • frame=%d • render-in=%.1fms • prediction=%.1fms • stitch=%.1fms • convert+append/backpressure=%.1fms", frames, renderInSeconds * 1000 / Double(frames), predictionSeconds * 1000 / Double(frames), stitchSeconds * 1000 / Double(frames), encodeSeconds * 1000 / Double(frames)))
@@ -207,6 +212,7 @@ final class RealCUGANPass {
             }
         }
 
+        if let encodeTask { try await encodeTask.value }
         if reader.status == .failed { throw ProcessorError.reader(reader.error?.localizedDescription ?? "Real-CUGAN decode failed") }
         guard frames > 0 else { throw ProcessorError.conversionFailed("Real-CUGAN received zero decoded frames") }
         let completedURL = try await checkpoint.finish()
@@ -225,6 +231,7 @@ final class RealCUGANPass {
         try preparePools(targetWidth: stillWidth * 2, targetHeight: stillHeight * 2, profile: stillProfile)
         defer {
             tileInputPool = nil
+            tileOutputPool = nil
             stitchedFramePool = nil
         }
         let stillPreferNeuralEngine = stillProfile.modelName == fast1080Profile.modelName && ModelComputePreference.current == .auto
@@ -248,6 +255,7 @@ final class RealCUGANPass {
 
     private func preparePools(targetWidth: Int, targetHeight: Int, profile: TileProfile) throws {
         tileInputPool = nil
+        tileOutputPool = nil
         stitchedFramePool = nil
 
         let attrs: [String: Any] = [
@@ -262,6 +270,19 @@ final class RealCUGANPass {
             throw ProcessorError.conversionFailed("could not create Real-CUGAN input tile pool")
         }
         tileInputPool = pool
+
+        let outputAttrs: [String: Any] = [
+            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
+            kCVPixelBufferWidthKey as String: profile.width * 2,
+            kCVPixelBufferHeightKey as String: profile.height * 2,
+            kCVPixelBufferMetalCompatibilityKey as String: true,
+            kCVPixelBufferIOSurfacePropertiesKey as String: [:]
+        ]
+        var outputPool: CVPixelBufferPool?
+        guard CVPixelBufferPoolCreate(kCFAllocatorDefault, nil, outputAttrs as CFDictionary, &outputPool) == kCVReturnSuccess, let outputPool else {
+            throw ProcessorError.conversionFailed("could not create Real-CUGAN output tile pool")
+        }
+        tileOutputPool = outputPool
 
         let stitchedAttrs: [String: Any] = [
             kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
@@ -289,24 +310,42 @@ final class RealCUGANPass {
         let targetWidth = sourceWidth * 2
         let targetHeight = sourceHeight * 2
 
-        guard let tileInputPool, let stitchedFramePool else {
+        guard let tileInputPool, let tileOutputPool, let stitchedFramePool else {
             throw ProcessorError.conversionFailed("Real-CUGAN tile pools are unavailable")
         }
         var stitched: CVPixelBuffer?
         guard CVPixelBufferPoolCreatePixelBuffer(nil, stitchedFramePool, &stitched) == kCVReturnSuccess, let stitched else {
             throw ProcessorError.conversionFailed("could not allocate native 2x stitched frame")
         }
-
-        // One tile buffer is reused for every synchronous prediction in this frame.
-        // This removes repeated IOSurface/CVPixelBuffer pool churn without touching pixels.
         var reusableTile: CVPixelBuffer?
-        guard CVPixelBufferPoolCreatePixelBuffer(nil, tileInputPool, &reusableTile) == kCVReturnSuccess, let tileBuffer = reusableTile else {
-            throw ProcessorError.conversionFailed("could not allocate reusable Real-CUGAN input tile")
+        var reusableOutput: CVPixelBuffer?
+        guard CVPixelBufferPoolCreatePixelBuffer(nil, tileInputPool, &reusableTile) == kCVReturnSuccess, let tileBuffer = reusableTile,
+              CVPixelBufferPoolCreatePixelBuffer(nil, tileOutputPool, &reusableOutput) == kCVReturnSuccess, let outputBuffer = reusableOutput else {
+            throw ProcessorError.conversionFailed("could not allocate reusable Real-CUGAN tiles")
         }
 
-        let sourceImage = CIImage(cvPixelBuffer: source).clampedToExtent()
+        CVPixelBufferLockBaseAddress(source, .readOnly)
+        CVPixelBufferLockBaseAddress(tileBuffer, [])
+        CVPixelBufferLockBaseAddress(stitched, [])
+        defer {
+            CVPixelBufferUnlockBaseAddress(stitched, [])
+            CVPixelBufferUnlockBaseAddress(tileBuffer, [])
+            CVPixelBufferUnlockBaseAddress(source, .readOnly)
+        }
+        guard let sourceBase = CVPixelBufferGetBaseAddress(source),
+              let tileBase = CVPixelBufferGetBaseAddress(tileBuffer),
+              let stitchedBase = CVPixelBufferGetBaseAddress(stitched) else {
+            throw ProcessorError.conversionFailed("Real-CUGAN tile addresses are unavailable")
+        }
+        let sourceStride = CVPixelBufferGetBytesPerRow(source)
+        let tileStride = CVPixelBufferGetBytesPerRow(tileBuffer)
+        let outputStride = CVPixelBufferGetBytesPerRow(outputBuffer)
+        let stitchedStride = CVPixelBufferGetBytesPerRow(stitched)
+
         var tileIndex = 0
         let totalTiles = Int(ceil(Double(sourceWidth) / Double(profile.stepX))) * Int(ceil(Double(sourceHeight) / Double(profile.stepY)))
+        let options = MLPredictionOptions()
+        options.outputBackings = ["output": MLFeatureValue(pixelBuffer: outputBuffer)]
 
         var y = 0
         while y < sourceHeight {
@@ -315,43 +354,48 @@ final class RealCUGANPass {
             while x < sourceWidth {
                 let coreWidth = min(profile.stepX, sourceWidth - x)
                 tileIndex += 1
-
-                let inputRect = CGRect(x: x - profile.overlap, y: y - profile.overlap, width: profile.width, height: profile.height)
-                let tileImage = sourceImage
-                    .cropped(to: inputRect)
-                    .transformed(by: CGAffineTransform(translationX: -inputRect.origin.x, y: -inputRect.origin.y))
                 let renderStart = CFAbsoluteTimeGetCurrent()
-                ciContext.render(tileImage, to: tileBuffer, bounds: CGRect(x: 0, y: 0, width: profile.width, height: profile.height), colorSpace: colorSpace)
-
+                RealCUGANTileCopy.crop(
+                    source: sourceBase.assumingMemoryBound(to: UInt8.self),
+                    sourceStride: sourceStride,
+                    sourceWidth: sourceWidth,
+                    sourceHeight: sourceHeight,
+                    destination: tileBase.assumingMemoryBound(to: UInt8.self),
+                    destinationStride: tileStride,
+                    ciOriginX: x - profile.overlap,
+                    ciOriginY: y - profile.overlap,
+                    tileWidth: profile.width,
+                    tileHeight: profile.height
+                )
                 renderInSeconds += CFAbsoluteTimeGetCurrent() - renderStart
-
-                try autoreleasepool {
-                    let provider = try MLDictionaryFeatureProvider(dictionary: [
-                        "image": MLFeatureValue(pixelBuffer: tileBuffer),
-                        "alpha": MLFeatureValue(multiArray: alpha)
-                    ])
-                    let predictionStart = CFAbsoluteTimeGetCurrent()
-                    let prediction = try model.prediction(from: provider, options: MLPredictionOptions())
-                    predictionSeconds += CFAbsoluteTimeGetCurrent() - predictionStart
-                    guard let modelOutput = prediction.featureValue(for: "output")?.imageBufferValue else {
-                        throw ProcessorError.conversionFailed("Real-CUGAN tile did not return an image buffer")
-                    }
-
-                    let stitchStart = CFAbsoluteTimeGetCurrent()
-                    let outputImage = CIImage(cvPixelBuffer: modelOutput)
-                    let cropOrigin = profile.overlap * 2
-                    let cropRect = CGRect(x: cropOrigin, y: cropOrigin, width: coreWidth * 2, height: coreHeight * 2)
-                    let destinationRect = CGRect(x: x * 2, y: y * 2, width: coreWidth * 2, height: coreHeight * 2)
-                    let translated = outputImage
-                        .cropped(to: cropRect)
-                        .transformed(by: CGAffineTransform(
-                            translationX: destinationRect.origin.x - cropRect.origin.x,
-                            y: destinationRect.origin.y - cropRect.origin.y
-                        ))
-                    ciContext.render(translated, to: stitched, bounds: destinationRect, colorSpace: colorSpace)
-                    stitchSeconds += CFAbsoluteTimeGetCurrent() - stitchStart
+                let provider = try MLDictionaryFeatureProvider(dictionary: [
+                    "image": MLFeatureValue(pixelBuffer: tileBuffer),
+                    "alpha": MLFeatureValue(multiArray: alpha)
+                ])
+                let batch = MLArrayBatchProvider(array: [provider])
+                let predictionStart = CFAbsoluteTimeGetCurrent()
+                _ = try model.predictions(from: batch, options: options)
+                predictionSeconds += CFAbsoluteTimeGetCurrent() - predictionStart
+                CVPixelBufferLockBaseAddress(outputBuffer, .readOnly)
+                defer { CVPixelBufferUnlockBaseAddress(outputBuffer, []) }
+                guard let freshOutput = CVPixelBufferGetBaseAddress(outputBuffer) else {
+                    throw ProcessorError.conversionFailed("Real-CUGAN output tile address is unavailable")
                 }
-
+                let stitchStart = CFAbsoluteTimeGetCurrent()
+                RealCUGANTileCopy.stitch(
+                    modelOutput: freshOutput.assumingMemoryBound(to: UInt8.self),
+                    outputStride: outputStride,
+                    outputHeight: profile.height * 2,
+                    destination: stitchedBase.assumingMemoryBound(to: UInt8.self),
+                    destinationStride: stitchedStride,
+                    destinationHeight: targetHeight,
+                    coreX: x,
+                    coreY: y,
+                    coreWidth: coreWidth,
+                    coreHeight: coreHeight,
+                    overlap: profile.overlap
+                )
+                stitchSeconds += CFAbsoluteTimeGetCurrent() - stitchStart
                 if frameNumber == 1 && (tileIndex == 1 || tileIndex == totalTiles) {
                     DiagnosticsLogger.shared.log("Real-CUGAN first-frame tile \(tileIndex)/\(totalTiles) complete • core=\(coreWidth)x\(coreHeight)")
                 }
@@ -363,8 +407,6 @@ final class RealCUGANPass {
         guard CVPixelBufferGetWidth(stitched) == targetWidth, CVPixelBufferGetHeight(stitched) == targetHeight else {
             throw ProcessorError.conversionFailed("Real-CUGAN stitched frame size mismatch")
         }
-
-
         return stitched
     }
 
