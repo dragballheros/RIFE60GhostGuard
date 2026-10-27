@@ -526,7 +526,7 @@ final class RealCUGANPass {
                 ]))
             }
             let batch = MLArrayBatchProvider(array: providers)
-            let results = try model.predictions(from: batch)
+            let results = try model.predictions(from: batch, options: MLPredictionOptions())
             predictionSeconds += CFAbsoluteTimeGetCurrent() - predictionStart
             for index in 0..<count {
                 guard let image = results.features(at: index).featureValue(for: "output")?.imageBufferValue else {

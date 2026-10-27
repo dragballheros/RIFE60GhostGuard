@@ -166,7 +166,7 @@ enum ModelBenchmark {
 
     private static func predictUnbackedBatch(model: MLModel, provider: MLFeatureProvider, count: Int) throws {
         let batch = MLArrayBatchProvider(array: Array(repeating: provider, count: count))
-        _ = try model.predictions(from: batch)
+        _ = try model.predictions(from: batch, options: MLPredictionOptions())
     }
 
     private static func predictConcurrent(model: MLModel, provider: MLFeatureProvider, slots: Int, tileWidth: Int, tileHeight: Int) throws {
