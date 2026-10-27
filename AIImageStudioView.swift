@@ -286,6 +286,7 @@ struct AIImageStudioView: View {
             Section("Positive Prompt") {
                 StablePromptTextView(text: $positivePrompt, accessibilityLabel: "Positive prompt")
                     .frame(minHeight: 120, maxHeight: 240)
+                    .copyPasteBar(text: positivePrompt) { positivePrompt = $0 }
                 let suggested = ImageModelProfile.profile(for: settings.localModelID).suggestedTags
                 if !suggested.isEmpty {
                     Button("Insert recommended tags") {
@@ -300,6 +301,7 @@ struct AIImageStudioView: View {
             Section("Negative Prompt") {
                 StablePromptTextView(text: $negativePrompt, accessibilityLabel: "Negative prompt")
                     .frame(minHeight: 96, maxHeight: 200)
+                    .copyPasteBar(text: negativePrompt) { negativePrompt = $0 }
             }
             Section("On-device Model") {
                 LabeledContent("Model catalog ID", value: settings.localModelID)
@@ -388,7 +390,11 @@ struct AIImageStudioView: View {
                 Slider(value: $height, in: 512...1536, step: 64)
                 HStack { Text("Clip skip"); Spacer(); Text("\(Int(clipSkip))").monospacedDigit() }
                 Slider(value: $clipSkip, in: 1...2, step: 1)
-                TextField("Seed", text: $seedText).keyboardType(.numberPad)
+                TextField("Seed", text: $seedText)
+                    .keyboardType(.numberPad)
+                    .copyPasteBar(text: seedText, transform: { raw in
+                        raw.filter(\.isNumber)
+                    }) { seedText = $0 }
                 Text("The engine stores a 32-bit seed. A longer number uses its low 32 bits, and that value is shown in the status line.")
                     .font(.caption).foregroundStyle(.secondary)
                 HStack(spacing: 12) {
@@ -489,8 +495,10 @@ struct AIImageStudioView: View {
                     .font(.caption).foregroundStyle(.secondary)
                 TextField("Trigger word", text: $triggerWord)
                     .textInputAutocapitalization(.never).autocorrectionDisabled()
+                    .copyPasteBar(text: triggerWord) { triggerWord = $0 }
                 StablePromptTextView(text: $trainingCaption, accessibilityLabel: "Shared caption or style description")
                     .frame(minHeight: 72, maxHeight: 160)
+                    .copyPasteBar(text: trainingCaption) { trainingCaption = $0 }
                 Text("For a character LoRA, use clear varied images of the same subject, consistent captions, and a unique trigger word. Only upload images you have permission to use.")
                     .font(.caption).foregroundStyle(.secondary)
             }

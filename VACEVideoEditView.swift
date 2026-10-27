@@ -187,9 +187,11 @@ struct VACEVideoEditView: View {
                 Section("Generation prompt") {
                     TextField("Positive prompt", text: $prompt, axis: .vertical)
                         .lineLimit(2...5)
+                        .copyPasteBar(text: prompt) { prompt = $0 }
                     if selectedBackend == .wanVACE {
                         TextField("Negative prompt", text: $negativePrompt, axis: .vertical)
                             .lineLimit(2...4)
+                            .copyPasteBar(text: negativePrompt) { negativePrompt = $0 }
                     } else {
                         Text("The current native H3 API does not expose a separate negative-prompt input. Put exclusions directly into the main prompt; this field is only used by Wan VACE.")
                             .font(.caption).foregroundStyle(.secondary)
