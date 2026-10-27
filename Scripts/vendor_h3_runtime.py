@@ -31,6 +31,8 @@ def main():
     subprocess.run(["git", "-C", str(temp), "checkout", "--quiet", REVISION], check=True)
     patcher = ROOT / "Scripts" / "patch_h3_ios_availability.py"
     subprocess.run(["python3", str(patcher), str(temp / "h3_gpu.m")], check=True)
+    subprocess.run(["python3", str(patcher), str(temp / "h3_metal.m")], check=True)
+    subprocess.run(["python3", str(patcher), str(temp / "h3_dit.c")], check=True)
 
     staged = target.with_name("minimax-h3.staging")
     shutil.rmtree(staged, ignore_errors=True)

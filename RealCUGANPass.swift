@@ -331,7 +331,7 @@ final class RealCUGANPass {
                         "alpha": MLFeatureValue(multiArray: alpha)
                     ])
                     let predictionStart = CFAbsoluteTimeGetCurrent()
-                    let prediction = try model.prediction(from: provider)
+                    let prediction = try model.prediction(from: provider, options: MLPredictionOptions())
                     predictionSeconds += CFAbsoluteTimeGetCurrent() - predictionStart
                     guard let modelOutput = prediction.featureValue(for: "output")?.imageBufferValue else {
                         throw ProcessorError.conversionFailed("Real-CUGAN tile did not return an image buffer")

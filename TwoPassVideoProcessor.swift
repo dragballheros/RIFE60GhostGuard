@@ -49,6 +49,8 @@ final class TwoPassVideoProcessor {
         if upscaleFirst {
             return try await processUpscaleFirst(sourceURL: sourceURL, recoveryDirectory: recoveryDirectory, progress: progress, telemetry: telemetry)
         }
+        let stageTimer = PipelineStageTimer()
+        defer { stageTimer.finish() }
         let stageTelemetry = StageTelemetryBox()
         var transientURLs: [URL] = []
         defer {
@@ -243,6 +245,7 @@ final class TwoPassVideoProcessor {
                     colorPopStrength: rifeIsFinalVisualStage ? colorPopStrength : 0,
                     applyWarmthCorrection: rifeIsFinalVisualStage
                 )
+                stageTimer.begin("rife")
                 let generated = try await rife.process(
                     sourceURL: rifeInput,
                     progress: { p, message in
@@ -258,6 +261,7 @@ final class TwoPassVideoProcessor {
                         telemetry(combined)
                     }
                 )
+                stageTimer.end("rife")
 
                 if let rifeCheckpoint {
                     try persistCheckpoint(from: generated, to: rifeCheckpoint)
@@ -299,6 +303,7 @@ final class TwoPassVideoProcessor {
                         try await thermalHandoff(progress: progress, position: 0.40, next: "Real-CUGAN native 2×")
                         progress(0.41, "Pass 3/4 • Loading Real-CUGAN Anime native 2×…")
                         let cuganIsFinalVisualStage = !config.outlineProtection && automaticCuganPasses == 1
+                        stageTimer.begin("cugan")
                         let cugan = RealCUGANPass(
                             intensity: 1.30,
                             colorPopStrength: cuganIsFinalVisualStage ? colorPopStrength : 0,
@@ -329,6 +334,7 @@ final class TwoPassVideoProcessor {
                             },
                             recoveryDirectory: recoveryDirectory
                         )
+                        stageTimer.end("cugan")
                         if let cuganCheckpoint {
                             try persistCheckpoint(from: generated, to: cuganCheckpoint)
                             try? fm.removeItem(at: generated)

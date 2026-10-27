@@ -8,11 +8,42 @@ APIs introduced in iOS 18.0. Fail closed before Metal/graph initialization.
 from pathlib import Path
 import sys
 
+def patch_named_runtime(path: Path, source: str) -> None:
+    """Optional guards for files that are not h3_gpu.m. Missing needles are left unchanged."""
+    original = source
+    if path.name == "h3_metal.m" and "device.architecture" in source:
+        source = source.replace(
+            "@available(macOS 14.0, *)",
+            "@available(iOS 17.0, macOS 14.0, *)",
+            1,
+        )
+        source = source.replace(
+            "@available(macOS 26.0, *)",
+            "@available(iOS 26.0, macOS 26.0, *)",
+            1,
+        )
+    if path.name == "h3_dit.c":
+        source = source.replace("pthread_t stream_thread;", "pthread_t stream_thread = 0;", 1)
+        source = source.replace("pthread_t attn_thread;", "pthread_t attn_thread = 0;", 1)
+        source = source.replace(
+            "pthread_t matrix_threads[STREAM_MATRICES];",
+            "pthread_t matrix_threads[STREAM_MATRICES] = {0};",
+            1,
+        )
+    if source != original:
+        path.write_text(source, encoding="utf-8")
+        print(f"Applied optional H3 availability patches in {path.name}.")
+    else:
+        print(f"No optional H3 availability needles in {path.name}.")
+
 if len(sys.argv) != 2:
     raise SystemExit("usage: patch_h3_ios_availability.py <h3_gpu.m>")
 
 path = Path(sys.argv[1])
 source = path.read_text(encoding="utf-8")
+if path.name in {"h3_metal.m", "h3_dit.c"}:
+    patch_named_runtime(path, source)
+    raise SystemExit(0)
 needle = """h3_gpu *h3_gpu_create(const char *shader_source_path,
                       char *error, size_t error_size) {
     @autoreleasepool {

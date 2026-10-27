@@ -27,7 +27,7 @@ enum H3RuntimePreflight {
 
         var message: String {
             if !isOperatingSystemSupported {
-                return "MiniMax H3 requires iOS 18.0 or newer. Wan VACE remains available."
+                return "MiniMax H3 requires iOS 18.0 or newer."
             }
             if !modelDirectoryExists {
                 return "MiniMax H3 model files are not installed. Select or install a compatible local H3 model directory first."

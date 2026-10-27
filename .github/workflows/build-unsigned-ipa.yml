@@ -270,9 +270,6 @@ jobs:
           git clone https://github.com/drawthingsai/draw-things-community.git Vendor/draw-things-community
           git -C Vendor/draw-things-community checkout 4f288803ac898525012c0fe8d998c85bcb920b70
           python3 Scripts/patch_draw_things_memory.py
-          python3 Scripts/patch_draw_things_vace_video_sequence.py
-          python3 Scripts/patch_draw_things_vace_video_masks.py
-          python3 Scripts/test_wan_vace_video_bridge.py
           python3 - <<'PY'
           from pathlib import Path
           path = Path("Vendor/draw-things-community/Package.swift")
