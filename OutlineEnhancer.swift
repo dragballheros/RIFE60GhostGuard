@@ -179,8 +179,7 @@ final class OutlineEnhancer {
     }
 
     private func refineContentAwareOutlines(source: CVPixelBuffer, destination: CVPixelBuffer) {
-        let mask: CVPixelBuffer?
-        mask = personSegmentationRequest.results?.first?.pixelBuffer
+        let mask = personSegmentationRequest.results?.first?.pixelBuffer
 
         let width = CVPixelBufferGetWidth(source)
         let height = CVPixelBufferGetHeight(source)
@@ -305,7 +304,6 @@ final class OutlineEnhancer {
                 dst[di + 1] = UInt8((sg + (eg - sg) * Double(amount)) * 255.0)
                 dst[di + dbOff] = UInt8((sb + (eb - sb) * Double(amount)) * 255.0)
             }
-        }
         }
     }
 
