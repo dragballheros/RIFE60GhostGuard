@@ -3,7 +3,7 @@ name: RIFE60GhostGuard
 options:
   bundleIdPrefix: com.za
   deploymentTarget:
-    iOS: "16.0"
+    iOS: "17.0"
 
 packages:
   RifeMetal:
@@ -67,7 +67,8 @@ targets:
         INFOPLIST_KEY_CFBundleShortVersionString: "$(MARKETING_VERSION)"
         INFOPLIST_KEY_CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
         SWIFT_VERSION: 5.10
-        IPHONEOS_DEPLOYMENT_TARGET: 16.0
+        IPHONEOS_DEPLOYMENT_TARGET: 17.0
+        CODE_SIGN_ENTITLEMENTS: RIFE60GhostGuard.entitlements
         TARGETED_DEVICE_FAMILY: "1,2"
         SUPPORTS_MACCATALYST: NO
         CODE_SIGN_STYLE: Automatic
