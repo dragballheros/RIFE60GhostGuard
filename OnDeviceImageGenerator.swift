@@ -171,10 +171,16 @@ enum OnDeviceImageGenerator {
         let stem = sourceURL.deletingPathExtension().lastPathComponent
             .replacingOccurrences(of: " ", with: "_")
         let outputName = stem.hasSuffix("_lora_f16") ? "\(stem).ckpt" : "\(stem)_lora_f16.ckpt"
+        let imported = try LoRAImporter.import(
+            downloadedFile: sourceURL.path,
+            name: stem,
+            filename: outputName,
+            scaleFactor: 1,
+            forceVersion: nil,
+            progress: { _ in }
+        )
+        let detected = String(describing: imported.0).lowercased()
         let destination = directory.appendingPathComponent(outputName)
-        var importer = LoRAImporter(file: sourceURL)
-        try importer.import(to: destination)
-        let detected = String(describing: importer.version).lowercased()
         let expectedToken = profile.family == .sdxl ? "sdxl" : "cosmos"
         guard detected.contains(expectedToken) else {
             try? FileManager.default.removeItem(at: destination)
