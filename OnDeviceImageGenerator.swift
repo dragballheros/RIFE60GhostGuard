@@ -165,16 +165,10 @@ enum OnDeviceImageGenerator {
         let stem = sourceURL.deletingPathExtension().lastPathComponent
             .replacingOccurrences(of: " ", with: "_")
         let outputName = stem.hasSuffix("_lora_f16") ? "\(stem).ckpt" : "\(stem)_lora_f16.ckpt"
-        let imported = try LoRAImporter.import(
-            downloadedFile: sourceURL.path,
-            name: stem,
-            filename: outputName,
-            scaleFactor: 1,
-            forceVersion: nil,
-            progress: { _ in }
-        )
-        let detected = String(describing: imported.0).lowercased()
         let destination = directory.appendingPathComponent(outputName)
+        var importer = LoRAImporter(file: sourceURL)
+        try importer.import(to: destination, scaleFactor: 1, progressHandler: nil)
+        let detected = String(describing: importer.version).lowercased()
         let expectedToken = profile.family == .sdxl ? "sdxl" : "cosmos"
         guard detected.contains(expectedToken) else {
             try? FileManager.default.removeItem(at: destination)
@@ -184,7 +178,7 @@ enum OnDeviceImageGenerator {
         let sidecar = StoredLoRASidecar(version: detected, trigger: trigger, sourceFile: sourceURL.lastPathComponent)
         let sidecarURL = directory.appendingPathComponent(outputName + ".json")
         if let data = try? JSONEncoder().encode(sidecar) {
-            try? data.write(to: sidecarURL, options: .atomic)
+            try? data.write(to: sidecarURL, options: Data.WritingOptions.atomic)
         }
         return StoredLocalLoRA(file: outputName, weight: 0.7, version: detected, trigger: trigger)
     }
@@ -330,7 +324,7 @@ enum OnDeviceImageGenerator {
         // The medium tier can still retain more model state than this device can
         // safely accommodate after pipeline construction. Restore the app's
         // established medium tier when this generation call exits.
-        let previousEngineState = EngineStateSnapshot.capture()
+        let previousEngineState = OnDeviceImageGenerator.EngineStateSnapshot.capture()
         defer { previousEngineState.restore() }
         DeviceCapability.memoryCapacity = .low
         DeviceCapability.isPartialOffloadPreferred.store(true, ordering: .releasing)
@@ -430,7 +424,7 @@ enum OnDeviceImageGenerator {
             useTiledDecoding = false
             AIImageGenerationMemoryJournal.shared.record("benchmark-configured-128x128-1step")
         }
-        guard let pipeline else {
+        guard var pipeline else {
             throw AIImageStudioError("The local image engine did not create a pipeline.")
         }
         let appliedShift = profile.appliedShift(shift)
@@ -760,7 +754,7 @@ enum OnDeviceLoRATrainer {
 
         // Match the inference path's constrained-device policy before invoking
         // the CLI trainer. Keep weights file-backed and avoid a resident model cache.
-        let previousEngineState = EngineStateSnapshot.capture()
+        let previousEngineState = OnDeviceImageGenerator.EngineStateSnapshot.capture()
         defer { previousEngineState.restore() }
         DeviceCapability.memoryCapacity = .low
         DeviceCapability.isPartialOffloadPreferred.store(true, ordering: .releasing)
