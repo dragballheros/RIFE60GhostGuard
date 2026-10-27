@@ -4,6 +4,7 @@ import Darwin
 import _MediaGenerationKit
 import DrawThingsCLILib
 import DataModels
+import Atomics
 
 private final class AIImageGenerationMemoryWatchdog: @unchecked Sendable {
     private let lock = NSLock()
@@ -132,6 +133,91 @@ enum OnDeviceImageGenerator {
     // low-memory device capability, partial CPU offload, and the smallest supported tiles.
     // iOS can still terminate the process if transient Metal allocations exceed its budget.
 
+    /// Saves the process-global Draw Things knobs this generator mutates and puts them back on exit.
+    fileprivate struct EngineStateSnapshot {
+        let memoryCapacity: DeviceCapability.MemoryCapacity
+        let partialOffload: Bool
+        let weightsCache: UInt64
+        let externalURLs: [URL]
+
+        static func capture() -> EngineStateSnapshot {
+            let environment = MediaGenerationEnvironment.default
+            return EngineStateSnapshot(
+                memoryCapacity: DeviceCapability.memoryCapacity,
+                partialOffload: DeviceCapability.isPartialOffloadPreferred.load(ordering: .acquiring),
+                weightsCache: environment.maxTotalWeightsCacheSize,
+                externalURLs: environment.externalUrls
+            )
+        }
+
+        func restore() {
+            DeviceCapability.memoryCapacity = memoryCapacity
+            DeviceCapability.isPartialOffloadPreferred.store(partialOffload, ordering: .releasing)
+            var environment = MediaGenerationEnvironment.default
+            environment.externalUrls = externalURLs
+            environment.maxTotalWeightsCacheSize = weightsCache
+            MediaGenerationEnvironment.default = environment
+        }
+    }
+
+    /// Converts a LoRA into Draw Things format and refuses it when the detected architecture does not match the selected model.
+    static func importLoRA(from sourceURL: URL, modelID: String) throws -> StoredLocalLoRA {
+        let ext = sourceURL.pathExtension.lowercased()
+        guard ["safetensors", "ckpt", "pt", "bin"].contains(ext) else {
+            throw AIImageStudioError("Choose a LoRA checkpoint file (.safetensors, .ckpt, .pt, or .bin).")
+        }
+        let profile = ImageModelProfile.profile(for: modelID)
+        let directory = try modelsDirectoryURL()
+        let stem = sourceURL.deletingPathExtension().lastPathComponent
+            .replacingOccurrences(of: " ", with: "_")
+        let outputName = stem.hasSuffix("_lora_f16") ? "\(stem).ckpt" : "\(stem)_lora_f16.ckpt"
+        let destination = directory.appendingPathComponent(outputName)
+        var importer = LoRAImporter(file: sourceURL)
+        try importer.import(to: destination)
+        let detected = String(describing: importer.version).lowercased()
+        let expectedToken = profile.family == .sdxl ? "sdxl" : "cosmos"
+        guard detected.contains(expectedToken) else {
+            try? FileManager.default.removeItem(at: destination)
+            throw AIImageStudioError("This LoRA was detected as \(detected), which does not match \(profile.displayName). It was not selected.")
+        }
+        let trigger = loraTrigger(in: sourceURL) ?? ""
+        let sidecar = StoredLoRASidecar(version: detected, trigger: trigger, sourceFile: sourceURL.lastPathComponent)
+        let sidecarURL = directory.appendingPathComponent(outputName + ".json")
+        if let data = try? JSONEncoder().encode(sidecar) {
+            try? data.write(to: sidecarURL, options: .atomic)
+        }
+        return StoredLocalLoRA(file: outputName, weight: 0.7, version: detected, trigger: trigger)
+    }
+
+    private struct StoredLoRASidecar: Codable {
+        var version: String
+        var trigger: String
+        var sourceFile: String
+    }
+
+    private static func loraTrigger(in url: URL) -> String? {
+        guard url.pathExtension.lowercased() == "safetensors",
+              let handle = try? FileHandle(forReadingFrom: url) else { return nil }
+        defer { try? handle.close() }
+        guard let prefix = try? handle.read(upToCount: 8), prefix.count == 8 else { return nil }
+        let headerLength = prefix.enumerated().reduce(UInt64(0)) { partial, item in
+            partial | (UInt64(item.element) << (item.offset * 8))
+        }
+        guard headerLength > 0, headerLength <= 16 * 1024 * 1024,
+              let header = try? handle.read(upToCount: Int(headerLength)),
+              header.count == Int(headerLength),
+              let root = try? JSONSerialization.jsonObject(with: header) as? [String: Any],
+              let metadata = root["__metadata__"] as? [String: Any] else { return nil }
+        let keys = ["modelspec.trigger_phrase", "ss_trigger_words", "ss_trigger_word", "trigger_word", "trigger"]
+        for key in keys {
+            if let raw = metadata[key] as? String {
+                let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmed.isEmpty { return trimmed }
+            }
+        }
+        return nil
+    }
+
     static func modelsDirectoryURL() throws -> URL {
         let base = try FileManager.default.url(
             for: .applicationSupportDirectory,
@@ -153,6 +239,15 @@ enum OnDeviceImageGenerator {
 
     private static func multipleOf64(_ value: Int) -> Int {
         max(64, Int((Double(max(64, value)) / 64.0).rounded()) * 64)
+    }
+
+    /// First-pass size for hires fix. Draw Things treats hiresFixWidth as the smaller start size.
+    private static func smallerHiresPass(_ value: Int, scale: Double) -> Int {
+        let divisor = max(scale, 1.05)
+        let raw = Int((Double(value) / divisor).rounded(.down))
+        let snapped = max(64, (raw / 64) * 64)
+        let strictlySmaller = max(64, ((value - 64) / 64) * 64)
+        return min(snapped, strictlySmaller)
     }
 
     static func generate(
@@ -207,34 +302,19 @@ enum OnDeviceImageGenerator {
             DiagnosticsLogger.shared.log("AI Image Studio entering low-memory mode before model load • available=\(Int(memory.availableMemoryMB)) MB")
         }
 
+        let profile = ImageModelProfile.profile(for: modelID)
         let requestedWidth = multipleOf64(width)
         let requestedHeight = multipleOf64(height)
-        var outputWidth: Int
-        var outputHeight: Int
-        if memory.availableMemoryMB < 1_400 {
-            // Keep the latent surface very small when the phone is under pressure.
-            // The existing Real-CUGAN pipeline can upscale after diffusion releases its model.
-            outputWidth = 384
-            outputHeight = 384
-        } else if memory.availableMemoryMB < 1_800 {
-            let scale = min(1.0, 1024.0 / Double(max(requestedWidth, requestedHeight)))
-            outputWidth = multipleOf64(Int(Double(requestedWidth) * scale))
-            outputHeight = multipleOf64(Int(Double(requestedHeight) * scale))
-        } else {
-            outputWidth = requestedWidth
-            outputHeight = requestedHeight
-        }
-        var useTiledDiffusion = true
-        // Keep VAE decoding untiled on this iPhone profile. The crash report
-        // terminates inside FirstStage.decode while ccv compiles a convolution;
-        // the 1-unit (64px) tiled decoder is the highest-confidence trigger.
-        var useTiledDecoding = false
-        // Draw Things stores tile dimensions and overlap in 64-pixel units.
-        // Keep the human-readable sizes in pixels here and convert at assignment.
-        // CPU partial-offload is enabled below; 64px tiles minimize transient activation memory.
-        var diffusionTileSize = 64
-        var decodingTileSize = 64
-        let tileOverlapPixels = 0
+        // Native SDXL canvases such as 832x1216 stay intact. The old <4 GB cap
+        // forced 384–768 px on a 6 GB phone and broke anatomy, especially with LoRAs.
+        var outputWidth = requestedWidth
+        var outputHeight = requestedHeight
+        let useTiledDiffusion = false
+        // Tiled VAE decode uses 512 px tiles (8 units) and 128 px overlap (2 units).
+        // The crash was the 64 px / 1-unit tile, not tiling itself.
+        var useTiledDecoding = true
+        let decodingTilePixels = 512
+        let decodingOverlapPixels = 128
 
         DiagnosticsLogger.shared.log(
             "AI Image Studio memory preflight • available=\(Int(memory.availableMemoryMB)) MB • physical=\(Int(memory.physicalMemoryMB)) MB • tier=\(memory.tier.rawValue) • requested=\(requestedWidth)x\(requestedHeight) • selected=\(outputWidth)x\(outputHeight) • tiledDiffusion=\(useTiledDiffusion) • tiledDecoding=\(useTiledDecoding)"
@@ -250,8 +330,9 @@ enum OnDeviceImageGenerator {
         // The medium tier can still retain more model state than this device can
         // safely accommodate after pipeline construction. Restore the app's
         // established medium tier when this generation call exits.
+        let previousEngineState = EngineStateSnapshot.capture()
+        defer { previousEngineState.restore() }
         DeviceCapability.memoryCapacity = .low
-        defer { DeviceCapability.memoryCapacity = .medium }
         DeviceCapability.isPartialOffloadPreferred.store(true, ordering: .releasing)
         DiagnosticsLogger.shared.log("AI Image Studio memory policy • partial CPU offload enabled • capacity=low • weights cache disabled")
 
@@ -309,21 +390,10 @@ enum OnDeviceImageGenerator {
         if memory.availableMemoryMB < 1_024 {
             DiagnosticsLogger.shared.log("AI Image Studio model-load headroom is low • continuing with on-demand weights and tiled inference • available=\(Int(memory.availableMemoryMB)) MB")
         }
-        if memory.availableMemoryMB < 1_400 {
-            outputWidth = 384
-            outputHeight = 384
-        } else if memory.availableMemoryMB < 1_800 {
-            let scale = min(1.0, 1024.0 / Double(max(requestedWidth, requestedHeight)))
-            outputWidth = multipleOf64(Int(Double(requestedWidth) * scale))
-            outputHeight = multipleOf64(Int(Double(requestedHeight) * scale))
-        } else {
-            outputWidth = requestedWidth
-            outputHeight = requestedHeight
-        }
-        useTiledDiffusion = true
-        useTiledDecoding = false
+        outputWidth = requestedWidth
+        outputHeight = requestedHeight
         DiagnosticsLogger.shared.log(
-            "AI Image Studio refreshed pre-load memory • available=\(Int(memory.availableMemoryMB)) MB • selected=\(outputWidth)x\(outputHeight) • diffusionTilePixels=\(diffusionTileSize) • decodeTilePixels=\(decodingTileSize) • overlapPixels=\(tileOverlapPixels)"
+            "AI Image Studio refreshed pre-load memory • available=\(Int(memory.availableMemoryMB)) MB • selected=\(outputWidth)x\(outputHeight) • decodeTilePixels=\(decodingTilePixels) • overlapPixels=\(decodingOverlapPixels)"
         )
 
         notify(
@@ -350,130 +420,114 @@ enum OnDeviceImageGenerator {
         // If model loading leaves less than 3 GiB, reduce latent dimensions while
         // preserving the requested aspect ratio. Upscaling can happen afterward via
         // the existing Real-CUGAN stage, which runs after this pipeline is released.
-        if memory.availableMemoryMB < 1_200 {
-            let scale = min(1.0, 384.0 / Double(max(requestedWidth, requestedHeight)))
-            outputWidth = multipleOf64(Int(Double(requestedWidth) * scale))
-            outputHeight = multipleOf64(Int(Double(requestedHeight) * scale))
-        } else if memory.availableMemoryMB < 1_800 {
-            let scale = min(1.0, 512.0 / Double(max(requestedWidth, requestedHeight)))
-            outputWidth = multipleOf64(Int(Double(requestedWidth) * scale))
-            outputHeight = multipleOf64(Int(Double(requestedHeight) * scale))
-        } else if memory.availableMemoryMB < 4_096 {
-            // Diffusion tiling is disabled because the bundled engine's tiny-tile
-            // UNet compilation path can trap. Compensate with a conservative canvas
-            // cap while preserving the requested aspect ratio; upscale afterward.
-            let safeLongEdge = memory.availableMemoryMB < 2_200 ? 512.0 : 768.0
-            let scale = min(1.0, safeLongEdge / Double(max(requestedWidth, requestedHeight)))
-            outputWidth = multipleOf64(Int(Double(requestedWidth) * scale))
-            outputHeight = multipleOf64(Int(Double(requestedHeight) * scale))
-        }
         if recoveringAfterInterruption {
-            DiagnosticsLogger.shared.log("AI Image Studio Recovery Safe Mode • preserving memory-policy output size \(outputWidth)x\(outputHeight) • steps=\(effectiveSteps) • Hires/LoRA disabled")
+            DiagnosticsLogger.shared.log("AI Image Studio Recovery Safe Mode • size \(outputWidth)x\(outputHeight) • steps=\(effectiveSteps) • Hires/LoRA disabled for this retry")
         }
         if benchmarkMode {
-            // Exercise the actual local pipeline with a deliberately small workload.
-            // This validates stages and resource lifecycle, not full-resolution throughput.
             outputWidth = 128
             outputHeight = 128
             effectiveSteps = 1
-            useTiledDiffusion = false
             useTiledDecoding = false
             AIImageGenerationMemoryJournal.shared.record("benchmark-configured-128x128-1step")
         }
-        // Disable both tiled diffusion and tiled VAE decoding on this iPhone
-        // profile. The crash report shows SIGABRT in ccv_nnc_hint_tensor_forward
-        // while FirstStage.decode compiles a convolution. A 1-unit (64px) VAE
-        // tile can produce an unsupported convolution shape. Keep the memory
-        // budget bounded with the canvas-size policy above rather than compiling
-        // the tiny-tile decoder graph.
-        useTiledDiffusion = false
-        useTiledDecoding = false
-        diffusionTileSize = 64
-        decodingTileSize = 64
+        guard let pipeline else {
+            throw AIImageStudioError("The local image engine did not create a pipeline.")
+        }
+        let appliedShift = profile.appliedShift(shift)
+        let appliedSampler = profile.family == .flowMatching && !ImageModelProfile.flowCompatibleSamplers.contains(samplerName)
+            ? profile.samplerName
+            : samplerName
+        let engineSeed = UInt32(truncatingIfNeeded: max(0, seed))
         DiagnosticsLogger.shared.log(
-            "AI Image Studio execution policy • recovery=\(recoveringAfterInterruption) • size=\(outputWidth)x\(outputHeight) • steps=\(effectiveSteps) • tiledDiffusion=\(useTiledDiffusion) • tiledDecode=\(useTiledDecoding) • available=\(Int(currentRenderPerformanceSnapshot().availableMemoryMB)) MB"
+            "AI Image Studio execution policy • model=\(profile.displayName) • recovery=\(recoveringAfterInterruption) • size=\(outputWidth)x\(outputHeight) • steps=\(effectiveSteps) • cfg=\(cfg) • shift=\(appliedShift) • sampler=\(appliedSampler) • clipSkip=\(clipSkip) • tiledDecode=\(useTiledDecoding) • requestedSeed=\(seed) • engineSeed=\(engineSeed)"
         )
-        pipeline!.configuration.width = outputWidth
-        pipeline!.configuration.height = outputHeight
-        pipeline!.configuration.steps = effectiveSteps
-        pipeline!.configuration.batchCount = 1
-        pipeline!.configuration.batchSize = 1
-        pipeline!.configuration.tiledDecoding = useTiledDecoding
+        if seed > Int64(UInt32.max) {
+            notify("Engine seed is \(engineSeed) (the low 32 bits of \(seed)). The Draw Things seed field is 32-bit, so this is the value that will reproduce the image.", progress: progress)
+        }
+        pipeline.configuration.width = outputWidth
+        pipeline.configuration.height = outputHeight
+        pipeline.configuration.steps = effectiveSteps
+        pipeline.configuration.batchCount = 1
+        pipeline.configuration.batchSize = 1
+        pipeline.configuration.tiledDecoding = useTiledDecoding
         if useTiledDecoding {
-            pipeline!.configuration.decodingTileWidth = decodingTileSize / 64
-            pipeline!.configuration.decodingTileHeight = decodingTileSize / 64
-            pipeline!.configuration.decodingTileOverlap = tileOverlapPixels / 64
+            pipeline.configuration.decodingTileWidth = decodingTilePixels
+            pipeline.configuration.decodingTileHeight = decodingTilePixels
+            pipeline.configuration.decodingTileOverlap = decodingOverlapPixels
         }
-        // Keep diffusion tiling disabled for this device until the bundled
-        // engine's tiled UNet compilation path is validated on-device.
-        pipeline!.configuration.tiledDiffusion = false
-        pipeline!.configuration.guidanceScale = Float(max(0, min(20, cfg)))
-        pipeline!.configuration.seed = UInt32(truncatingIfNeeded: max(0, seed))
-        pipeline!.configuration.shift = Float(max(0.1, min(12.0, shift)))
-        switch samplerName {
+        pipeline.configuration.tiledDiffusion = useTiledDiffusion
+        pipeline.configuration.guidanceScale = Float(max(0, min(20, cfg)))
+        pipeline.configuration.seed = engineSeed
+        pipeline.configuration.shift = Float(appliedShift)
+        pipeline.configuration.stage2Shift = Float(profile.usesShift ? appliedShift : 1)
+        pipeline.configuration.resolutionDependentShift = false
+        switch appliedSampler {
         case "Euler a":
-            pipeline!.configuration.sampler = DataModels.SamplerType.eulerA
-        case "DPM++ SDE Karras (closest to Civitai GPU sampler)":
-            pipeline!.configuration.sampler = DataModels.SamplerType.dPMPPSDEKarras
+            pipeline.configuration.sampler = DataModels.SamplerType.eulerA
+        case "Euler a Trailing":
+            pipeline.configuration.sampler = DataModels.SamplerType.eulerATrailing
+        case "DPM++ SDE Karras", "DPM++ SDE Karras (closest to Civitai GPU sampler)":
+            pipeline.configuration.sampler = DataModels.SamplerType.dPMPPSDEKarras
         case "DPM++ 2M Karras":
-            pipeline!.configuration.sampler = DataModels.SamplerType.dPMPP2MKarras
+            pipeline.configuration.sampler = DataModels.SamplerType.dPMPP2MKarras
+        case "DPM++ SDE Trailing":
+            pipeline.configuration.sampler = DataModels.SamplerType.dPMPPSDETrailing
+        case "DPM++ 2M Trailing":
+            pipeline.configuration.sampler = DataModels.SamplerType.dPMPP2MTrailing
         case "DDIM":
-            pipeline!.configuration.sampler = DataModels.SamplerType.DDIM
+            pipeline.configuration.sampler = DataModels.SamplerType.DDIM
         case "UniPC":
-            pipeline!.configuration.sampler = DataModels.SamplerType.uniPC
+            pipeline.configuration.sampler = DataModels.SamplerType.uniPC
         default:
-            break
+            pipeline.configuration.sampler = profile.family == .flowMatching
+                ? DataModels.SamplerType.eulerATrailing
+                : DataModels.SamplerType.eulerA
         }
-        pipeline!.configuration.clipSkip = max(1, min(2, clipSkip))
+        pipeline.configuration.clipSkip = max(1, min(2, clipSkip))
 
-        if hiresEnabled && !benchmarkMode {
-            // Hires diffusion multiplies the latent working surface. Keep it disabled
-            // for this device profile; use the app's separate Real-CUGAN stage instead.
-            if memory.availableMemoryMB >= 4_096 && !recoveringAfterInterruption {
-                pipeline!.configuration.hiresFix = true
-                pipeline!.configuration.hiresFixWidth = multipleOf64(Int(Double(outputWidth) * hiresScale))
-                pipeline!.configuration.hiresFixHeight = multipleOf64(Int(Double(outputHeight) * hiresScale))
-                pipeline!.configuration.hiresFixStrength = Float(max(0.05, min(0.95, hiresDenoise)))
-                pipeline!.configuration.stage2Steps = max(1, min(60, hiresSteps))
-                pipeline!.configuration.stage2Guidance = Float(max(0, min(20, cfg)))
-            } else {
-                pipeline!.configuration.hiresFix = false
-                notify(
-                    recoveringAfterInterruption
-                        ? "Recovery Safe Mode: high-resolution diffusion is disabled for this retry; upscale afterward with Real-CUGAN."
-                        : "Memory Safe Mode: high-resolution diffusion was disabled; you can upscale the result with Real-CUGAN afterward.",
-                    progress: progress
-                )
-            }
+        if hiresEnabled && !benchmarkMode && !recoveringAfterInterruption && memory.availableMemoryMB >= 1_800 {
+            let firstWidth = smallerHiresPass(outputWidth, scale: hiresScale)
+            let firstHeight = smallerHiresPass(outputHeight, scale: hiresScale)
+            pipeline.configuration.hiresFix = true
+            pipeline.configuration.hiresFixWidth = firstWidth
+            pipeline.configuration.hiresFixHeight = firstHeight
+            pipeline.configuration.hiresFixStrength = Float(max(0.05, min(0.95, hiresDenoise)))
+            pipeline.configuration.stage2Steps = max(1, min(60, hiresSteps))
+            pipeline.configuration.stage2Guidance = Float(max(0, min(20, cfg)))
+            DiagnosticsLogger.shared.log("AI Image Studio hires fix • first pass \(firstWidth)x\(firstHeight) • final \(outputWidth)x\(outputHeight)")
         } else {
-            pipeline!.configuration.hiresFix = false
+            pipeline.configuration.hiresFix = false
+            if hiresEnabled && recoveringAfterInterruption {
+                notify("Recovery Safe Mode: high-resolution diffusion is disabled for this retry.", progress: progress)
+            } else if hiresEnabled && memory.availableMemoryMB < 1_800 && !benchmarkMode {
+                notify("High-resolution diffusion needs at least 1.8 GB free after the model loads. This run uses the requested canvas only.", progress: progress)
+            }
         }
 
-        // Match the regular generation memory policy instead of requiring 4 GiB
-        // of free memory after model load. The canvas has already been reduced at
-        // low headroom (384px below 1.2 GiB, 512px below 1.8 GiB, and at most
-        // 768px below 4 GiB). Permit LoRA from 1.2 GiB free upward, where the
-        // minimum canvas policy is active, while retaining the recovery retry
-        // safeguard because a prior attempt may have been terminated by iOS.
-        let hasSelectedLoRA = !settings.localLoraFile.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let selectedLoRAs: [(file: String, weight: Float)] = {
+            if !settings.localLoras.isEmpty {
+                return settings.localLoras.map { ($0.file, Float(loraWeight)) }
+            }
+            let single = settings.localLoraFile.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !single.isEmpty { return [(single, Float(loraWeight))] }
+            return []
+        }()
         let canApplyLoRA = !benchmarkMode
             && !recoveringAfterInterruption
             && enableLoRA
-            && hasSelectedLoRA
+            && !selectedLoRAs.isEmpty
             && memory.availableMemoryMB >= 1_200
         if canApplyLoRA {
-            pipeline!.configuration.loras = [
-                DataModels.LoRA(file: settings.localLoraFile, weight: Float(loraWeight), mode: .all)
-            ]
-            DiagnosticsLogger.shared.log(
-                "AI Image Studio LoRA enabled • available=\(Int(memory.availableMemoryMB)) MB • output=\(outputWidth)x\(outputHeight) • adaptive low-memory canvas policy active"
-            )
+            pipeline.configuration.loras = selectedLoRAs.map {
+                DataModels.LoRA(file: $0.file, weight: $0.weight, mode: .all)
+            }
+            DiagnosticsLogger.shared.log("AI Image Studio LoRA enabled • count=\(selectedLoRAs.count) • available=\(Int(memory.availableMemoryMB)) MB • output=\(outputWidth)x\(outputHeight)")
         } else {
-            pipeline!.configuration.loras = []
+            pipeline.configuration.loras = []
             if enableLoRA && recoveringAfterInterruption {
                 notify("Recovery Safe Mode: local LoRA is disabled for this retry; the next normal run can try it again.", progress: progress)
-            } else if enableLoRA && hasSelectedLoRA && memory.availableMemoryMB < 1_200 && !benchmarkMode {
-                notify("Memory Safe Mode: LoRA needs at least 1.2 GB free after model load; generation will continue at the reduced canvas size.", progress: progress)
+            } else if enableLoRA && !selectedLoRAs.isEmpty && memory.availableMemoryMB < 1_200 && !benchmarkMode {
+                notify("LoRA needs at least 1.2 GB free after model load. Generation continues without it.", progress: progress)
             }
         }
 
@@ -484,7 +538,7 @@ enum OnDeviceImageGenerator {
             "\(generationMode) • \(outputWidth)x\(outputHeight) • \(effectiveSteps) steps • \(Int(memory.availableMemoryMB)) MB initial headroom",
             progress: progress
         )
-        DiagnosticsLogger.shared.log("AI Image Studio generation begin • steps=\(effectiveSteps) • size=\(outputWidth)x\(outputHeight) • tiledDiffusion=\(useTiledDiffusion) • diffusionTilePixels=\(diffusionTileSize) • tiledDecoding=\(useTiledDecoding) • decodeTilePixels=\(decodingTileSize) • overlapPixels=\(tileOverlapPixels)")
+        DiagnosticsLogger.shared.log("AI Image Studio generation begin • steps=\(effectiveSteps) • size=\(outputWidth)x\(outputHeight) • tiledDiffusion=\(useTiledDiffusion) • tiledDecoding=\(useTiledDecoding) • decodeTilePixels=\(decodingTilePixels) • overlapPixels=\(decodingOverlapPixels)")
         // Poll memory during inference because SDXL can allocate transient Metal buffers during early denoising.
         // Keep the pipeline's strong reference inside the task only. Once the
         // task completes, its operation can release that capture before PNG encoding.
@@ -496,7 +550,8 @@ enum OnDeviceImageGenerator {
         AIImageGenerationMemoryJournal.shared.record("pipeline-configured")
         if benchmarkMode { AIImageGenerationMemoryJournal.shared.record("benchmark-pre-denoising") }
         AIImageGenerationMemoryJournal.shared.record("generate-call-start")
-        let generationTask = Task { [activePipeline = pipeline!] in
+        var releasablePipeline: MediaGenerationPipeline? = pipeline
+        let generationTask = Task { [activePipeline = pipeline] in
             try await activePipeline.generate(prompt: positivePrompt, negativePrompt: negativePrompt) { state, _ in
             let message: String
             switch state {
@@ -610,13 +665,13 @@ enum OnDeviceImageGenerator {
             AIImageGenerationMemoryJournal.shared.record("benchmark-results-received")
         }
         guard let result = results.first else {
-            pipeline = nil
+            releasablePipeline = nil
             throw AIImageStudioError("The local image engine returned no image.")
         }
         // Release the diffusion pipeline before encoding the decoded image. PNG
         // compression can allocate substantial CPU-side buffers; retaining SDXL's
         // model and Metal resources during that phase needlessly compounds peak RAM.
-        pipeline = nil
+        releasablePipeline = nil
         let beforeEncoding = currentRenderPerformanceSnapshot()
         DiagnosticsLogger.shared.log(
             "AI Image Studio pipeline released before PNG encoding • available=\(Int(beforeEncoding.availableMemoryMB)) MB • physical=\(Int(beforeEncoding.physicalMemoryMB)) MB"
@@ -705,6 +760,8 @@ enum OnDeviceLoRATrainer {
 
         // Match the inference path's constrained-device policy before invoking
         // the CLI trainer. Keep weights file-backed and avoid a resident model cache.
+        let previousEngineState = EngineStateSnapshot.capture()
+        defer { previousEngineState.restore() }
         DeviceCapability.memoryCapacity = .low
         DeviceCapability.isPartialOffloadPreferred.store(true, ordering: .releasing)
         var trainingEnvironment = MediaGenerationEnvironment.default
@@ -718,7 +775,6 @@ enum OnDeviceLoRATrainer {
         try FileManager.default.createDirectory(at: datasetDirectory, withIntermediateDirectories: true)
         defer {
             try? FileManager.default.removeItem(at: datasetDirectory)
-            DeviceCapability.memoryCapacity = .medium
         }
 
         for (index, image) in images.enumerated() {
@@ -752,7 +808,7 @@ enum OnDeviceLoRATrainer {
             "--rank", String(max(4, min(64, rank))),
             "--learning-rate", String(format: "%.7g", max(0.000001, min(0.001, learningRate))),
             "--resolution", "512",
-            "--save-every", "0",
+            "--save-every", "50",
             "--seed", "1647498191",
             "--memory-saver", "minimal",
             "--weights-memory", "justInTime",
@@ -763,10 +819,7 @@ enum OnDeviceLoRATrainer {
         guard let stream = fopen(logURL.path, "w+") else {
             throw AIImageStudioError("Could not create the local training log.")
         }
-        defer {
-            fclose(stream)
-            try? FileManager.default.removeItem(at: logURL)
-        }
+        defer { fclose(stream) }
         let context = DrawThingsCLIContext(
             input: stdin,
             output: stream,

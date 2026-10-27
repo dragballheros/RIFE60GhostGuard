@@ -98,16 +98,10 @@ private struct AIImageStudioDraft: Codable {
     var hiresScale: Double
     var hiresSteps: Double
     var hiresDenoise: Double
-    var upscalerName: String
     var clipSkip: Double
-    var ensd: Double
-    var tokenMergingRatio: Double
-    var tokenMergingHiresRatio: Double
     var samplerName: String
-    var schedulerName: String
     var seedText: String
     var randomSeed: Bool
-    var turboWeight: Double
     var characterWeight: Double
     var enableCharacterLora: Bool
     static let key = "RIFE60.AIImageStudio.GenerationDraft.v1"
@@ -126,31 +120,21 @@ struct AIImageStudioView: View {
     @State private var selectedLoRATrigger = ""
     @State private var selectedLoRAStatus = ""
 
-    @State private var positivePrompt = """
-masterpiece, best quality, score_7, safe, 1girl, sysdeep_chizuru, beautiful young woman, long brown hair, expressive brown eyes, delicate facial features, fair skin, gentle smile, soft blush, natural proportions, detailed eyes, glossy hair, clean lineart, detailed shading, vibrant colors, soft natural lighting
-"""
-    @State private var negativePrompt = """
-worst quality, low quality, score_1, score_2, artist name, blurry, jpeg artifacts, chromatic aberration, bad anatomy, extra limbs, extra digits, signature, watermark, text, logo
-"""
+    @State private var positivePrompt = "1girl, beautiful young woman, long brown hair, expressive brown eyes, detailed eyes, clean lineart"
+    @State private var negativePrompt = "worst quality, low quality, blurry, bad anatomy, extra limbs, extra digits, watermark, text"
     @State private var width = 832.0
     @State private var height = 1216.0
-    @State private var steps = 30.0
-    @State private var cfg = 4.0
-    @State private var shift = 3.0
+    @State private var steps = 28.0
+    @State private var cfg = 5.0
+    @State private var shift = 1.0
     @State private var hiresEnabled = false
-    @State private var hiresScale = 2.0
-    @State private var hiresSteps = 20.0
-    @State private var hiresDenoise = 0.5
-    @State private var upscalerName = "RealESRGAN_x4plus_anime_6B.pth"
+    @State private var hiresScale = 1.5
+    @State private var hiresSteps = 12.0
+    @State private var hiresDenoise = 0.35
     @State private var clipSkip = 2.0
-    @State private var ensd = 31337.0
-    @State private var tokenMergingRatio = 0.1
-    @State private var tokenMergingHiresRatio = 0.1
-    @State private var samplerName = "DPM++ SDE Karras (closest to Civitai GPU sampler)"
-    @State private var schedulerName = "Normal"
-    @State private var seedText = "943875898392407"
+    @State private var samplerName = "Euler a"
+    @State private var seedText = "943875898"
     @State private var randomSeed = false
-    @State private var turboWeight = 1.0
     @State private var characterWeight = 0.7
     @State private var enableCharacterLora = false
     @State private var isGenerating = false
@@ -300,60 +284,22 @@ worst quality, low quality, score_1, score_2, artist name, blurry, jpeg artifact
                 }
             }
             Section("Positive Prompt") {
-                ScrollView {
-                    Text(positivePrompt)
-                        .frame(maxWidth: .infinity, alignment: .topLeading)
-                        .textSelection(.disabled)
-                        .padding(10)
-                }
-                .frame(minHeight: 120, maxHeight: 240)
-                .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 10))
-                .accessibilityLabel("Positive prompt, read only")
-                HStack(spacing: 12) {
-                    Button {
-                        UIPasteboard.general.string = effectivePositivePrompt
-                    } label: {
-                        Label("Copy", systemImage: "doc.on.doc")
+                StablePromptTextView(text: $positivePrompt, accessibilityLabel: "Positive prompt")
+                    .frame(minHeight: 120, maxHeight: 240)
+                let suggested = ImageModelProfile.profile(for: settings.localModelID).suggestedTags
+                if !suggested.isEmpty {
+                    Button("Insert recommended tags") {
+                        if !positivePrompt.localizedCaseInsensitiveContains(suggested) {
+                            positivePrompt = suggested + ", " + positivePrompt
+                        }
                     }
-                    .buttonStyle(.bordered)
-                    Button {
-                        guard let clipboardText = UIPasteboard.general.string else { return }
-                        positivePrompt = promptBody(fromClipboard: clipboardText)
-                    } label: {
-                        Label("Paste", systemImage: "clipboard")
-                    }
-                    .buttonStyle(.bordered)
+                    Text("Recommended tags stay out of the prompt until you insert them.")
+                        .font(.caption).foregroundStyle(.secondary)
                 }
-                Text("Read-only preview. Copy to Notes to edit, then copy your changes and tap Paste to replace this prompt.")
-                    .font(.caption).foregroundStyle(.secondary)
             }
             Section("Negative Prompt") {
-                ScrollView {
-                    Text(negativePrompt)
-                        .frame(maxWidth: .infinity, alignment: .topLeading)
-                        .textSelection(.disabled)
-                        .padding(10)
-                }
-                .frame(minHeight: 96, maxHeight: 200)
-                .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 10))
-                .accessibilityLabel("Negative prompt, read only")
-                HStack(spacing: 12) {
-                    Button {
-                        UIPasteboard.general.string = negativePrompt
-                    } label: {
-                        Label("Copy", systemImage: "doc.on.doc")
-                    }
-                    .buttonStyle(.bordered)
-                    Button {
-                        guard let clipboardText = UIPasteboard.general.string else { return }
-                        negativePrompt = clipboardText
-                    } label: {
-                        Label("Paste", systemImage: "clipboard")
-                    }
-                    .buttonStyle(.bordered)
-                }
-                Text("Read-only preview. Copy to Notes to edit, then copy your changes and tap Paste to replace this prompt.")
-                    .font(.caption).foregroundStyle(.secondary)
+                StablePromptTextView(text: $negativePrompt, accessibilityLabel: "Negative prompt")
+                    .frame(minHeight: 96, maxHeight: 200)
             }
             Section("On-device Model") {
                 LabeledContent("Model catalog ID", value: settings.localModelID)
@@ -399,7 +345,7 @@ worst quality, low quality, score_1, score_2, artist name, blurry, jpeg artifact
                     Spacer()
                     Text(String(format: "%.2f", characterWeight)).monospacedDigit()
                 }
-                Slider(value: $characterWeight, in: 0...1.5, step: 0.05)
+                Slider(value: $characterWeight, in: -1.5...2, step: 0.05)
                     .disabled(!enableCharacterLora || settings.localLoraFile.isEmpty)
                 Text("Selecting a LoRA copies it into the app's Models folder, reads embedded trigger metadata when available, and enables it for generation. The trigger preview above the positive prompt is read-only; its weight follows LoRA strength.")
                     .font(.caption).foregroundStyle(.secondary)
@@ -413,11 +359,18 @@ worst quality, low quality, score_1, score_2, artist name, blurry, jpeg artifact
                         .foregroundStyle(.secondary)
                         .padding(.bottom, 6)
                     samplerOptionRow("Euler a", value: "Euler a")
-                    samplerOptionRow("DPM++ SDE Karras (closest)", value: "DPM++ SDE Karras (closest to Civitai GPU sampler)")
+                    samplerOptionRow("Euler a Trailing", value: "Euler a Trailing")
+                    samplerOptionRow("DPM++ SDE Karras", value: "DPM++ SDE Karras")
                     samplerOptionRow("DPM++ 2M Karras", value: "DPM++ 2M Karras")
+                    samplerOptionRow("DPM++ SDE Trailing", value: "DPM++ SDE Trailing")
+                    samplerOptionRow("DPM++ 2M Trailing", value: "DPM++ 2M Trailing")
                     samplerOptionRow("DDIM", value: "DDIM")
                     samplerOptionRow("UniPC", value: "UniPC")
                 }
+                Text(settings.localModelID == OnDeviceImageGenerator.animaModelID
+                     ? "Anima is flow-matching. Karras samplers are rejected by the engine; Trailing is used instead."
+                     : "Animagine XL v3.1 default is Euler a, 28 steps, CFG 5, clip skip 2. Shift stays 1.")
+                    .font(.caption).foregroundStyle(.secondary)
                 if settings.localModelID == OnDeviceImageGenerator.animaModelID {
                     HStack { Text("Shift"); Spacer(); Text(String(format: "%.1f", shift)).monospacedDigit() }
                     Slider(value: $shift, in: 0.1...12, step: 0.1)
@@ -433,7 +386,11 @@ worst quality, low quality, score_1, score_2, artist name, blurry, jpeg artifact
                 Slider(value: $width, in: 512...1024, step: 64)
                 HStack { Text("Height"); Spacer(); Text("\(Int(height)) px").monospacedDigit() }
                 Slider(value: $height, in: 512...1536, step: 64)
+                HStack { Text("Clip skip"); Spacer(); Text("\(Int(clipSkip))").monospacedDigit() }
+                Slider(value: $clipSkip, in: 1...2, step: 1)
                 TextField("Seed", text: $seedText).keyboardType(.numberPad)
+                Text("The engine stores a 32-bit seed. A longer number uses its low 32 bits, and that value is shown in the status line.")
+                    .font(.caption).foregroundStyle(.secondary)
                 HStack(spacing: 12) {
                     Button {
                         UIPasteboard.general.string = seedText
@@ -665,38 +622,25 @@ worst quality, low quality, score_1, score_2, artist name, blurry, jpeg artifact
     }
 
     private func applyModelProfile(_ profile: String) {
-        let useAnima = profile == OnDeviceImageGenerator.animaModelID
-            || profile.localizedCaseInsensitiveContains("Anima Base")
-        settings.localModelID = useAnima
-            ? OnDeviceImageGenerator.animaModelID
-            : OnDeviceImageGenerator.defaultModelID
-        modelProfile = useAnima ? "Anima Base v1.0 (Local)" : "Animagine XL v3.1 (Local)"
+        let resolved = ImageModelProfile.profile(for: profile)
+        settings.localModelID = resolved.modelID
+        modelProfile = resolved.displayName
         UserDefaults.standard.set(modelProfile, forKey: "RIFE60.AIImageStudio.SelectedProfile")
         errorText = ""
         generationStatus = ""
         generatedImage = nil
         generatedURL = nil
-        width = useAnima ? 832 : 832
-        height = useAnima ? 1216 : 1216
-        steps = useAnima ? 30 : 28
-        cfg = useAnima ? 4.0 : 5.5
-        shift = useAnima ? 3.0 : 1.0
+        width = resolved.width
+        height = resolved.height
+        steps = resolved.steps
+        cfg = resolved.cfg
+        shift = resolved.shift
         hiresEnabled = false
         hiresScale = 1.5
         hiresSteps = 12
         hiresDenoise = 0.35
-        clipSkip = useAnima ? 1 : 2
-        samplerName = useAnima
-            ? "DPM++ SDE Karras (closest to Civitai GPU sampler)"
-            : "Euler a"
-        schedulerName = "Model recommended"
-        if useAnima {
-            seedText = "943875898392407"
-            randomSeed = false
-            if !positivePrompt.localizedCaseInsensitiveContains("sysdeep_chizuru") {
-                positivePrompt = "masterpiece, best quality, score_7, safe, sysdeep_chizuru, " + positivePrompt
-            }
-        }
+        clipSkip = resolved.clipSkip
+        samplerName = resolved.samplerName
     }
 
     private func restoreGenerationDraft() {
@@ -756,37 +700,26 @@ worst quality, low quality, score_1, score_2, artist name, blurry, jpeg artifact
             try? settings.save()
             return
         }
-        modelProfile = settings.localModelID == OnDeviceImageGenerator.animaModelID
-            ? "Anima Base v1.0 (Local)"
-            : "Animagine XL v3.1 (Local)"
+        let resolved = ImageModelProfile.profile(for: settings.localModelID)
+        modelProfile = resolved.displayName
         positivePrompt = removingLegacyCharacterTrigger(from: draft.positivePrompt)
         negativePrompt = draft.negativePrompt
-        // Keep conservative defaults for each native model family.
-        let useAnima = settings.localModelID == OnDeviceImageGenerator.animaModelID
-        if useAnima && !positivePrompt.localizedCaseInsensitiveContains("sysdeep_chizuru") {
-            positivePrompt = "masterpiece, best quality, score_7, safe, sysdeep_chizuru, " + positivePrompt
+        width = draft.width
+        height = draft.height
+        steps = draft.steps
+        cfg = draft.cfg
+        shift = resolved.appliedShift(draft.shift)
+        hiresEnabled = draft.hiresEnabled
+        hiresScale = draft.hiresScale
+        hiresSteps = draft.hiresSteps
+        hiresDenoise = draft.hiresDenoise
+        clipSkip = resolved.clipSkip
+        samplerName = resolved.family == .flowMatching ? resolved.resolvedSamplerName : draft.samplerName
+        if samplerName == "Model recommended" || samplerName.contains("closest") {
+            samplerName = resolved.samplerName
         }
-        width = useAnima ? 832 : 832
-        height = useAnima ? 1216 : 1216
-        steps = useAnima ? 30 : 28
-        cfg = useAnima ? 4.0 : 5.5
-        shift = useAnima ? 3.0 : 1.0
-        hiresEnabled = false
-        hiresScale = 1.5
-        hiresSteps = 12
-        hiresDenoise = 0.35
-        upscalerName = draft.upscalerName
-        clipSkip = 2
-        ensd = draft.ensd
-        tokenMergingRatio = draft.tokenMergingRatio
-        tokenMergingHiresRatio = draft.tokenMergingHiresRatio
-        samplerName = useAnima
-            ? "DPM++ SDE Karras (closest to Civitai GPU sampler)"
-            : (draft.samplerName == "Model recommended" ? "Euler a" : draft.samplerName)
-        schedulerName = "Model recommended"
-        seedText = useAnima ? "943875898392407" : draft.seedText
+        seedText = draft.seedText
         randomSeed = draft.randomSeed
-        turboWeight = draft.turboWeight
         characterWeight = draft.characterWeight
         enableCharacterLora = useAnima && selectedLoRATrigger == "sysdeep_chizuru"
             ? true
@@ -824,16 +757,10 @@ worst quality, low quality, score_1, score_2, artist name, blurry, jpeg artifact
             hiresScale: hiresScale,
             hiresSteps: hiresSteps,
             hiresDenoise: hiresDenoise,
-            upscalerName: upscalerName,
             clipSkip: clipSkip,
-            ensd: ensd,
-            tokenMergingRatio: tokenMergingRatio,
-            tokenMergingHiresRatio: tokenMergingHiresRatio,
             samplerName: samplerName,
-            schedulerName: schedulerName,
             seedText: seedText,
             randomSeed: randomSeed,
-            turboWeight: turboWeight,
             characterWeight: characterWeight,
             enableCharacterLora: enableCharacterLora
         )
@@ -958,31 +885,18 @@ worst quality, low quality, score_1, score_2, artist name, blurry, jpeg artifact
             guard ["safetensors", "ckpt", "pt", "bin"].contains(ext) else {
                 throw AIImageStudioError("Choose a LoRA checkpoint file (.safetensors, .ckpt, .pt, or .bin).")
             }
-            let directory = try OnDeviceImageGenerator.modelsDirectoryURL()
-            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-            let safeName = sourceURL.lastPathComponent
-            let destinationURL = directory.appendingPathComponent(safeName)
-            if sourceURL.standardizedFileURL != destinationURL.standardizedFileURL {
-                if FileManager.default.fileExists(atPath: destinationURL.path) {
-                    try FileManager.default.removeItem(at: destinationURL)
-                }
-                try FileManager.default.copyItem(at: sourceURL, to: destinationURL)
-            }
-            settings.localLoraFile = safeName
+            let modelID = settings.localModelID
+            let imported = try OnDeviceImageGenerator.importLoRA(from: sourceURL, modelID: modelID)
+            settings.localLoraFile = imported.file
+            settings.localLoras = [imported]
             enableCharacterLora = true
-            let stem = sourceURL.deletingPathExtension().lastPathComponent
-                .replacingOccurrences(of: "_", with: " ")
-                .replacingOccurrences(of: "-", with: " ")
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            let extracted = extractLoRATrigger(from: destinationURL)
-            selectedLoRATrigger = extracted?.trigger ?? stem
+            characterWeight = imported.weight
+            selectedLoRATrigger = imported.trigger
             try settings.save()
             saveGenerationDraft()
-            if let extracted {
-                selectedLoRAStatus = "Imported and selected: " + safeName + ". Trigger auto-detected from " + extracted.source + "."
-            } else {
-                selectedLoRAStatus = "Imported and selected: " + safeName + ". No trigger metadata was embedded; using the filename as a fallback guess."
-            }
+            selectedLoRAStatus = imported.trigger.isEmpty
+                ? "Converted and selected \(imported.file). No trigger was embedded."
+                : "Converted and selected \(imported.file). Trigger: \(imported.trigger)."
             errorText = ""
         } catch {
             errorText = "Could not import LoRA: " + error.localizedDescription
@@ -1012,6 +926,13 @@ worst quality, low quality, score_1, score_2, artist name, blurry, jpeg artifact
         generatedURL = nil
         defer { isGenerating = false }
         do {
+            if !settings.localLoras.isEmpty {
+                settings.localLoras = settings.localLoras.map { item in
+                    var updated = item
+                    updated.weight = characterWeight
+                    return updated
+                }
+            }
             try settings.save()
             saveGenerationDraft()
             let resolvedSeed: Int64
