@@ -50,7 +50,11 @@ final class TwoPassVideoProcessor {
             return try await processUpscaleFirst(sourceURL: sourceURL, recoveryDirectory: recoveryDirectory, progress: progress, telemetry: telemetry)
         }
         let stageTimer = PipelineStageTimer()
-        defer { stageTimer.finish() }
+        PipelineStageTimer.current = stageTimer
+        defer {
+            PipelineStageTimer.current = nil
+            stageTimer.finish()
+        }
         let stageTelemetry = StageTelemetryBox()
         var transientURLs: [URL] = []
         defer {

@@ -484,6 +484,14 @@ jobs:
       - name: Reject output backings on batch predictions
         run: python3 Scripts/check_no_batch_output_backings.py
 
+      - name: Verify Real-CUGAN strategy selection
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/cugan-strategy-check
+          cp Scripts/check_cugan_strategy.swift /tmp/cugan-strategy-check/main.swift
+          swiftc -swift-version 5 RealCUGANTileStrategy.swift /tmp/cugan-strategy-check/main.swift -o /tmp/cugan-strategy-check/check
+          /tmp/cugan-strategy-check/check
+
       - name: Verify anime inpainting inference and mask geometry
         run: |
           set -euo pipefail

@@ -61,10 +61,153 @@ enum ModelBenchmark {
             }
             rows.append(([name] + values).joined(separator: " | "))
         }
-        rows.append("Policies permit CPU fallback; these labels do not prove every operation used the named accelerator. Sharpie production also uses parallel tiles. No setting changed automatically.")
+        rows.append(contentsOf: try benchmarkStrategies(progress: progress))
+        rows.append("Policies permit CPU fallback; these labels do not prove every operation used the named accelerator. Sharpie production also uses parallel tiles. The fastest Real-CUGAN strategy that stays inside memory headroom is saved for this model, tile, device, iOS version, and app build. The next render uses it. Before a benchmark, renders use sequential backed predictions.")
         let report = rows.joined(separator: "\n")
         DiagnosticsLogger.shared.log(report)
         return report
+    }
+
+    private static func benchmarkStrategies(progress: @escaping @Sendable (Double, String) -> Void) throws -> [String] {
+        let models = ["RealCUGAN2xNoise3_Tile704x608", "RealCUGAN2xNoise3_Tile512"]
+        var rows = ["Real-CUGAN tile strategy | model | ms/tile | extra MB | result"]
+        for name in models {
+            guard let url = Bundle.main.url(forResource: name, withExtension: "mlmodelc") else { continue }
+            let tileWidth = name.contains("704") ? 704 : 512
+            let tileHeight = name.contains("608") ? 608 : 512
+            let available = currentRenderPerformanceSnapshot().availableMemoryMB
+            var best: (RealCUGANTileStrategy, Int, Double, Double)?
+            for strategy in RealCUGANTileStrategy.candidates(modelName: name, availableMB: available) {
+                try Task.checkCancellation()
+                progress(1, "Real-CUGAN \(strategy.title) • \(name)")
+                let slots = strategy == .concurrentBacked ? RealCUGANStrategyStore.allowedConcurrentSlots(availableMB: available) : (strategy.fixedBatchCount ?? (strategy == .batchedUnbacked ? 2 : 1))
+                do {
+                    let sample = try timeStrategy(url: url, strategy: strategy, slots: slots, tileWidth: tileWidth, tileHeight: tileHeight)
+                    rows.append("\(strategy.title) | \(name) | \(String(format: "%.1f", sample.millisecondsPerTile)) | \(String(format: "%.0f", sample.extraMB)) | kept")
+                    DiagnosticsLogger.shared.log("Real-CUGAN strategy sample • \(strategy.rawValue) • \(name) • \(String(format: "%.1f", sample.millisecondsPerTile))ms/tile • extra=\(String(format: "%.0f", sample.extraMB))MB")
+                    if best == nil || sample.millisecondsPerTile < best!.2 {
+                        best = (strategy, slots, sample.millisecondsPerTile, sample.extraMB)
+                    }
+                } catch {
+                    rows.append("\(strategy.title) | \(name) | - | - | \(error.localizedDescription)")
+                    DiagnosticsLogger.shared.log("Real-CUGAN strategy discarded • \(strategy.rawValue) • \(name) • \(error.localizedDescription)")
+                }
+            }
+            if let best {
+                RealCUGANStrategyStore.save(RealCUGANStrategyRecord(
+                    strategy: best.0.rawValue,
+                    slots: best.1,
+                    medianMilliseconds: best.2,
+                    peakExtraMB: best.3,
+                    modelName: name,
+                    tileWidth: tileWidth,
+                    tileHeight: tileHeight,
+                    deviceModel: RealCUGANStrategyStore.deviceModel(),
+                    systemVersion: RealCUGANStrategyStore.systemVersion(),
+                    buildNumber: RealCUGANStrategyStore.buildNumber(),
+                    needsRebenchmark: false
+                ))
+                rows.append("winner | \(name) | \(best.0.title) | \(String(format: "%.1f", best.2)) ms/tile | slots \(best.1)")
+            }
+        }
+        return rows
+    }
+
+    private static func timeStrategy(url: URL, strategy: RealCUGANTileStrategy, slots: Int, tileWidth: Int, tileHeight: Int) throws -> (millisecondsPerTile: Double, extraMB: Double) {
+        let before = currentRenderPerformanceSnapshot().availableMemoryMB
+        guard before >= 500 else { throw ProcessorError.conversionFailed("insufficient headroom") }
+        let options = MLModelConfiguration()
+        options.computeUnits = ModelComputePreference.current == .auto ? .cpuAndNeuralEngine : ModelComputePreference.current.units
+        let modelURL: URL
+        if let count = strategy.fixedBatchCount {
+            guard let fixed = Bundle.main.url(forResource: "\(url.deletingPathExtension().lastPathComponent)_Batch\(count)", withExtension: "mlmodelc") else {
+                throw ProcessorError.conversionFailed("fixed-batch model missing")
+            }
+            modelURL = fixed
+        } else {
+            modelURL = url
+        }
+        let model = try MLModel(contentsOf: modelURL, configuration: options)
+        let provider = try syntheticInput(for: model)
+        let repeats = 3
+        let tilesPerRepeat = max(1, strategy == .sequentialBacked ? 2 : slots)
+        var samples: [Double] = []
+        var lowest = before
+        for _ in 0..<repeats {
+            try Task.checkCancellation()
+            let now = currentRenderPerformanceSnapshot()
+            if now.tier == .safe || now.availableMemoryMB < 500 { throw ProcessorError.conversionFailed("exceeded memory headroom") }
+            lowest = min(lowest, now.availableMemoryMB)
+            let elapsed = try autoreleasepool { () throws -> Double in
+                let start = CFAbsoluteTimeGetCurrent()
+                if strategy == .batchedUnbacked {
+                    try predictUnbackedBatch(model: model, provider: provider, count: max(2, slots))
+                } else if strategy == .concurrentBacked {
+                    try predictConcurrent(model: model, provider: provider, slots: max(2, slots), tileWidth: tileWidth, tileHeight: tileHeight)
+                } else {
+                    try predictBacked(model: model, provider: provider, repeats: tilesPerRepeat, tileWidth: tileWidth, tileHeight: tileHeight)
+                }
+                return (CFAbsoluteTimeGetCurrent() - start) * 1000 / Double(tilesPerRepeat)
+            }
+            samples.append(elapsed)
+            lowest = min(lowest, currentRenderPerformanceSnapshot().availableMemoryMB)
+        }
+        if lowest < 500 { throw ProcessorError.conversionFailed("exceeded memory headroom") }
+        let extra = max(0, before - lowest)
+        return (samples.sorted()[samples.count / 2], extra)
+    }
+
+    private static func predictBacked(model: MLModel, provider: MLFeatureProvider, repeats: Int, tileWidth: Int, tileHeight: Int) throws {
+        let backing = try outputBacking(for: model, tileWidth: tileWidth, tileHeight: tileHeight)
+        let prediction = MLPredictionOptions()
+        prediction.outputBackings = backing
+        for _ in 0..<repeats { _ = try model.prediction(from: provider, options: prediction) }
+    }
+
+    private static func predictUnbackedBatch(model: MLModel, provider: MLFeatureProvider, count: Int) throws {
+        let batch = MLArrayBatchProvider(array: Array(repeating: provider, count: count))
+        _ = try model.predictions(from: batch)
+    }
+
+    private static func predictConcurrent(model: MLModel, provider: MLFeatureProvider, slots: Int, tileWidth: Int, tileHeight: Int) throws {
+        let group = DispatchGroup()
+        let errorLock = NSLock()
+        var firstError: Error?
+        for _ in 0..<slots {
+            group.enter()
+            DispatchQueue.global(qos: .userInitiated).async {
+                defer { group.leave() }
+                do {
+                    try predictBacked(model: model, provider: provider, repeats: 1, tileWidth: tileWidth, tileHeight: tileHeight)
+                } catch {
+                    errorLock.lock()
+                    if firstError == nil { firstError = error }
+                    errorLock.unlock()
+                }
+            }
+        }
+        group.wait()
+        if let firstError { throw firstError }
+    }
+
+    private static func outputBacking(for model: MLModel, tileWidth: Int, tileHeight: Int) throws -> [String: MLFeatureValue] {
+        guard let name = model.modelDescription.outputDescriptionsByName.keys.first else {
+            throw ProcessorError.conversionFailed("model has no output")
+        }
+        if let image = model.modelDescription.outputDescriptionsByName[name]?.imageConstraint {
+            var buffer: CVPixelBuffer?
+            let attrs: [String: Any] = [kCVPixelBufferIOSurfacePropertiesKey as String: [:]]
+            guard CVPixelBufferCreate(kCFAllocatorDefault, image.pixelsWide, image.pixelsHigh, image.pixelFormatType, attrs as CFDictionary, &buffer) == kCVReturnSuccess, let buffer else {
+                throw ProcessorError.conversionFailed("could not allocate benchmark output backing")
+            }
+            return [name: MLFeatureValue(pixelBuffer: buffer)]
+        }
+        if let array = model.modelDescription.outputDescriptionsByName[name]?.multiArrayConstraint {
+            return [name: MLFeatureValue(multiArray: try MLMultiArray(shape: array.shape, dataType: array.dataType))]
+        }
+        _ = tileWidth
+        _ = tileHeight
+        throw ProcessorError.conversionFailed("unsupported benchmark output")
     }
 
     private static func syntheticInput(for model: MLModel) throws -> MLFeatureProvider {

@@ -76,3 +76,46 @@ mlmodel.short_description = f"Real-CUGAN Anime 2x Noise 3, {W}x{H} tile -> {W*2}
 mlmodel.version = "2.1"
 mlmodel.save(str(out_path))
 print(f"Saved {out_path} ({W}x{H})")
+
+# Optional fixed-batch asset. One prediction consumes N tiles stacked on the
+# batch dimension, so a single output backing is legal. The graph is the same
+# Tile2x math applied per tile. Nothing is downloaded; this writes only when
+# REALCUGAN_BATCH is 2 or 4.
+batch = int(os.environ.get("REALCUGAN_BATCH", "0"))
+if batch in (2, 4):
+    class BatchedTiles(torch.nn.Module):
+        def __init__(self, single, count):
+            super().__init__()
+            self.single = single
+            self.count = count
+
+        def forward(self, image, alpha):
+            parts = [self.single(image[index:index + 1] / 255.0, alpha) for index in range(self.count)]
+            return torch.cat(parts, dim=0)
+
+    batched = BatchedTiles(model, batch).eval()
+    batch_image = torch.randint(0, 256, (batch, 3, H, W), dtype=torch.float32)
+    with torch.no_grad():
+        traced_batch = torch.jit.trace(batched, (batch_image, alpha_example), strict=False, check_trace=False)
+        stacked = batched(batch_image, alpha_example)
+        singles = torch.cat([model(batch_image[index:index + 1] / 255.0, alpha_example) for index in range(batch)], dim=0)
+        delta = (stacked - singles).abs().max().item()
+        if delta > 1:
+            raise SystemExit(f"fixed batch diverged from per-tile by {delta}")
+    batch_model = ct.convert(
+        traced_batch,
+        convert_to="mlprogram",
+        inputs=[
+            ct.TensorType(name="image", shape=(batch, 3, H, W), dtype=np.float32),
+            ct.TensorType(name="alpha", shape=(1,), dtype=np.float16),
+        ],
+        outputs=[ct.TensorType(name="output", dtype=np.float32)],
+        minimum_deployment_target=ct.target.iOS16,
+        compute_precision=ct.precision.FLOAT16,
+    )
+    batch_path = out_path.with_name(f"{out_path.stem}_Batch{batch}.mlpackage")
+    batch_model.short_description = f"Real-CUGAN Anime 2x Noise 3, fixed batch {batch}, {W}x{H} tiles"
+    batch_model.author = mlmodel.author
+    batch_model.version = "2.1"
+    batch_model.save(str(batch_path))
+    print(f"Saved {batch_path} (batch {batch}, max delta vs per-tile {delta})")
