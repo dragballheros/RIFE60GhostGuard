@@ -135,28 +135,22 @@ enum OnDeviceImageGenerator {
 
     /// Saves the process-global Draw Things knobs this generator mutates and puts them back on exit.
     fileprivate struct EngineStateSnapshot {
-        let memoryCapacity: DeviceCapability.MemoryCapacity
-        let partialOffload: Bool
-        let weightsCache: UInt64
-        let externalURLs: [URL]
+        let restore: () -> Void
 
         static func capture() -> EngineStateSnapshot {
+            let capacity = DeviceCapability.memoryCapacity
+            let partialOffload = DeviceCapability.isPartialOffloadPreferred.load(ordering: .acquiring)
             let environment = MediaGenerationEnvironment.default
-            return EngineStateSnapshot(
-                memoryCapacity: DeviceCapability.memoryCapacity,
-                partialOffload: DeviceCapability.isPartialOffloadPreferred.load(ordering: .acquiring),
-                weightsCache: environment.maxTotalWeightsCacheSize,
-                externalURLs: environment.externalUrls
-            )
-        }
-
-        func restore() {
-            DeviceCapability.memoryCapacity = memoryCapacity
-            DeviceCapability.isPartialOffloadPreferred.store(partialOffload, ordering: .releasing)
-            var environment = MediaGenerationEnvironment.default
-            environment.externalUrls = externalURLs
-            environment.maxTotalWeightsCacheSize = weightsCache
-            MediaGenerationEnvironment.default = environment
+            let weightsCache = environment.maxTotalWeightsCacheSize
+            let externalURLs = environment.externalUrls
+            return EngineStateSnapshot {
+                DeviceCapability.memoryCapacity = capacity
+                DeviceCapability.isPartialOffloadPreferred.store(partialOffload, ordering: .releasing)
+                var restored = MediaGenerationEnvironment.default
+                restored.externalUrls = externalURLs
+                restored.maxTotalWeightsCacheSize = weightsCache
+                MediaGenerationEnvironment.default = restored
+            }
         }
     }
 
