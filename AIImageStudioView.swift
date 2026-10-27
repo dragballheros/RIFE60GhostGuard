@@ -729,9 +729,8 @@ struct AIImageStudioView: View {
         seedText = draft.seedText
         randomSeed = draft.randomSeed
         characterWeight = draft.characterWeight
-        enableCharacterLora = useAnima && selectedLoRATrigger == "sysdeep_chizuru"
-            ? true
-            : (draft.enableCharacterLora && !settings.localLoraFile.isEmpty)
+        enableCharacterLora = (enableCharacterLora && selectedLoRATrigger == "sysdeep_chizuru")
+            || (draft.enableCharacterLora && !settings.localLoraFile.isEmpty)
         UserDefaults.standard.set(modelProfile, forKey: "RIFE60.AIImageStudio.SelectedProfile")
     }
 
