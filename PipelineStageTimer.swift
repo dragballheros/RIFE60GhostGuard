@@ -7,6 +7,7 @@ final class PipelineStageTimer: @unchecked Sendable {
     private var marks: [(name: String, seconds: Double)] = []
     private var notes: [String] = []
     private var metrics: [String: Double] = [:]
+    private var rejections: [[String: Any]] = []
     private var open: [String: Date] = [:]
     private static let currentLock = NSLock()
     static weak var current: PipelineStageTimer?
@@ -36,6 +37,19 @@ final class PipelineStageTimer: @unchecked Sendable {
         lock.unlock()
     }
 
+    func recordRejection(seconds: Double, reason: String, disposition: String) {
+        lock.lock()
+        rejections.append(["seconds": seconds, "reason": reason, "disposition": disposition])
+        lock.unlock()
+    }
+
+    static func recordRejection(seconds: Double, reason: String, disposition: String) {
+        currentLock.lock()
+        let timer = current
+        currentLock.unlock()
+        timer?.recordRejection(seconds: seconds, reason: reason, disposition: disposition)
+    }
+
     static func note(_ text: String) {
         currentLock.lock()
         let timer = current
@@ -57,10 +71,11 @@ final class PipelineStageTimer: @unchecked Sendable {
         let snapshot = marks
         let recordedNotes = notes
         let recordedMetrics = metrics
+        let recordedRejections = rejections
         let total = Date().timeIntervalSince(started)
         lock.unlock()
         let stages = snapshot.map { ["stage": $0.name, "seconds": $0.seconds] as [String: Any] }
-        let payload: [String: Any] = ["totalSeconds": total, "stages": stages, "notes": recordedNotes, "metrics": recordedMetrics]
+        let payload: [String: Any] = ["totalSeconds": total, "stages": stages, "notes": recordedNotes, "metrics": recordedMetrics, "rifeRejections": recordedRejections]
         guard let data = try? JSONSerialization.data(withJSONObject: payload, options: [.prettyPrinted]) else { return }
         let fm = FileManager.default
         guard let docs = try? fm.url(for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: true) else { return }

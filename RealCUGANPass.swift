@@ -78,7 +78,8 @@ final class RealCUGANPass {
         let tilesDown = Int(ceil(Double(height) / Double(profile.stepY)))
         let tilesPerFrame = tilesAcross * tilesDown
 
-        DiagnosticsLogger.shared.log("Real-CUGAN entered • native source=\(width)x\(height) • native 2x target=\(targetWidth)x\(targetHeight) • tile=\(profile.width)x\(profile.height) • core=\(profile.stepX)x\(profile.stepY) • tiles/frame=\(tilesPerFrame) • bufferReuse=true • textureCacheBoundary=IOSurface • duration=\(String(format: "%.3f", seconds))s • thermal=\(currentThermalStateName())")
+        let strategyExplanation = RealCUGANStrategyStore.lookupExplanation(modelName: profile.modelName, tileWidth: profile.width, tileHeight: profile.height)
+        DiagnosticsLogger.shared.log("Real-CUGAN entered • native source=\(width)x\(height) • native 2x target=\(targetWidth)x\(targetHeight) • tile=\(profile.width)x\(profile.height) • core=\(profile.stepX)x\(profile.stepY) • tiles/frame=\(tilesPerFrame) • strategy=\(strategyExplanation) • thermal=\(currentThermalStateName()) • benchmark tiles are timed on a cool phone; this pass follows RIFE so per-tile time can be higher")
         progress(0.001, "Pass 3/3 • Real-CUGAN native 2× • \(width)×\(height) → \(targetWidth)×\(targetHeight)…")
 
         try preparePools(targetWidth: targetWidth, targetHeight: targetHeight, profile: profile)
@@ -86,7 +87,7 @@ final class RealCUGANPass {
 
         progress(0.002, "Pass 3/3 • Loading Real-CUGAN Anime 2x Noise 3…")
         DiagnosticsLogger.shared.log("Real-CUGAN tiled model load begin • \(profile.modelName)")
-        let preferNeuralEngine = false
+        let preferNeuralEngine = profile.modelName == fast1080Profile.modelName && ModelComputePreference.current == .auto
         let model = try loadModel(named: profile.modelName, preferNeuralEngine: preferNeuralEngine)
         DiagnosticsLogger.shared.log("Real-CUGAN tiled model load complete")
 
@@ -190,7 +191,8 @@ final class RealCUGANPass {
             encodeSeconds += CFAbsoluteTimeGetCurrent() - encodeStart
 
             if frames == 1 || frames % 20 == 0 {
-                DiagnosticsLogger.shared.log(String(format: "Real-CUGAN breakdown (running averages) • frame=%d • render-in=%.1fms • prediction=%.1fms • stitch=%.1fms • convert+append/backpressure=%.1fms", frames, renderInSeconds * 1000 / Double(frames), predictionSeconds * 1000 / Double(frames), stitchSeconds * 1000 / Double(frames), encodeSeconds * 1000 / Double(frames)))
+                let perTile = predictionSeconds * 1000 / Double(frames * max(tilesPerFrame, 1))
+                DiagnosticsLogger.shared.log(String(format: "Real-CUGAN breakdown (running averages) • frame=%d • tiles/frame=%d • prediction=%.1fms/frame • %.1fms/tile • render-in=%.1fms • stitch=%.1fms • convert+append/backpressure=%.1fms • thermal=%@", frames, tilesPerFrame, predictionSeconds * 1000 / Double(frames), perTile, renderInSeconds * 1000 / Double(frames), stitchSeconds * 1000 / Double(frames), encodeSeconds * 1000 / Double(frames), currentThermalStateName()))
                 let memory = currentRenderPerformanceSnapshot()
                 DiagnosticsLogger.shared.log("Real-CUGAN frame \(frames) complete • \(tilesPerFrame) tiles/frame • inference=\(String(format: "%.1f", inferenceSeconds * 1000.0 / Double(frames)))ms/frame • headroom=\(Int(memory.availableMemoryMB.rounded())) MB • thermal=\(memory.thermalAndMode)")
             }

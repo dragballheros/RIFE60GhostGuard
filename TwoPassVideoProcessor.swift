@@ -260,6 +260,11 @@ final class TwoPassVideoProcessor {
                     },
                     telemetry: { pass2 in
                         stageTelemetry.rife = pass2
+                        PipelineStageTimer.current?.record("compressionMs", milliseconds: stageTelemetry.restoration.compressionMsPerFrame)
+                        PipelineStageTimer.current?.record("rifeHqMs", milliseconds: pass2.rifeMsPerGeneratedFrame)
+                        PipelineStageTimer.current?.record("ghostGuardMs", milliseconds: pass2.ghostMsPerGeneratedFrame)
+                        PipelineStageTimer.current?.record("generatedFrames", milliseconds: Double(pass2.generatedFrames))
+                        PipelineStageTimer.current?.record("rejectedFrames", milliseconds: Double(pass2.rejectedFrames))
                         var combined = pass2
                         combined.sourceFrames = max(pass2.sourceFrames, stageTelemetry.restoration.sourceFrames)
                         combined.compressionMsPerFrame = stageTelemetry.restoration.compressionMsPerFrame
@@ -324,6 +329,8 @@ final class TwoPassVideoProcessor {
                             },
                             telemetry: { sample in
                                 stageTelemetry.cugan = sample
+                                PipelineStageTimer.current?.record("realCuganMs", milliseconds: sample.cuganMsPerFrame)
+                                PipelineStageTimer.current?.record("encodeMs", milliseconds: sample.encodeMsPerOutputFrame)
                                 var combined = stageTelemetry.rife
                                 combined.sourceFrames = max(stageTelemetry.rife.sourceFrames, stageTelemetry.restoration.sourceFrames)
                                 combined.compressionMsPerFrame = stageTelemetry.restoration.compressionMsPerFrame
@@ -376,6 +383,8 @@ final class TwoPassVideoProcessor {
                             },
                             telemetry: { sample in
                                 stageTelemetry.cugan = sample
+                                PipelineStageTimer.current?.record("realCuganMs", milliseconds: sample.cuganMsPerFrame)
+                                PipelineStageTimer.current?.record("encodeMs", milliseconds: sample.encodeMsPerOutputFrame)
                                 var combined = stageTelemetry.rife
                                 combined.sourceFrames = max(stageTelemetry.rife.sourceFrames, stageTelemetry.restoration.sourceFrames)
                                 combined.outlineMsPerFrame = 0
@@ -444,6 +453,9 @@ final class TwoPassVideoProcessor {
                         combined.outlineMsPerFrame = outlineSample.outlineMsPerFrame
                         combined.upscaledFrames = stageTelemetry.cugan.upscaledFrames
                         combined.cuganMsPerFrame = stageTelemetry.cugan.cuganMsPerFrame
+                        PipelineStageTimer.current?.record("realCuganMs", milliseconds: stageTelemetry.cugan.cuganMsPerFrame)
+                        PipelineStageTimer.current?.record("finalOutlineMs", milliseconds: outlineSample.outlineMsPerFrame)
+                        PipelineStageTimer.current?.record("encodeMs", milliseconds: outlineSample.encodeMsPerOutputFrame)
                         combined.upscaleFPS = stageTelemetry.cugan.upscaleFPS
                         combined.encodeMsPerOutputFrame = outlineSample.encodeMsPerOutputFrame
                         combined.thermalState = outlineSample.thermalState

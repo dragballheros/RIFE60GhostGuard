@@ -401,6 +401,9 @@ struct ContentView: View {
                     Section("Diagnostics") {
                         Button { vm.benchmarkModels() } label: { Label("Benchmark Models", systemImage: "speedometer") }
                             .disabled(vm.isBusy || vm.isBenchmarking || vm.isImporting)
+                        Button { vm.shareDiagnostics() } label: { Label("Share Diagnostics", systemImage: "square.and.arrow.up") }
+                            .disabled(vm.diagnosticsShareItems.isEmpty && DiagnosticsExport.runFiles().isEmpty)
+                        Button { vm.copyDiagnosticsJSON() } label: { Label("Copy Diagnostics", systemImage: "doc.on.doc") }
                         if vm.isBenchmarking {
                             ProgressView(value: vm.benchmarkProgress)
                             Button("Cancel Benchmark", role: .destructive) { vm.cancelBenchmark() }
@@ -589,6 +592,9 @@ struct ContentView: View {
             }
         }
         .simultaneousGesture(DragGesture(minimumDistance: 0).onChanged { _ in registerPostRenderInteraction() })
+        .sheet(isPresented: $vm.showingDiagnosticsShare) {
+            DiagnosticsActivityView(items: vm.diagnosticsShareItems)
+        }
         .sheet(isPresented: $showingH3VideoEditor) {
             H3VideoEditView()
         }

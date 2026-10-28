@@ -101,6 +101,25 @@ enum RealCUGANStrategyStore {
         return RealCUGANStrategyPlan(strategy: strategy, slots: slots, medianMilliseconds: record.medianMilliseconds)
     }
 
+    /// Why the saved benchmark winner was or was not used. Logged at Real-CUGAN entry.
+    static func lookupExplanation(modelName: String, tileWidth: Int, tileHeight: Int) -> String {
+        let device = deviceModel()
+        let system = systemVersion()
+        let build = buildNumber()
+        let records = loadRecords()
+        guard let record = records.first(where: {
+            $0.modelName == modelName && $0.tileWidth == tileWidth && $0.tileHeight == tileHeight
+                && $0.deviceModel == device && $0.systemVersion == system && $0.buildNumber == build
+        }) else {
+            let sameModel = records.filter { $0.modelName == modelName }.count
+            return "no saved record for model=\(modelName) tile=\(tileWidth)x\(tileHeight) device=\(device) system=\(system) build=\(build) • otherRecordsForModel=\(sameModel) • default=sequentialBacked"
+        }
+        if record.needsRebenchmark {
+            return "saved \(record.strategy) is marked for re-benchmark • default=sequentialBacked"
+        }
+        return "loaded \(record.strategy) slots=\(record.slots) median=\(String(format: "%.1f", record.medianMilliseconds))ms/tile"
+    }
+
     static func save(_ record: RealCUGANStrategyRecord) {
         var records = loadRecords().filter { !sameKey($0, record) }
         records.append(record)

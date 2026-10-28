@@ -4,6 +4,7 @@ import SwiftUI
 struct RIFE60GhostGuardApp: App {
     init() {
         StorageMigration.removeRetiredVACEWeights()
+        DiagnosticsExport.ensureFolder()
     }
 
     var body: some Scene {

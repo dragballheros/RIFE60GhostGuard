@@ -86,6 +86,8 @@ final class VideoProcessorViewModel: ObservableObject {
     @Published var recoveryAvailable = false
     @Published var recoveryStatusText = ""
     @Published var diagnosticsCopyStatus = ""
+    @Published var showingDiagnosticsShare = false
+    @Published var diagnosticsShareItems: [URL] = []
     @Published var exportFolderName = "On My iPhone > RIFE 60 Ghost Guard > Exports"
 
     @Published var mediaQueue: BatchMediaManifest?
@@ -373,6 +375,25 @@ final class VideoProcessorViewModel: ObservableObject {
         """
         UIPasteboard.general.string = report
         diagnosticsCopyStatus = "Error logs copied to clipboard"
+    }
+
+    func shareDiagnostics() {
+        let items = DiagnosticsExport.shareItems()
+        guard !items.isEmpty else {
+            diagnosticsCopyStatus = "No Documents/Diagnostics/run-*.json yet"
+            return
+        }
+        diagnosticsShareItems = items
+        showingDiagnosticsShare = true
+    }
+
+    func copyDiagnosticsJSON() {
+        guard let text = DiagnosticsExport.newestJSONText() else {
+            diagnosticsCopyStatus = "No Documents/Diagnostics/run-*.json yet"
+            return
+        }
+        UIPasteboard.general.string = text
+        diagnosticsCopyStatus = "Newest diagnostics JSON copied"
     }
 
     func wakeProcessingScreen() {

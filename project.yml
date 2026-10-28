@@ -18,6 +18,11 @@ targets:
   RIFE60GhostGuard:
     type: application
     platform: iOS
+    info:
+      path: Info.plist
+      properties:
+        UIFileSharingEnabled: true
+        LSSupportsOpeningDocumentsInPlace: true
     sources:
       - path: .
         includes:

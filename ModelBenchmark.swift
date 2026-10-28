@@ -62,6 +62,7 @@ enum ModelBenchmark {
             rows.append(([name] + values).joined(separator: " | "))
         }
         rows.append(contentsOf: try benchmarkStrategies(progress: progress))
+        rows.append(contentsOf: try benchmarkSharpieTiles(progress: progress))
         rows.append("Policies permit CPU fallback; these labels do not prove every operation used the named accelerator. Sharpie production also uses parallel tiles. The fastest Real-CUGAN strategy that stays inside memory headroom is saved for this model, tile, device, iOS version, and app build. The next render uses it. Before a benchmark, renders use sequential backed predictions.")
         let report = rows.joined(separator: "\n")
         DiagnosticsLogger.shared.log(report)
@@ -109,6 +110,48 @@ enum ModelBenchmark {
                 ))
                 rows.append("winner | \(name) | \(best.0.title) | \(String(format: "%.1f", best.2)) ms/tile | slots \(best.1)")
             }
+        }
+        return rows
+    }
+
+    private static func benchmarkSharpieTiles(progress: @escaping @Sendable (Double, String) -> Void) throws -> [String] {
+        var rows = ["Sharpie tile strategy | ms/tile | result"]
+        var best: (SharpieTileStrategy, Double)?
+        for strategy in SharpieTileStrategy.candidates() {
+            try Task.checkCancellation()
+            progress(1, strategy.title)
+            do {
+                let url = try OutlineEnhancer.compiledModelURL(resource: strategy.resourceName)
+                let options = MLModelConfiguration()
+                options.computeUnits = ModelComputePreference.current == .auto ? .cpuAndNeuralEngine : ModelComputePreference.current.units
+                let model = try MLModel(contentsOf: url, configuration: options)
+                let provider = try syntheticInput(for: model)
+                var samples: [Double] = []
+                let count = strategy.usesUnbackedBatch ? 4 : 1
+                for _ in 0..<3 {
+                    try Task.checkCancellation()
+                    let elapsed = try autoreleasepool { () throws -> Double in
+                        let start = CFAbsoluteTimeGetCurrent()
+                        if strategy.usesUnbackedBatch {
+                            let batch = MLArrayBatchProvider(array: Array(repeating: provider, count: count))
+                            _ = try model.predictions(from: batch, options: MLPredictionOptions())
+                        } else {
+                            _ = try model.prediction(from: provider)
+                        }
+                        return (CFAbsoluteTimeGetCurrent() - start) * 1000 / Double(count)
+                    }
+                    samples.append(elapsed)
+                }
+                let median = samples.sorted()[samples.count / 2]
+                rows.append("\(strategy.title) | \(String(format: "%.1f", median)) | kept")
+                if best == nil || median < best!.1 { best = (strategy, median) }
+            } catch {
+                rows.append("\(strategy.title) | - | \(error.localizedDescription)")
+            }
+        }
+        if let best {
+            SharpieTileStore.save(best.0, medianMilliseconds: best.1)
+            rows.append("winner | \(best.0.title) | \(String(format: "%.1f", best.1)) ms/tile")
         }
         return rows
     }
