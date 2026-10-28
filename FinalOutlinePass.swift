@@ -115,6 +115,7 @@ final class FinalOutlinePass {
 
         var frames = 0, shadowCleanedFrames = 0, finalCleanedFrames = 0
         var outlineSeconds = 0.0, shadowSeconds = 0.0, finalCompressionSeconds = 0.0, encodeSeconds = 0.0
+        var downscaleTotal = 0.0, packTotal = 0.0, predictTotal = 0.0, unpackTotal = 0.0, refineTotal = 0.0, dissolveTotal = 0.0
         let passStart = CFAbsoluteTimeGetCurrent()
 
         while let sample = output.copyNextSampleBuffer() {
@@ -150,6 +151,12 @@ final class FinalOutlinePass {
                 : try narrowTowardOriginal(enhanced: enhancedWorking, original: preSharpie)
             let blendSeconds = CFAbsoluteTimeGetCurrent() - blendStart
             outlineSeconds += CFAbsoluteTimeGetCurrent() - outlineStart
+            downscaleTotal += downscaleSeconds
+            packTotal += enhancer.lastPackSeconds
+            predictTotal += enhancer.lastPredictSeconds
+            unpackTotal += enhancer.lastUnpackSeconds
+            refineTotal += enhancer.lastRefineSeconds
+            dissolveTotal += blendSeconds
 
             // Only the light general compression polish remains after Sharpie.
             // The spatial shadow/chroma blur is never applied to finished Sharpie lines.
@@ -187,6 +194,18 @@ final class FinalOutlinePass {
             }
         }
 
+        if frames > 0 {
+            let count = Double(frames)
+            let split = String(format: "Sharpie split averages • downscale=%.1fms • pack=%.1fms • predict=%.1fms • unpack=%.1fms • visionRefine=%.1fms • upscaleDissolve=%.1fms", downscaleTotal * 1000 / count, packTotal * 1000 / count, predictTotal * 1000 / count, unpackTotal * 1000 / count, refineTotal * 1000 / count, dissolveTotal * 1000 / count)
+            DiagnosticsLogger.shared.log(split)
+            PipelineStageTimer.current?.note(split)
+            PipelineStageTimer.current?.record("sharpieDownscaleMs", milliseconds: downscaleTotal * 1000 / count)
+            PipelineStageTimer.current?.record("sharpiePackMs", milliseconds: packTotal * 1000 / count)
+            PipelineStageTimer.current?.record("sharpiePredictMs", milliseconds: predictTotal * 1000 / count)
+            PipelineStageTimer.current?.record("sharpieUnpackMs", milliseconds: unpackTotal * 1000 / count)
+            PipelineStageTimer.current?.record("sharpieVisionRefineMs", milliseconds: refineTotal * 1000 / count)
+            PipelineStageTimer.current?.record("sharpieUpscaleDissolveMs", milliseconds: dissolveTotal * 1000 / count)
+        }
         if reader.status == .failed { throw ProcessorError.reader(reader.error?.localizedDescription ?? "final polish decode failed") }
         guard frames > 0 else { throw ProcessorError.conversionFailed("Final polish pass received zero frames") }
         let completedURL = try await checkpoint.finish()

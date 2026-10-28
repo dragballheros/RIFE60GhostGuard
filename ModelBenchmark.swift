@@ -158,7 +158,7 @@ enum ModelBenchmark {
     }
 
     private static func predictBacked(model: MLModel, provider: MLFeatureProvider, repeats: Int, tileWidth: Int, tileHeight: Int) throws {
-        let backing = try outputBacking(for: model, tileWidth: tileWidth, tileHeight: tileHeight)
+        let backing = try RealCUGANOutputBacking.make(for: model)
         let prediction = MLPredictionOptions()
         prediction.outputBackings = backing
         for _ in 0..<repeats { _ = try model.prediction(from: provider, options: prediction) }
@@ -188,26 +188,6 @@ enum ModelBenchmark {
         }
         group.wait()
         if let firstError { throw firstError }
-    }
-
-    private static func outputBacking(for model: MLModel, tileWidth: Int, tileHeight: Int) throws -> [String: MLFeatureValue] {
-        guard let name = model.modelDescription.outputDescriptionsByName.keys.first else {
-            throw ProcessorError.conversionFailed("model has no output")
-        }
-        if let image = model.modelDescription.outputDescriptionsByName[name]?.imageConstraint {
-            var buffer: CVPixelBuffer?
-            let attrs: [String: Any] = [kCVPixelBufferIOSurfacePropertiesKey as String: [:]]
-            guard CVPixelBufferCreate(kCFAllocatorDefault, image.pixelsWide, image.pixelsHigh, image.pixelFormatType, attrs as CFDictionary, &buffer) == kCVReturnSuccess, let buffer else {
-                throw ProcessorError.conversionFailed("could not allocate benchmark output backing")
-            }
-            return [name: MLFeatureValue(pixelBuffer: buffer)]
-        }
-        if let array = model.modelDescription.outputDescriptionsByName[name]?.multiArrayConstraint {
-            return [name: MLFeatureValue(multiArray: try MLMultiArray(shape: array.shape, dataType: array.dataType))]
-        }
-        _ = tileWidth
-        _ = tileHeight
-        throw ProcessorError.conversionFailed("unsupported benchmark output")
     }
 
     private static func syntheticInput(for model: MLModel) throws -> MLFeatureProvider {

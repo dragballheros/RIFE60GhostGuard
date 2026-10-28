@@ -492,6 +492,14 @@ jobs:
           swiftc -swift-version 5 RealCUGANTileStrategy.swift /tmp/cugan-strategy-check/main.swift -o /tmp/cugan-strategy-check/check
           /tmp/cugan-strategy-check/check
 
+      - name: Verify Real-CUGAN output backings
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/cugan-backing-check
+          cp Scripts/check_cugan_output_backing.swift /tmp/cugan-backing-check/main.swift
+          swiftc -swift-version 5 -framework CoreML -framework CoreVideo RealCUGANOutputBacking.swift /tmp/cugan-backing-check/main.swift -o /tmp/cugan-backing-check/check
+          /tmp/cugan-backing-check/check CompiledModels
+
       - name: Verify anime inpainting inference and mask geometry
         run: |
           set -euo pipefail

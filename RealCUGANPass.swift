@@ -617,7 +617,7 @@ final class RealCUGANPass {
                             "alpha": MLFeatureValue(multiArray: alpha)
                         ])
                         let options = MLPredictionOptions()
-                        options.outputBackings = ["output": MLFeatureValue(pixelBuffer: outputs[index])]
+                        options.outputBackings = try RealCUGANOutputBacking.imageBacking(named: "output", model: model, reusing: outputs[index])
                         _ = try model.prediction(from: provider, options: options)
                     } catch {
                         errorLock.lock()
@@ -731,7 +731,10 @@ final class RealCUGANPass {
                 "alpha": MLFeatureValue(multiArray: alpha)
             ])
             let options = MLPredictionOptions()
-            options.outputBackings = ["output": MLFeatureValue(multiArray: outputArray)]
+            guard let outputName = model.modelDescription.outputDescriptionsByName.keys.first else {
+                throw ProcessorError.conversionFailed("fixed-batch Real-CUGAN model has no output")
+            }
+            options.outputBackings = [outputName: outputArray]
             let predictionStart = CFAbsoluteTimeGetCurrent()
             _ = try model.prediction(from: provider, options: options)
             predictionSeconds += CFAbsoluteTimeGetCurrent() - predictionStart
@@ -794,8 +797,12 @@ final class RealCUGANPass {
     private func predictSingle(model: MLModel, provider: MLFeatureProvider, outputBuffer: CVPixelBuffer, allowBacking: Bool) throws {
         if allowBacking {
             let options = MLPredictionOptions()
-            options.outputBackings = ["output": MLFeatureValue(pixelBuffer: outputBuffer)]
+            let backing = try RealCUGANOutputBacking.imageBacking(named: "output", model: model, reusing: outputBuffer)
+            options.outputBackings = backing
             _ = try model.prediction(from: provider, options: options)
+            if let backed = backing["output"] as? CVPixelBuffer, backed !== outputBuffer {
+                try copyPixelBuffer(backed, into: outputBuffer)
+            }
             return
         }
         let result = try model.prediction(from: provider)

@@ -6,6 +6,7 @@ final class PipelineStageTimer: @unchecked Sendable {
     private let started = Date()
     private var marks: [(name: String, seconds: Double)] = []
     private var notes: [String] = []
+    private var metrics: [String: Double] = [:]
     private var open: [String: Date] = [:]
     private static let currentLock = NSLock()
     static weak var current: PipelineStageTimer?
@@ -20,6 +21,12 @@ final class PipelineStageTimer: @unchecked Sendable {
         lock.lock()
         let start = open.removeValue(forKey: name) ?? started
         marks.append((name, Date().timeIntervalSince(start)))
+        lock.unlock()
+    }
+
+    func record(_ name: String, milliseconds: Double) {
+        lock.lock()
+        metrics[name] = milliseconds
         lock.unlock()
     }
 
@@ -49,10 +56,11 @@ final class PipelineStageTimer: @unchecked Sendable {
         lock.lock()
         let snapshot = marks
         let recordedNotes = notes
+        let recordedMetrics = metrics
         let total = Date().timeIntervalSince(started)
         lock.unlock()
         let stages = snapshot.map { ["stage": $0.name, "seconds": $0.seconds] as [String: Any] }
-        let payload: [String: Any] = ["totalSeconds": total, "stages": stages, "notes": recordedNotes]
+        let payload: [String: Any] = ["totalSeconds": total, "stages": stages, "notes": recordedNotes, "metrics": recordedMetrics]
         guard let data = try? JSONSerialization.data(withJSONObject: payload, options: [.prettyPrinted]) else { return }
         let fm = FileManager.default
         guard let docs = try? fm.url(for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: true) else { return }

@@ -379,7 +379,7 @@ final class OutlineEnhancer {
             timingLock.unlock()
             if !rejected {
                 let options = MLPredictionOptions()
-                options.outputBackings = [outputName: MLFeatureValue(multiArray: output)]
+                options.outputBackings = [outputName: output]
                 do {
                     _ = try model.prediction(from: provider, options: options)
                     return output
