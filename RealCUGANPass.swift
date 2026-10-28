@@ -798,10 +798,10 @@ final class RealCUGANPass {
         if allowBacking {
             let options = MLPredictionOptions()
             let backing = try RealCUGANOutputBacking.imageBacking(named: "output", model: model, reusing: outputBuffer)
-            options.outputBackings = backing
+            options.outputBackings = backing.dictionary
             _ = try model.prediction(from: provider, options: options)
-            if let backed = backing["output"] as? CVPixelBuffer, backed !== outputBuffer {
-                try copyPixelBuffer(backed, into: outputBuffer)
+            if let separate = backing.copyIntoPool {
+                try copyPixelBuffer(separate, into: outputBuffer)
             }
             return
         }
