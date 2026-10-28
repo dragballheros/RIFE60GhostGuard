@@ -22,9 +22,10 @@ for name in names {
         throw BackingCheckError.message("\(name) backing is missing its output feature")
     }
     if let image = model.modelDescription.outputDescriptionsByName[outputName]?.imageConstraint {
-        guard let buffer = value as? CVPixelBuffer else {
+        guard CFGetTypeID(value as CFTypeRef) == CVPixelBufferGetTypeID() else {
             throw BackingCheckError.message("\(name) image output was not backed by a CVPixelBuffer")
         }
+        let buffer = value as! CVPixelBuffer
         try expect(CVPixelBufferGetWidth(buffer) == image.pixelsWide, "\(name) backing width")
         try expect(CVPixelBufferGetHeight(buffer) == image.pixelsHigh, "\(name) backing height")
         try expect(CVPixelBufferGetPixelFormatType(buffer) == image.pixelFormatType, "\(name) backing pixel format")
