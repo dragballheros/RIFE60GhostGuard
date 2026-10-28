@@ -46,7 +46,9 @@ final class OutlineRebuild {
                 let r = Int(p[2])
                 let g = Int(p[1])
                 let b = Int(p[0])
-                luma[base + x] = UInt8(min(255, (77 * r + 150 * g + 29 * b) >> 8))
+                let weighted: Int = 77 * r + 150 * g + 29 * b
+                let shifted: Int = weighted >> 8
+                luma[base + x] = UInt8(min(255, shifted))
             }
         }
         return luma
@@ -120,20 +122,31 @@ final class OutlineRebuild {
                 let stats = neighborStats(closed: closed, luma: luma, x: x, y: y, width: width)
                 let center = Int(luma[index])
                 if closed[index] == 1 && stats.neighbors >= 2 {
-                    let lift = Int((1.0 - amount) * 18.0)
+                    let fade: Double = 1.0 - amount
+                    let lift = Int(fade * 18.0)
                     let target = min(center, stats.darkest + lift)
-                    let keep = 1.0 - amount * 0.65
-                    let mixed = Int((Double(center) * keep + Double(target) * (1.0 - keep)).rounded())
+                    let keep: Double = 1.0 - amount * 0.65
+                    let centerD = Double(center)
+                    let targetD = Double(target)
+                    let mixedD: Double = centerD * keep + targetD * (1.0 - keep)
+                    let mixed = Int(mixedD.rounded())
                     if mixed < center {
-                        scale(pixel: o, by: Double(max(mixed, 1)) / Double(max(center, 1)))
+                        let numerator = Double(max(mixed, 1))
+                        let denominator = Double(max(center, 1))
+                        scale(pixel: o, by: numerator / denominator)
                     }
                 } else if line[index] == 1 && stats.neighbors <= 1 {
                     let paper = paperLuma(closed: closed, luma: luma, x: x, y: y, width: width)
                     if let paper {
-                        let keep = 1.0 - amount * 0.7
-                        let mixed = Int((Double(center) * keep + Double(paper) * (1.0 - keep)).rounded())
+                        let keep: Double = 1.0 - amount * 0.7
+                        let centerD = Double(center)
+                        let paperD = Double(paper)
+                        let mixedD: Double = centerD * keep + paperD * (1.0 - keep)
+                        let mixed = Int(mixedD.rounded())
                         if mixed > center {
-                            scale(pixel: o, by: Double(mixed) / Double(max(center, 1)))
+                            let numerator = Double(mixed)
+                            let denominator = Double(max(center, 1))
+                            scale(pixel: o, by: numerator / denominator)
                         }
                     }
                 }
@@ -172,9 +185,12 @@ final class OutlineRebuild {
     }
 
     private static func scale(pixel: UnsafeMutablePointer<UInt8>, by factor: Double) {
-        pixel[0] = UInt8(min(255, max(0, Int((Double(pixel[0]) * factor).rounded()))))
-        pixel[1] = UInt8(min(255, max(0, Int((Double(pixel[1]) * factor).rounded()))))
-        pixel[2] = UInt8(min(255, max(0, Int((Double(pixel[2]) * factor).rounded()))))
+        let blue = Double(pixel[0]) * factor
+        let green = Double(pixel[1]) * factor
+        let red = Double(pixel[2]) * factor
+        pixel[0] = UInt8(min(255, max(0, Int(blue.rounded()))))
+        pixel[1] = UInt8(min(255, max(0, Int(green.rounded()))))
+        pixel[2] = UInt8(min(255, max(0, Int(red.rounded()))))
     }
 
     static func apply(to image: UIImage, strength: Double) -> UIImage? {

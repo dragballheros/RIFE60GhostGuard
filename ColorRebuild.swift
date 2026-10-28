@@ -53,11 +53,16 @@ final class ColorRebuild {
             let base = y * width
             for x in 0..<width {
                 let p = row.advanced(by: x * 4)
-                let b = Int(p[0]), g = Int(p[1]), r = Int(p[2])
-                let y8 = UInt8(min(255, (77 * r + 150 * g + 29 * b) >> 8))
+                let b = Int(p[0])
+                let g = Int(p[1])
+                let r = Int(p[2])
+                let lumaWeighted: Int = 77 * r + 150 * g + 29 * b
+                let y8 = UInt8(min(255, lumaWeighted >> 8))
                 luma[base + x] = y8
-                cb[base + x] = Int16(((-43 * r - 85 * g + 128 * b) >> 8) + 128)
-                cr[base + x] = Int16(((128 * r - 107 * g - 21 * b) >> 8) + 128)
+                let cbWeighted: Int = -43 * r - 85 * g + 128 * b
+                let crWeighted: Int = 128 * r - 107 * g - 21 * b
+                cb[base + x] = Int16((cbWeighted >> 8) + 128)
+                cr[base + x] = Int16((crWeighted >> 8) + 128)
             }
         }
 
@@ -73,18 +78,29 @@ final class ColorRebuild {
                 let index = base + x
                 let y8 = Int(luma[index])
                 let edge = Self.lumaEdge(luma, x: x, y: y, width: width, height: height)
-                var mix = amount * (edge < 12 ? 0.82 : (edge < 28 ? 0.38 : 0.12))
+                let flatMix: Double = edge < 12 ? 0.82 : (edge < 28 ? 0.38 : 0.12)
+                var mix: Double = amount * flatMix
                 let cb0 = Int(cb[index])
                 let cr0 = Int(cr[index])
                 if Self.isSkin(y: y8, cb: cb0, cr: cr0) { mix *= 0.42 }
-                var outCb = Int((Double(cb0) * (1 - mix) + Double(guidedCb[index]) * mix).rounded())
-                var outCr = Int((Double(cr0) * (1 - mix) + Double(guidedCr[index]) * mix).rounded())
+                let keep: Double = 1.0 - mix
+                let cbSource = Double(cb0)
+                let crSource = Double(cr0)
+                let cbGuide = Double(guidedCb[index])
+                let crGuide = Double(guidedCr[index])
+                let mixedCb: Double = cbSource * keep + cbGuide * mix
+                let mixedCr: Double = crSource * keep + crGuide * mix
+                var outCb = Int(mixedCb.rounded())
+                var outCr = Int(mixedCr.rounded())
                 if hasPrevious {
                     let motion = abs(y8 - Int(previousLuma[index]))
                     if motion < 8 {
-                        let hold = 0.34
-                        outCb = Int((Double(outCb) * (1 - hold) + Double(previousCb[index]) * hold).rounded())
-                        outCr = Int((Double(outCr) * (1 - hold) + Double(previousCr[index]) * hold).rounded())
+                        let hold: Double = 0.34
+                        let kept: Double = 1.0 - hold
+                        let heldCb: Double = Double(outCb) * kept + Double(previousCb[index]) * hold
+                        let heldCr: Double = Double(outCr) * kept + Double(previousCr[index]) * hold
+                        outCb = Int(heldCb.rounded())
+                        outCr = Int(heldCr.rounded())
                     }
                 }
                 outCb = min(255, max(0, outCb))
@@ -157,9 +173,12 @@ final class ColorRebuild {
     private static func rgb(y: Int, cb: Int, cr: Int) -> (r: UInt8, g: UInt8, b: UInt8) {
         let c = cb - 128
         let d = cr - 128
-        let r = min(255, max(0, y + ((359 * d) >> 8)))
-        let g = min(255, max(0, y - ((88 * c + 183 * d) >> 8)))
-        let b = min(255, max(0, y + ((454 * c) >> 8)))
+        let redShift: Int = (359 * d) >> 8
+        let greenShift: Int = (88 * c + 183 * d) >> 8
+        let blueShift: Int = (454 * c) >> 8
+        let r = min(255, max(0, y + redShift))
+        let g = min(255, max(0, y - greenShift))
+        let b = min(255, max(0, y + blueShift))
         return (UInt8(r), UInt8(g), UInt8(b))
     }
 
