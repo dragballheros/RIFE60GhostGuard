@@ -331,8 +331,9 @@ jobs:
           SHARPIE_WEIGHT=$(find Models/AnimeSharpieOutlineSubtle.mlpackage -type f -name 'weight.bin' -print -quit)
           test -n "$SHARPIE_WEIGHT"
           test -s "$SHARPIE_WEIGHT"
-          python3 -m pip install --disable-pip-version-check coremltools
-          python3 Scripts/export_sharpie_tiles.py Models/AnimeSharpieOutlineSubtle.mlpackage
+          python3 -m venv /tmp/sharpie-export
+          /tmp/sharpie-export/bin/pip install --disable-pip-version-check coremltools
+          /tmp/sharpie-export/bin/python Scripts/export_sharpie_tiles.py Models/AnimeSharpieOutlineSubtle.mlpackage
           test -f Models/AnimeSharpieOutlineSubtle_Tile768.mlpackage/Manifest.json
           test -f Models/AnimeSharpieOutlineSubtle_Tile1024.mlpackage/Manifest.json
 
