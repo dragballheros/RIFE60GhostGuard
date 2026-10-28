@@ -331,7 +331,10 @@ jobs:
           SHARPIE_WEIGHT=$(find Models/AnimeSharpieOutlineSubtle.mlpackage -type f -name 'weight.bin' -print -quit)
           test -n "$SHARPIE_WEIGHT"
           test -s "$SHARPIE_WEIGHT"
-          python3 -m venv /tmp/sharpie-export
+          if ! command -v python3.12 >/dev/null 2>&1; then brew install python@3.12; fi
+          PY312="$(command -v python3.12 || true)"
+          if [ -z "$PY312" ]; then PY312="$(brew --prefix python@3.12)/bin/python3.12"; fi
+          "$PY312" -m venv /tmp/sharpie-export
           /tmp/sharpie-export/bin/pip install --disable-pip-version-check coremltools
           /tmp/sharpie-export/bin/python Scripts/export_sharpie_tiles.py Models/AnimeSharpieOutlineSubtle.mlpackage
           test -f Models/AnimeSharpieOutlineSubtle_Tile768.mlpackage/Manifest.json
