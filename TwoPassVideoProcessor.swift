@@ -116,7 +116,8 @@ final class TwoPassVideoProcessor {
         // behaviour) found the upstream checkpoints missing and silently
         // re-ran Compression Guard and RIFE from scratch.
         // ------------------------------------------------------------------
-        let cuganEnd = config.outlineProtection ? 0.84 : 0.97
+        let visualPolish = config.outlineProtection || config.colorRebuild || config.outlineRebuild
+        let cuganEnd = visualPolish ? 0.84 : 0.97
         let finalExpectedWidth = upscaleTo4K ? automaticFinalWidth : sourceWidth
         let finalExpectedHeight = upscaleTo4K ? automaticFinalHeight : sourceHeight
 
@@ -126,7 +127,7 @@ final class TwoPassVideoProcessor {
         var rifeCheckpointValid = false
         var restoredCheckpointValid = false
 
-        if config.outlineProtection, let outlineCheckpoint {
+        if visualPolish, let outlineCheckpoint {
             outlineCheckpointValid = await validVideo(
                 outlineCheckpoint,
                 expectedDuration: sourceDuration,
@@ -245,7 +246,8 @@ final class TwoPassVideoProcessor {
                     preserveAudio: false,
                     targetFPS: config.targetFPS
                 )
-                let rifeIsFinalVisualStage = (!upscaleTo4K || automaticCuganPasses == 0) && !config.outlineProtection
+                let visualPolish = config.outlineProtection || config.colorRebuild || config.outlineRebuild
+                let rifeIsFinalVisualStage = (!upscaleTo4K || automaticCuganPasses == 0) && !visualPolish
                 let rife = RIFEVideoProcessor(
                     configuration: pass2Config,
                     colorPopStrength: rifeIsFinalVisualStage ? colorPopStrength : 0,
@@ -313,7 +315,7 @@ final class TwoPassVideoProcessor {
                         autoreleasepool { }
                         try await thermalHandoff(progress: progress, position: 0.40, next: "Real-CUGAN native 2×")
                         progress(0.41, "Pass 3/4 • Loading Real-CUGAN Anime native 2×…")
-                        let cuganIsFinalVisualStage = !config.outlineProtection && automaticCuganPasses == 1
+                        let cuganIsFinalVisualStage = !visualPolish && automaticCuganPasses == 1
                         stageTimer.begin("cugan")
                         let cugan = RealCUGANPass(
                             intensity: 1.30,
@@ -368,7 +370,7 @@ final class TwoPassVideoProcessor {
                         }
                         try await thermalHandoff(progress: progress, position: 0.62, next: "Real-CUGAN automatic 4×")
                         progress(0.63, "Pass 4/4 • Real-CUGAN automatic second 2× pass…")
-                        let cuganSecondIsFinalVisualStage = !config.outlineProtection && automaticCuganPasses == 2
+                        let cuganSecondIsFinalVisualStage = !visualPolish && automaticCuganPasses == 2
                         let cuganSecond = RealCUGANPass(
                             intensity: 1.30,
                             colorPopStrength: cuganSecondIsFinalVisualStage ? colorPopStrength : 0,
@@ -417,14 +419,14 @@ final class TwoPassVideoProcessor {
                 }
             } else {
                 postCUGANSource = rifeResult
-                if !config.outlineProtection { progress(0.97, "RIFE HQ complete") }
+                if !visualPolish { progress(0.97, "RIFE HQ complete") }
             }
         }
 
         // FINAL VISUAL PASS: apply the slightly narrower Sharpie model only after
         // CUGAN. If CUGAN is disabled it still remains after RIFE.
         let videoForMux: URL
-        if config.outlineProtection {
+        if visualPolish {
             if outlineCheckpointValid, let outlineCheckpoint {
                 videoForMux = outlineCheckpoint
                 progress(0.97, "Recovered checkpoint • Final Sharpie outline complete")
@@ -438,7 +440,7 @@ final class TwoPassVideoProcessor {
                 let outlineStart = upscaleTo4K ? 0.85 : 0.41
                 progress(outlineStart, upscaleTo4K ? "Pass 4/4 • Applying final Sharpie after Real-CUGAN…" : "Pass 3/3 • Applying final Sharpie after RIFE…")
                 stageTimer.begin("sharpie")
-                let finalOutline = FinalOutlinePass(colorPopStrength: colorPopStrength)
+                let finalOutline = FinalOutlinePass(colorPopStrength: colorPopStrength, colorRebuild: config.colorRebuild, colorRebuildStrength: config.colorRebuildStrength, outlineRebuild: config.outlineRebuild, outlineRebuildStrength: config.outlineRebuildStrength, sharpen: config.outlineProtection)
                 let generated = try await finalOutline.run(
                     sourceURL: outlineInput,
                     finalAudioBitrate: audioBitrate,
@@ -532,7 +534,7 @@ final class TwoPassVideoProcessor {
         let audioBitrate: Double
         if let audio = try await asset.loadTracks(withMediaType: .audio).first { audioBitrate = Double(try await audio.load(.estimatedDataRate)) } else { audioBitrate = 0 }
         let restore = config.compressionProtection || watermark.enabled
-        let stages = UpscaleFirstPlan.stages(restoration: restore, outline: config.outlineProtection)
+        let stages = UpscaleFirstPlan.stages(restoration: restore, outline: config.outlineProtection || config.colorRebuild || config.outlineRebuild)
         let checkpoints = stages.map { recoveryDirectory?.appendingPathComponent("checkpoint-upscale-first-\($0).mov") }
         var inputURL = sourceURL
         var startIndex = 0
@@ -580,7 +582,7 @@ final class TwoPassVideoProcessor {
                         telemetry(combined)
                     }, recoveryDirectory: recoveryDirectory)
                 default:
-                    generated = try await FinalOutlinePass(colorPopStrength: colorPopStrength).run(sourceURL: inputURL, finalAudioBitrate: audioBitrate, progress: publish, telemetry: { sample in combined.outlineMsPerFrame = sample.outlineMsPerFrame; telemetry(combined) }, recoveryDirectory: recoveryDirectory)
+                    generated = try await FinalOutlinePass(colorPopStrength: colorPopStrength, colorRebuild: config.colorRebuild, colorRebuildStrength: config.colorRebuildStrength, outlineRebuild: config.outlineRebuild, outlineRebuildStrength: config.outlineRebuildStrength, sharpen: config.outlineProtection).run(sourceURL: inputURL, finalAudioBitrate: audioBitrate, progress: publish, telemetry: { sample in combined.outlineMsPerFrame = sample.outlineMsPerFrame; telemetry(combined) }, recoveryDirectory: recoveryDirectory)
                 }
                 if let checkpoint = checkpoints[index] {
                     try persistCheckpoint(from: generated, to: checkpoint)

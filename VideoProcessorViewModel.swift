@@ -58,6 +58,10 @@ final class VideoProcessorViewModel: ObservableObject {
     @Published var sceneCutProtection = true
     @Published var compressionProtection = true
     @Published var outlineProtection = true
+    @Published var colorRebuildEnabled = true
+    @Published var colorRebuildStrength = 0.45
+    @Published var outlineRebuildEnabled = true
+    @Published var outlineRebuildStrength = 0.5
     @Published var watermarkRemovalEnabled = false
     @Published var watermarkModel: WatermarkModel = .lama
     @Published var watermarkRegions: [WatermarkRegion] = [] { didSet { saveSelectedMask() } }
@@ -254,6 +258,10 @@ final class VideoProcessorViewModel: ObservableObject {
         let isGIF = inputKind == .gif
         let compression = compressionProtection
         let outline = outlineProtection
+        let colorRebuild = colorRebuildEnabled
+        let colorStrength = colorRebuildStrength
+        let lineRebuild = outlineRebuildEnabled
+        let lineStrength = outlineRebuildStrength
         let upscale = upscaleTo4K
         let colorPop = colorPopEnabled
         let gradeStrength = colorPopStrength
@@ -275,6 +283,10 @@ final class VideoProcessorViewModel: ObservableObject {
                     upscale2x: upscale,
                     colorPopEnabled: colorPop,
                     colorPopStrength: gradeStrength,
+                    colorRebuild: colorRebuild,
+                    colorRebuildStrength: colorStrength,
+                    outlineRebuild: lineRebuild,
+                    outlineRebuildStrength: lineStrength,
                     watermark: watermark
                 )
                 guard !Task.isCancelled, let self else {
@@ -468,6 +480,10 @@ final class VideoProcessorViewModel: ObservableObject {
         let cuts = sceneCutProtection
         let compressionEnabled = compressionProtection
         let outlineEnabled = outlineProtection
+        let colorRebuild = colorRebuildEnabled
+        let colorStrength = colorRebuildStrength
+        let lineRebuild = outlineRebuildEnabled
+        let lineStrength = outlineRebuildStrength
         let sensitivity = ghostSensitivity
         let colorPop = colorPopEnabled
         let gradeStrength = colorPopStrength
@@ -478,7 +494,7 @@ final class VideoProcessorViewModel: ObservableObject {
         let upscaleBeforeRIFE = upscaleFirst && upscale
         let modelCompute = computePreference.rawValue
         let selectedTargetFPS = self.selectedTargetFPS
-        let configKey = ["pipeline-v6-deepcream-model", "hq", "ghost=\(guardEnabled)", "cuts=\(cuts)", "compression=\(compressionEnabled)", "outline=\(outlineEnabled)", "colorpop=\(colorPop)", "colorpopStrength=\(gradeStrength)", "warmthMode=\(warmthMode)", "skinToneMode=\(skinToneMode)", "watermark=\(watermark.enabled)", "watermarkMasks=\(watermark.serializedRegions)", "watermarkPadding=\(watermark.paddingPixels)", "watermarkModel=\(watermark.model.rawValue)", String(format: "sensitivity=%.2f", sensitivity), "audio=\(audio)", "reddit=\(redditMode)", "videoToGIF=\(videoToGIFEnabled)", "upscale=\(upscale)", "upscaleFirst=\(upscaleBeforeRIFE)", "computeUnits=\(modelCompute)", "fps=60"].joined(separator: "|")
+        let configKey = ["pipeline-v7-rebuild", "hq", "ghost=\(guardEnabled)", "cuts=\(cuts)", "compression=\(compressionEnabled)", "outline=\(outlineEnabled)", "colorRebuild=\(colorRebuild)", String(format: "colorRebuildStrength=%.2f", colorStrength), "outlineRebuild=\(lineRebuild)", String(format: "outlineRebuildStrength=%.2f", lineStrength), "colorpop=\(colorPop)", "colorpopStrength=\(gradeStrength)", "warmthMode=\(warmthMode)", "skinToneMode=\(skinToneMode)", "watermark=\(watermark.enabled)", "watermarkMasks=\(watermark.serializedRegions)", "watermarkPadding=\(watermark.paddingPixels)", "watermarkModel=\(watermark.model.rawValue)", String(format: "sensitivity=%.2f", sensitivity), "audio=\(audio)", "reddit=\(redditMode)", "videoToGIF=\(videoToGIFEnabled)", "upscale=\(upscale)", "upscaleFirst=\(upscaleBeforeRIFE)", "computeUnits=\(modelCompute)", "fps=60"].joined(separator: "|")
         DiagnosticsLogger.shared.log("Render requested • \(configKey)")
 
         currentTask = Task.detached(priority: .userInitiated) { [weak self] in
@@ -539,7 +555,11 @@ final class VideoProcessorViewModel: ObservableObject {
                     }
                     result = deliveryReady
                 } else {
-                    let config = ProcessorConfiguration(quality: .hq, ghostProtection: guardEnabled, sceneCutProtection: cuts, compressionProtection: compressionEnabled, outlineProtection: outlineEnabled, ghostSensitivity: sensitivity, preserveAudio: audio, targetFPS: 60)
+                    var config = ProcessorConfiguration(quality: .hq, ghostProtection: guardEnabled, sceneCutProtection: cuts, compressionProtection: compressionEnabled, outlineProtection: outlineEnabled, ghostSensitivity: sensitivity, preserveAudio: audio, targetFPS: 60)
+                    config.colorRebuild = colorRebuild
+                    config.colorRebuildStrength = colorStrength
+                    config.outlineRebuild = lineRebuild
+                    config.outlineRebuildStrength = lineStrength
                     let processor = TwoPassVideoProcessor(configuration: config, upscaleTo4K: upscale, colorPopEnabled: colorPop, colorPopStrength: gradeStrength, watermark: watermark, upscaleFirst: upscaleBeforeRIFE)
                     let generated = try await processor.process(sourceURL: job.sourceURL, recoveryDirectory: job.directory, progress: { p, message in
                         RecoveryStore.update(progress: p, message: message)
@@ -600,6 +620,10 @@ final class VideoProcessorViewModel: ObservableObject {
         computePreference = .auto
         colorPopEnabled = false
         colorPopStrength = 0.5
+        colorRebuildEnabled = false
+        colorRebuildStrength = 0.45
+        outlineRebuildEnabled = false
+        outlineRebuildStrength = 0.5
         watermarkRemovalEnabled = false
         watermarkRegions = []
         watermarkPaddingPixels = 3
@@ -612,6 +636,12 @@ final class VideoProcessorViewModel: ObservableObject {
             case "cuts": sceneCutProtection = enabled
             case "compression": compressionProtection = enabled
             case "outline": outlineProtection = enabled
+            case "colorRebuild": colorRebuildEnabled = enabled
+            case "colorRebuildStrength":
+                if let value = Double(pair[1]), value.isFinite { colorRebuildStrength = min(max(value, 0.1), 1) }
+            case "outlineRebuild": outlineRebuildEnabled = enabled
+            case "outlineRebuildStrength":
+                if let value = Double(pair[1]), value.isFinite { outlineRebuildStrength = min(max(value, 0.1), 1) }
             case "watermark": watermarkRemovalEnabled = enabled
             case "watermarkMasks": watermarkRegions = WatermarkConfiguration.decodeRegions(pair[1])
             case "watermarkPadding":
@@ -657,6 +687,10 @@ final class VideoProcessorViewModel: ObservableObject {
 
         let compressionEnabled = compressionProtection
         let outlineEnabled = outlineProtection
+        let colorRebuild = colorRebuildEnabled
+        let colorStrength = colorRebuildStrength
+        let lineRebuild = outlineRebuildEnabled
+        let lineStrength = outlineRebuildStrength
         let upscale = upscaleTo4K
         let colorPop = colorPopEnabled
         let gradeStrength = colorPopStrength
@@ -667,7 +701,7 @@ final class VideoProcessorViewModel: ObservableObject {
             do {
                 let secured = source.startAccessingSecurityScopedResource()
                 defer { if secured { source.stopAccessingSecurityScopedResource() } }
-                let processor = ImageStillProcessor(compressionProtection: compressionEnabled, outlineProtection: outlineEnabled, upscale2x: upscale, colorPopEnabled: colorPop, colorPopStrength: gradeStrength, watermark: watermark)
+                let processor = ImageStillProcessor(compressionProtection: compressionEnabled, outlineProtection: outlineEnabled, upscale2x: upscale, colorPopEnabled: colorPop, colorPopStrength: gradeStrength, colorRebuild: colorRebuild, colorRebuildStrength: colorStrength, outlineRebuild: lineRebuild, outlineRebuildStrength: lineStrength, watermark: watermark)
                 let generated = try await processor.process(sourceURL: source, progress: { p, message in
                     Task { @MainActor [weak self] in
                         guard let self, self.isProcessing, self.renderGeneration == generation else { return }

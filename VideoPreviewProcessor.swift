@@ -17,6 +17,10 @@ enum VideoPreviewProcessor {
         upscale2x: Bool,
         colorPopEnabled: Bool,
         colorPopStrength: Double,
+        colorRebuild: Bool = false,
+        colorRebuildStrength: Double = 0.45,
+        outlineRebuild: Bool = false,
+        outlineRebuildStrength: Double = 0.5,
         watermark: WatermarkConfiguration
     ) async throws -> [URL] {
         try await generateSync(
@@ -27,6 +31,10 @@ enum VideoPreviewProcessor {
             upscale2x: upscale2x,
             colorPopEnabled: colorPopEnabled,
             colorPopStrength: colorPopStrength,
+            colorRebuild: colorRebuild,
+            colorRebuildStrength: colorRebuildStrength,
+            outlineRebuild: outlineRebuild,
+            outlineRebuildStrength: outlineRebuildStrength,
             watermark: watermark
         )
     }
@@ -39,6 +47,10 @@ enum VideoPreviewProcessor {
         upscale2x: Bool,
         colorPopEnabled: Bool,
         colorPopStrength: Double,
+        colorRebuild: Bool,
+        colorRebuildStrength: Double,
+        outlineRebuild: Bool,
+        outlineRebuildStrength: Double,
         watermark: WatermarkConfiguration
     ) async throws -> [URL] {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("RIFE60-Preview-\(UUID().uuidString)", isDirectory: true)
@@ -97,6 +109,10 @@ enum VideoPreviewProcessor {
                     upscale2x: upscale2x,
                     colorPopEnabled: colorPopEnabled,
                     colorPopStrength: colorPopStrength,
+                    colorRebuild: colorRebuild,
+                    colorRebuildStrength: colorRebuildStrength,
+                    outlineRebuild: outlineRebuild,
+                    outlineRebuildStrength: outlineRebuildStrength,
                     watermark: watermark
                 )
                 let processed = try await processor.process(sourceURL: sourceURL) { _, _ in }

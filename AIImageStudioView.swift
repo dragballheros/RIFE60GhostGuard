@@ -142,6 +142,8 @@ struct AIImageStudioView: View {
     @State private var errorText = ""
     @State private var generatedImage: UIImage?
     @State private var generatedURL: URL?
+    @State private var outlineRebuildEnabled = true
+    @State private var outlineRebuildStrength = 0.5
     @State private var showSaveAlert = false
     @State private var saveMessage = ""
 
@@ -429,6 +431,14 @@ struct AIImageStudioView: View {
                 }
             }
             Section("Generate") {
+                Toggle("Outline Rebuild", isOn: $outlineRebuildEnabled)
+                    .disabled(isGenerating)
+                if outlineRebuildEnabled {
+                    HStack { Text("Outline Rebuild strength"); Spacer(); Text(String(format: "%.2f", outlineRebuildStrength)) }
+                    Slider(value: $outlineRebuildStrength, in: 0.1...1.0)
+                        .disabled(isGenerating)
+                    Text("After generation, reconnect short line gaps and restore faded line art on this iPhone. Sharpie is unchanged and still runs later if you upscale.").font(.caption).foregroundStyle(.secondary)
+                }
                 if let image = generatedImage {
                     Image(uiImage: image)
                         .resizable()
@@ -976,7 +986,19 @@ struct AIImageStudioView: View {
                 try? FileManager.default.removeItem(at: url)
                 throw AIImageStudioError("The local engine saved a PNG that could not be decoded as an image.")
             }
-            generatedImage = image
+            var presented = image
+            if outlineRebuildEnabled && !isBenchmark {
+                let started = CFAbsoluteTimeGetCurrent()
+                if let rebuilt = OutlineRebuild.apply(to: image, strength: outlineRebuildStrength),
+                   let png = rebuilt.pngData() {
+                    try png.write(to: url, options: .atomic)
+                    presented = rebuilt
+                    let elapsed = (CFAbsoluteTimeGetCurrent() - started) * 1000
+                    DiagnosticsLogger.shared.log(String(format: "AI Image Studio outline rebuild • %.1fms • strength=%.2f", elapsed, outlineRebuildStrength))
+                    PipelineStageTimer.current?.record("outlineRebuildMs", milliseconds: elapsed)
+                }
+            }
+            generatedImage = presented
             generatedURL = url
             generationStatus = isBenchmark
                 ? "Benchmark complete • 128×128 • 1 step • export diagnostics for stage-by-stage results"

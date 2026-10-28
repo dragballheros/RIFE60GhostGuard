@@ -26,11 +26,15 @@ final class ImageStillProcessor {
     private let outlineProtection: Bool
     private let upscale2x: Bool
     private let colorPopStrength: Double
+    private let colorRebuild: Bool
+    private let colorRebuildStrength: Double
+    private let outlineRebuild: Bool
+    private let outlineRebuildStrength: Double
     private let watermark: WatermarkConfiguration
     private let ciContext: CIContext
     private let colorSpace: CGColorSpace = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
 
-    init(compressionProtection: Bool, outlineProtection: Bool, upscale2x: Bool, colorPopEnabled: Bool = false, colorPopStrength: Double = 0.5, watermark: WatermarkConfiguration = WatermarkConfiguration()) {
+    init(compressionProtection: Bool, outlineProtection: Bool, upscale2x: Bool, colorPopEnabled: Bool = false, colorPopStrength: Double = 0.5, colorRebuild: Bool = false, colorRebuildStrength: Double = 0.45, outlineRebuild: Bool = false, outlineRebuildStrength: Double = 0.5, watermark: WatermarkConfiguration = WatermarkConfiguration()) {
         if let device = MTLCreateSystemDefaultDevice() {
             self.ciContext = CIContext(mtlDevice: device, options: [.cacheIntermediates: false])
         } else {
@@ -41,6 +45,10 @@ final class ImageStillProcessor {
         self.compressionProtection = compressionProtection
         self.outlineProtection = outlineProtection
         self.upscale2x = upscale2x
+        self.colorRebuild = colorRebuild
+        self.colorRebuildStrength = colorRebuildStrength
+        self.outlineRebuild = outlineRebuild
+        self.outlineRebuildStrength = outlineRebuildStrength
     }
 
     func process(
@@ -100,9 +108,9 @@ final class ImageStillProcessor {
             DiagnosticsLogger.shared.log("Image pipeline: \(note) (\(sourceWidth)x\(sourceHeight))")
         }
 
-        if outlineProtection {
-            progress(0.65, "Image • Final Sharpie…")
-            let polish = FinalOutlinePass()
+        if outlineProtection || colorRebuild || outlineRebuild {
+            progress(0.65, outlineProtection ? "Image • Color rebuild, outline rebuild, Sharpie…" : "Image • Color and outline rebuild…")
+            let polish = FinalOutlinePass(colorRebuild: colorRebuild, colorRebuildStrength: colorRebuildStrength, outlineRebuild: outlineRebuild, outlineRebuildStrength: outlineRebuildStrength, sharpen: outlineProtection)
             buffer = try polish.polishStill(buffer)
             try Task.checkCancellation()
         }

@@ -9,6 +9,10 @@ struct ProcessorConfiguration {
     let sceneCutProtection: Bool
     let compressionProtection: Bool
     let outlineProtection: Bool
+    var colorRebuild: Bool = false
+    var colorRebuildStrength: Double = 0.45
+    var outlineRebuild: Bool = false
+    var outlineRebuildStrength: Double = 0.5
     let ghostSensitivity: Double
     let preserveAudio: Bool
     let targetFPS: Double

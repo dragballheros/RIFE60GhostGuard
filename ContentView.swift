@@ -206,6 +206,18 @@ struct ContentView: View {
 
                     Section("Anime Processing") {
                         Toggle("Compression Guard", isOn: $vm.compressionProtection).disabled(vm.queueLocked || vm.isImporting)
+                        Toggle("Color Rebuild", isOn: $vm.colorRebuildEnabled).disabled(vm.queueLocked || vm.isImporting)
+                        if vm.colorRebuildEnabled {
+                            HStack { Text("Color Rebuild strength"); Spacer(); Text(String(format: "%.2f", vm.colorRebuildStrength)) }
+                            Slider(value: $vm.colorRebuildStrength, in: 0.1...1.0).disabled(vm.queueLocked || vm.isImporting)
+                            Text("Luma-guided chroma rebuild after Real-CUGAN and before Sharpie. Flat cel colors are consolidated and speckle is removed. Line art, skin, and saturation stay.").font(.caption).foregroundStyle(.secondary)
+                        }
+                        Toggle("Outline Rebuild", isOn: $vm.outlineRebuildEnabled).disabled(vm.queueLocked || vm.isImporting)
+                        if vm.outlineRebuildEnabled {
+                            HStack { Text("Outline Rebuild strength"); Spacer(); Text(String(format: "%.2f", vm.outlineRebuildStrength)) }
+                            Slider(value: $vm.outlineRebuildStrength, in: 0.1...1.0).disabled(vm.queueLocked || vm.isImporting)
+                            Text("Closes short gaps, restores faded line darkness, and lifts stray specks before Sharpie. Sharpie itself is unchanged.").font(.caption).foregroundStyle(.secondary)
+                        }
                         Toggle("Final Sharpie Outline", isOn: $vm.outlineProtection).disabled(vm.queueLocked || vm.isImporting)
                         Toggle("Color Pop", isOn: $vm.colorPopEnabled).disabled(vm.queueLocked || vm.isImporting)
                         Picker("Automatic warmth", selection: $automaticWarmthCorrectionModeRawValue) {
