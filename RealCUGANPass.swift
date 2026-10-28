@@ -617,7 +617,7 @@ final class RealCUGANPass {
                             "alpha": MLFeatureValue(multiArray: alpha)
                         ])
                         let options = MLPredictionOptions()
-                        options.outputBackings = try RealCUGANOutputBacking.imageBacking(named: "output", model: model, reusing: outputs[index])
+                        options.outputBackings = try RealCUGANOutputBacking.imageBacking(named: "output", model: model, reusing: outputs[index]).dictionary
                         _ = try model.prediction(from: provider, options: options)
                     } catch {
                         errorLock.lock()

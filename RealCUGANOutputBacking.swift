@@ -30,10 +30,16 @@ enum RealCUGANOutputBacking {
         return backing
     }
 
+    struct Prepared {
+        var dictionary: [String: Any]
+        /// Set when prediction writes somewhere other than the pooled tile.
+        var copyIntoPool: CVPixelBuffer?
+    }
+
     /// Use a pooled image when it already matches the model's image output.
     /// Otherwise allocate a buffer from the constraint. The dictionary value is
     /// the buffer or array itself.
-    static func imageBacking(named name: String, model: MLModel, reusing pooled: CVPixelBuffer?) throws -> [String: Any] {
+    static func imageBacking(named name: String, model: MLModel, reusing pooled: CVPixelBuffer?) throws -> Prepared {
         guard let description = model.modelDescription.outputDescriptionsByName[name] else {
             throw BackingError.message("Real-CUGAN model has no output named \(name)")
         }
@@ -41,16 +47,17 @@ enum RealCUGANOutputBacking {
             if let pooled, buffer(pooled, matches: image) {
                 let backing = [name: pooled as Any]
                 try assertDirectBacking(backing)
-                return backing
+                return Prepared(dictionary: backing, copyIntoPool: nil)
             }
-            let backing = [name: try pixelBuffer(matching: image) as Any]
+            let created = try pixelBuffer(matching: image)
+            let backing = [name: created as Any]
             try assertDirectBacking(backing)
-            return backing
+            return Prepared(dictionary: backing, copyIntoPool: created)
         }
         if let array = description.multiArrayConstraint {
             let backing: [String: Any] = [name: try MLMultiArray(shape: array.shape, dataType: array.dataType)]
             try assertDirectBacking(backing)
-            return backing
+            return Prepared(dictionary: backing, copyIntoPool: nil)
         }
         throw BackingError.message("Real-CUGAN output \(name) cannot be backed")
     }
