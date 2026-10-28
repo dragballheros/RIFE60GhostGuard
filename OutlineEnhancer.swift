@@ -28,8 +28,11 @@ final class OutlineEnhancer {
     private let modelBlend: Float32 = 0.94
     private let sourceBlend: Float32 = 0.06
 
-    private let model: MLModel
+    private let models: [MLModel]
+    private var model: MLModel { models[0] }
     private static let maxWorkers = 4
+    /// Two in-flight batches per model copy, so the next pack overlaps predict.
+    private static let batchCopies = 2
     private let inputArrays: [MLMultiArray]
     private let outputArrays: [MLMultiArray]
     private let timingLock = NSLock()
@@ -38,6 +41,11 @@ final class OutlineEnhancer {
     private(set) var lastPredictSeconds = 0.0
     private(set) var lastUnpackSeconds = 0.0
     private(set) var lastRefineSeconds = 0.0
+    private(set) var lastQueueWaitSeconds = 0.0
+    private(set) var lastBatchAssemblySeconds = 0.0
+    private(set) var lastHandoffSeconds = 0.0
+    private(set) var lastPredictWallSeconds = 0.0
+    private(set) var strategyName = ""
     private var outputPool: CVPixelBufferPool?
     private var outputPoolSize: (Int, Int) = (0, 0)
 
@@ -59,14 +67,21 @@ final class OutlineEnhancer {
         let preference = ModelComputePreference.current
         configuration.computeUnits = preference == .auto ? .cpuAndNeuralEngine : preference.units
         configuration.allowLowPrecisionAccumulationOnGPU = true
-        self.model = try MLModel(contentsOf: modelURL, configuration: configuration)
-        let inputConstraint = self.model.modelDescription.inputDescriptionsByName["x"]?.multiArrayConstraint
+        let copies = selected.usesUnbackedBatch ? Self.batchCopies : 1
+        var loaded: [MLModel] = []
+        for _ in 0..<copies {
+            loaded.append(try MLModel(contentsOf: modelURL, configuration: configuration))
+        }
+        self.models = loaded
+        self.strategyName = selected.rawValue
+        let inputConstraint = loaded[0].modelDescription.inputDescriptionsByName["x"]?.multiArrayConstraint
         let shape = inputConstraint?.shape ?? [1, 3, NSNumber(value: tile), NSNumber(value: tile)]
-        DiagnosticsLogger.shared.log("Sharpie compute policy • strategy=\(selected.rawValue) • tile=\(tile) • batch=\(useUnbackedBatch) • requested=\(configuration.computeUnits.rawValue) • preference=\(preference.rawValue)")
+        DiagnosticsLogger.shared.log("Sharpie compute policy • strategy=\(selected.rawValue) • tile=\(tile) • batch=\(useUnbackedBatch) • modelCopies=\(copies) • requested=\(configuration.computeUnits.rawValue) • preference=\(preference.rawValue)")
         var arrays: [MLMultiArray] = []
         var outputs: [MLMultiArray] = []
         let dataType = inputConstraint?.dataType ?? .float32
-        for _ in 0..<Self.maxWorkers {
+        let arrayCount = selected.usesUnbackedBatch ? Self.maxWorkers * 2 * copies : Self.maxWorkers
+        for _ in 0..<arrayCount {
             arrays.append(try MLMultiArray(shape: shape, dataType: dataType))
             outputs.append(try MLMultiArray(shape: shape, dataType: dataType))
         }
@@ -154,6 +169,10 @@ final class OutlineEnhancer {
         lastPackSeconds = 0
         lastPredictSeconds = 0
         lastUnpackSeconds = 0
+        lastQueueWaitSeconds = 0
+        lastBatchAssemblySeconds = 0
+        lastHandoffSeconds = 0
+        lastPredictWallSeconds = 0
         timingLock.unlock()
 
         // Tiles write to disjoint core regions of the destination and only READ the source, so they
@@ -339,42 +358,153 @@ final class OutlineEnhancer {
         }
     }
 
-    /// Several 256 tiles per Core ML call, without output backings. Each result
-    /// is unpacked with the same blend as the single-tile path.
+    /// Several 256 tiles per Core ML call, without output backings. Two model
+    /// copies each keep two batches so the next pack overlaps the in-flight
+    /// prediction, and the finished batch is unpacked on that same background
+    /// turn. The blend matches the single-tile path.
     private func predictUnbackedBatches(
         tileCount: Int, tilesAcross: Int, core: Int,
         width: Int, height: Int,
         src: UnsafeMutablePointer<UInt8>, dst: UnsafeMutablePointer<UInt8>,
         srcRow: Int, dstRow: Int, isBGRA: Bool
     ) throws {
-        let batchSize = min(4, inputArrays.count)
-        var index = 0
-        while index < tileCount {
-            let count = min(batchSize, tileCount - index)
-            var providers: [MLFeatureProvider] = []
+        let copies = models.count
+        let batchSize = min(Self.maxWorkers, inputArrays.count / max(copies * 2, 1))
+        let wallStart = CFAbsoluteTimeGetCurrent()
+        let failure = TileFailure()
+        DispatchQueue.concurrentPerform(iterations: copies) { copy in
+            if failure.hasError { return }
+            do {
+                try self.runPipelinedCopy(
+                    copy: copy, copies: copies, batchSize: batchSize,
+                    tileCount: tileCount, tilesAcross: tilesAcross, core: core,
+                    width: width, height: height, src: src, dst: dst,
+                    srcRow: srcRow, dstRow: dstRow, isBGRA: isBGRA
+                )
+            } catch {
+                failure.record(error)
+            }
+        }
+        let wall = CFAbsoluteTimeGetCurrent() - wallStart
+        timingLock.lock()
+        lastPredictWallSeconds += wall
+        timingLock.unlock()
+        try failure.rethrowIfNeeded()
+    }
+
+    private func runPipelinedCopy(
+        copy: Int, copies: Int, batchSize: Int,
+        tileCount: Int, tilesAcross: Int, core: Int,
+        width: Int, height: Int,
+        src: UnsafeMutablePointer<UInt8>, dst: UnsafeMutablePointer<UInt8>,
+        srcRow: Int, dstRow: Int, isBGRA: Bool
+    ) throws {
+        let slotsPerCopy = batchSize * 2
+        let base = copy * slotsPerCopy
+        var nextTile = copy
+        func advance() -> Int? {
+            guard nextTile < tileCount else { return nil }
+            let tile = nextTile
+            nextTile += copies
+            return tile
+        }
+        var busy = [DispatchGroup(), DispatchGroup()]
+        var occupied = [false, false]
+        var launchError: Error?
+        let errorLock = NSLock()
+
+        func waitSlot(_ generation: Int) {
+            guard occupied[generation] else { return }
+            let started = CFAbsoluteTimeGetCurrent()
+            busy[generation].wait()
+            let waited = CFAbsoluteTimeGetCurrent() - started
+            timingLock.lock()
+            lastQueueWaitSeconds += waited
+            timingLock.unlock()
+            occupied[generation] = false
+            errorLock.lock()
+            let thrown = launchError
+            errorLock.unlock()
+            if let thrown { /* surfaced after the frame */ _ = thrown }
+        }
+
+        func packGenerationFixed(_ generation: Int) throws -> (count: Int, origins: [(Int, Int)]) {
+            waitSlot(generation)
             var origins: [(Int, Int)] = []
-            for offset in 0..<count {
-                let tileIndex = index + offset
+            let assemblyStart = CFAbsoluteTimeGetCurrent()
+            for offset in 0..<batchSize {
+                guard let tileIndex = advance() else { break }
                 let coreX = (tileIndex % tilesAcross) * core
                 let coreY = (tileIndex / tilesAcross) * core
                 origins.append((coreX, coreY))
-                try packTile(coreX: coreX, coreY: coreY, width: width, height: height, src: src, srcRow: srcRow, isBGRA: isBGRA, input: inputArrays[offset])
-                providers.append(try MLDictionaryFeatureProvider(dictionary: [inputName: MLFeatureValue(multiArray: inputArrays[offset])]))
+                try packTile(
+                    coreX: coreX, coreY: coreY, width: width, height: height,
+                    src: src, srcRow: srcRow, isBGRA: isBGRA,
+                    input: inputArrays[base + generation * batchSize + offset]
+                )
             }
-            let started = CFAbsoluteTimeGetCurrent()
-            let results = try model.predictions(from: MLArrayBatchProvider(array: providers), options: MLPredictionOptions())
-            let elapsed = CFAbsoluteTimeGetCurrent() - started
             timingLock.lock()
-            lastPredictSeconds += elapsed
+            lastBatchAssemblySeconds += CFAbsoluteTimeGetCurrent() - assemblyStart
             timingLock.unlock()
-            for offset in 0..<count {
-                guard let array = results.features(at: offset).featureValue(for: outputName)?.multiArrayValue else {
-                    throw OutlineError.badModelInterface("missing batched output \(outputName)")
-                }
-                try writeTile(coreX: origins[offset].0, coreY: origins[offset].1, width: width, height: height, src: src, dst: dst, srcRow: srcRow, dstRow: dstRow, isBGRA: isBGRA, predicted: array)
-            }
-            index += count
+            return (origins.count, origins)
         }
+
+        var generation = 0
+        var primed = try packGenerationFixed(generation)
+        while primed.count > 0 {
+            let capturedGen = generation
+            let captured = primed
+            busy[capturedGen].enter()
+            occupied[capturedGen] = true
+            let model = self.models[copy]
+            DispatchQueue.global(qos: .userInitiated).async {
+                defer { busy[capturedGen].leave() }
+                do {
+                    var providers: [MLFeatureProvider] = []
+                    for offset in 0..<captured.count {
+                        providers.append(try MLDictionaryFeatureProvider(dictionary: [
+                            self.inputName: MLFeatureValue(multiArray: self.inputArrays[base + capturedGen * batchSize + offset])
+                        ]))
+                    }
+                    let started = CFAbsoluteTimeGetCurrent()
+                    let results = try model.predictions(from: MLArrayBatchProvider(array: providers), options: MLPredictionOptions())
+                    let elapsed = CFAbsoluteTimeGetCurrent() - started
+                    self.timingLock.lock()
+                    self.lastPredictSeconds += elapsed
+                    self.timingLock.unlock()
+                    let handoff = CFAbsoluteTimeGetCurrent()
+                    for offset in 0..<captured.count {
+                        guard let array = results.features(at: offset).featureValue(for: self.outputName)?.multiArrayValue else {
+                            throw OutlineError.badModelInterface("missing batched output \(self.outputName)")
+                        }
+                        try self.writeTile(
+                            coreX: captured.origins[offset].0, coreY: captured.origins[offset].1,
+                            width: width, height: height, src: src, dst: dst,
+                            srcRow: srcRow, dstRow: dstRow, isBGRA: isBGRA, predicted: array
+                        )
+                    }
+                    let handoffElapsed = CFAbsoluteTimeGetCurrent() - handoff
+                    self.timingLock.lock()
+                    self.lastHandoffSeconds += handoffElapsed
+                    self.timingLock.unlock()
+                } catch {
+                    errorLock.lock()
+                    if launchError == nil { launchError = error }
+                    errorLock.unlock()
+                }
+            }
+            generation ^= 1
+            primed = try packGenerationFixed(generation)
+        }
+        for generation in 0..<2 where occupied[generation] {
+            let started = CFAbsoluteTimeGetCurrent()
+            busy[generation].wait()
+            let waited = CFAbsoluteTimeGetCurrent() - started
+            timingLock.lock()
+            lastQueueWaitSeconds += waited
+            timingLock.unlock()
+        }
+        if let launchError { throw launchError }
     }
 
     private func packTile(

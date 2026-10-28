@@ -115,8 +115,10 @@ enum ModelBenchmark {
     }
 
     private static func benchmarkSharpieTiles(progress: @escaping @Sendable (Double, String) -> Void) throws -> [String] {
-        var rows = ["Sharpie tile strategy | ms/tile | result"]
-        var best: (SharpieTileStrategy, Double)?
+        var rows = ["Sharpie tile strategy | ms/frame | ms/tile | result"]
+        var best: (SharpieTileStrategy, Double, Double)?
+        let frameWidth = 3072
+        let frameHeight = 1728
         for strategy in SharpieTileStrategy.candidates() {
             try Task.checkCancellation()
             progress(1, strategy.title)
@@ -125,33 +127,66 @@ enum ModelBenchmark {
                 let options = MLModelConfiguration()
                 options.computeUnits = ModelComputePreference.current == .auto ? .cpuAndNeuralEngine : ModelComputePreference.current.units
                 let model = try MLModel(contentsOf: url, configuration: options)
+                let second = strategy.usesUnbackedBatch ? try MLModel(contentsOf: url, configuration: options) : model
+                let loadedModels = [model, second]
                 let provider = try syntheticInput(for: model)
+                let core = max(strategy.tile - 40, 1)
+                let tiles = ((frameWidth + core - 1) / core) * ((frameHeight + core - 1) / core)
+                // Production batched path keeps two model copies in flight, each
+                // issuing a batch of four. Sequential production overlaps two workers.
+                let copies = strategy.usesUnbackedBatch ? 2 : 1
+                let batch = strategy.usesUnbackedBatch ? 4 : 1
+                let workers = strategy.usesUnbackedBatch ? copies : 2
                 var samples: [Double] = []
-                let count = strategy.usesUnbackedBatch ? 4 : 1
                 for _ in 0..<3 {
                     try Task.checkCancellation()
                     let elapsed = try autoreleasepool { () throws -> Double in
                         let start = CFAbsoluteTimeGetCurrent()
                         if strategy.usesUnbackedBatch {
-                            let batch = MLArrayBatchProvider(array: Array(repeating: provider, count: count))
-                            _ = try model.predictions(from: batch, options: MLPredictionOptions())
+                            let group = DispatchGroup()
+                            let errorLock = NSLock()
+                            var firstError: Error?
+                            for copy in 0..<copies {
+                                group.enter()
+                                let copyModel = loadedModels[copy]
+                                DispatchQueue.global(qos: .userInitiated).async {
+                                    defer { group.leave() }
+                                    do {
+                                        let waves = (tiles + copies * batch - 1) / (copies * batch)
+                                        for _ in 0..<max(waves, 1) {
+                                            let batchProvider = MLArrayBatchProvider(array: Array(repeating: provider, count: batch))
+                                            _ = try copyModel.predictions(from: batchProvider, options: MLPredictionOptions())
+                                        }
+                                    } catch {
+                                        errorLock.lock()
+                                        if firstError == nil { firstError = error }
+                                        errorLock.unlock()
+                                    }
+                                }
+                            }
+                            group.wait()
+                            if let firstError { throw firstError }
                         } else {
-                            _ = try model.prediction(from: provider)
+                            let waves = (tiles + workers - 1) / workers
+                            for _ in 0..<max(waves, 1) {
+                                _ = try model.prediction(from: provider)
+                            }
                         }
-                        return (CFAbsoluteTimeGetCurrent() - start) * 1000 / Double(count)
+                        return (CFAbsoluteTimeGetCurrent() - start) * 1000
                     }
                     samples.append(elapsed)
                 }
                 let median = samples.sorted()[samples.count / 2]
-                rows.append("\(strategy.title) | \(String(format: "%.1f", median)) | kept")
-                if best == nil || median < best!.1 { best = (strategy, median) }
+                let perTile = median / Double(max(tiles, 1))
+                rows.append("\(strategy.title) | \(String(format: "%.1f", median)) | \(String(format: "%.1f", perTile)) | kept")
+                if best == nil || median < best!.1 { best = (strategy, median, perTile) }
             } catch {
-                rows.append("\(strategy.title) | - | \(error.localizedDescription)")
+                rows.append("\(strategy.title) | - | - | \(error.localizedDescription)")
             }
         }
         if let best {
             SharpieTileStore.save(best.0, medianMilliseconds: best.1)
-            rows.append("winner | \(best.0.title) | \(String(format: "%.1f", best.1)) ms/tile")
+            rows.append("winner | \(best.0.title) | \(String(format: "%.1f", best.1)) ms/frame | \(String(format: "%.1f", best.2)) ms/tile")
         }
         return rows
     }
@@ -173,7 +208,9 @@ enum ModelBenchmark {
         let model = try MLModel(contentsOf: modelURL, configuration: options)
         let provider = try syntheticInput(for: model)
         let repeats = 3
-        let tilesPerRepeat = max(1, strategy == .sequentialBacked ? 2 : slots)
+        // 1080p uses 6 wide tiles or 15 of the 512 tiles. Score the whole frame
+        // so a serial concurrent launch is not divided into a fake per-tile win.
+        let frameTiles = tileWidth >= 700 ? 6 : 15
         var samples: [Double] = []
         var lowest = before
         for _ in 0..<repeats {
@@ -183,14 +220,25 @@ enum ModelBenchmark {
             lowest = min(lowest, now.availableMemoryMB)
             let elapsed = try autoreleasepool { () throws -> Double in
                 let start = CFAbsoluteTimeGetCurrent()
-                if strategy == .batchedUnbacked {
-                    try predictUnbackedBatch(model: model, provider: provider, count: max(2, slots))
-                } else if strategy == .concurrentBacked {
-                    try predictConcurrent(model: model, provider: provider, slots: max(2, slots), tileWidth: tileWidth, tileHeight: tileHeight)
-                } else {
-                    try predictBacked(model: model, provider: provider, repeats: tilesPerRepeat, tileWidth: tileWidth, tileHeight: tileHeight)
+                var remaining = frameTiles
+                while remaining > 0 {
+                    if strategy == .batchedUnbacked {
+                        let count = min(max(2, slots), remaining)
+                        try predictUnbackedBatch(model: model, provider: provider, count: count)
+                        remaining -= count
+                    } else if strategy == .concurrentBacked {
+                        let count = min(max(2, slots), remaining)
+                        try predictConcurrent(model: model, provider: provider, slots: count, tileWidth: tileWidth, tileHeight: tileHeight)
+                        remaining -= count
+                    } else if strategy.fixedBatchCount != nil {
+                        try predictBacked(model: model, provider: provider, repeats: 1, tileWidth: tileWidth, tileHeight: tileHeight)
+                        remaining -= min(strategy.fixedBatchCount ?? 1, remaining)
+                    } else {
+                        try predictBacked(model: model, provider: provider, repeats: 1, tileWidth: tileWidth, tileHeight: tileHeight)
+                        remaining -= 1
+                    }
                 }
-                return (CFAbsoluteTimeGetCurrent() - start) * 1000 / Double(tilesPerRepeat)
+                return (CFAbsoluteTimeGetCurrent() - start) * 1000 / Double(frameTiles)
             }
             samples.append(elapsed)
             lowest = min(lowest, currentRenderPerformanceSnapshot().availableMemoryMB)

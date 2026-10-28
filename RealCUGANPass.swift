@@ -43,6 +43,10 @@ final class RealCUGANPass {
     private let colorPopGrade: ColorPopGrade?
     private var renderInSeconds = 0.0
     private var predictionSeconds = 0.0
+    private var activeStrategyName = "sequentialBacked"
+    private var activeStrategyLoaded = false
+    private var activeStrategySlots = 1
+    private var activeStrategyFallback = ""
     private var stitchSeconds = 0.0
 
     init(intensity: Double = 1.30, colorPopStrength: Double = 0, applyWarmthCorrection: Bool? = nil) {
@@ -79,6 +83,7 @@ final class RealCUGANPass {
         let tilesPerFrame = tilesAcross * tilesDown
 
         let strategyExplanation = RealCUGANStrategyStore.lookupExplanation(modelName: profile.modelName, tileWidth: profile.width, tileHeight: profile.height)
+        PipelineStageTimer.current?.recordText("cuganStrategyLookup", strategyExplanation)
         DiagnosticsLogger.shared.log("Real-CUGAN entered • native source=\(width)x\(height) • native 2x target=\(targetWidth)x\(targetHeight) • tile=\(profile.width)x\(profile.height) • core=\(profile.stepX)x\(profile.stepY) • tiles/frame=\(tilesPerFrame) • strategy=\(strategyExplanation) • thermal=\(currentThermalStateName()) • benchmark tiles are timed on a cool phone; this pass follows RIFE so per-tile time can be higher")
         progress(0.001, "Pass 3/3 • Real-CUGAN native 2× • \(width)×\(height) → \(targetWidth)×\(targetHeight)…")
 
@@ -222,7 +227,15 @@ final class RealCUGANPass {
         guard frames > 0 else { throw ProcessorError.conversionFailed("Real-CUGAN received zero decoded frames") }
         let completedURL = try await checkpoint.finish()
         let completedBytes = (try? FileManager.default.attributesOfItem(atPath: completedURL.path)[.size] as? NSNumber)?.int64Value ?? 0
-        DiagnosticsLogger.shared.log("Real-CUGAN writer completed • native 2x=\(targetWidth)x\(targetHeight) • frames=\(frames) • file=\(formatStorageMB(completedBytes)) MB")
+        let count = Double(frames)
+        PipelineStageTimer.current?.record("cuganPackMs", milliseconds: renderInSeconds * 1000 / count)
+        PipelineStageTimer.current?.record("cuganPredictMs", milliseconds: predictionSeconds * 1000 / count)
+        PipelineStageTimer.current?.record("cuganStitchMs", milliseconds: stitchSeconds * 1000 / count)
+        PipelineStageTimer.current?.record("cuganSlots", milliseconds: Double(activeStrategySlots))
+        PipelineStageTimer.current?.record("cuganStrategyLoaded", milliseconds: activeStrategyLoaded ? 1 : 0)
+        PipelineStageTimer.current?.recordText("cuganStrategy", activeStrategyName)
+        PipelineStageTimer.current?.recordText("cuganFallback", activeStrategyFallback.isEmpty ? "none" : activeStrategyFallback)
+        DiagnosticsLogger.shared.log("Real-CUGAN writer completed • native 2x=\(targetWidth)x\(targetHeight) • frames=\(frames) • strategy=\(activeStrategyName) • loaded=\(activeStrategyLoaded) • slots=\(activeStrategySlots) • file=\(formatStorageMB(completedBytes)) MB")
         return completedURL
     }
 
@@ -336,6 +349,9 @@ final class RealCUGANPass {
             return try renderFrame(source, model: model, alpha: alpha, frameNumber: frameNumber, profile: profile, strategy: .sequentialBacked, slots: 1, forceCopy: true)
         }
         let plan = RealCUGANStrategyStore.plan(modelName: profile.modelName, tileWidth: profile.width, tileHeight: profile.height)
+        activeStrategyName = plan.strategy.rawValue
+        activeStrategySlots = plan.slots
+        activeStrategyLoaded = plan.medianMilliseconds != nil
         let logKey = "\(profile.modelName)-\(plan.strategy.rawValue)-\(plan.slots)"
         if loggedStrategyKey != logKey {
             loggedStrategyKey = logKey
@@ -346,6 +362,10 @@ final class RealCUGANPass {
             return try renderFrame(source, model: model, alpha: alpha, frameNumber: frameNumber, profile: profile, strategy: plan.strategy, slots: plan.slots)
         } catch {
             let message = "Real-CUGAN strategy \(plan.strategy.rawValue) failed (\(error.localizedDescription)); falling back to sequential backed"
+            activeStrategyFallback = message
+            activeStrategyName = "sequentialBacked"
+            activeStrategySlots = 1
+            activeStrategyLoaded = false
             DiagnosticsLogger.shared.log(message)
             PipelineStageTimer.note(message)
             RealCUGANStrategyStore.markNeedsRebenchmark(modelName: profile.modelName, tileWidth: profile.width, tileHeight: profile.height, failed: plan.strategy)
@@ -562,6 +582,8 @@ final class RealCUGANPass {
         }
         var inputs: [CVPixelBuffer] = []
         var outputs: [CVPixelBuffer] = []
+        var providers: [MLFeatureProvider] = []
+        var predictionOptions: [MLPredictionOptions] = []
         for _ in 0..<slots {
             var input: CVPixelBuffer?
             var output: CVPixelBuffer?
@@ -571,6 +593,14 @@ final class RealCUGANPass {
             }
             inputs.append(input)
             outputs.append(output)
+            providers.append(try MLDictionaryFeatureProvider(dictionary: [
+                "image": MLFeatureValue(pixelBuffer: input),
+                "alpha": MLFeatureValue(multiArray: alpha)
+            ]))
+            let options = MLPredictionOptions()
+            let backing = try RealCUGANOutputBacking.imageBacking(named: "output", model: model, reusing: output)
+            options.outputBackings = backing.dictionary
+            predictionOptions.append(options)
         }
         CVPixelBufferLockBaseAddress(source, .readOnly)
         CVPixelBufferLockBaseAddress(stitched, [])
@@ -585,6 +615,7 @@ final class RealCUGANPass {
         var cursor = 0
         while cursor < specs.count {
             let count = min(slots, specs.count - cursor)
+            let cropStart = CFAbsoluteTimeGetCurrent()
             for index in 0..<count {
                 let spec = specs[cursor + index]
                 CVPixelBufferLockBaseAddress(inputs[index], [])
@@ -605,21 +636,18 @@ final class RealCUGANPass {
                 )
                 CVPixelBufferUnlockBaseAddress(inputs[index], [])
             }
+            renderInSeconds += CFAbsoluteTimeGetCurrent() - cropStart
             let predictionStart = CFAbsoluteTimeGetCurrent()
             let group = DispatchGroup()
             let errorLock = NSLock()
             var firstError: Error?
             for index in 0..<count {
                 group.enter()
+                let provider = providers[index]
+                let options = predictionOptions[index]
                 DispatchQueue.global(qos: .userInitiated).async {
                     defer { group.leave() }
                     do {
-                        let provider = try MLDictionaryFeatureProvider(dictionary: [
-                            "image": MLFeatureValue(pixelBuffer: inputs[index]),
-                            "alpha": MLFeatureValue(multiArray: alpha)
-                        ])
-                        let options = MLPredictionOptions()
-                        options.outputBackings = try RealCUGANOutputBacking.imageBacking(named: "output", model: model, reusing: outputs[index]).dictionary
                         _ = try model.prediction(from: provider, options: options)
                     } catch {
                         errorLock.lock()

@@ -11,6 +11,7 @@ final class TiledHQInterpolator {
     private let width: Int
     private let height: Int
     private var bandCount: Int
+    var activeBandCount: Int { bandCount }
     private let overlap: Int
     private var coreHeight: Int
     private var tileHeight: Int
@@ -20,6 +21,9 @@ final class TiledHQInterpolator {
     private let sharedInterpolator: RifeInterpolator?
     private var sharedStream: RifeStream?
     private var previousFrame: CVPixelBuffer?
+    private(set) var extractSeconds = 0.0
+    private(set) var pushSeconds = 0.0
+    private(set) var stitchSeconds = 0.0
 
     init(interpolator: RifeInterpolator,
          width: Int,
@@ -104,9 +108,12 @@ final class TiledHQInterpolator {
 
         // Fast path: no extraction, stitching, overlap, or second RIFE stream.
         if bandCount == 1 {
-            return try autoreleasepool {
+            let started = CFAbsoluteTimeGetCurrent()
+            let outputs = try autoreleasepool {
                 try streams[0].push(current, timesteps: timesteps)
             }
+            pushSeconds += CFAbsoluteTimeGetCurrent() - started
+            return outputs
         }
 
         var fullOutputs: [CVPixelBuffer] = []
@@ -115,20 +122,45 @@ final class TiledHQInterpolator {
             fullOutputs.append(try makeBuffer(width: width, height: height))
         }
 
+        var tiles: [CVPixelBuffer?] = Array(repeating: nil, count: bandCount)
+        let outputLock = NSLock()
+        var tileOutputsByBand: [Int: [CVPixelBuffer]] = [:]
+        for band in 0..<bandCount {
+            let coreStart = band * coreHeight
+            guard coreStart < height else { break }
+            let extractStart = CFAbsoluteTimeGetCurrent()
+            tiles[band] = try extractBand(current, coreStart: coreStart)
+            extractSeconds += CFAbsoluteTimeGetCurrent() - extractStart
+        }
+        let pushStart = CFAbsoluteTimeGetCurrent()
+        let failureLock = NSLock()
+        var pushError: Error?
+        DispatchQueue.concurrentPerform(iterations: bandCount) { band in
+            guard let tile = tiles[band] else { return }
+            do {
+                let tileOutputs = try autoreleasepool {
+                    try streams[band].push(tile, timesteps: timesteps)
+                }
+                if tileOutputs.count != timesteps.count {
+                    throw ProcessorError.conversionFailed("Streaming tiled HQ RIFE returned an unexpected frame count")
+                }
+                outputLock.lock()
+                tileOutputsByBand[band] = tileOutputs
+                outputLock.unlock()
+            } catch {
+                failureLock.lock()
+                if pushError == nil { pushError = error }
+                failureLock.unlock()
+            }
+        }
+        pushSeconds += CFAbsoluteTimeGetCurrent() - pushStart
+        if let pushError { throw pushError }
+        let stitchStart = CFAbsoluteTimeGetCurrent()
         for band in 0..<bandCount {
             let coreStart = band * coreHeight
             guard coreStart < height else { break }
             let coreCount = min(coreHeight, height - coreStart)
-            let currentTile = try extractBand(current, coreStart: coreStart)
-
-            let tileOutputs = try autoreleasepool {
-                try streams[band].push(currentTile, timesteps: timesteps)
-            }
-
-            guard tileOutputs.count == timesteps.count else {
-                throw ProcessorError.conversionFailed("Streaming tiled HQ RIFE returned an unexpected frame count")
-            }
-
+            guard let tileOutputs = tileOutputsByBand[band], tileOutputs.count == timesteps.count else { continue }
             for index in tileOutputs.indices {
                 try copyCore(
                     from: tileOutputs[index],
@@ -138,6 +170,7 @@ final class TiledHQInterpolator {
                 )
             }
         }
+        stitchSeconds += CFAbsoluteTimeGetCurrent() - stitchStart
 
         return fullOutputs
     }

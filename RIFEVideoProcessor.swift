@@ -211,6 +211,11 @@ final class RIFEVideoProcessor {
             t.compressionMsPerFrame = cleaned > 0 ? compressionSeconds * 1000.0 / Double(cleaned) : 0
             t.outlineMsPerFrame = outlined > 0 ? outlineSeconds * 1000.0 / Double(outlined) : 0
             t.rifeMsPerGeneratedFrame = generated > 0 ? rifeSeconds * 1000.0 / Double(generated) : 0
+            let generatedCount = Double(max(generated, 1))
+            PipelineStageTimer.current?.record("rifePushMs", milliseconds: tiledHQ.pushSeconds * 1000 / generatedCount)
+            PipelineStageTimer.current?.record("rifeExtractMs", milliseconds: tiledHQ.extractSeconds * 1000 / generatedCount)
+            PipelineStageTimer.current?.record("rifeStitchMs", milliseconds: tiledHQ.stitchSeconds * 1000 / generatedCount)
+            PipelineStageTimer.current?.record("rifeBands", milliseconds: Double(tiledHQ.activeBandCount))
             t.ghostMsPerGeneratedFrame = generated > 0 ? ghostSeconds * 1000.0 / Double(generated) : 0
             t.encodeMsPerOutputFrame = outputFrames > 0 ? encodeSeconds * 1000.0 / Double(outputFrames) : 0
             t.generatedFPS = Double(generated) / elapsed

@@ -116,6 +116,7 @@ final class FinalOutlinePass {
         var frames = 0, shadowCleanedFrames = 0, finalCleanedFrames = 0
         var outlineSeconds = 0.0, shadowSeconds = 0.0, finalCompressionSeconds = 0.0, encodeSeconds = 0.0
         var downscaleTotal = 0.0, packTotal = 0.0, predictTotal = 0.0, unpackTotal = 0.0, refineTotal = 0.0, dissolveTotal = 0.0
+        var queueWaitTotal = 0.0, assemblyTotal = 0.0, handoffTotal = 0.0, predictWallTotal = 0.0
         let passStart = CFAbsoluteTimeGetCurrent()
 
         while let sample = output.copyNextSampleBuffer() {
@@ -157,6 +158,10 @@ final class FinalOutlinePass {
             unpackTotal += enhancer.lastUnpackSeconds
             refineTotal += enhancer.lastRefineSeconds
             dissolveTotal += blendSeconds
+            queueWaitTotal += enhancer.lastQueueWaitSeconds
+            assemblyTotal += enhancer.lastBatchAssemblySeconds
+            handoffTotal += enhancer.lastHandoffSeconds
+            predictWallTotal += enhancer.lastPredictWallSeconds
 
             // Only the light general compression polish remains after Sharpie.
             // The spatial shadow/chroma blur is never applied to finished Sharpie lines.
@@ -205,6 +210,11 @@ final class FinalOutlinePass {
             PipelineStageTimer.current?.record("sharpieUnpackMs", milliseconds: unpackTotal * 1000 / count)
             PipelineStageTimer.current?.record("sharpieVisionRefineMs", milliseconds: refineTotal * 1000 / count)
             PipelineStageTimer.current?.record("sharpieUpscaleDissolveMs", milliseconds: dissolveTotal * 1000 / count)
+            PipelineStageTimer.current?.record("sharpieQueueWaitMs", milliseconds: queueWaitTotal * 1000 / count)
+            PipelineStageTimer.current?.record("sharpieBatchAssemblyMs", milliseconds: assemblyTotal * 1000 / count)
+            PipelineStageTimer.current?.record("sharpieHandoffMs", milliseconds: handoffTotal * 1000 / count)
+            PipelineStageTimer.current?.record("sharpiePredictWallMs", milliseconds: predictWallTotal * 1000 / count)
+            PipelineStageTimer.current?.recordText("sharpieStrategy", SharpieTileStore.plan().rawValue)
         }
         if reader.status == .failed { throw ProcessorError.reader(reader.error?.localizedDescription ?? "final polish decode failed") }
         guard frames > 0 else { throw ProcessorError.conversionFailed("Final polish pass received zero frames") }
