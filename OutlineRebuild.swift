@@ -25,50 +25,86 @@ final class OutlineRebuild {
         let dst = destinationBase.assumingMemoryBound(to: UInt8.self)
         let srcRow = CVPixelBufferGetBytesPerRow(source)
         let dstRow = CVPixelBufferGetBytesPerRow(destination)
-        let count = width * height
-        var luma = [UInt8](repeating: 0, count: count)
+        let luma = Self.lumaPlane(src: src, width: width, height: height, srcRow: srcRow)
+        let gap = amount > 0.66 ? 2 : 1
+        let line = Self.lineMask(luma: luma, width: width, height: height, gap: gap)
+        let closed = Self.closedMask(line: line, luma: luma, width: width, height: height, gap: gap)
+        Self.paint(
+            src: src, dst: dst, luma: luma, line: line, closed: closed,
+            width: width, height: height, srcRow: srcRow, dstRow: dstRow, amount: amount
+        )
+        return destination
+    }
+
+    private static func lumaPlane(src: UnsafeMutablePointer<UInt8>, width: Int, height: Int, srcRow: Int) -> [UInt8] {
+        var luma = [UInt8](repeating: 0, count: width * height)
         for y in 0..<height {
             let row = src.advanced(by: y * srcRow)
+            let base = y * width
             for x in 0..<width {
                 let p = row.advanced(by: x * 4)
-                luma[y * width + x] = UInt8(min(255, (77 * Int(p[2]) + 150 * Int(p[1]) + 29 * Int(p[0])) >> 8))
+                let r = Int(p[2])
+                let g = Int(p[1])
+                let b = Int(p[0])
+                luma[base + x] = UInt8(min(255, (77 * r + 150 * g + 29 * b) >> 8))
             }
         }
-        let gap = amount > 0.66 ? 2 : 1
-        var line = [UInt8](repeating: 0, count: count)
-        for y in 1..<(height - 1) {
-            for x in 1..<(width - 1) {
+        return luma
+    }
+
+    private static func lineMask(luma: [UInt8], width: Int, height: Int, gap: Int) -> [UInt8] {
+        var line = [UInt8](repeating: 0, count: width * height)
+        for y in gap..<(height - gap) {
+            for x in gap..<(width - gap) {
                 let index = y * width + x
                 let center = Int(luma[index])
                 var localMax = center
-                for yy in (y - gap)...(y + gap) {
-                    for xx in (x - gap)...(x + gap) {
+                var yy = y - gap
+                while yy <= y + gap {
+                    var xx = x - gap
+                    while xx <= x + gap {
                         localMax = max(localMax, Int(luma[yy * width + xx]))
+                        xx += 1
                     }
+                    yy += 1
                 }
                 if center < 150 && center + 16 < localMax {
                     line[index] = 1
                 }
             }
         }
+        return line
+    }
+
+    private static func closedMask(line: [UInt8], luma: [UInt8], width: Int, height: Int, gap: Int) -> [UInt8] {
         var closed = line
         for y in gap..<(height - gap) {
             for x in gap..<(width - gap) {
                 let index = y * width + x
                 if line[index] == 1 { continue }
                 var hits = 0
-                for yy in (y - gap)...(y + gap) {
-                    for xx in (x - gap)...(x + gap) where line[yy * width + xx] == 1 {
-                        hits += 1
+                var yy = y - gap
+                while yy <= y + gap {
+                    var xx = x - gap
+                    while xx <= x + gap {
+                        if line[yy * width + xx] == 1 { hits += 1 }
+                        xx += 1
                     }
+                    yy += 1
                 }
-                let center = Int(luma[index])
-                if hits >= 3 && center < 190 {
+                if hits >= 3 && Int(luma[index]) < 190 {
                     closed[index] = 1
                 }
             }
         }
+        return closed
+    }
 
+    private static func paint(
+        src: UnsafeMutablePointer<UInt8>, dst: UnsafeMutablePointer<UInt8>,
+        luma: [UInt8], line: [UInt8], closed: [UInt8],
+        width: Int, height: Int, srcRow: Int, dstRow: Int, amount: Double
+    ) {
         for y in 0..<height {
             let row = src.advanced(by: y * srcRow)
             let out = dst.advanced(by: y * dstRow)
@@ -80,50 +116,65 @@ final class OutlineRebuild {
                 o[1] = p[1]
                 o[2] = p[2]
                 o[3] = p[3]
-                guard y > 0, x > 0, y < height - 1, x < width - 1 else { continue }
-                var neighbors = 0
-                var darkest = Int(luma[index])
-                for yy in (y - 1)...(y + 1) {
-                    for xx in (x - 1)...(x + 1) where !(xx == x && yy == y) {
-                        if closed[yy * width + xx] == 1 {
-                            neighbors += 1
-                            darkest = min(darkest, Int(luma[yy * width + xx]))
-                        }
-                    }
-                }
+                if y == 0 || x == 0 || y == height - 1 || x == width - 1 { continue }
+                let stats = neighborStats(closed: closed, luma: luma, x: x, y: y, width: width)
                 let center = Int(luma[index])
-                if closed[index] == 1 && neighbors >= 2 {
-                    let target = min(center, darkest + Int((1.0 - amount) * 18))
-                    let mixed = Int((Double(center) * (1 - amount * 0.65) + Double(target) * amount * 0.65).rounded())
+                if closed[index] == 1 && stats.neighbors >= 2 {
+                    let lift = Int((1.0 - amount) * 18.0)
+                    let target = min(center, stats.darkest + lift)
+                    let keep = 1.0 - amount * 0.65
+                    let mixed = Int((Double(center) * keep + Double(target) * (1.0 - keep)).rounded())
                     if mixed < center {
-                        let scale = Double(max(mixed, 1)) / Double(max(center, 1))
-                        o[0] = UInt8(min(255, max(0, Int((Double(p[0]) * scale).rounded()))))
-                        o[1] = UInt8(min(255, max(0, Int((Double(p[1]) * scale).rounded()))))
-                        o[2] = UInt8(min(255, max(0, Int((Double(p[2]) * scale).rounded()))))
+                        scale(pixel: o, by: Double(max(mixed, 1)) / Double(max(center, 1)))
                     }
-                } else if line[index] == 1 && neighbors <= 1 {
-                    var paper = 0
-                    var paperCount = 0
-                    for yy in (y - 1)...(y + 1) {
-                        for xx in (x - 1)...(x + 1) where closed[yy * width + xx] == 0 {
-                            paper += Int(luma[yy * width + xx])
-                            paperCount += 1
-                        }
-                    }
-                    if paperCount > 0 {
-                        let lifted = paper / paperCount
-                        let mixed = Int((Double(center) * (1 - amount * 0.7) + Double(lifted) * amount * 0.7).rounded())
+                } else if line[index] == 1 && stats.neighbors <= 1 {
+                    let paper = paperLuma(closed: closed, luma: luma, x: x, y: y, width: width)
+                    if let paper {
+                        let keep = 1.0 - amount * 0.7
+                        let mixed = Int((Double(center) * keep + Double(paper) * (1.0 - keep)).rounded())
                         if mixed > center {
-                            let scale = Double(mixed) / Double(max(center, 1))
-                            o[0] = UInt8(min(255, max(0, Int((Double(p[0]) * scale).rounded()))))
-                            o[1] = UInt8(min(255, max(0, Int((Double(p[1]) * scale).rounded()))))
-                            o[2] = UInt8(min(255, max(0, Int((Double(p[2]) * scale).rounded()))))
+                            scale(pixel: o, by: Double(mixed) / Double(max(center, 1)))
                         }
                     }
                 }
             }
         }
-        return destination
+    }
+
+    private static func neighborStats(closed: [UInt8], luma: [UInt8], x: Int, y: Int, width: Int) -> (neighbors: Int, darkest: Int) {
+        var neighbors = 0
+        var darkest = 255
+        for yy in (y - 1)...(y + 1) {
+            for xx in (x - 1)...(x + 1) {
+                if xx == x && yy == y { continue }
+                if closed[yy * width + xx] == 1 {
+                    neighbors += 1
+                    darkest = min(darkest, Int(luma[yy * width + xx]))
+                }
+            }
+        }
+        return (neighbors, darkest)
+    }
+
+    private static func paperLuma(closed: [UInt8], luma: [UInt8], x: Int, y: Int, width: Int) -> Int? {
+        var paper = 0
+        var paperCount = 0
+        for yy in (y - 1)...(y + 1) {
+            for xx in (x - 1)...(x + 1) {
+                if closed[yy * width + xx] == 0 {
+                    paper += Int(luma[yy * width + xx])
+                    paperCount += 1
+                }
+            }
+        }
+        guard paperCount > 0 else { return nil }
+        return paper / paperCount
+    }
+
+    private static func scale(pixel: UnsafeMutablePointer<UInt8>, by factor: Double) {
+        pixel[0] = UInt8(min(255, max(0, Int((Double(pixel[0]) * factor).rounded()))))
+        pixel[1] = UInt8(min(255, max(0, Int((Double(pixel[1]) * factor).rounded()))))
+        pixel[2] = UInt8(min(255, max(0, Int((Double(pixel[2]) * factor).rounded()))))
     }
 
     static func apply(to image: UIImage, strength: Double) -> UIImage? {
