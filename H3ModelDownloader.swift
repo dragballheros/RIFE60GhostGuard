@@ -1,25 +1,16 @@
 import Combine
-import CryptoKit
 import Foundation
 
 private enum H3ModelDownloadError: LocalizedError {
     case listing(Int)
     case emptyManifest
-    case badDigest(String)
-    case badSize(String)
     case http(String, Int)
-    case rangeIgnored
-    case hashMismatch(String)
 
     var errorDescription: String? {
         switch self {
         case .listing(let status): return "Could not list official H3 model files (HTTP \(status))."
         case .emptyManifest: return "The pinned H3 model manifest did not contain all required FL2VA base and Ref2VA transformer assets or verifiable checksums."
-        case .badDigest(let path): return "No verifiable checksum was supplied for \(path)."
-        case .badSize(let path): return "Downloaded size did not match the manifest for \(path)."
         case .http(let path, let status): return "Download failed for \(path) (HTTP \(status))."
-        case .rangeIgnored: return "The model server did not honor a resume request."
-        case .hashMismatch(let path): return "Checksum verification failed for \(path); the incomplete file was discarded."
         }
     }
 }
@@ -39,14 +30,25 @@ final class H3ModelDownloader: ObservableObject {
     @Published private(set) var totalBytes: Int64 = 0
     @Published private(set) var completedFiles = 0
     @Published private(set) var totalFiles = 0
+    @Published private(set) var currentFile = ""
+    @Published private(set) var shardIndex = 0
+    @Published private(set) var fileBytes: Int64 = 0
+    @Published private(set) var fileTotalBytes: Int64 = 0
+    @Published private(set) var tapNote = ""
 
     static let revision = "42ed227ee7df40d41602854ae760620d6eb651fe"
     static let licenseURL = URL(string: "https://huggingface.co/MiniMaxAI/MiniMax-H3/blob/42ed227ee7df40d41602854ae760620d6eb651fe/LICENSE")!
     private static let repository = "MiniMaxAI/MiniMax-H3"
-    private static let diskMargin: Int64 = 2 * 1_073_741_824
     private var files: [Entry] = []
     private var task: Task<Void, Never>?
+    private var running = false
     private let fileManager = FileManager.default
+
+    init() {
+        H3Tier1BackgroundTransfer.shared.activate()
+        running = true
+        task = Task { await resumeSavedTier1Job() }
+    }
 
     var destinationURL: URL {
         fileManager.urls(for: .documentDirectory, in: .userDomainMask)[0]
@@ -89,55 +91,115 @@ final class H3ModelDownloader: ObservableObject {
         }
     }
 
+    func reportBlocked(_ message: String) {
+        tapNote = ""
+        state = .failed(message)
+    }
+
+    /// Tier 1: one published compressed shard at a time. Does not fetch the full official tree.
     func startDownload() {
-        guard canStart else { return }
-        let root = destinationURL
-        do {
-            try fileManager.createDirectory(at: root, withIntermediateDirectories: true)
-            var modelRoot = root
-            var resourceValues = URLResourceValues()
-            resourceValues.isExcludedFromBackup = true
-            try modelRoot.setResourceValues(resourceValues)
-            let attributes = try fileManager.attributesOfFileSystem(forPath: root.path)
-            let free = (attributes[.systemFreeSize] as? NSNumber)?.int64Value ?? 0
-            let remaining = max(0, totalBytes - existingBytes())
-            guard free > 0 else {
-                state = .failed("Could not verify free iPhone storage. Free up space and retry after storage information is available.")
-                return
-            }
-            guard free >= remaining + Self.diskMargin else {
-                state = .failed("Not enough free storage. The required native H3 model files need about \(String(format: "%.1f", Double(remaining + Self.diskMargin) / 1_073_741_824)) GiB including safety margin.")
-                return
-            }
-        } catch {
-            state = .failed("Cannot prepare local model storage: \(error.localizedDescription)")
+        if running || state == .downloading || state == .listing {
+            let name = currentFile.isEmpty ? "current shard" : currentFile
+            let count = max(totalFiles, shardIndex)
+            tapNote = "Download is already running: shard \(max(shardIndex, 1)) of \(max(count, 1)), \(name), \(fileBytes) of \(fileTotalBytes) bytes."
             return
         }
+        tapNote = ""
+        running = true
+        state = .listing
+        task = Task { await runTier1Download(resumingSavedManifest: false) }
+    }
 
-        downloadedBytes = existingBytes()
-        completedFiles = 0
-        state = .downloading
-        task = Task {
-            do {
-                for entry in files {
-                    try Task.checkCancellation()
-                    try await Self.download(entry, root: root) { [weak self] delta in
-                        Task { @MainActor in
-                            guard let self else { return }
-                            self.downloadedBytes = max(0, min(self.totalBytes, self.downloadedBytes + delta))
-                        }
-                    }
-                    completedFiles += 1
-                }
-                state = .completed
-            } catch is CancellationError {
-                downloadedBytes = existingBytes()
-                state = .ready
-            } catch {
-                downloadedBytes = existingBytes()
-                state = .failed(error.localizedDescription)
-            }
+    private var savedManifestURL: URL {
+        destinationURL.appendingPathComponent("tier1-manifest.json")
+    }
+
+    private func resumeSavedTier1Job() async {
+        let tasks = await H3Tier1BackgroundTransfer.shared.outstandingDownloadCount()
+        guard tasks > 0 || fileManager.fileExists(atPath: savedManifestURL.path) else {
+            running = false
+            return
         }
+        await runTier1Download(resumingSavedManifest: true)
+    }
+
+    private func runTier1Download(resumingSavedManifest: Bool) async {
+        defer { running = false }
+        do {
+            let manifest: H3Tier1OnDeviceConverter.Manifest
+            if resumingSavedManifest, let data = try? Data(contentsOf: savedManifestURL) {
+                manifest = try JSONDecoder().decode(H3Tier1OnDeviceConverter.Manifest.self, from: data)
+            } else {
+                let raw = UserDefaults.standard.string(forKey: H3Tier1OnDeviceConverter.manifestDefaultsKey)?
+                    .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                guard let url = URL(string: raw), url.scheme == "https", !raw.isEmpty else {
+                    throw H3Tier1OnDeviceConverter.Failure.missingManifest
+                }
+                currentFile = "manifest"
+                state = .listing
+                let (data, response) = try await URLSession.shared.data(from: url)
+                try Task.checkCancellation()
+                let status = (response as? HTTPURLResponse)?.statusCode ?? -1
+                guard (200..<300).contains(status) else {
+                    throw H3Tier1OnDeviceConverter.Failure.http("manifest", status)
+                }
+                manifest = try JSONDecoder().decode(H3Tier1OnDeviceConverter.Manifest.self, from: data)
+                guard !manifest.files.isEmpty else { throw H3ModelDownloadError.emptyManifest }
+                try fileManager.createDirectory(at: destinationURL, withIntermediateDirectories: true)
+                try data.write(to: savedManifestURL, options: .atomic)
+            }
+            guard !manifest.files.isEmpty else { throw H3ModelDownloadError.emptyManifest }
+            totalFiles = manifest.files.count
+            totalBytes = manifest.files.reduce(Int64(0)) { $0 + $1.bytes }
+            state = .downloading
+            try await H3Tier1OnDeviceConverter.convert(manifest: manifest, into: destinationURL) { [weak self] message in
+                Task { @MainActor in
+                    self?.applyTier1Progress(message, files: manifest.files)
+                }
+            }
+            try Task.checkCancellation()
+            try? fileManager.removeItem(at: savedManifestURL)
+            currentFile = ""
+            fileBytes = totalBytes
+            fileTotalBytes = totalBytes
+            shardIndex = totalFiles
+            completedFiles = totalFiles
+            downloadedBytes = totalBytes
+            state = .completed
+            tapNote = "Tier 1 download finished. \(totalFiles) shard(s) kept. Scratch deleted."
+        } catch is CancellationError {
+            if state == .listing || state == .downloading {
+                state = .ready
+            }
+        } catch {
+            state = .failed(error.localizedDescription)
+        }
+    }
+
+    private func applyTier1Progress(_ message: String, files: [H3Tier1OnDeviceConverter.Manifest.File]) {
+        if message.hasPrefix("bytes ") {
+            let body = message.dropFirst("bytes ".count)
+            let pieces = body.split(separator: " · ", maxSplits: 1, omittingEmptySubsequences: false)
+            let counts = pieces.first?.split(separator: "/", maxSplits: 1) ?? []
+            if counts.count == 2 {
+                fileBytes = Int64(counts[0]) ?? fileBytes
+                fileTotalBytes = Int64(counts[1]) ?? fileTotalBytes
+            }
+            if pieces.count == 2 { currentFile = String(pieces[1]) }
+        } else if message.hasPrefix("Downloading ") {
+            currentFile = String(message.dropFirst("Downloading ".count))
+            fileBytes = 0
+        } else if message.hasPrefix("Kept ") {
+            let name = String(message.dropFirst("Kept ".count)).replacingOccurrences(of: ". Scratch deleted.", with: "")
+            currentFile = name
+        }
+        if let index = files.firstIndex(where: { $0.path == currentFile }) {
+            shardIndex = index + 1
+            completedFiles = message.hasPrefix("Kept ") ? index + 1 : index
+            let prior = files.prefix(index).reduce(Int64(0)) { $0 + $1.bytes }
+            downloadedBytes = prior + (message.hasPrefix("Kept ") ? files[index].bytes : fileBytes)
+        }
+        tapNote = "Shard \(max(shardIndex, 1)) of \(files.count): \(currentFile) · \(fileBytes) / \(fileTotalBytes) bytes"
     }
 
     func cancel() {
@@ -256,152 +318,4 @@ final class H3ModelDownloader: ObservableObject {
         return nil
     }
 
-    private static func download(_ entry: Entry, root: URL, onProgress: @escaping (Int64) -> Void) async throws {
-        let finalURL = root.appendingPathComponent(entry.path)
-        try FileManager.default.createDirectory(at: finalURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-        var attempt = 0
-        while true {
-            try Task.checkCancellation()
-            attempt += 1
-            do {
-                try await attemptDownload(entry, finalURL: finalURL, onProgress: onProgress)
-                return
-            } catch is CancellationError {
-                throw CancellationError()
-            } catch {
-                if attempt >= 5 { throw error }
-                try await Task.sleep(nanoseconds: UInt64(min(30, pow(2, Double(attempt))) * 1_000_000_000))
-            }
-        }
-    }
-
-    private static func attemptDownload(_ entry: Entry, finalURL: URL, onProgress: @escaping (Int64) -> Void) async throws {
-        let fm = FileManager.default
-        var size = (try? fm.attributesOfItem(atPath: finalURL.path)[.size] as? NSNumber)?.int64Value ?? 0
-        if size == entry.expectedSize {
-            if try verify(finalURL, entry: entry) { return }
-            try? fm.removeItem(at: finalURL)
-            onProgress(-size)
-            size = 0
-        } else if size > entry.expectedSize {
-            try? fm.removeItem(at: finalURL)
-            onProgress(-size)
-            size = 0
-        }
-
-        let encodedPath = entry.path.split(separator: "/").map {
-            String($0).addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? String($0)
-        }.joined(separator: "/")
-        guard let url = URL(string: "https://huggingface.co/\(repository)/resolve/\(revision)/\(encodedPath)") else {
-            throw H3ModelDownloadError.http(entry.path, -1)
-        }
-        var request = URLRequest(url: url)
-        let resuming = size > 0
-        if resuming { request.setValue("bytes=\(size)-", forHTTPHeaderField: "Range") }
-
-        if !fm.fileExists(atPath: finalURL.path) { fm.createFile(atPath: finalURL.path, contents: nil) }
-        let handle = try FileHandle(forWritingTo: finalURL)
-        try handle.seekToEnd()
-        defer { try? handle.close() }
-        let delegate = H3StreamDelegate(handle: handle, expectPartial: resuming, onProgress: onProgress)
-        let session = URLSession(configuration: .ephemeral, delegate: delegate, delegateQueue: nil)
-        defer { session.invalidateAndCancel() }
-
-        do {
-            try await withTaskCancellationHandler {
-                try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-                    delegate.continuation = continuation
-                    session.dataTask(with: request).resume()
-                }
-            } onCancel: {
-                session.invalidateAndCancel()
-            }
-        } catch H3ModelDownloadError.rangeIgnored {
-            try? fm.removeItem(at: finalURL)
-            onProgress(-size)
-            throw H3ModelDownloadError.http(entry.path, 200)
-        }
-
-        let actualSize = (try? fm.attributesOfItem(atPath: finalURL.path)[.size] as? NSNumber)?.int64Value ?? 0
-        guard actualSize == entry.expectedSize else { throw H3ModelDownloadError.badSize(entry.path) }
-        guard try verify(finalURL, entry: entry) else {
-            try? fm.removeItem(at: finalURL)
-            onProgress(-actualSize)
-            throw H3ModelDownloadError.hashMismatch(entry.path)
-        }
-    }
-
-    private static func verify(_ url: URL, entry: Entry) throws -> Bool {
-        let handle = try FileHandle(forReadingFrom: url)
-        defer { try? handle.close() }
-        if let expected = entry.sha256 {
-            var hasher = SHA256()
-            while let data = try handle.read(upToCount: 8 * 1024 * 1024), !data.isEmpty { hasher.update(data: data) }
-            let digest = hasher.finalize().map { String(format: "%02x", $0) }.joined()
-            return digest == expected
-        }
-        guard let expected = entry.gitSHA1 else { throw H3ModelDownloadError.badDigest(entry.path) }
-        var hasher = Insecure.SHA1()
-        hasher.update(data: Data("blob \(entry.expectedSize)\0".utf8))
-        while let data = try handle.read(upToCount: 8 * 1024 * 1024), !data.isEmpty { hasher.update(data: data) }
-        let digest = hasher.finalize().map { String(format: "%02x", $0) }.joined()
-        return digest == expected
-    }
-}
-
-private final class H3StreamDelegate: NSObject, URLSessionDataDelegate, @unchecked Sendable {
-    private let handle: FileHandle
-    private let expectPartial: Bool
-    private let onProgress: (Int64) -> Void
-    var continuation: CheckedContinuation<Void, Error>?
-    private var finished = false
-
-    init(handle: FileHandle, expectPartial: Bool, onProgress: @escaping (Int64) -> Void) {
-        self.handle = handle
-        self.expectPartial = expectPartial
-        self.onProgress = onProgress
-    }
-
-    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive response: URLResponse,
-                    completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
-        guard let http = response as? HTTPURLResponse else {
-            completionHandler(.cancel)
-            finish(H3ModelDownloadError.http("model file", -1))
-            return
-        }
-        if expectPartial && http.statusCode != 206 {
-            completionHandler(.cancel)
-            finish(H3ModelDownloadError.rangeIgnored)
-            return
-        }
-        guard (200..<300).contains(http.statusCode) else {
-            completionHandler(.cancel)
-            finish(H3ModelDownloadError.http("model file", http.statusCode))
-            return
-        }
-        completionHandler(.allow)
-    }
-
-    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
-        do {
-            try handle.write(contentsOf: data)
-            onProgress(Int64(data.count))
-        } catch {
-            dataTask.cancel()
-            finish(error)
-        }
-    }
-
-    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
-        finish(error)
-    }
-
-    private func finish(_ error: Error?) {
-        guard !finished else { return }
-        finished = true
-        guard let continuation else { return }
-        self.continuation = nil
-        if let error { continuation.resume(throwing: error) }
-        else { continuation.resume() }
-    }
 }

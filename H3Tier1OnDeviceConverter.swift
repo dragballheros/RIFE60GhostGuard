@@ -69,16 +69,30 @@ enum H3Tier1OnDeviceConverter {
             try Task.checkCancellation()
             try validate(file)
             let scratchURL = scratch.appendingPathComponent(safeName(file.path))
+            let keptURL = kept.appendingPathComponent(safeName(file.path))
+            if fm.fileExists(atPath: keptURL.path),
+               (try? sha256(of: keptURL)) == file.sha256.lowercased() {
+                progress("Kept \(file.path). Scratch deleted.")
+                continue
+            }
             defer { try? fm.removeItem(at: scratchURL) }
-            progress("Downloading \(file.path)")
-            try await download(file, to: scratchURL)
+            let scratchSize = (try? fm.attributesOfItem(atPath: scratchURL.path)[.size] as? NSNumber)?.int64Value ?? 0
+            if scratchSize == file.bytes, (try? sha256(of: scratchURL)) == file.sha256.lowercased() {
+                progress("bytes \(file.bytes)/\(file.bytes) · \(file.path)")
+            } else {
+                if scratchSize > 0 { try? fm.removeItem(at: scratchURL) }
+                progress("Downloading \(file.path)")
+                try await download(file, to: scratchURL) { written, expected in
+                    progress("bytes \(written)/\(expected) · \(file.path)")
+                }
+            }
             guard try sha256(of: scratchURL) == file.sha256.lowercased() else {
                 throw Failure.checksum(file.path)
             }
             guard stored + file.bytes <= targetStoreBytes else {
                 throw Failure.storeBudgetExceeded(file.path)
             }
-            let destination = kept.appendingPathComponent(safeName(file.path))
+            let destination = keptURL
             if fm.fileExists(atPath: destination.path) {
                 try fm.removeItem(at: destination)
             }
@@ -101,10 +115,14 @@ enum H3Tier1OnDeviceConverter {
         }
     }
 
-    private static func download(_ file: Manifest.File, to destination: URL) async throws {
+    private static func download(
+        _ file: Manifest.File,
+        to destination: URL,
+        onBytes: @escaping @Sendable (Int64, Int64) -> Void
+    ) async throws {
         guard let url = URL(string: file.url) else { throw Failure.http(file.path, -1) }
-        let (temporary, response) = try await URLSession.shared.download(from: url)
-        let status = (response as? HTTPURLResponse)?.statusCode ?? -1
+        let temporary = try await H3Tier1BackgroundTransfer.shared.download(url, taskDescription: destination.path, onBytes: onBytes)
+        let status = H3Tier1BackgroundTransfer.shared.lastStatus
         guard (200..<300).contains(status) else {
             try? FileManager.default.removeItem(at: temporary)
             throw Failure.http(file.path, status)
@@ -146,5 +164,145 @@ enum H3Tier1OnDeviceConverter {
 
     private static func safeName(_ path: String) -> String {
         path.replacingOccurrences(of: "/", with: "_")
+    }
+}
+
+/// One background download at a time. Recreating the session with the same
+/// identifier lets iOS finish or continue a shard after the app is suspended or killed.
+final class H3Tier1BackgroundTransfer: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
+    static let shared = H3Tier1BackgroundTransfer()
+    static let identifier = "com.za.rife60ghostguard.h3.tier1"
+
+    var backgroundCompletion: (() -> Void)?
+    private(set) var lastStatus = 200
+    private let lock = NSLock()
+    private var session: URLSession?
+    private var waiters: [Int: CheckedContinuation<URL, Error>] = [:]
+    private var byteHandlers: [Int: @Sendable (Int64, Int64) -> Void] = [:]
+    private var finished: [Int: Result<URL, Error>] = [:]
+    private var closed: Set<Int> = []
+
+    func activate() {
+        lock.lock()
+        defer { lock.unlock() }
+        guard session == nil else { return }
+        let configuration = URLSessionConfiguration.background(withIdentifier: Self.identifier)
+        configuration.sessionSendsLaunchEvents = true
+        configuration.isDiscretionary = false
+        session = URLSession(configuration: configuration, delegate: self, delegateQueue: nil)
+    }
+
+    func outstandingDownloadCount() async -> Int {
+        await currentTasks().count
+    }
+
+    func download(
+        _ url: URL,
+        taskDescription: String,
+        onBytes: @escaping @Sendable (Int64, Int64) -> Void
+    ) async throws -> URL {
+        activate()
+        let existing = await currentTasks()
+        if let match = existing.first(where: { $0.originalRequest?.url == url || $0.taskDescription == taskDescription }) {
+            return try await wait(for: match, onBytes: onBytes, resume: false)
+        }
+        guard let session else { throw H3Tier1OnDeviceConverter.Failure.http(url.absoluteString, -1) }
+        let task = session.downloadTask(with: url)
+        task.taskDescription = taskDescription
+        return try await wait(for: task, onBytes: onBytes, resume: true)
+    }
+
+    private func currentTasks() async -> [URLSessionDownloadTask] {
+        activate()
+        guard let session else { return [] }
+        return await withCheckedContinuation { continuation in
+            session.getTasksWithCompletionHandler { _, _, downloads in
+                continuation.resume(returning: downloads)
+            }
+        }
+    }
+
+    private func wait(
+        for task: URLSessionTask,
+        onBytes: @escaping @Sendable (Int64, Int64) -> Void,
+        resume: Bool
+    ) async throws -> URL {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<URL, Error>) in
+            lock.lock()
+            if let result = finished.removeValue(forKey: task.taskIdentifier) {
+                lock.unlock()
+                continuation.resume(with: result)
+                return
+            }
+            waiters[task.taskIdentifier] = continuation
+            byteHandlers[task.taskIdentifier] = onBytes
+            lock.unlock()
+            if resume { task.resume() }
+        }
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        downloadTask: URLSessionDownloadTask,
+        didWriteData bytesWritten: Int64,
+        totalBytesWritten: Int64,
+        totalBytesExpectedToWrite: Int64
+    ) {
+        lock.lock()
+        let handler = byteHandlers[downloadTask.taskIdentifier]
+        lock.unlock()
+        let expected = totalBytesExpectedToWrite > 0 ? totalBytesExpectedToWrite : totalBytesWritten
+        handler?(totalBytesWritten, expected)
+    }
+
+    func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {
+        let status = (downloadTask.response as? HTTPURLResponse)?.statusCode ?? -1
+        lock.lock()
+        lastStatus = status
+        lock.unlock()
+        let destination = URL(fileURLWithPath: downloadTask.taskDescription ?? FileManager.default.temporaryDirectory.path)
+        let incoming = destination.appendingPathExtension("incoming")
+        do {
+            try FileManager.default.createDirectory(at: incoming.deletingLastPathComponent(), withIntermediateDirectories: true)
+            if FileManager.default.fileExists(atPath: incoming.path) {
+                try FileManager.default.removeItem(at: incoming)
+            }
+            try FileManager.default.moveItem(at: location, to: incoming)
+            guard (200..<300).contains(status) else {
+                try? FileManager.default.removeItem(at: incoming)
+                complete(task: downloadTask, result: .failure(H3Tier1OnDeviceConverter.Failure.http(destination.lastPathComponent, status)))
+                return
+            }
+            complete(task: downloadTask, result: .success(incoming))
+        } catch {
+            complete(task: downloadTask, result: .failure(error))
+        }
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        guard let error else { return }
+        complete(task: task, result: .failure(error))
+    }
+
+    func urlSessionDidFinishEvents(forBackgroundURLSession session: URLSession) {
+        let handler = backgroundCompletion
+        backgroundCompletion = nil
+        DispatchQueue.main.async { handler?() }
+    }
+
+    private func complete(task: URLSessionTask, result: Result<URL, Error>) {
+        lock.lock()
+        if closed.contains(task.taskIdentifier) {
+            lock.unlock()
+            return
+        }
+        closed.insert(task.taskIdentifier)
+        byteHandlers[task.taskIdentifier] = nil
+        let waiter = waiters.removeValue(forKey: task.taskIdentifier)
+        if waiter == nil {
+            finished[task.taskIdentifier] = result
+        }
+        lock.unlock()
+        waiter?.resume(with: result)
     }
 }

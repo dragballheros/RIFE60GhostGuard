@@ -18,6 +18,44 @@ private struct H3PickedVideo: Transferable {
     }
 }
 
+private struct H3DownloadStatus: View {
+    @ObservedObject var downloader: H3ModelDownloader
+
+    var body: some View {
+        switch downloader.state {
+        case .idle:
+            if !downloader.tapNote.isEmpty {
+                Text(downloader.tapNote).font(.caption)
+            }
+        case .listing:
+            ProgressView()
+            Text(downloader.tapNote.isEmpty ? "Checking the H3 manifest…" : downloader.tapNote)
+                .font(.caption)
+        case .ready:
+            Text(downloader.totalFiles > 0
+                 ? "Official file list is ready: \(downloader.totalFiles) files, about \(String(format: "%.1f", downloader.totalGiB)) GiB. Tier 1 download uses the manifest URL above, not this full tree."
+                 : "Ready.")
+                .font(.caption)
+        case .downloading:
+            ProgressView(value: downloader.fileTotalBytes > 0 ? min(1, Double(downloader.fileBytes) / Double(downloader.fileTotalBytes)) : downloader.progress)
+            Text("Shard \(max(downloader.shardIndex, 1)) of \(max(downloader.totalFiles, 1)): \(downloader.currentFile.isEmpty ? "starting" : downloader.currentFile)")
+                .font(.caption)
+            Text("\(downloader.fileBytes) / \(downloader.fileTotalBytes) bytes in this file · \(downloader.downloadedBytes) / \(downloader.totalBytes) bytes overall")
+                .font(.caption).foregroundStyle(.secondary)
+            if !downloader.tapNote.isEmpty {
+                Text(downloader.tapNote).font(.caption)
+            }
+        case .completed:
+            Text(downloader.tapNote.isEmpty ? "Tier 1 download finished." : downloader.tapNote)
+                .font(.caption)
+        case .failed(let message):
+            Text(message)
+                .foregroundStyle(.red)
+                .copyPasteBar(text: message) { _ in }
+        }
+    }
+}
+
 private enum LocalVideoBackend: String, CaseIterable, Hashable {
     case minimaxH3 = "MiniMax H3"
 }
@@ -37,6 +75,7 @@ struct H3VideoEditView: View {
     @State private var h3ModelDirectoryURL: URL?
     @State private var isChoosingH3Model = false
     @State private var acceptedH3License = false
+    @AppStorage(H3Tier1OnDeviceConverter.manifestDefaultsKey) private var tier1ManifestURL = ""
     @State private var h3CancellationToken: H3CancellationToken?
     @StateObject private var h3ModelDownloader = H3ModelDownloader()
 
@@ -71,10 +110,21 @@ struct H3VideoEditView: View {
                     Toggle("I have verified that my use is authorized by the license, including separate authorization if my territory is excluded", isOn: $acceptedH3License)
                     Text("Tier 1 stays on this phone: one published compressed shard at a time, about 30 GB kept, scratch deleted before the next file. No paid cloud, no encoder-student distillation, and no DMD training.")
                         .font(.caption).foregroundStyle(.secondary)
+                    TextField("Tier 1 manifest URL (https)", text: $tier1ManifestURL)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .copyPasteBar(text: tier1ManifestURL) { tier1ManifestURL = $0 }
                     Button("Check official H3 model files") { h3ModelDownloader.prepare() }
                         .disabled(h3ModelDownloader.state == .listing || h3ModelDownloader.state == .downloading)
-                    Button("Download / resume local H3 model") { h3ModelDownloader.startDownload() }
-                        .disabled(!acceptedH3License || !h3ModelDownloader.canStart || isRunning)
+                    Button("Download / resume local H3 model") {
+                        guard acceptedH3License else {
+                            h3ModelDownloader.reportBlocked("Accept the license statement above before this phone downloads the local H3 model.")
+                            return
+                        }
+                        h3ModelDownloader.startDownload()
+                    }
+                    .disabled(isRunning)
+                    H3DownloadStatus(downloader: h3ModelDownloader)
                 }
                 Section("Reference video") {
                     PhotosPicker(selection: $videoItem, matching: .videos) {
@@ -99,7 +149,10 @@ struct H3VideoEditView: View {
                         Label("Generate H3 reference video", systemImage: "wand.and.stars")
                     }
                     .disabled(isRunning || sourceURL == nil || h3ModelDirectoryURL == nil || !acceptedH3License)
-                    if let errorText { Text(errorText).foregroundStyle(.red) }
+                    if let errorText {
+                        Text(errorText).foregroundStyle(.red)
+                            .copyPasteBar(text: errorText) { _ in }
+                    }
                     Text(status).font(.caption).foregroundStyle(.secondary)
                 }
             }
