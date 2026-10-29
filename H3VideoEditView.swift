@@ -206,6 +206,7 @@ struct H3VideoEditView: View {
         let hasSecurityScope = modelURL.startAccessingSecurityScopedResource()
         defer { if hasSecurityScope { modelURL.stopAccessingSecurityScopedResource() } }
         do {
+            try H3Tier1OnDeviceConverter.installBundledTokenizer(into: modelURL)
             let referenceAsset = AVURLAsset(url: sourceURL)
             let referenceDuration = try await referenceAsset.load(.duration)
             let referenceTracks = try await referenceAsset.loadTracks(withMediaType: .video)

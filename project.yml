@@ -44,6 +44,9 @@ targets:
       - path: Models/h3-tier1-manifest.json
         type: file
         buildPhase: resources
+      - path: Models/h3-tokenizer.json
+        type: file
+        buildPhase: resources
     dependencies:
       - package: RifeMetal
         product: RifeMetal

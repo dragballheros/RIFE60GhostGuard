@@ -13,6 +13,22 @@ enum H3Tier1OnDeviceConverter {
     static let targetStoreBytes: Int64 = 44 * 1_073_741_824
     /// Raw manifest on the repository default branch. The app also ships the same JSON.
     static let defaultManifestURLString = "https://raw.githubusercontent.com/dragballheros/RIFE60GhostGuard/main/Models/h3-tier1-manifest.json"
+
+    /// The Q8 manifest does not include a tokenizer. The official tokenizer ships in the app
+    /// and is copied next to the weights so generation can encode a prompt.
+    static func installBundledTokenizer(into modelDirectory: URL) throws {
+        guard let bundled = Bundle.main.url(forResource: "h3-tokenizer", withExtension: "json") else {
+            return
+        }
+        let folders = ["FL2VA/tokenizer", "Ref2VA/tokenizer"]
+        for relative in folders {
+            let directory = modelDirectory.appendingPathComponent(relative, isDirectory: true)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            let destination = directory.appendingPathComponent("tokenizer.json")
+            if FileManager.default.fileExists(atPath: destination.path) { continue }
+            try FileManager.default.copyItem(at: bundled, to: destination)
+        }
+    }
     static let peakScratchCeilingBytes: Int64 = 150 * 1_073_741_824
     static let manifestDefaultsKey = "RIFE60.H3.Tier1ManifestURL"
 
