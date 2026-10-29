@@ -108,7 +108,7 @@ struct H3VideoEditView: View {
                     Text("Territory restriction: the published Community License excludes the United States, European Union, United Kingdom, and South Korea from its standard applicable territory. If you are in an excluded territory, do not download or use these weights unless MiniMax has separately authorized you. Check the current license before proceeding.")
                         .font(.caption).foregroundStyle(.red)
                     Toggle("I have verified that my use is authorized by the license, including separate authorization if my territory is excluded", isOn: $acceptedH3License)
-                    Text("Tier 1 stays on this phone: one published compressed shard at a time, about 30 GB kept, scratch deleted before the next file. No paid cloud, no encoder-student distillation, and no DMD training.")
+                    Text("Tier 1 stays on this phone: one published compressed shard at a time, about 44 GB kept, scratch deleted before the next file. No paid cloud, no encoder-student distillation, and no DMD training.")
                         .font(.caption).foregroundStyle(.secondary)
                     TextField("Tier 1 manifest URL (https)", text: $tier1ManifestURL)
                         .textInputAutocapitalization(.never)
@@ -162,6 +162,11 @@ struct H3VideoEditView: View {
             }
             .fileImporter(isPresented: $isChoosingH3Model, allowedContentTypes: [.folder], allowsMultipleSelection: false) { result in
                 if case .success(let urls) = result { h3ModelDirectoryURL = urls.first }
+            }
+            .onAppear {
+                if tier1ManifestURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    tier1ManifestURL = H3Tier1OnDeviceConverter.defaultManifestURLString
+                }
             }
             .onChange(of: videoItem) { item in
                 guard let item else { return }

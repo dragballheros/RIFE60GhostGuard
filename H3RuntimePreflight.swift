@@ -33,7 +33,7 @@ enum H3RuntimePreflight {
                 return "MiniMax H3 model files are not installed. Select or install a compatible local H3 model directory first."
             }
             if !modelLayoutIsValid {
-                return "The selected folder is not a complete native H3 model layout. This runtime requires the FL2VA base components and the Ref2VA transformer checkpoint. A partial download or GGUF-only file is not compatible."
+                return "The selected folder is not a complete native H3 model layout. This runtime requires the FL2VA base components and the Ref2VA transformer checkpoint. A partial download or GGUF-only file is not compatible. H3GGUFStream can dequantize Q8_0 blocks on this phone, and the native graph still requires BF16 safetensors."
             }
             if !hasMinimumMemory {
                 let availableGiB = Double(availableMemoryBytes) / 1_073_741_824

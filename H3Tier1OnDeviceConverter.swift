@@ -10,7 +10,9 @@ import Foundation
 /// it only when the stored set stays within the Tier 1 budget, then deletes the
 /// scratch file before the next file starts.
 enum H3Tier1OnDeviceConverter {
-    static let targetStoreBytes: Int64 = 30 * 1_073_741_824
+    static let targetStoreBytes: Int64 = 44 * 1_073_741_824
+    /// Raw manifest on the repository default branch. The app also ships the same JSON.
+    static let defaultManifestURLString = "https://raw.githubusercontent.com/dragballheros/RIFE60GhostGuard/main/Models/h3-tier1-manifest.json"
     static let peakScratchCeilingBytes: Int64 = 150 * 1_073_741_824
     static let manifestDefaultsKey = "RIFE60.H3.Tier1ManifestURL"
 
@@ -43,9 +45,9 @@ enum H3Tier1OnDeviceConverter {
             case .shardTooLarge(let path):
                 return "\(path) is larger than the 150 GB scratch ceiling. It was not downloaded."
             case .notEnoughFreeSpace:
-                return "Not enough free space to hold one shard and still delete it after the check."
+                return "Not enough free space to hold this one shard plus a 2 GB margin and still delete the scratch file. The kept store can grow to about 44 GB, one file at a time."
             case .storeBudgetExceeded(let path):
-                return "Keeping \(path) would pass the about 30 GB Tier 1 store. The scratch file was deleted."
+                return "Keeping \(path) would pass the about 44 GB Tier 1 store. The scratch file was deleted."
             case .checksum(let path):
                 return "Checksum failed for \(path). The scratch file was deleted."
             case .http(let path, let status):
@@ -88,6 +90,9 @@ enum H3Tier1OnDeviceConverter {
             }
             guard try sha256(of: scratchURL) == file.sha256.lowercased() else {
                 throw Failure.checksum(file.path)
+            }
+            if file.path.lowercased().hasSuffix(".gguf") {
+                try H3GGUFStream.confirmDownloadableShard(at: scratchURL, path: file.path)
             }
             guard stored + file.bytes <= targetStoreBytes else {
                 throw Failure.storeBudgetExceeded(file.path)

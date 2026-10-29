@@ -133,17 +133,24 @@ final class H3ModelDownloader: ObservableObject {
             } else {
                 let raw = UserDefaults.standard.string(forKey: H3Tier1OnDeviceConverter.manifestDefaultsKey)?
                     .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-                guard let url = URL(string: raw), url.scheme == "https", !raw.isEmpty else {
+                let manifestString = raw.isEmpty ? H3Tier1OnDeviceConverter.defaultManifestURLString : raw
+                guard let url = URL(string: manifestString), url.scheme == "https" else {
                     throw H3Tier1OnDeviceConverter.Failure.missingManifest
                 }
                 currentFile = "manifest"
                 state = .listing
-                let (data, response) = try await URLSession.shared.data(from: url)
-                try Task.checkCancellation()
-                let status = (response as? HTTPURLResponse)?.statusCode ?? -1
-                guard (200..<300).contains(status) else {
-                    throw H3Tier1OnDeviceConverter.Failure.http("manifest", status)
+                let data: Data
+                if let fetched = try? await Self.fetchManifest(url) {
+                    data = fetched
+                } else if manifestString == H3Tier1OnDeviceConverter.defaultManifestURLString,
+                          let bundled = Bundle.main.url(forResource: "h3-tier1-manifest", withExtension: "json"),
+                          let local = try? Data(contentsOf: bundled) {
+                    data = local
+                    tapNote = "Using the Q8 Tier 1 manifest shipped with this build."
+                } else {
+                    throw H3Tier1OnDeviceConverter.Failure.http("manifest", -1)
                 }
+                try Task.checkCancellation()
                 manifest = try JSONDecoder().decode(H3Tier1OnDeviceConverter.Manifest.self, from: data)
                 guard !manifest.files.isEmpty else { throw H3ModelDownloadError.emptyManifest }
                 try fileManager.createDirectory(at: destinationURL, withIntermediateDirectories: true)
@@ -175,6 +182,15 @@ final class H3ModelDownloader: ObservableObject {
         } catch {
             state = .failed(error.localizedDescription)
         }
+    }
+
+    private static func fetchManifest(_ url: URL) async throws -> Data {
+        let (data, response) = try await URLSession.shared.data(from: url)
+        let status = (response as? HTTPURLResponse)?.statusCode ?? -1
+        guard (200..<300).contains(status) else {
+            throw H3Tier1OnDeviceConverter.Failure.http("manifest", status)
+        }
+        return data
     }
 
     private func applyTier1Progress(_ message: String, files: [H3Tier1OnDeviceConverter.Manifest.File]) {

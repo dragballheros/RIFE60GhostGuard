@@ -110,7 +110,7 @@ struct ContentView: View {
                             Label("Open Local MiniMax H3", systemImage: "wand.and.stars")
                         }
                         .disabled(vm.isBusy || vm.isImporting || vm.isBenchmarking)
-                        Text("Reference-conditioned video on this iPhone. Tier 1 keeps about 30 GB of published compressed weights and does not use a paid cloud.")
+                        Text("Reference-conditioned video on this iPhone. Tier 1 keeps about 44 GB of published compressed weights and does not use a paid cloud.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }

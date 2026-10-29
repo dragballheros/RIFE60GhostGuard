@@ -38,6 +38,9 @@ targets:
       - path: Assets.xcassets
       - path: Models/DeepCreamBar.mlpackage
       - path: Models/DeepCreamMosaic.mlpackage
+      - path: Models/h3-tier1-manifest.json
+        type: file
+        buildPhase: resources
     dependencies:
       - package: RifeMetal
         product: RifeMetal
