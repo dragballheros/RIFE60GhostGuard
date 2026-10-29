@@ -84,6 +84,17 @@ print("\nDevice/runtime release gates:")
 for label, passed in release_gates:
     print(f"{'PASS' if passed else 'BLOCKED'}: {label}")
 
+gguf_test = subprocess.run(
+    ["cc", "-std=c11", "-DH3_GGUF_TEST", "-I", "Vendor/h3-gguf", "-o", "/tmp/h3gguf",
+     "Vendor/h3-gguf/h3_gguf.c"],
+    check=False,
+)
+if gguf_test.returncode or subprocess.run(["/tmp/h3gguf"], check=False).returncode:
+    failed.append("GGUF header, 535-key Ref2VA map, and dequant reference values")
+    print("FAIL: GGUF header, 535-key Ref2VA map, and dequant reference values")
+else:
+    print("PASS: GGUF header, 535-key Ref2VA map, and dequant reference values")
+
 if failed:
     print(f"\nIntegration validation failed: {len(failed)} check(s).")
     sys.exit(1)

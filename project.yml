@@ -32,6 +32,9 @@ targets:
         includes:
           - "*.c"
           - "*.m"
+      - path: Vendor/h3-gguf
+        includes:
+          - "*.c"
       - path: Vendor/minimax-h3/h3_shaders.metal
         type: file
         buildPhase: resources
@@ -58,6 +61,7 @@ targets:
         SWIFT_OBJC_BRIDGING_HEADER: "$(SRCROOT)/RIFE60GhostGuard-Bridging-Header.h"
         HEADER_SEARCH_PATHS:
           - "$(SRCROOT)/Vendor/minimax-h3"
+          - "$(SRCROOT)/Vendor/h3-gguf"
         LIBRARY_SEARCH_PATHS:
         OTHER_LDFLAGS:
           - "-framework"

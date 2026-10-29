@@ -168,6 +168,11 @@ struct H3VideoEditView: View {
                     tier1ManifestURL = H3Tier1OnDeviceConverter.defaultManifestURLString
                 }
             }
+            .onChange(of: h3ModelDownloader.state) { state in
+                if state == .completed {
+                    h3ModelDirectoryURL = h3ModelDownloader.destinationURL
+                }
+            }
             .onChange(of: videoItem) { item in
                 guard let item else { return }
                 Task {

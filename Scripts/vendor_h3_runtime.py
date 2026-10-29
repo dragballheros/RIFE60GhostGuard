@@ -50,6 +50,7 @@ def main():
     shutil.rmtree(target, ignore_errors=True)
     staged.rename(target)
     shutil.rmtree(temp, ignore_errors=True)
+    subprocess.run(["python3", str(ROOT / "Scripts" / "patch_h3_gguf_runtime.py"), str(target)], check=True)
     print(f"Staged {len(SOURCES)} pinned H3 runtime files from {REVISION} at {target}")
 
 if __name__ == "__main__":
