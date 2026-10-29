@@ -71,7 +71,7 @@ enum H3Tier1OnDeviceConverter {
             let scratchURL = scratch.appendingPathComponent(safeName(file.path))
             let keptURL = kept.appendingPathComponent(safeName(file.path))
             if fm.fileExists(atPath: keptURL.path),
-               (try? sha256(of: keptURL)) == file.sha256.lowercased() {
+               (try? await H3ModelDownloader.checksumMatches(url: keptURL, sha256: file.sha256, gitSHA1: nil, size: file.bytes)) == true {
                 progress("Kept \(file.path). Scratch deleted.")
                 continue
             }
@@ -121,6 +121,12 @@ enum H3Tier1OnDeviceConverter {
         onBytes: @escaping @Sendable (Int64, Int64) -> Void
     ) async throws {
         guard let url = URL(string: file.url) else { throw Failure.http(file.path, -1) }
+        let existing = (try? FileManager.default.attributesOfItem(atPath: destination.path)[.size] as? NSNumber)?.int64Value ?? 0
+        if existing > 0, existing < file.bytes {
+            let request = await H3ModelDownloader.resumeRequest(for: url, existingBytes: existing)
+            try await appendResume(request, to: destination, already: existing, expected: file.bytes, onBytes: onBytes)
+            return
+        }
         let temporary = try await H3Tier1BackgroundTransfer.shared.download(url, taskDescription: destination.path, onBytes: onBytes)
         let status = H3Tier1BackgroundTransfer.shared.lastStatus
         guard (200..<300).contains(status) else {
@@ -131,6 +137,41 @@ enum H3Tier1OnDeviceConverter {
             try FileManager.default.removeItem(at: destination)
         }
         try FileManager.default.moveItem(at: temporary, to: destination)
+    }
+
+    private static func appendResume(
+        _ request: URLRequest,
+        to destination: URL,
+        already: Int64,
+        expected: Int64,
+        onBytes: @escaping @Sendable (Int64, Int64) -> Void
+    ) async throws {
+        let (temporary, response) = try await URLSession.shared.download(for: request)
+        let status = (response as? HTTPURLResponse)?.statusCode ?? -1
+        guard status == 206 else {
+            try? FileManager.default.removeItem(at: temporary)
+            throw Failure.http(destination.lastPathComponent, status)
+        }
+        let input = try FileHandle(forReadingFrom: temporary)
+        defer {
+            try? input.close()
+            try? FileManager.default.removeItem(at: temporary)
+        }
+        if !FileManager.default.fileExists(atPath: destination.path) {
+            FileManager.default.createFile(atPath: destination.path, contents: nil)
+        }
+        let output = try FileHandle(forWritingTo: destination)
+        defer { try? output.close() }
+        try output.seekToEnd()
+        var written = already
+        while true {
+            let chunk = try input.read(upToCount: 8 * 1024 * 1024) ?? Data()
+            if chunk.isEmpty { break }
+            try output.write(contentsOf: chunk)
+            written += Int64(chunk.count)
+            onBytes(written, expected)
+        }
+        guard written == expected else { throw Failure.http(destination.lastPathComponent, status) }
     }
 
     private static func sha256(of url: URL) throws -> String {

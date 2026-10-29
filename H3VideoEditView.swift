@@ -148,7 +148,7 @@ struct H3VideoEditView: View {
                     Button { Task { await runH3ReferenceEdit() } } label: {
                         Label("Generate H3 reference video", systemImage: "wand.and.stars")
                     }
-                    .disabled(isRunning || sourceURL == nil || h3ModelDirectoryURL == nil || !acceptedH3License)
+                    .disabled(!acceptedH3License || isRunning || sourceURL == nil || h3ModelDirectoryURL == nil)
                     if let errorText {
                         Text(errorText).foregroundStyle(.red)
                             .copyPasteBar(text: errorText) { _ in }

@@ -1,4 +1,5 @@
 import Combine
+import CryptoKit
 import Foundation
 
 private enum H3ModelDownloadError: LocalizedError {
@@ -318,4 +319,33 @@ final class H3ModelDownloader: ObservableObject {
         return nil
     }
 
+    /// Appends to a partial file when a background task is no longer in the system session.
+    static func resumeRequest(for url: URL, existingBytes: Int64) -> URLRequest {
+        var request = URLRequest(url: url)
+        if existingBytes > 0 {
+            request.setValue("bytes=\(existingBytes)-", forHTTPHeaderField: "Range")
+        }
+        return request
+    }
+
+    static func checksumMatches(url: URL, sha256 expectedSHA: String?, gitSHA1: String?, size: Int64) throws -> Bool {
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        if let expectedSHA {
+            var hasher = SHA256()
+            while let data = try handle.read(upToCount: 8 * 1024 * 1024), !data.isEmpty {
+                hasher.update(data: data)
+            }
+            let digest = hasher.finalize().map { String(format: "%02x", $0) }.joined()
+            return digest == expectedSHA.lowercased()
+        }
+        guard let gitSHA1 else { return false }
+        var hasher = Insecure.SHA1()
+        hasher.update(data: Data("blob \(size)\0".utf8))
+        while let data = try handle.read(upToCount: 8 * 1024 * 1024), !data.isEmpty {
+            hasher.update(data: data)
+        }
+        let digest = hasher.finalize().map { String(format: "%02x", $0) }.joined()
+        return digest == gitSHA1.lowercased()
+    }
 }
