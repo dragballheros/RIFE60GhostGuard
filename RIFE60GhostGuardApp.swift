@@ -7,8 +7,18 @@ final class RIFE60AppDelegate: NSObject, UIApplicationDelegate {
         completionHandler: @escaping () -> Void
     ) {
         guard identifier == H3Tier1BackgroundTransfer.identifier else { return }
-        H3Tier1BackgroundTransfer.shared.backgroundCompletion = completionHandler
-        H3Tier1BackgroundTransfer.shared.activate()
+        // Store the handler before the session exists. Creating the session earlier
+        // delivers the shard event first, the handler is never called, and iOS
+        // relaunches the app in a loop while shard 1 is still attached.
+        H3Tier1BackgroundTransfer.shared.beginBackgroundEvents(completionHandler)
+    }
+
+    func application(
+        _ application: UIApplication,
+        didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
+    ) -> Bool {
+        H3Tier1BackgroundTransfer.shared.cancelLegacyDownloadsIfIdle()
+        return true
     }
 }
 
@@ -19,7 +29,6 @@ struct RIFE60GhostGuardApp: App {
     init() {
         StorageMigration.removeRetiredVACEWeights()
         DiagnosticsExport.ensureFolder()
-        H3Tier1BackgroundTransfer.shared.activate()
     }
 
     var body: some Scene {

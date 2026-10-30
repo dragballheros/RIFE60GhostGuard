@@ -46,7 +46,6 @@ final class H3ModelDownloader: ObservableObject {
     private let fileManager = FileManager.default
 
     init() {
-        H3Tier1BackgroundTransfer.shared.activate()
         running = true
         task = Task { await resumeSavedTier1Job() }
     }
@@ -116,8 +115,7 @@ final class H3ModelDownloader: ObservableObject {
     }
 
     private func resumeSavedTier1Job() async {
-        let tasks = await H3Tier1BackgroundTransfer.shared.outstandingDownloadCount()
-        guard tasks > 0 || fileManager.fileExists(atPath: savedManifestURL.path) else {
+        guard fileManager.fileExists(atPath: savedManifestURL.path) else {
             running = false
             return
         }
@@ -333,15 +331,6 @@ final class H3ModelDownloader: ObservableObject {
             return URL(string: target, relativeTo: response.url)?.absoluteURL
         }
         return nil
-    }
-
-    /// Appends to a partial file when a background task is no longer in the system session.
-    static func resumeRequest(for url: URL, existingBytes: Int64) -> URLRequest {
-        var request = URLRequest(url: url)
-        if existingBytes > 0 {
-            request.setValue("bytes=\(existingBytes)-", forHTTPHeaderField: "Range")
-        }
-        return request
     }
 
     static func checksumMatches(url: URL, sha256 expectedSHA: String?, gitSHA1: String?, size: Int64) throws -> Bool {
