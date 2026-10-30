@@ -180,8 +180,7 @@ enum H3Tier1OnDeviceConverter {
         while written < file.bytes {
             try Task.checkCancellation()
             let pieceEnd = min(written + pieceBytes, file.bytes) - 1
-            var request = URLRequest(url: url)
-            request.setValue("bytes=\(written)-\(pieceEnd)", forHTTPHeaderField: "Range")
+            var request = H3ModelDownloader.resumeRequest(for: url, existingBytes: written, end: pieceEnd)
             request.timeoutInterval = 180
             let (temporary, response) = try await pieceSession.download(for: request)
             let status = (response as? HTTPURLResponse)?.statusCode ?? -1

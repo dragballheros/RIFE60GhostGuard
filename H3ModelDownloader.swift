@@ -333,6 +333,17 @@ final class H3ModelDownloader: ObservableObject {
         return nil
     }
 
+    /// Ranged GET for a partial shard. `end` is inclusive, matching an HTTP Range header.
+    nonisolated static func resumeRequest(for url: URL, existingBytes: Int64, end: Int64? = nil) -> URLRequest {
+        var request = URLRequest(url: url)
+        if let end {
+            request.setValue("bytes=\(existingBytes)-\(end)", forHTTPHeaderField: "Range")
+        } else if existingBytes > 0 {
+            request.setValue("bytes=\(existingBytes)-", forHTTPHeaderField: "Range")
+        }
+        return request
+    }
+
     static func checksumMatches(url: URL, sha256 expectedSHA: String?, gitSHA1: String?, size: Int64) throws -> Bool {
         let handle = try FileHandle(forReadingFrom: url)
         defer { try? handle.close() }
