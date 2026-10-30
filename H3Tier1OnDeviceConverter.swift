@@ -97,8 +97,9 @@ enum H3Tier1OnDeviceConverter {
             try validate(file, bytesStillNeeded: bytesStillNeeded)
             // A killed app must keep the partial shard. A failed checksum still deletes it.
             defer {
-                if Task.isCancelled { return }
-                try? fm.removeItem(at: scratchURL)
+                if !Task.isCancelled {
+                    try? fm.removeItem(at: scratchURL)
+                }
             }
             let scratchSize = (try? fm.attributesOfItem(atPath: scratchURL.path)[.size] as? NSNumber)?.int64Value ?? 0
             var digest: String?
