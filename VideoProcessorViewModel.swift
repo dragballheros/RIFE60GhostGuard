@@ -389,6 +389,11 @@ final class VideoProcessorViewModel: ObservableObject {
         diagnosticsCopyStatus = "Error logs copied to clipboard"
     }
 
+    func clearErrorLogs() {
+        DiagnosticsLogger.shared.clear()
+        diagnosticsCopyStatus = "Error log cleared"
+    }
+
     func shareDiagnostics() {
         let items = DiagnosticsExport.shareItems()
         guard !items.isEmpty else {

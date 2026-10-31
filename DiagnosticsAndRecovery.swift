@@ -36,32 +36,83 @@ final class DiagnosticsLogger: @unchecked Sendable {
 
     private init() {
         try? fm.createDirectory(at: directory, withIntermediateDirectories: true)
+        queue.async { self.pruneLocked() }
     }
 
     func log(_ message: String) {
-        queue.async {
-            let stamp = self.formatter.string(from: Date())
-            let line = "[\(stamp)] \(message)\n"
-            let directory = self.directory
-            let logURL = self.logURL
-            try? self.fm.createDirectory(at: directory, withIntermediateDirectories: true)
-            if !self.fm.fileExists(atPath: logURL.path) {
-                try? Data(line.utf8).write(to: logURL, options: .atomic)
-            } else if let handle = try? FileHandle(forWritingTo: logURL) {
-                defer { try? handle.close() }
-                try? handle.seekToEnd()
-                try? handle.write(contentsOf: Data(line.utf8))
-            }
-            guard let attrs = try? self.fm.attributesOfItem(atPath: logURL.path),
-                  let size = attrs[.size] as? NSNumber,
-                  size.intValue > self.maxBytes,
-                  let data = try? Data(contentsOf: logURL) else { return }
-            try? Data(data.suffix(self.maxBytes / 2)).write(to: logURL, options: .atomic)
+        queue.async { self.appendLocked(message) }
+    }
+
+    /// Writes before returning so a crash on the next line is still in the log.
+    func logSync(_ message: String) {
+        queue.sync { self.appendLocked(message) }
+    }
+
+    func clear() {
+        queue.sync {
+            try? fm.removeItem(at: logURL)
+            DiagnosticsExport.pruneStaleRuns(removingAllRuns: true)
         }
+        CrashCapture.clearCaptureFile()
+    }
+
+    private func appendLocked(_ message: String) {
+        let stamp = formatter.string(from: Date())
+        let line = "[\(stamp)] \(message)\n"
+        try? fm.createDirectory(at: directory, withIntermediateDirectories: true)
+        if !fm.fileExists(atPath: logURL.path) {
+            try? Data(line.utf8).write(to: logURL, options: .atomic)
+        } else if let handle = try? FileHandle(forWritingTo: logURL) {
+            defer { try? handle.close() }
+            try? handle.seekToEnd()
+            try? handle.write(contentsOf: Data(line.utf8))
+        }
+        pruneLocked()
+    }
+
+    /// Drops log lines and diagnostic run files older than two days.
+    private func pruneLocked() {
+        let cutoff = Date().addingTimeInterval(-2 * 24 * 60 * 60)
+        if let text = try? String(contentsOf: logURL, encoding: .utf8) {
+            var keep = false
+            var kept = ""
+            var sawTimestamp = false
+            for line in text.split(separator: "\n", omittingEmptySubsequences: false) {
+                if let date = timestamp(in: line) {
+                    sawTimestamp = true
+                    keep = date >= cutoff
+                } else if !sawTimestamp {
+                    keep = true
+                }
+                if keep {
+                    kept += line
+                    kept += "\n"
+                }
+            }
+            if kept != text {
+                try? Data(kept.utf8).write(to: logURL, options: .atomic)
+            }
+        }
+        guard let attrs = try? fm.attributesOfItem(atPath: logURL.path),
+              let size = attrs[.size] as? NSNumber,
+              size.intValue > maxBytes,
+              let data = try? Data(contentsOf: logURL) else {
+            DiagnosticsExport.pruneStaleRuns(removingAllRuns: false)
+            return
+        }
+        try? Data(data.suffix(maxBytes / 2)).write(to: logURL, options: .atomic)
+        DiagnosticsExport.pruneStaleRuns(removingAllRuns: false)
+    }
+
+    private func timestamp(in line: Substring) -> Date? {
+        guard line.hasPrefix("["), let end = line.firstIndex(of: "]"), line.startIndex < end else { return nil }
+        let stamp = line[line.index(after: line.startIndex)..<end]
+        return formatter.date(from: String(stamp))
     }
 
     func text() -> String {
         queue.sync {
+            pruneLocked()
             let header = """
             RIFE 60 Ghost Guard diagnostics
             Device: \(UIDevice.current.model)

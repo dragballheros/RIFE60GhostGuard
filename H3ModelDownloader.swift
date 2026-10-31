@@ -98,6 +98,7 @@ final class H3ModelDownloader: ObservableObject {
 
     /// Tier 1: one published compressed shard at a time. Does not fetch the full official tree.
     func startDownload() {
+        CrashCapture.step("H3 download requested")
         if running || state == .downloading || state == .listing {
             let name = currentFile.isEmpty ? "current shard" : currentFile
             let count = max(totalFiles, shardIndex)
@@ -115,6 +116,7 @@ final class H3ModelDownloader: ObservableObject {
     }
 
     private func resumeSavedTier1Job() async {
+        CrashCapture.step("H3 checking saved manifest")
         guard fileManager.fileExists(atPath: savedManifestURL.path) else {
             running = false
             return
@@ -135,6 +137,7 @@ final class H3ModelDownloader: ObservableObject {
                 guard let url = URL(string: manifestString), url.scheme == "https" else {
                     throw H3Tier1OnDeviceConverter.Failure.missingManifest
                 }
+                CrashCapture.step("H3 loading manifest \(manifestString)")
                 currentFile = "manifest"
                 state = .listing
                 let data: Data
@@ -157,6 +160,7 @@ final class H3ModelDownloader: ObservableObject {
             guard !manifest.files.isEmpty else { throw H3ModelDownloadError.emptyManifest }
             totalFiles = manifest.files.count
             totalBytes = manifest.files.reduce(Int64(0)) { $0 + $1.bytes }
+            CrashCapture.step("H3 manifest ready files=\(totalFiles) bytes=\(totalBytes)")
             state = .downloading
             try await H3Tier1OnDeviceConverter.convert(manifest: manifest, into: destinationURL) { [weak self] message in
                 Task { @MainActor in
@@ -178,6 +182,7 @@ final class H3ModelDownloader: ObservableObject {
                 state = .ready
             }
         } catch {
+            CrashCapture.step("H3 download failed \(error.localizedDescription)")
             state = .failed(error.localizedDescription)
         }
     }
@@ -215,6 +220,7 @@ final class H3ModelDownloader: ObservableObject {
             downloadedBytes = prior + (message.hasPrefix("Kept ") ? files[index].bytes : fileBytes)
         }
         tapNote = "Shard \(max(shardIndex, 1)) of \(files.count): \(currentFile) · \(fileBytes) / \(fileTotalBytes) bytes"
+        CrashCapture.note(tapNote)
     }
 
     func cancel() {

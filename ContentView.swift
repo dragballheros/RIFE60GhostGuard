@@ -433,6 +433,7 @@ struct ContentView: View {
                         }
                         Text("Keep the app open and cool. Tests compute policies, then every available Real-CUGAN tile strategy on this phone. The fastest strategy that stays inside memory headroom is saved for this model, tile size, device, iOS version, and app build. The next render uses it. Before a benchmark, Real-CUGAN stays on sequential backed predictions.").font(.caption).foregroundStyle(.secondary)
                         Button { vm.copyErrorLogs() } label: { Label("Copy Error Logs", systemImage: "doc.on.doc") }
+                        Button(role: .destructive) { vm.clearErrorLogs() } label: { Label("Clear Error Log", systemImage: "trash") }
                         if !vm.diagnosticsCopyStatus.isEmpty { Text(vm.diagnosticsCopyStatus).font(.caption).foregroundStyle(.secondary) }
                         Text("Copies the persistent render log, last stage/progress, thermal state, frame counters, RIFE speed, Real-CUGAN speed, export folder, and the last error directly to the clipboard.").font(.caption).foregroundStyle(.secondary)
                     }

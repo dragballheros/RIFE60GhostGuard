@@ -6,6 +6,25 @@ enum DiagnosticsExport {
     static func ensureFolder() {
         guard let directory = directoryURL() else { return }
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        pruneStaleRuns(removingAllRuns: false)
+    }
+
+    /// `removingAllRuns` clears every run file. Otherwise only files older than two days are removed.
+    static func pruneStaleRuns(removingAllRuns: Bool) {
+        guard let directory = directoryURL(),
+              let urls = try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: [.contentModificationDateKey], options: [.skipsHiddenFiles]) else {
+            return
+        }
+        let cutoff = Date().addingTimeInterval(-2 * 24 * 60 * 60)
+        for url in urls {
+            let name = url.lastPathComponent
+            let isRun = name.hasPrefix("run-") && url.pathExtension == "json"
+            let isZip = name.hasPrefix("diagnostics-last-") && url.pathExtension == "zip"
+            guard isRun || isZip else { continue }
+            if removingAllRuns || modificationDate(url) < cutoff {
+                try? FileManager.default.removeItem(at: url)
+            }
+        }
     }
 
     static func directoryURL() -> URL? {

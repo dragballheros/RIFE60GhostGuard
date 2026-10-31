@@ -107,7 +107,17 @@ struct H3VideoEditView: View {
                     Link("Review the official MiniMax H3 model license", destination: H3ModelDownloader.licenseURL)
                     Text("Territory restriction: the published Community License excludes the United States, European Union, United Kingdom, and South Korea from its standard applicable territory. If you are in an excluded territory, do not download or use these weights unless MiniMax has separately authorized you. Check the current license before proceeding.")
                         .font(.caption).foregroundStyle(.red)
-                    Toggle("I have verified that my use is authorized by the license, including separate authorization if my territory is excluded", isOn: $acceptedH3License)
+                    Toggle("I have verified that my use is authorized by the license, including separate authorization if my territory is excluded", isOn: Binding(
+                        get: { acceptedH3License },
+                        set: { accepted in
+                            if accepted {
+                                CrashCapture.step("H3 authorized-use accepted")
+                            } else {
+                                CrashCapture.step("H3 authorized-use cleared")
+                            }
+                            acceptedH3License = accepted
+                        }
+                    ))
                     Text("Tier 1 stays on this phone: one published compressed shard at a time, about 44 GB kept, scratch deleted before the next file. No paid cloud, no encoder-student distillation, and no DMD training.")
                         .font(.caption).foregroundStyle(.secondary)
                     TextField("Tier 1 manifest URL (https)", text: $tier1ManifestURL)

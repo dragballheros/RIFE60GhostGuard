@@ -98,6 +98,7 @@ targets:
         INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents: YES
         INFOPLIST_KEY_UIBackgroundModes:
           - audio
+          - fetch
     scheme:
       testTargets: []
 

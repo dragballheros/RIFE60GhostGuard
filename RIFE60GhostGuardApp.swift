@@ -17,7 +17,6 @@ final class RIFE60AppDelegate: NSObject, UIApplicationDelegate {
         _ application: UIApplication,
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
     ) -> Bool {
-        H3Tier1BackgroundTransfer.shared.cancelLegacyDownloadsIfIdle()
         return true
     }
 }
@@ -27,6 +26,7 @@ struct RIFE60GhostGuardApp: App {
     @UIApplicationDelegateAdaptor(RIFE60AppDelegate.self) private var appDelegate
 
     init() {
+        CrashCapture.install()
         StorageMigration.removeRetiredVACEWeights()
         DiagnosticsExport.ensureFolder()
     }

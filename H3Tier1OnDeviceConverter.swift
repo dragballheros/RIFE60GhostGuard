@@ -87,6 +87,7 @@ enum H3Tier1OnDeviceConverter {
             try Task.checkCancellation()
             let scratchURL = scratch.appendingPathComponent(safeName(file.path))
             let keptURL = kept.appendingPathComponent(safeName(file.path))
+            CrashCapture.step("H3 shard \(file.path) bytes=\(file.bytes)")
             if fm.fileExists(atPath: keptURL.path),
                (try? await hashFile(keptURL)) == file.sha256.lowercased() {
                 progress("Kept \(file.path). Scratch deleted.")
@@ -104,22 +105,26 @@ enum H3Tier1OnDeviceConverter {
             let scratchSize = (try? fm.attributesOfItem(atPath: scratchURL.path)[.size] as? NSNumber)?.int64Value ?? 0
             var digest: String?
             if scratchSize == file.bytes {
+                CrashCapture.step("H3 checksum \(file.path)")
                 digest = try? await hashFile(scratchURL)
             }
             if digest == file.sha256.lowercased() {
                 progress("bytes \(file.bytes)/\(file.bytes) · \(file.path)")
             } else {
                 if scratchSize > file.bytes { try? fm.removeItem(at: scratchURL) }
+                CrashCapture.step("H3 downloading \(file.path)")
                 progress("Downloading \(file.path)")
                 try await download(file, to: scratchURL) { written, expected in
                     progress("bytes \(written)/\(expected) · \(file.path)")
                 }
+                CrashCapture.step("H3 checksum \(file.path)")
                 digest = try await hashFile(scratchURL)
             }
             guard digest == file.sha256.lowercased() else {
                 throw Failure.checksum(file.path)
             }
             if file.path.lowercased().hasSuffix(".gguf") {
+                CrashCapture.step("H3 verify GGUF header \(file.path)")
                 try await Task.detached(priority: .utility) {
                     try H3GGUFStream.confirmDownloadableShard(at: scratchURL, path: file.path)
                 }.value
@@ -292,21 +297,6 @@ final class H3Tier1BackgroundTransfer: NSObject, URLSessionDownloadDelegate, @un
         backgroundCompletion = completion
         handlingBackgroundEvents = true
         deliveredCompletion = false
-        createSessionLocked()
-        let active = session
-        lock.unlock()
-        active?.invalidateAndCancel()
-    }
-
-    func cancelLegacyDownloadsIfIdle() {
-        let manifest = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("MiniMax-H3/tier1-manifest.json")
-        guard FileManager.default.fileExists(atPath: manifest.path) else { return }
-        lock.lock()
-        if handlingBackgroundEvents {
-            lock.unlock()
-            return
-        }
         createSessionLocked()
         let active = session
         lock.unlock()
