@@ -1,5 +1,6 @@
 import Combine
 import CryptoKit
+import Darwin
 import Foundation
 
 private enum H3ModelDownloadError: LocalizedError {
@@ -45,10 +46,7 @@ final class H3ModelDownloader: ObservableObject {
     private var running = false
     private let fileManager = FileManager.default
 
-    init() {
-        running = true
-        task = Task { await resumeSavedTier1Job() }
-    }
+    init() {}
 
     var destinationURL: URL {
         fileManager.urls(for: .documentDirectory, in: .userDomainMask)[0]
@@ -353,10 +351,18 @@ final class H3ModelDownloader: ObservableObject {
     static func checksumMatches(url: URL, sha256 expectedSHA: String?, gitSHA1: String?, size: Int64) throws -> Bool {
         let handle = try FileHandle(forReadingFrom: url)
         defer { try? handle.close() }
+        _ = fcntl(handle.fileDescriptor, F_NOCACHE, 1)
         if let expectedSHA {
             var hasher = SHA256()
-            while let data = try handle.read(upToCount: 8 * 1024 * 1024), !data.isEmpty {
-                hasher.update(data: data)
+            let chunkBytes = 4 * 1024 * 1024
+            while true {
+                let finished = try autoreleasepool { () -> Bool in
+                    let data = try handle.read(upToCount: chunkBytes) ?? Data()
+                    if data.isEmpty { return true }
+                    hasher.update(data: data)
+                    return false
+                }
+                if finished { break }
             }
             let digest = hasher.finalize().map { String(format: "%02x", $0) }.joined()
             return digest == expectedSHA.lowercased()
@@ -364,8 +370,15 @@ final class H3ModelDownloader: ObservableObject {
         guard let gitSHA1 else { return false }
         var hasher = Insecure.SHA1()
         hasher.update(data: Data("blob \(size)\0".utf8))
-        while let data = try handle.read(upToCount: 8 * 1024 * 1024), !data.isEmpty {
-            hasher.update(data: data)
+        let chunkBytes = 4 * 1024 * 1024
+        while true {
+            let finished = try autoreleasepool { () -> Bool in
+                let data = try handle.read(upToCount: chunkBytes) ?? Data()
+                if data.isEmpty { return true }
+                hasher.update(data: data)
+                return false
+            }
+            if finished { break }
         }
         let digest = hasher.finalize().map { String(format: "%02x", $0) }.joined()
         return digest == gitSHA1.lowercased()

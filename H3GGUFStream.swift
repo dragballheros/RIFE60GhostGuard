@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 /// On-device GGUF reader. The pinned native H3 runtime memory-maps BF16 safetensors
@@ -56,7 +57,8 @@ enum H3GGUFStream {
     }
 
     static func readHeader(at url: URL, path: String) throws -> Header {
-        let handle = try FileHandle(forReadingFrom: url)
+        CrashCapture.step("H3 GGUF header begin \(path)")
+        let handle = try openUncached(url)
         defer { try? handle.close() }
         let magic = try readData(handle, count: 4, path: path)
         guard magic == Data("GGUF".utf8) else { throw Failure.notGGUF(path) }
@@ -101,14 +103,21 @@ enum H3GGUFStream {
         let position = try handle.offset()
         let remainder = position % alignment
         let dataOffset = remainder == 0 ? position : position + (alignment - remainder)
+        CrashCapture.step("H3 GGUF header end \(path) tensors=\(tensors.count)")
         return Header(tensors: tensors, alignment: alignment, dataOffset: dataOffset)
+    }
+
+    private static func openUncached(_ url: URL) throws -> FileHandle {
+        let handle = try FileHandle(forReadingFrom: url)
+        _ = fcntl(handle.fileDescriptor, F_NOCACHE, 1)
+        return handle
     }
 
     static func dequantizeFirstQ8Block(at url: URL, header: Header, path: String) throws -> [UInt16] {
         guard let tensor = header.tensors.first(where: { $0.ggmlType == ggmlQ8_0 }) else {
             throw Failure.unsupported(path)
         }
-        let handle = try FileHandle(forReadingFrom: url)
+        let handle = try openUncached(url)
         defer { try? handle.close() }
         let location = header.dataOffset + tensor.offset
         try handle.seek(toOffset: location)

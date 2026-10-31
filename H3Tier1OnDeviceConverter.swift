@@ -1,4 +1,5 @@
 import CryptoKit
+import Darwin
 import Foundation
 
 /// Tier 1 MiniMax H3 install. No paid API, no cloud inference, no encoder-student
@@ -88,8 +89,16 @@ enum H3Tier1OnDeviceConverter {
             let scratchURL = scratch.appendingPathComponent(safeName(file.path))
             let keptURL = kept.appendingPathComponent(safeName(file.path))
             CrashCapture.step("H3 shard \(file.path) bytes=\(file.bytes)")
-            if fm.fileExists(atPath: keptURL.path),
-               (try? await hashFile(keptURL)) == file.sha256.lowercased() {
+            if fm.fileExists(atPath: keptURL.path), try await alreadyVerified(file, at: keptURL, directory: directory) {
+                progress("Kept \(file.path). Scratch deleted.")
+                continue
+            }
+            if fm.fileExists(atPath: keptURL.path) {
+                let digest = try await hashFile(keptURL) { read in
+                    progress("bytes \(read)/\(file.bytes) · \(file.path)")
+                }
+                guard digest == file.sha256.lowercased() else { throw Failure.checksum(file.path) }
+                try rememberVerified(file, at: keptURL, digest: digest, directory: directory)
                 progress("Kept \(file.path). Scratch deleted.")
                 continue
             }
@@ -104,9 +113,14 @@ enum H3Tier1OnDeviceConverter {
             }
             let scratchSize = (try? fm.attributesOfItem(atPath: scratchURL.path)[.size] as? NSNumber)?.int64Value ?? 0
             var digest: String?
-            if scratchSize == file.bytes {
+            if scratchSize == file.bytes, try await alreadyVerified(file, at: scratchURL, directory: directory) {
+                digest = file.sha256.lowercased()
+                progress("bytes \(file.bytes)/\(file.bytes) · \(file.path)")
+            } else if scratchSize == file.bytes {
                 CrashCapture.step("H3 checksum \(file.path)")
-                digest = try? await hashFile(scratchURL)
+                digest = try await hashFile(scratchURL) { read in
+                    progress("bytes \(read)/\(file.bytes) · \(file.path)")
+                }
             }
             if digest == file.sha256.lowercased() {
                 progress("bytes \(file.bytes)/\(file.bytes) · \(file.path)")
@@ -118,7 +132,9 @@ enum H3Tier1OnDeviceConverter {
                     progress("bytes \(written)/\(expected) · \(file.path)")
                 }
                 CrashCapture.step("H3 checksum \(file.path)")
-                digest = try await hashFile(scratchURL)
+                digest = try await hashFile(scratchURL) { read in
+                    progress("bytes \(read)/\(file.bytes) · \(file.path)")
+                }
             }
             guard digest == file.sha256.lowercased() else {
                 throw Failure.checksum(file.path)
@@ -137,6 +153,9 @@ enum H3Tier1OnDeviceConverter {
                 try fm.removeItem(at: destination)
             }
             try fm.moveItem(at: scratchURL, to: destination)
+            if let digest {
+                try rememberVerified(file, at: destination, digest: digest, directory: directory)
+            }
             stored += file.bytes
             progress("Kept \(file.path). Scratch deleted.")
         }
@@ -239,18 +258,105 @@ enum H3Tier1OnDeviceConverter {
         return written
     }
 
-    private static func hashFile(_ url: URL) async throws -> String {
+    private static let checksumChunkBytes = 4 * 1024 * 1024
+
+    private struct VerifiedRecord: Codable {
+        var bytes: Int64
+        var modifiedMillis: Int64
+        var sha256: String
+    }
+
+    private static func verifiedMarkerURL(_ directory: URL) -> URL {
+        directory.appendingPathComponent("tier1-verified.json")
+    }
+
+    private static func modificationMillis(_ url: URL) -> Int64? {
+        guard let date = try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate else { return nil }
+        return Int64((date.timeIntervalSince1970 * 1000).rounded())
+    }
+
+    private static func alreadyVerified(_ file: Manifest.File, at url: URL, directory: URL) async throws -> Bool {
+        guard let size = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? NSNumber)?.int64Value,
+              size == file.bytes,
+              let modified = modificationMillis(url),
+              let data = try? Data(contentsOf: verifiedMarkerURL(directory)),
+              let map = try? JSONDecoder().decode([String: VerifiedRecord].self, from: data),
+              let record = map[file.path],
+              record.bytes == size,
+              record.modifiedMillis == modified,
+              record.sha256 == file.sha256.lowercased() else {
+            return false
+        }
+        CrashCapture.step("H3 checksum skipped \(file.path); verified marker matches size and modification date")
+        return true
+    }
+
+    private static func rememberVerified(_ file: Manifest.File, at url: URL, digest: String, directory: URL) throws {
+        guard let size = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? NSNumber)?.int64Value,
+              let modified = modificationMillis(url) else { return }
+        let markerURL = verifiedMarkerURL(directory)
+        var map = (try? Data(contentsOf: markerURL)).flatMap { try? JSONDecoder().decode([String: VerifiedRecord].self, from: $0) } ?? [:]
+        map[file.path] = VerifiedRecord(bytes: size, modifiedMillis: modified, sha256: digest.lowercased())
+        let data = try JSONEncoder().encode(map)
+        try data.write(to: markerURL, options: .atomic)
+    }
+
+    private static func hashFile(_ url: URL, progress: @escaping @Sendable (Int64) -> Void) async throws -> String {
         try await Task.detached(priority: .utility) {
-            try sha256(of: url)
+            try await sha256Streaming(of: url, progress: progress)
         }.value
+    }
+
+    private static func sha256Streaming(of url: URL, progress: @escaping @Sendable (Int64) -> Void) async throws -> String {
+        var handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        armUncached(handle)
+        CrashCapture.step("H3 allocating checksum buffer bytes=\(checksumChunkBytes) for \(url.lastPathComponent)")
+        var hasher = SHA256()
+        var readTotal: Int64 = 0
+        var loggedFirstChunk = false
+        while true {
+            if CrashCapture.memoryWarningActive {
+                try handle.close()
+                CrashCapture.step("H3 checksum paused; released \(checksumChunkBytes)B read buffer")
+                try await CrashCapture.waitWhileMemoryWarning()
+                handle = try FileHandle(forReadingFrom: url)
+                armUncached(handle)
+                try handle.seek(toOffset: UInt64(readTotal))
+                CrashCapture.step("H3 checksum resumed at byte \(readTotal)")
+            }
+            let chunk: Data = try autoreleasepool {
+                try handle.read(upToCount: checksumChunkBytes) ?? Data()
+            }
+            if chunk.isEmpty { break }
+            hasher.update(data: chunk)
+            readTotal += Int64(chunk.count)
+            if !loggedFirstChunk {
+                loggedFirstChunk = true
+                CrashCapture.step("H3 checksum first chunk bytes=\(chunk.count) released")
+            }
+            if readTotal % (32 * 1_024 * 1_024) < Int64(chunk.count) {
+                progress(readTotal)
+                CrashCapture.note("H3 checksum \(url.lastPathComponent) \(readTotal)")
+            }
+        }
+        CrashCapture.step("H3 checksum finished \(url.lastPathComponent) bytes=\(readTotal)")
+        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
+    }
+
+    private static func armUncached(_ handle: FileHandle) {
+        _ = fcntl(handle.fileDescriptor, F_NOCACHE, 1)
     }
 
     private static func sha256(of url: URL) throws -> String {
         let handle = try FileHandle(forReadingFrom: url)
         defer { try? handle.close() }
+        armUncached(handle)
         var hasher = SHA256()
         while true {
-            let chunk = try handle.read(upToCount: 8 * 1_024 * 1_024) ?? Data()
+            let chunk: Data = try autoreleasepool {
+                try handle.read(upToCount: checksumChunkBytes) ?? Data()
+            }
             if chunk.isEmpty { break }
             hasher.update(data: chunk)
         }

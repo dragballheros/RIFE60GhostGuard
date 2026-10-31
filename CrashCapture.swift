@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import UIKit
 
 private let crashStepCapacity = 512
 private let crashStepBuffer: UnsafeMutablePointer<CChar> = {
@@ -9,6 +10,9 @@ private let crashStepBuffer: UnsafeMutablePointer<CChar> = {
 }()
 private let crashFrames = UnsafeMutablePointer<UnsafeMutableRawPointer?>.allocate(capacity: 64)
 private var crashFD: Int32 = -1
+private let memoryWarningLock = NSLock()
+private var memoryWarningUntil: TimeInterval = 0
+private var memoryWarningObserver: NSObjectProtocol?
 
 private let crashSignalPrefix = UnsafeMutablePointer<CChar>.allocate(capacity: 32)
 
@@ -92,6 +96,30 @@ enum CrashCapture {
         signal(SIGBUS, rife60CrashSignal)
         signal(SIGILL, rife60CrashSignal)
         signal(SIGTRAP, rife60CrashSignal)
+        guard memoryWarningObserver == nil else { return }
+        memoryWarningObserver = NotificationCenter.default.addObserver(
+            forName: UIApplication.didReceiveMemoryWarningNotification,
+            object: nil,
+            queue: nil
+        ) { _ in
+            memoryWarningLock.lock()
+            memoryWarningUntil = Date().timeIntervalSince1970 + 120
+            memoryWarningLock.unlock()
+            CrashCapture.step("H3 memory warning; pausing shard reads and releasing file buffers")
+        }
+    }
+
+    static var memoryWarningActive: Bool {
+        memoryWarningLock.lock()
+        defer { memoryWarningLock.unlock() }
+        return Date().timeIntervalSince1970 < memoryWarningUntil
+    }
+
+    static func waitWhileMemoryWarning() async throws {
+        while memoryWarningActive {
+            try await Task.sleep(nanoseconds: 500_000_000)
+            try Task.checkCancellation()
+        }
     }
 
     /// Persists the step, then updates the buffer a signal handler can write.

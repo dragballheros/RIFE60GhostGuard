@@ -74,7 +74,7 @@ struct H3VideoEditView: View {
     @State private var selectedBackend: LocalVideoBackend = .minimaxH3
     @State private var h3ModelDirectoryURL: URL?
     @State private var isChoosingH3Model = false
-    @State private var acceptedH3License = false
+    @AppStorage("RIFE60.H3.AuthorizedUseAccepted") private var acceptedH3License = false
     @AppStorage(H3Tier1OnDeviceConverter.manifestDefaultsKey) private var tier1ManifestURL = ""
     @State private var h3CancellationToken: H3CancellationToken?
     @StateObject private var h3ModelDownloader = H3ModelDownloader()
@@ -118,6 +118,8 @@ struct H3VideoEditView: View {
                             acceptedH3License = accepted
                         }
                     ))
+                    Text("Accepting records that choice on this phone. It does not download, hash, or load weights.")
+                        .font(.caption).foregroundStyle(.secondary)
                     Text("Tier 1 stays on this phone: one published compressed shard at a time, about 44 GB kept, scratch deleted before the next file. No paid cloud, no encoder-student distillation, and no DMD training.")
                         .font(.caption).foregroundStyle(.secondary)
                     TextField("Tier 1 manifest URL (https)", text: $tier1ManifestURL)
