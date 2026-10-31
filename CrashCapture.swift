@@ -15,10 +15,35 @@ private let crashSignalPrefix = UnsafeMutablePointer<CChar>.allocate(capacity: 3
 @_cdecl("rife60_crash_signal")
 func rife60CrashSignal(_ sig: Int32) {
     if crashFD >= 0 {
-        snprintf(crashSignalPrefix, 32, "signal %d\n", sig)
-        _ = write(crashFD, crashSignalPrefix, strlen(crashSignalPrefix))
-        snprintf(crashSignalPrefix, 32, "last step: ")
-        _ = write(crashFD, crashSignalPrefix, strlen(crashSignalPrefix))
+        var index = 0
+        for byte in [UInt8]("signal ".utf8) {
+            crashSignalPrefix[index] = CChar(bitPattern: byte)
+            index += 1
+        }
+        var value = Int(sig < 0 ? -sig : sig)
+        var reversed = [CChar](repeating: 0, count: 8)
+        var digitCount = 0
+        repeat {
+            reversed[digitCount] = CChar(48 + (value % 10))
+            value /= 10
+            digitCount += 1
+        } while value > 0 && digitCount < 8
+        while digitCount > 0 {
+            digitCount -= 1
+            crashSignalPrefix[index] = reversed[digitCount]
+            index += 1
+        }
+        crashSignalPrefix[index] = 10
+        index += 1
+        crashSignalPrefix[index] = 0
+        _ = write(crashFD, crashSignalPrefix, index)
+        index = 0
+        for byte in [UInt8]("last step: ".utf8) {
+            crashSignalPrefix[index] = CChar(bitPattern: byte)
+            index += 1
+        }
+        crashSignalPrefix[index] = 0
+        _ = write(crashFD, crashSignalPrefix, index)
         _ = write(crashFD, crashStepBuffer, strlen(crashStepBuffer))
         _ = write(crashFD, "\n", 1)
         let count = backtrace(crashFrames, 64)
