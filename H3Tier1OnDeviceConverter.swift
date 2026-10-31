@@ -15,6 +15,61 @@ enum H3Tier1OnDeviceConverter {
     /// Raw manifest on the repository default branch. The app also ships the same JSON.
     static let defaultManifestURLString = "https://raw.githubusercontent.com/dragballheros/RIFE60GhostGuard/main/Models/h3-tier1-manifest.json"
 
+    static func stageTier1Layout(into modelDirectory: URL) throws {
+        let fm = FileManager.default
+        let roots = [modelDirectory, modelDirectory.appendingPathComponent("tier1-weights", isDirectory: true)]
+        guard let found = roots.first(where: {
+            fm.fileExists(atPath: $0.appendingPathComponent("minimax_h3_ref2va_pruned-Q8_0.gguf").path)
+        }) else { return }
+        func source(_ names: [String]) -> URL? {
+            for name in names {
+                let candidate = found.appendingPathComponent(name)
+                if fm.fileExists(atPath: candidate.path) { return candidate }
+            }
+            return nil
+        }
+        func link(directory: String, name: String, from source: URL) throws {
+            let folder = modelDirectory.appendingPathComponent(directory, isDirectory: true)
+            try fm.createDirectory(at: folder, withIntermediateDirectories: true)
+            let destination = folder.appendingPathComponent(name)
+            if fm.fileExists(atPath: destination.path) { return }
+            try fm.createSymbolicLink(at: destination, withDestinationURL: source)
+        }
+        let ref = found.appendingPathComponent("minimax_h3_ref2va_pruned-Q8_0.gguf")
+        try link(directory: "FL2VA/transformer", name: ref.lastPathComponent, from: ref)
+        try link(directory: "Ref2VA/transformer", name: ref.lastPathComponent, from: ref)
+        if let qwen = source(["qwen3vl_32b_minimax_h3-Q4_K_M.gguf"]) {
+            try link(directory: "FL2VA/text_encoder", name: qwen.lastPathComponent, from: qwen)
+            try link(directory: "Ref2VA/text_encoder", name: qwen.lastPathComponent, from: qwen)
+        }
+        if let video = source(["vae_minimax_h3_video_vae_fp16.safetensors", "vae/minimax_h3_video_vae_fp16.safetensors"]) {
+            try link(directory: "FL2VA/video_vae/source", name: "minimax_h3_video_vae_fp16.safetensors", from: video)
+            try link(directory: "Ref2VA/video_vae/source", name: "minimax_h3_video_vae_fp16.safetensors", from: video)
+        }
+        if let audio = source(["vae_minimax_h3_audio_vae_fp32.safetensors", "vae/minimax_h3_audio_vae_fp32.safetensors"]) {
+            try link(directory: "FL2VA/audio_vae", name: "minimax_h3_audio_vae_fp32.safetensors", from: audio)
+            try link(directory: "Ref2VA/audio_vae", name: "minimax_h3_audio_vae_fp32.safetensors", from: audio)
+        }
+        let config = Data("{\"architectures\":[\"MiniMaxH3\"],\"weight_format\":\"gguf-stream\"}\n".utf8)
+        for relative in ["FL2VA/transformer/config.json", "Ref2VA/transformer/config.json", "FL2VA/text_encoder/config.json"] {
+            let url = modelDirectory.appendingPathComponent(relative)
+            if fm.fileExists(atPath: url.path) { continue }
+            try fm.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try config.write(to: url, options: .atomic)
+        }
+        let indexURL = modelDirectory.appendingPathComponent("Ref2VA/transformer/model.safetensors.index.json")
+        if !fm.fileExists(atPath: indexURL.path) {
+            let index = Data("{\"weight_map\":{\"ref2va\":\"minimax_h3_ref2va_pruned-Q8_0.gguf\"}}\n".utf8)
+            try fm.createDirectory(at: indexURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try index.write(to: indexURL, options: .atomic)
+        }
+        let bundledSize = (try? Bundle.main.url(forResource: "h3-tokenizer", withExtension: "json")
+            .flatMap { try fm.attributesOfItem(atPath: $0.path)[.size] as? NSNumber }?.int64Value) ?? 0
+        CrashCapture.step("H3 copying bundled tokenizer bytes=\(bundledSize)")
+        try installBundledTokenizer(into: modelDirectory)
+        CrashCapture.step("H3 staged Q8_0 transformer, Q4_K_M text encoder, and both VAE files")
+    }
+
     /// The Q8 manifest does not include a tokenizer. The official tokenizer ships in the app
     /// and is copied next to the weights so generation can encode a prompt.
     static func installBundledTokenizer(into modelDirectory: URL) throws {

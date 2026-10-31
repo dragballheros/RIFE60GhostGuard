@@ -11,6 +11,14 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include "h3_gpu.h"
+
+static void h3_uncached(int fd) {
+#if defined(F_NOCACHE)
+    fcntl(fd, F_NOCACHE, 1);
+#else
+    (void)fd;
+#endif
+}
 #endif
 
 void h3_gguf_runtime_name(const char *gguf_name, char *out, size_t out_size) {
@@ -531,6 +539,7 @@ int h3_gguf_try_decode(const char *path, uint64_t file_offset, void *destination
         return 1;
     }
     int fd = open(path, O_RDONLY | O_CLOEXEC);
+    if (fd >= 0) h3_uncached(fd);
     if (fd < 0 || !h3_decode_range(fd, recipe, destination, want_bf16)) {
         if (fd >= 0) close(fd);
         if (error && error_size) snprintf(error, error_size, "cannot stream GGUF tensor");
@@ -544,8 +553,15 @@ int h3_gguf_try_decode(const char *path, uint64_t file_offset, void *destination
 h3_gpu_tensor *h3_gguf_load_f16_as_f32(h3_gpu *gpu, const char *path,
                                        uint64_t file_offset, size_t elements,
                                        char *error, size_t error_size) {
+    if (elements > (1536ull * 1024ull * 1024ull) / sizeof(float)) {
+        if (error && error_size) {
+            snprintf(error, error_size, "refusing VAE tensor of %zu bytes", elements * sizeof(float));
+        }
+        return NULL;
+    }
     int fd = open(path, O_RDONLY | O_CLOEXEC);
     float *values = malloc(elements * sizeof(*values));
+    if (fd >= 0) h3_uncached(fd);
     if (fd < 0 || !values) {
         if (fd >= 0) close(fd);
         free(values);
