@@ -109,9 +109,9 @@ enum H3RuntimePreflight {
             ),
             modelDirectoryExists: exists,
             modelLayoutIsValid: layoutIsValid,
-            missingComponents: missing,
             availableMemoryBytes: UInt64(os_proc_available_memory()),
-            modelDirectory: modelDirectory
+            modelDirectory: modelDirectory,
+            missingComponents: missing
         )
     }
 }
