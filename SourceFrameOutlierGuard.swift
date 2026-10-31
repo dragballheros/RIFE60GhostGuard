@@ -103,6 +103,12 @@ final class SourceFrameOutlierGuard {
             let p = pBase.advanced(by: y * pRow).assumingMemoryBound(to: UInt8.self)
             let n = nBase.advanced(by: y * nRow).assumingMemoryBound(to: UInt8.self)
             let o = oBase.advanced(by: y * oRow).assumingMemoryBound(to: UInt8.self)
+            o.update(from: p, count: width * 4)
+            if t == 0 { continue }
+            if t == 1 {
+                o.update(from: n, count: width * 4)
+                continue
+            }
             for x in 0..<(width * 4) {
                 o[x] = UInt8(min(255, max(0, Int((1.0 - t) * Double(p[x]) + t * Double(n[x]) + 0.5))))
             }

@@ -10,7 +10,7 @@ import subprocess
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
-UI = (ROOT / "VACEVideoEditView.swift").read_text(encoding="utf-8")
+UI = (ROOT / "H3VideoEditView.swift").read_text(encoding="utf-8")
 RUNTIME = (ROOT / "H3NativeRuntime.swift").read_text(encoding="utf-8")
 PREFLIGHT = (ROOT / "H3RuntimePreflight.swift").read_text(encoding="utf-8")
 DOWNLOADER = (ROOT / "H3ModelDownloader.swift").read_text(encoding="utf-8")
@@ -22,10 +22,10 @@ NATIVE_CORE_PATH = ROOT / "Vendor" / "minimax-h3" / "h3.c"
 
 checks = [
     ("Swift string interpolation is not double-escaped", "\\\\(" not in UI),
-    ("H3 and Wan are separate visible backend choices", "case wanVACE" in UI and "case minimaxH3" in UI and "ForEach(LocalVideoBackend.allCases" in UI),
+    ("H3 is the visible local video backend", "case minimaxH3" in UI and "ForEach(LocalVideoBackend.allCases" in UI and "case wanVACE" not in UI),
     ("model selection uses checkbox-style indicators", 'Image(systemName: selectedBackend == backend ? "checkmark.circle.fill" : "circle")' in UI),
     ("no dropdown picker in the editor", not re.search(r"\bPicker\s*\(", UI)),
-    ("Wan VACE masked workflow remains wired", "DrawThingsLocalVACEReconstructionEngine()" in UI and "VACESelectiveVideoPipeline(" in UI and "loadMask(url:" in UI),
+    ("Wan VACE masked workflow is removed from the app", "DrawThingsLocalVACEReconstructionEngine()" not in UI and "VACESelectiveVideoPipeline(" not in UI),
     ("H3 selection dispatches to its own reference workflow", "await runH3ReferenceEdit()" in UI and "generateReferenceConditionedVideo(" in UI),
     ("H3 workflow does not claim VACE mask semantics", "does not use the VACE mask" in UI and "does not claim pixel-mask preservation" in UI),
     ("H3 validates Ref2VA video duration and playable track before native loading", "Official Ref2VA accepts reference clips of 2–15 seconds" in UI and "(2.0...15.0).contains(referenceDuration.seconds)" in UI and "loadTracks(withMediaType: .video)" in UI),
@@ -83,6 +83,17 @@ release_gates = [
 print("\nDevice/runtime release gates:")
 for label, passed in release_gates:
     print(f"{'PASS' if passed else 'BLOCKED'}: {label}")
+
+gguf_test = subprocess.run(
+    ["cc", "-std=c11", "-DH3_GGUF_TEST", "-I", "Vendor/h3-gguf", "-o", "/tmp/h3gguf",
+     "Vendor/h3-gguf/h3_gguf.c"],
+    check=False,
+)
+if gguf_test.returncode or subprocess.run(["/tmp/h3gguf"], check=False).returncode:
+    failed.append("GGUF header, 535-key Ref2VA map, and dequant reference values")
+    print("FAIL: GGUF header, 535-key Ref2VA map, and dequant reference values")
+else:
+    print("PASS: GGUF header, 535-key Ref2VA map, and dequant reference values")
 
 if failed:
     print(f"\nIntegration validation failed: {len(failed)} check(s).")

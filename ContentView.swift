@@ -13,8 +13,7 @@ struct ContentView: View {
     @StateObject private var pipController = ProcessingPiPController()
     @State private var showingImporter = false
     @State private var showingAIImageStudio = false
-    @State private var showingVACEComponentTest = false
-    @State private var showingVACEVideoEditor = false
+    @State private var showingH3VideoEditor = false
     @State private var showingWatermarkEditor = false
     @State private var showingPhotosPicker = false
     @State private var showingPreview = false
@@ -106,22 +105,12 @@ struct ContentView: View {
                     }
 
 
-                    Section("Wan VACE — Local Video Editing") {
-                        Button { showingVACEVideoEditor = true } label: {
-                            Label("Open Local Wan VACE Video Editor", systemImage: "wand.and.stars")
+                    Section("MiniMax H3") {
+                        Button { showingH3VideoEditor = true } label: {
+                            Label("Open Local MiniMax H3", systemImage: "wand.and.stars")
                         }
                         .disabled(vm.isBusy || vm.isImporting || vm.isBenchmarking)
-                        Text("Imports a source video and white-on-black edit mask, tracks the mask locally with Vision optical flow, runs native local Wan VACE on 5-frame temporal windows, then exports a reconstructed MOV with the original audio. The explicitly selected experimental profile is 1.3B Q8 at 512×512 inference, not the unavailable 14B/720p path.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-
-                    Section("Wan VACE — On-device Component Test") {
-                        Button { showingVACEComponentTest = true } label: {
-                            Label("Open VACE Component Test Lab", systemImage: "cpu")
-                        }
-                        .disabled(vm.isBusy || vm.isImporting || vm.isBenchmarking)
-                        Text("Experimental local Core ML smoke test for exported Wan VAE components. This does not perform VACE video editing and does not contain the 14B transformer.")
+                        Text("Reference-conditioned video on this iPhone. Tier 1 keeps about 44 GB of published compressed weights and does not use a paid cloud.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -217,6 +206,18 @@ struct ContentView: View {
 
                     Section("Anime Processing") {
                         Toggle("Compression Guard", isOn: $vm.compressionProtection).disabled(vm.queueLocked || vm.isImporting)
+                        Toggle("Color Rebuild", isOn: $vm.colorRebuildEnabled).disabled(vm.queueLocked || vm.isImporting)
+                        if vm.colorRebuildEnabled {
+                            HStack { Text("Color Rebuild strength"); Spacer(); Text(String(format: "%.2f", vm.colorRebuildStrength)) }
+                            Slider(value: $vm.colorRebuildStrength, in: 0.1...1.0).disabled(vm.queueLocked || vm.isImporting)
+                            Text("Luma-guided chroma rebuild after Real-CUGAN and before Sharpie. Flat cel colors are consolidated and speckle is removed. Line art, skin, and saturation stay.").font(.caption).foregroundStyle(.secondary)
+                        }
+                        Toggle("Outline Rebuild", isOn: $vm.outlineRebuildEnabled).disabled(vm.queueLocked || vm.isImporting)
+                        if vm.outlineRebuildEnabled {
+                            HStack { Text("Outline Rebuild strength"); Spacer(); Text(String(format: "%.2f", vm.outlineRebuildStrength)) }
+                            Slider(value: $vm.outlineRebuildStrength, in: 0.1...1.0).disabled(vm.queueLocked || vm.isImporting)
+                            Text("Closes short gaps, restores faded line darkness, and lifts stray specks before Sharpie. Sharpie itself is unchanged.").font(.caption).foregroundStyle(.secondary)
+                        }
                         Toggle("Final Sharpie Outline", isOn: $vm.outlineProtection).disabled(vm.queueLocked || vm.isImporting)
                         Toggle("Color Pop", isOn: $vm.colorPopEnabled).disabled(vm.queueLocked || vm.isImporting)
                         Picker("Automatic warmth", selection: $automaticWarmthCorrectionModeRawValue) {
@@ -412,6 +413,9 @@ struct ContentView: View {
                     Section("Diagnostics") {
                         Button { vm.benchmarkModels() } label: { Label("Benchmark Models", systemImage: "speedometer") }
                             .disabled(vm.isBusy || vm.isBenchmarking || vm.isImporting)
+                        Button { vm.shareDiagnostics() } label: { Label("Share Diagnostics", systemImage: "square.and.arrow.up") }
+                            .disabled(vm.diagnosticsShareItems.isEmpty && DiagnosticsExport.runFiles().isEmpty)
+                        Button { vm.copyDiagnosticsJSON() } label: { Label("Copy Diagnostics", systemImage: "doc.on.doc") }
                         if vm.isBenchmarking {
                             ProgressView(value: vm.benchmarkProgress)
                             Button("Cancel Benchmark", role: .destructive) { vm.cancelBenchmark() }
@@ -427,8 +431,9 @@ struct ContentView: View {
                                 Label("Copy Benchmark Report", systemImage: "doc.on.doc")
                             }
                         }
-                        Text("Keep the app open and cool. Tests 2 warm-ups and 5 timed predictions per model/policy. Results are device measurements; no preference is changed automatically.").font(.caption).foregroundStyle(.secondary)
+                        Text("Keep the app open and cool. Tests compute policies, then every available Real-CUGAN tile strategy on this phone. The fastest strategy that stays inside memory headroom is saved for this model, tile size, device, iOS version, and app build. The next render uses it. Before a benchmark, Real-CUGAN stays on sequential backed predictions.").font(.caption).foregroundStyle(.secondary)
                         Button { vm.copyErrorLogs() } label: { Label("Copy Error Logs", systemImage: "doc.on.doc") }
+                        Button(role: .destructive) { vm.clearErrorLogs() } label: { Label("Clear Error Log", systemImage: "trash") }
                         if !vm.diagnosticsCopyStatus.isEmpty { Text(vm.diagnosticsCopyStatus).font(.caption).foregroundStyle(.secondary) }
                         Text("Copies the persistent render log, last stage/progress, thermal state, frame counters, RIFE speed, Real-CUGAN speed, export folder, and the last error directly to the clipboard.").font(.caption).foregroundStyle(.secondary)
                     }
@@ -466,7 +471,7 @@ struct ContentView: View {
                     if !vm.isBusy && !vm.isPaused && !vm.recoveryAvailable {
                         VStack(spacing: 8) {
                             HStack {
-                                Label(vm.inputURL == nil ? "No media selected" : vm.inputURL!.lastPathComponent,
+                                Label(vm.inputURL?.lastPathComponent ?? "No media selected",
                                       systemImage: vm.inputKind == .image ? "photo" : vm.inputKind == .gif ? "livephoto" : "film")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
@@ -600,11 +605,11 @@ struct ContentView: View {
             }
         }
         .simultaneousGesture(DragGesture(minimumDistance: 0).onChanged { _ in registerPostRenderInteraction() })
-        .sheet(isPresented: $showingVACEComponentTest) {
-            VACEComponentTestView()
+        .sheet(isPresented: $vm.showingDiagnosticsShare) {
+            DiagnosticsActivityView(items: vm.diagnosticsShareItems)
         }
-        .sheet(isPresented: $showingVACEVideoEditor) {
-            VACEVideoEditView()
+        .sheet(isPresented: $showingH3VideoEditor) {
+            H3VideoEditView()
         }
         .sheet(isPresented: $showingPreview) {
             VideoSettingsPreviewSheet(viewModel: vm)

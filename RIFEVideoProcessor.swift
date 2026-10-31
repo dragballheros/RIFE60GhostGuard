@@ -9,6 +9,10 @@ struct ProcessorConfiguration {
     let sceneCutProtection: Bool
     let compressionProtection: Bool
     let outlineProtection: Bool
+    var colorRebuild: Bool = false
+    var colorRebuildStrength: Double = 0.45
+    var outlineRebuild: Bool = false
+    var outlineRebuildStrength: Double = 0.5
     let ghostSensitivity: Double
     let preserveAudio: Bool
     let targetFPS: Double
@@ -211,6 +215,11 @@ final class RIFEVideoProcessor {
             t.compressionMsPerFrame = cleaned > 0 ? compressionSeconds * 1000.0 / Double(cleaned) : 0
             t.outlineMsPerFrame = outlined > 0 ? outlineSeconds * 1000.0 / Double(outlined) : 0
             t.rifeMsPerGeneratedFrame = generated > 0 ? rifeSeconds * 1000.0 / Double(generated) : 0
+            let generatedCount = Double(max(generated, 1))
+            PipelineStageTimer.current?.record("rifePushMs", milliseconds: tiledHQ.pushSeconds * 1000 / generatedCount)
+            PipelineStageTimer.current?.record("rifeExtractMs", milliseconds: tiledHQ.extractSeconds * 1000 / generatedCount)
+            PipelineStageTimer.current?.record("rifeStitchMs", milliseconds: tiledHQ.stitchSeconds * 1000 / generatedCount)
+            PipelineStageTimer.current?.record("rifeBands", milliseconds: Double(tiledHQ.activeBandCount))
             t.ghostMsPerGeneratedFrame = generated > 0 ? ghostSeconds * 1000.0 / Double(generated) : 0
             t.encodeMsPerOutputFrame = outputFrames > 0 ? encodeSeconds * 1000.0 / Double(outputFrames) : 0
             t.generatedFPS = Double(generated) / elapsed
@@ -468,12 +477,18 @@ final class RIFEVideoProcessor {
                             DiagnosticsLogger.shared.log(
                                 "Fast-motion Ghost Guard final fallback • motion=\(String(format: "%.3f", fastCheck.motionScore)) • artifact=\(String(format: "%.3f", fastCheck.artifactScore)) • t=\(String(format: "%.3f", t))"
                             )
+                            PipelineStageTimer.recordRejection(
+                                seconds: CMTimeGetSeconds(requestedTimes[index]),
+                                reason: "Fast-motion Ghost Guard final fallback • motion=\(String(format: "%.3f", fastCheck.motionScore)) • artifact=\(String(format: "%.3f", fastCheck.artifactScore))",
+                                disposition: "replaced"
+                            )
                         }
                     } else if existingGuardRejected || (fastCheck?.reject ?? false) {
                         // Hard failures preserve the timestamp without blending.
                         // If the previous source frame is an isolated endpoint, use
                         // the current frame, which matched the prior scene context.
                         rejected += 1
+                        let rejectionReason = check.reason == "ok" ? (fastCheck?.reject == true ? "fast-motion artifact" : "guard rejected") : check.reason
                         if check.reason == "isolated scene-end frame" {
                             chosen = currentPB
                             DiagnosticsLogger.shared.log("Ghost Guard fallback • isolated scene-end source frame replaced • t=\(String(format: "%.3f", t))")
@@ -483,6 +498,11 @@ final class RIFEVideoProcessor {
                                 DiagnosticsLogger.shared.log("Ghost Guard fallback • scene boundary protected, recursive retry skipped • t=\(String(format: "%.3f", t))")
                             }
                         }
+                        PipelineStageTimer.recordRejection(
+                            seconds: CMTimeGetSeconds(requestedTimes[index]),
+                            reason: rejectionReason,
+                            disposition: "replaced"
+                        )
                     }
                 }
 

@@ -113,6 +113,26 @@ final class IncrementalVideoCheckpointWriter {
         }
     }
 
+    private func waitUntilReady(_ input: AVAssetWriterInput) async throws {
+        if input.isReadyForMoreMediaData { return }
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            let queue = DispatchQueue(label: "RIFE60.media-ready")
+            let gate = NSLock()
+            var resumed = false
+            input.requestMediaDataWhenReady(on: queue) {
+                gate.lock()
+                let already = resumed
+                if input.isReadyForMoreMediaData { resumed = true }
+                gate.unlock()
+                if already { return }
+                if input.isReadyForMoreMediaData {
+                    continuation.resume()
+                }
+            }
+        }
+        try await checkCancellation()
+    }
+
     func append(_ pixelBuffer: CVPixelBuffer, at presentationTime: CMTime) async throws {
         try await checkCancellation()
         try await ensureWriter(startingAt: presentationTime)
@@ -120,10 +140,7 @@ final class IncrementalVideoCheckpointWriter {
             throw ProcessorError.writer("pause checkpoint writer unavailable")
         }
 
-        while !input.isReadyForMoreMediaData {
-            try await checkCancellation()
-            try await Task.sleep(nanoseconds: 1_000_000)
-        }
+        try await waitUntilReady(input)
 
         guard adaptor.append(pixelBuffer, withPresentationTime: localTime(presentationTime)) else {
             throw ProcessorError.writer("failed writing pause checkpoint frame")
@@ -139,10 +156,7 @@ final class IncrementalVideoCheckpointWriter {
             throw ProcessorError.writer("pause checkpoint 10-bit pool unavailable")
         }
 
-        while !input.isReadyForMoreMediaData {
-            try await checkCancellation()
-            try await Task.sleep(nanoseconds: 1_000_000)
-        }
+        try await waitUntilReady(input)
 
         var destination: CVPixelBuffer?
         guard CVPixelBufferPoolCreatePixelBuffer(nil, pool, &destination) == kCVReturnSuccess,

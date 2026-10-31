@@ -3,7 +3,7 @@ name: RIFE60GhostGuard
 options:
   bundleIdPrefix: com.za
   deploymentTarget:
-    iOS: "16.0"
+    iOS: "17.0"
 
 packages:
   RifeMetal:
@@ -18,6 +18,11 @@ targets:
   RIFE60GhostGuard:
     type: application
     platform: iOS
+    info:
+      path: Info.plist
+      properties:
+        UIFileSharingEnabled: true
+        LSSupportsOpeningDocumentsInPlace: true
     sources:
       - path: .
         includes:
@@ -27,12 +32,21 @@ targets:
         includes:
           - "*.c"
           - "*.m"
+      - path: Vendor/h3-gguf
+        includes:
+          - "*.c"
       - path: Vendor/minimax-h3/h3_shaders.metal
         type: file
         buildPhase: resources
       - path: Assets.xcassets
       - path: Models/DeepCreamBar.mlpackage
       - path: Models/DeepCreamMosaic.mlpackage
+      - path: Models/h3-tier1-manifest.json
+        type: file
+        buildPhase: resources
+      - path: Models/h3-tokenizer.json
+        type: file
+        buildPhase: resources
     dependencies:
       - package: RifeMetal
         product: RifeMetal
@@ -50,6 +64,7 @@ targets:
         SWIFT_OBJC_BRIDGING_HEADER: "$(SRCROOT)/RIFE60GhostGuard-Bridging-Header.h"
         HEADER_SEARCH_PATHS:
           - "$(SRCROOT)/Vendor/minimax-h3"
+          - "$(SRCROOT)/Vendor/h3-gguf"
         LIBRARY_SEARCH_PATHS:
         OTHER_LDFLAGS:
           - "-framework"
@@ -67,7 +82,8 @@ targets:
         INFOPLIST_KEY_CFBundleShortVersionString: "$(MARKETING_VERSION)"
         INFOPLIST_KEY_CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
         SWIFT_VERSION: 5.10
-        IPHONEOS_DEPLOYMENT_TARGET: 16.0
+        IPHONEOS_DEPLOYMENT_TARGET: 17.0
+        CODE_SIGN_ENTITLEMENTS: RIFE60GhostGuard.entitlements
         TARGETED_DEVICE_FAMILY: "1,2"
         SUPPORTS_MACCATALYST: NO
         CODE_SIGN_STYLE: Automatic
@@ -82,6 +98,7 @@ targets:
         INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents: YES
         INFOPLIST_KEY_UIBackgroundModes:
           - audio
+          - fetch
     scheme:
       testTargets: []
 

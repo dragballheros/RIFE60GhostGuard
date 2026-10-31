@@ -19,7 +19,7 @@ on:
   pull_request:
     branches: [main, feature/wan-vace-ondevice-component-test, feature/wan-vace-iphone-memory-first]
   push:
-    branches: [main, feature/wan-vace-iphone-memory-first, feature/minimax-h3-ios-runtime]
+    branches: [main, feature/wan-vace-iphone-memory-first, feature/minimax-h3-ios-runtime, cursor/rife60-quality-speed-h3-1273]
 
 permissions:
   contents: write
@@ -270,9 +270,6 @@ jobs:
           git clone https://github.com/drawthingsai/draw-things-community.git Vendor/draw-things-community
           git -C Vendor/draw-things-community checkout 4f288803ac898525012c0fe8d998c85bcb920b70
           python3 Scripts/patch_draw_things_memory.py
-          python3 Scripts/patch_draw_things_vace_video_sequence.py
-          python3 Scripts/patch_draw_things_vace_video_masks.py
-          python3 Scripts/test_wan_vace_video_bridge.py
           python3 - <<'PY'
           from pathlib import Path
           path = Path("Vendor/draw-things-community/Package.swift")
@@ -334,6 +331,14 @@ jobs:
           SHARPIE_WEIGHT=$(find Models/AnimeSharpieOutlineSubtle.mlpackage -type f -name 'weight.bin' -print -quit)
           test -n "$SHARPIE_WEIGHT"
           test -s "$SHARPIE_WEIGHT"
+          if ! command -v python3.12 >/dev/null 2>&1; then brew install python@3.12; fi
+          PY312="$(command -v python3.12 || true)"
+          if [ -z "$PY312" ]; then PY312="$(brew --prefix python@3.12)/bin/python3.12"; fi
+          "$PY312" -m venv /tmp/sharpie-export
+          /tmp/sharpie-export/bin/pip install --disable-pip-version-check coremltools
+          /tmp/sharpie-export/bin/python Scripts/export_sharpie_tiles.py Models/AnimeSharpieOutlineSubtle.mlpackage
+          test -f Models/AnimeSharpieOutlineSubtle_Tile768.mlpackage/Manifest.json
+          test -f Models/AnimeSharpieOutlineSubtle_Tile1024.mlpackage/Manifest.json
 
       - name: Restore stable Real-CUGAN model cache
         uses: actions/cache@v4
@@ -475,6 +480,33 @@ jobs:
           cp Scripts/check_color_pop.swift /tmp/color-pop-check/main.swift
           swiftc -swift-version 5 ColorPopGrade.swift AutoWarmthCorrection.swift /tmp/color-pop-check/main.swift -o /tmp/color-pop-check/check
           /tmp/color-pop-check/check
+
+      - name: Verify Real-CUGAN tile copy parity
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/cugan-tile-check
+          cp Scripts/check_cugan_tile_copy.swift /tmp/cugan-tile-check/main.swift
+          swiftc -swift-version 5 RealCUGANTileCopy.swift /tmp/cugan-tile-check/main.swift -o /tmp/cugan-tile-check/check
+          /tmp/cugan-tile-check/check
+
+      - name: Reject output backings on batch predictions
+        run: python3 Scripts/check_no_batch_output_backings.py
+
+      - name: Verify Real-CUGAN strategy selection
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/cugan-strategy-check
+          cp Scripts/check_cugan_strategy.swift /tmp/cugan-strategy-check/main.swift
+          swiftc -swift-version 5 RealCUGANTileStrategy.swift /tmp/cugan-strategy-check/main.swift -o /tmp/cugan-strategy-check/check
+          /tmp/cugan-strategy-check/check
+
+      - name: Verify Real-CUGAN output backings
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/cugan-backing-check
+          cp Scripts/check_cugan_output_backing.swift /tmp/cugan-backing-check/main.swift
+          swiftc -swift-version 5 -framework CoreML -framework CoreVideo RealCUGANOutputBacking.swift /tmp/cugan-backing-check/main.swift -o /tmp/cugan-backing-check/check
+          /tmp/cugan-backing-check/check CompiledModels
 
       - name: Verify anime inpainting inference and mask geometry
         run: |
@@ -756,6 +788,8 @@ jobs:
           mkdir -p Payload
           cp -R build/Build/Products/Release-iphoneos/RIFE60GhostGuard.app Payload/
           cp -R Models/AnimeSharpieOutlineSubtle.mlpackage Payload/RIFE60GhostGuard.app/
+          cp -R Models/AnimeSharpieOutlineSubtle_Tile768.mlpackage Payload/RIFE60GhostGuard.app/
+          cp -R Models/AnimeSharpieOutlineSubtle_Tile1024.mlpackage Payload/RIFE60GhostGuard.app/
           cp -R CompiledModels/RealCUGAN2xNoise3_Tile512.mlmodelc Payload/RIFE60GhostGuard.app/
           cp -R CompiledModels/RealCUGAN2xNoise3_Tile704x608.mlmodelc Payload/RIFE60GhostGuard.app/
           cp -R CompiledModels/AnimeWatermarkLaMa512.mlmodelc Payload/RIFE60GhostGuard.app/
@@ -763,6 +797,18 @@ jobs:
           cp Licenses/LaMa-Apache-2.0.txt Payload/RIFE60GhostGuard.app/
           test -d Payload/RIFE60GhostGuard.app/AnimeWatermarkLaMa512.mlmodelc
           test -f Payload/RIFE60GhostGuard.app/AnimeSharpieOutlineSubtle.mlpackage/Manifest.json
+          test -f Payload/RIFE60GhostGuard.app/AnimeSharpieOutlineSubtle_Tile768.mlpackage/Manifest.json
+          test -f Payload/RIFE60GhostGuard.app/AnimeSharpieOutlineSubtle_Tile1024.mlpackage/Manifest.json
+          python3 - << 'PY'
+          import plistlib
+          path = "Payload/RIFE60GhostGuard.app/Info.plist"
+          with open(path, "rb") as handle:
+              info = plistlib.load(handle)
+          for key in ("UIFileSharingEnabled", "LSSupportsOpeningDocumentsInPlace"):
+              if info.get(key) is not True:
+                  raise SystemExit(f"{key} is missing from the built Info.plist")
+          print("Documents file sharing is enabled")
+          PY
           SHARPIE_WEIGHT=$(find Payload/RIFE60GhostGuard.app/AnimeSharpieOutlineSubtle.mlpackage -type f -name 'weight.bin' -print -quit)
           test -n "$SHARPIE_WEIGHT"
           test -s "$SHARPIE_WEIGHT"

@@ -1,6 +1,26 @@
 import Foundation
 import AVFoundation
 
+private final class StageTelemetryBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var restorationValue = PerformanceTelemetry()
+    private var rifeValue = PerformanceTelemetry()
+    private var cuganValue = PerformanceTelemetry()
+
+    var restoration: PerformanceTelemetry {
+        get { lock.lock(); defer { lock.unlock() }; return restorationValue }
+        set { lock.lock(); restorationValue = newValue; lock.unlock() }
+    }
+    var rife: PerformanceTelemetry {
+        get { lock.lock(); defer { lock.unlock() }; return rifeValue }
+        set { lock.lock(); rifeValue = newValue; lock.unlock() }
+    }
+    var cugan: PerformanceTelemetry {
+        get { lock.lock(); defer { lock.unlock() }; return cuganValue }
+        set { lock.lock(); cuganValue = newValue; lock.unlock() }
+    }
+}
+
 final class TwoPassVideoProcessor {
     private let config: ProcessorConfiguration
     private let upscaleTo4K: Bool
@@ -29,9 +49,13 @@ final class TwoPassVideoProcessor {
         if upscaleFirst {
             return try await processUpscaleFirst(sourceURL: sourceURL, recoveryDirectory: recoveryDirectory, progress: progress, telemetry: telemetry)
         }
-        var restorationTelemetry = PerformanceTelemetry()
-        var rifeTelemetry = PerformanceTelemetry()
-        var cuganTelemetry = PerformanceTelemetry()
+        let stageTimer = PipelineStageTimer()
+        PipelineStageTimer.current = stageTimer
+        defer {
+            PipelineStageTimer.current = nil
+            stageTimer.finish()
+        }
+        let stageTelemetry = StageTelemetryBox()
         var transientURLs: [URL] = []
         defer {
             for url in transientURLs { try? FileManager.default.removeItem(at: url) }
@@ -92,7 +116,8 @@ final class TwoPassVideoProcessor {
         // behaviour) found the upstream checkpoints missing and silently
         // re-ran Compression Guard and RIFE from scratch.
         // ------------------------------------------------------------------
-        let cuganEnd = config.outlineProtection ? 0.84 : 0.97
+        let visualPolish = config.outlineProtection || config.colorRebuild || config.outlineRebuild
+        let cuganEnd = visualPolish ? 0.84 : 0.97
         let finalExpectedWidth = upscaleTo4K ? automaticFinalWidth : sourceWidth
         let finalExpectedHeight = upscaleTo4K ? automaticFinalHeight : sourceHeight
 
@@ -102,7 +127,7 @@ final class TwoPassVideoProcessor {
         var rifeCheckpointValid = false
         var restoredCheckpointValid = false
 
-        if config.outlineProtection, let outlineCheckpoint {
+        if visualPolish, let outlineCheckpoint {
             outlineCheckpointValid = await validVideo(
                 outlineCheckpoint,
                 expectedDuration: sourceDuration,
@@ -160,6 +185,7 @@ final class TwoPassVideoProcessor {
                 } else {
                     if let restoredCheckpoint { try? fm.removeItem(at: restoredCheckpoint) }
                     progress(0.001, "Pass 1/4 • Starting \(restorationName)…")
+                    stageTimer.begin(watermark.enabled ? "deepcream" : "restoration")
                     let restoration = RestorationPass(
                         compressionEnabled: config.compressionProtection,
                         outlineEnabled: false,
@@ -175,10 +201,11 @@ final class TwoPassVideoProcessor {
                             progress(local * 0.10, renamed)
                         },
                         telemetry: { t in
-                            restorationTelemetry = t
+                            stageTelemetry.restoration = t
                             telemetry(t)
                         }
                     )
+                    stageTimer.end(watermark.enabled ? "deepcream" : "restoration")
 
                     if let restoredCheckpoint {
                         try persistCheckpoint(from: result.url, to: restoredCheckpoint)
@@ -219,12 +246,14 @@ final class TwoPassVideoProcessor {
                     preserveAudio: false,
                     targetFPS: config.targetFPS
                 )
-                let rifeIsFinalVisualStage = (!upscaleTo4K || automaticCuganPasses == 0) && !config.outlineProtection
+                let visualPolish = config.outlineProtection || config.colorRebuild || config.outlineRebuild
+                let rifeIsFinalVisualStage = (!upscaleTo4K || automaticCuganPasses == 0) && !visualPolish
                 let rife = RIFEVideoProcessor(
                     configuration: pass2Config,
                     colorPopStrength: rifeIsFinalVisualStage ? colorPopStrength : 0,
                     applyWarmthCorrection: rifeIsFinalVisualStage
                 )
+                stageTimer.begin("rife")
                 let generated = try await rife.process(
                     sourceURL: rifeInput,
                     progress: { p, message in
@@ -232,14 +261,20 @@ final class TwoPassVideoProcessor {
                         progress(0.11 + local * 0.29, "Pass 2/4 • \(message)")
                     },
                     telemetry: { pass2 in
-                        rifeTelemetry = pass2
+                        stageTelemetry.rife = pass2
+                        PipelineStageTimer.current?.record("compressionMs", milliseconds: stageTelemetry.restoration.compressionMsPerFrame)
+                        PipelineStageTimer.current?.record("rifeHqMs", milliseconds: pass2.rifeMsPerGeneratedFrame)
+                        PipelineStageTimer.current?.record("ghostGuardMs", milliseconds: pass2.ghostMsPerGeneratedFrame)
+                        PipelineStageTimer.current?.record("generatedFrames", milliseconds: Double(pass2.generatedFrames))
+                        PipelineStageTimer.current?.record("rejectedFrames", milliseconds: Double(pass2.rejectedFrames))
                         var combined = pass2
-                        combined.sourceFrames = max(pass2.sourceFrames, restorationTelemetry.sourceFrames)
-                        combined.compressionMsPerFrame = restorationTelemetry.compressionMsPerFrame
+                        combined.sourceFrames = max(pass2.sourceFrames, stageTelemetry.restoration.sourceFrames)
+                        combined.compressionMsPerFrame = stageTelemetry.restoration.compressionMsPerFrame
                         combined.outlineMsPerFrame = 0
                         telemetry(combined)
                     }
                 )
+                stageTimer.end("rife")
 
                 if let rifeCheckpoint {
                     try persistCheckpoint(from: generated, to: rifeCheckpoint)
@@ -280,7 +315,8 @@ final class TwoPassVideoProcessor {
                         autoreleasepool { }
                         try await thermalHandoff(progress: progress, position: 0.40, next: "Real-CUGAN native 2×")
                         progress(0.41, "Pass 3/4 • Loading Real-CUGAN Anime native 2×…")
-                        let cuganIsFinalVisualStage = !config.outlineProtection && automaticCuganPasses == 1
+                        let cuganIsFinalVisualStage = !visualPolish && automaticCuganPasses == 1
+                        stageTimer.begin("cugan")
                         let cugan = RealCUGANPass(
                             intensity: 1.30,
                             colorPopStrength: cuganIsFinalVisualStage ? colorPopStrength : 0,
@@ -294,10 +330,12 @@ final class TwoPassVideoProcessor {
                                 progress(0.41 + local * (cuganEnd - 0.41), message.replacingOccurrences(of: "Pass 3/3", with: "Pass 3/4"))
                             },
                             telemetry: { sample in
-                                cuganTelemetry = sample
-                                var combined = rifeTelemetry
-                                combined.sourceFrames = max(rifeTelemetry.sourceFrames, restorationTelemetry.sourceFrames)
-                                combined.compressionMsPerFrame = restorationTelemetry.compressionMsPerFrame
+                                stageTelemetry.cugan = sample
+                                PipelineStageTimer.current?.record("realCuganMs", milliseconds: sample.cuganMsPerFrame)
+                                PipelineStageTimer.current?.record("encodeMs", milliseconds: sample.encodeMsPerOutputFrame)
+                                var combined = stageTelemetry.rife
+                                combined.sourceFrames = max(stageTelemetry.rife.sourceFrames, stageTelemetry.restoration.sourceFrames)
+                                combined.compressionMsPerFrame = stageTelemetry.restoration.compressionMsPerFrame
                                 combined.outlineMsPerFrame = 0
                                 combined.upscaledFrames = sample.upscaledFrames
                                 combined.cuganMsPerFrame = sample.cuganMsPerFrame
@@ -311,6 +349,7 @@ final class TwoPassVideoProcessor {
                             },
                             recoveryDirectory: recoveryDirectory
                         )
+                        stageTimer.end("cugan")
                         if let cuganCheckpoint {
                             try persistCheckpoint(from: generated, to: cuganCheckpoint)
                             try? fm.removeItem(at: generated)
@@ -331,7 +370,7 @@ final class TwoPassVideoProcessor {
                         }
                         try await thermalHandoff(progress: progress, position: 0.62, next: "Real-CUGAN automatic 4×")
                         progress(0.63, "Pass 4/4 • Real-CUGAN automatic second 2× pass…")
-                        let cuganSecondIsFinalVisualStage = !config.outlineProtection && automaticCuganPasses == 2
+                        let cuganSecondIsFinalVisualStage = !visualPolish && automaticCuganPasses == 2
                         let cuganSecond = RealCUGANPass(
                             intensity: 1.30,
                             colorPopStrength: cuganSecondIsFinalVisualStage ? colorPopStrength : 0,
@@ -345,9 +384,11 @@ final class TwoPassVideoProcessor {
                                 progress(0.63 + local * (cuganEnd - 0.63), message.replacingOccurrences(of: "Pass 3/3", with: "Pass 4/4"))
                             },
                             telemetry: { sample in
-                                cuganTelemetry = sample
-                                var combined = rifeTelemetry
-                                combined.sourceFrames = max(rifeTelemetry.sourceFrames, restorationTelemetry.sourceFrames)
+                                stageTelemetry.cugan = sample
+                                PipelineStageTimer.current?.record("realCuganMs", milliseconds: sample.cuganMsPerFrame)
+                                PipelineStageTimer.current?.record("encodeMs", milliseconds: sample.encodeMsPerOutputFrame)
+                                var combined = stageTelemetry.rife
+                                combined.sourceFrames = max(stageTelemetry.rife.sourceFrames, stageTelemetry.restoration.sourceFrames)
                                 combined.outlineMsPerFrame = 0
                                 combined.upscaledFrames = sample.upscaledFrames
                                 combined.cuganMsPerFrame = sample.cuganMsPerFrame
@@ -378,14 +419,14 @@ final class TwoPassVideoProcessor {
                 }
             } else {
                 postCUGANSource = rifeResult
-                if !config.outlineProtection { progress(0.97, "RIFE HQ complete") }
+                if !visualPolish { progress(0.97, "RIFE HQ complete") }
             }
         }
 
         // FINAL VISUAL PASS: apply the slightly narrower Sharpie model only after
         // CUGAN. If CUGAN is disabled it still remains after RIFE.
         let videoForMux: URL
-        if config.outlineProtection {
+        if visualPolish {
             if outlineCheckpointValid, let outlineCheckpoint {
                 videoForMux = outlineCheckpoint
                 progress(0.97, "Recovered checkpoint • Final Sharpie outline complete")
@@ -398,7 +439,8 @@ final class TwoPassVideoProcessor {
                 try await thermalHandoff(progress: progress, position: upscaleTo4K ? 0.84 : 0.40, next: "final Sharpie outline")
                 let outlineStart = upscaleTo4K ? 0.85 : 0.41
                 progress(outlineStart, upscaleTo4K ? "Pass 4/4 • Applying final Sharpie after Real-CUGAN…" : "Pass 3/3 • Applying final Sharpie after RIFE…")
-                let finalOutline = FinalOutlinePass(colorPopStrength: colorPopStrength)
+                stageTimer.begin("sharpie")
+                let finalOutline = FinalOutlinePass(colorPopStrength: colorPopStrength, colorRebuild: config.colorRebuild, colorRebuildStrength: config.colorRebuildStrength, outlineRebuild: config.outlineRebuild, outlineRebuildStrength: config.outlineRebuildStrength, sharpen: config.outlineProtection)
                 let generated = try await finalOutline.run(
                     sourceURL: outlineInput,
                     finalAudioBitrate: audioBitrate,
@@ -407,13 +449,16 @@ final class TwoPassVideoProcessor {
                         progress(outlineStart + local * (0.97 - outlineStart), message)
                     },
                     telemetry: { outlineSample in
-                        var combined = rifeTelemetry
-                        combined.sourceFrames = max(rifeTelemetry.sourceFrames, restorationTelemetry.sourceFrames)
-                        combined.compressionMsPerFrame = restorationTelemetry.compressionMsPerFrame
+                        var combined = stageTelemetry.rife
+                        combined.sourceFrames = max(stageTelemetry.rife.sourceFrames, stageTelemetry.restoration.sourceFrames)
+                        combined.compressionMsPerFrame = stageTelemetry.restoration.compressionMsPerFrame
                         combined.outlineMsPerFrame = outlineSample.outlineMsPerFrame
-                        combined.upscaledFrames = cuganTelemetry.upscaledFrames
-                        combined.cuganMsPerFrame = cuganTelemetry.cuganMsPerFrame
-                        combined.upscaleFPS = cuganTelemetry.upscaleFPS
+                        combined.upscaledFrames = stageTelemetry.cugan.upscaledFrames
+                        combined.cuganMsPerFrame = stageTelemetry.cugan.cuganMsPerFrame
+                        PipelineStageTimer.current?.record("realCuganMs", milliseconds: stageTelemetry.cugan.cuganMsPerFrame)
+                        PipelineStageTimer.current?.record("finalOutlineMs", milliseconds: outlineSample.outlineMsPerFrame)
+                        PipelineStageTimer.current?.record("encodeMs", milliseconds: outlineSample.encodeMsPerOutputFrame)
+                        combined.upscaleFPS = stageTelemetry.cugan.upscaleFPS
                         combined.encodeMsPerOutputFrame = outlineSample.encodeMsPerOutputFrame
                         combined.thermalState = outlineSample.thermalState
                         combined.performanceMode = outlineSample.performanceMode
@@ -423,6 +468,7 @@ final class TwoPassVideoProcessor {
                     },
                     recoveryDirectory: recoveryDirectory
                 )
+                stageTimer.end("sharpie")
 
                 if let outlineCheckpoint {
                     try persistCheckpoint(from: generated, to: outlineCheckpoint)
@@ -488,7 +534,7 @@ final class TwoPassVideoProcessor {
         let audioBitrate: Double
         if let audio = try await asset.loadTracks(withMediaType: .audio).first { audioBitrate = Double(try await audio.load(.estimatedDataRate)) } else { audioBitrate = 0 }
         let restore = config.compressionProtection || watermark.enabled
-        let stages = UpscaleFirstPlan.stages(restoration: restore, outline: config.outlineProtection)
+        let stages = UpscaleFirstPlan.stages(restoration: restore, outline: config.outlineProtection || config.colorRebuild || config.outlineRebuild)
         let checkpoints = stages.map { recoveryDirectory?.appendingPathComponent("checkpoint-upscale-first-\($0).mov") }
         var inputURL = sourceURL
         var startIndex = 0
@@ -536,7 +582,7 @@ final class TwoPassVideoProcessor {
                         telemetry(combined)
                     }, recoveryDirectory: recoveryDirectory)
                 default:
-                    generated = try await FinalOutlinePass(colorPopStrength: colorPopStrength).run(sourceURL: inputURL, finalAudioBitrate: audioBitrate, progress: publish, telemetry: { sample in combined.outlineMsPerFrame = sample.outlineMsPerFrame; telemetry(combined) }, recoveryDirectory: recoveryDirectory)
+                    generated = try await FinalOutlinePass(colorPopStrength: colorPopStrength, colorRebuild: config.colorRebuild, colorRebuildStrength: config.colorRebuildStrength, outlineRebuild: config.outlineRebuild, outlineRebuildStrength: config.outlineRebuildStrength, sharpen: config.outlineProtection).run(sourceURL: inputURL, finalAudioBitrate: audioBitrate, progress: publish, telemetry: { sample in combined.outlineMsPerFrame = sample.outlineMsPerFrame; telemetry(combined) }, recoveryDirectory: recoveryDirectory)
                 }
                 if let checkpoint = checkpoints[index] {
                     try persistCheckpoint(from: generated, to: checkpoint)
