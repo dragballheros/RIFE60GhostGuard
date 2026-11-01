@@ -32,12 +32,10 @@ targets:
         includes:
           - "*.c"
           - "*.m"
+          - "*.metal"
       - path: Vendor/h3-gguf
         includes:
           - "*.c"
-      - path: Vendor/minimax-h3/h3_shaders.metal
-        type: file
-        buildPhase: resources
       - path: Assets.xcassets
       - path: Models/DeepCreamBar.mlpackage
       - path: Models/DeepCreamMosaic.mlpackage

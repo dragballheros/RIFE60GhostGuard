@@ -76,17 +76,29 @@ if not guard_present:
     source = source.replace(needle, replacement, 1)
 
 shader_needle = 'NSString *path = [NSString stringWithUTF8String:source_path];'
-shader_replacement = """NSString *path = [NSString stringWithUTF8String:source_path];
+shader_replacement = """/*
+         * Kernels are compiled into the app's default.metallib. Use that
+         * library when it contains the H3 entry kernel. A loose .metal file
+         * is only a fallback, resolved from the app bundle rather than the
+         * process working directory.
+         */
+        gpu.library = [gpu.device newDefaultLibrary];
+        if (![gpu.library newFunctionWithName:@"h3_linear_f32"]) {
+            gpu.library = nil;
+        }
+        NSString *path = [NSString stringWithUTF8String:source_path];
         /*
          * On iOS the process working directory is not the app bundle. Resolve
          * the runtime's relative shader name against the bundled resource.
          */
-        if (![path isAbsolutePath] &&
+        if (!gpu.library && ![path isAbsolutePath] &&
             ![[NSFileManager defaultManager] fileExistsAtPath:path]) {
             NSString *bundledShader =
                 [[NSBundle mainBundle] pathForResource:@"h3_shaders" ofType:@"metal"];
             if (bundledShader) path = bundledShader;
         }"""
+read_needle = "NSString *source = [NSString stringWithContentsOfFile:path"
+read_replacement = "NSString *source = gpu.library ? nil : [NSString stringWithContentsOfFile:path"
 shader_present = shader_replacement in source
 if not shader_present:
     if source.count(shader_needle) != 1:
@@ -95,6 +107,14 @@ if not shader_present:
             f"found {source.count(shader_needle)}"
         )
     source = source.replace(shader_needle, shader_replacement, 1)
+
+if read_needle in source and read_replacement not in source:
+    if source.count(read_needle) != 1:
+        raise SystemExit(
+            "Refusing to patch: expected exactly one Metal source read; "
+            f"found {source.count(read_needle)}"
+        )
+    source = source.replace(read_needle, read_replacement, 1)
 
 path.write_text(source, encoding="utf-8")
 print("H3 iOS runtime patches present: minimum iOS 18 guard and app-bundle shader resolution.")
