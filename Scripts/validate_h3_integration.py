@@ -84,6 +84,13 @@ print("\nDevice/runtime release gates:")
 for label, passed in release_gates:
     print(f"{'PASS' if passed else 'BLOCKED'}: {label}")
 
+vae_names = subprocess.run(["python3", "Scripts/test_h3_vae_weight_names.py"], check=False)
+if vae_names.returncode:
+    failed.append("H3 VAE weight names resolve against the published safetensors headers")
+    print("FAIL: H3 VAE weight names resolve against the published safetensors headers")
+else:
+    print("PASS: H3 VAE weight names resolve against the published safetensors headers")
+
 gguf_test = subprocess.run(
     ["cc", "-std=c11", "-DH3_GGUF_TEST", "-I", "Vendor/h3-gguf", "-o", "/tmp/h3gguf",
      "Vendor/h3-gguf/h3_gguf.c"],
