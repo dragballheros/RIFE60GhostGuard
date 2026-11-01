@@ -146,6 +146,10 @@ struct VACEVideoEditView: View {
                             Slider(value: $brushPercent, in: 0.2...4)
                             Text(String(format: "%.1f%%", brushPercent)).monospacedDigit()
                         }
+                        PhotosPicker(selection: $maskItem, matching: .images) {
+                            Label(maskURL == nil ? "Import a mask image" : "Change imported mask", systemImage: "photo")
+                        }
+                        .disabled(isRunning)
                         HStack {
                             Button("Undo") {
                                 var strokes = keyframeStrokes[previewFrameIndex] ?? WatermarkBrushMask()
