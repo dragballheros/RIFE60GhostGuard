@@ -177,7 +177,10 @@ struct H3VideoEditView: View {
                 Section {
                     if isRunning {
                         ProgressView(value: progress)
-                        Button("Cancel H3 generation") { h3CancellationToken?.cancel() }
+                        Button("Cancel H3 generation") {
+                            h3CancellationToken?.cancel()
+                            CrashCapture.requestH3Cancel()
+                        }
                     }
                     Button { Task { await runH3ReferenceEdit() } } label: {
                         Label("Generate H3 reference video", systemImage: "wand.and.stars")
@@ -290,8 +293,35 @@ struct H3VideoEditView: View {
         errorText = nil
         let token = H3CancellationToken()
         h3CancellationToken = token
+        CrashCapture.resetH3Activity()
+        let watchdog = Task.detached {
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 5_000_000_000)
+                if Task.isCancelled { return }
+                let activity = CrashCapture.h3ActivityAge()
+                await MainActor.run {
+                    if activity.text != "starting" {
+                        status = activity.text
+                    }
+                }
+                if activity.seconds < 120 { continue }
+                let stall = CrashCapture.logH3Stall(after: activity.seconds)
+                token.cancel()
+                CrashCapture.requestH3Cancel()
+                await MainActor.run {
+                    errorText = "H3 made no progress for 120s during \(activity.text). Generation was stopped."
+                    status = "H3 stalled. See the diagnostics log."
+                }
+                _ = stall
+                return
+            }
+        }
         var h3OutputCandidate: URL?
-        defer { isRunning = false; h3CancellationToken = nil }
+        defer {
+            watchdog.cancel()
+            isRunning = false
+            h3CancellationToken = nil
+        }
         let hasSecurityScope = modelURL.startAccessingSecurityScopedResource()
         defer { if hasSecurityScope { modelURL.stopAccessingSecurityScopedResource() } }
         do {

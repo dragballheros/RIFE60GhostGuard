@@ -235,6 +235,161 @@ void h3_weight_format_absent(const h3_weight_store *store, const char *name,
             raise SystemExit("h3_audio_vae.c is missing normalize_conv")
     else:
         audio.write_text(audio_text.replace(old_norm, new_norm, 1), encoding="utf-8")
+    progress_old = '''static void h3_progress_emit(h3_generation_progress *state, const char *phase,
+                             int completed, int total) {
+    if (!state || state->cancelled || !state->params->on_progress) return;
+'''
+    progress_new = '''extern void rife60_h3_stage(const char *text);
+extern int rife60_h3_cancelled(void);
+
+static void h3_progress_emit(h3_generation_progress *state, const char *phase,
+                             int completed, int total) {
+    char stage[160];
+    snprintf(stage, sizeof(stage), "H3 %s %d/%d", phase ? phase : "work",
+             completed, total);
+    rife60_h3_stage(stage);
+    if (!state || state->cancelled || rife60_h3_cancelled() ||
+        !state->params->on_progress) {
+        if (state && rife60_h3_cancelled()) state->cancelled = 1;
+        return;
+    }
+'''
+    core_text = core.read_text(encoding="utf-8")
+    before_video = '''            if (!h3_video_vae_encode(
+'''
+    before_video_new = '''            h3_progress_emit(&progress, "video VAE encoder", 0, 1);
+            if (progress.cancelled) goto cleanup;
+            if (!h3_video_vae_encode(
+'''
+    if before_video not in core_text:
+        if 'h3_progress_emit(&progress, "video VAE encoder", 0, 1)' not in core_text:
+            raise SystemExit("h3.c video encode call changed")
+    else:
+        core_text = core_text.replace(before_video, before_video_new, 1)
+        core.write_text(core_text, encoding="utf-8")
+    before_vision = '''                    int ok = h3_vision_encode_bf16(
+                        text_path, "h3_shaders.metal", pair, 2,
+'''
+    before_vision_new = '''                    h3_progress_emit(&progress, "Qwen vision", 0, 1);
+                    if (progress.cancelled) goto cleanup;
+                    int ok = h3_vision_encode_bf16(
+                        text_path, "h3_shaders.metal", pair, 2,
+'''
+    core_text = core.read_text(encoding="utf-8")
+    if before_vision not in core_text:
+        if 'h3_progress_emit(&progress, "Qwen vision", 0, 1)' not in core_text:
+            raise SystemExit("h3.c vision encode call changed")
+    else:
+        core.write_text(core_text.replace(before_vision, before_vision_new, 1), encoding="utf-8")
+    core_text = core.read_text(encoding="utf-8")
+    if progress_old not in core_text:
+        if "rife60_h3_stage" not in core_text:
+            raise SystemExit("h3.c progress emit site changed")
+    else:
+        core.write_text(core_text.replace(progress_old, progress_new, 1), encoding="utf-8")
+    video = root / "h3_video_encoder.c"
+    video_old = '''    snprintf(name, sizeof(name), "%s.weight", prefix);
+    conv->weight = f5(encoder, name, output_channels, input_channels, kernel,
+'''
+    video_new = '''    extern void rife60_h3_note(const char *text);
+    extern int rife60_h3_cancelled(void);
+    char step[224];
+    snprintf(step, sizeof(step), "video VAE weight %s", prefix);
+    rife60_h3_note(step);
+    if (rife60_h3_cancelled()) {
+        fail(error, error_size, "generation cancelled during %s", step);
+        return 0;
+    }
+    snprintf(name, sizeof(name), "%s.weight", prefix);
+    conv->weight = f5(encoder, name, output_channels, input_channels, kernel,
+'''
+    video_text = video.read_text(encoding="utf-8")
+    if video_old not in video_text:
+        if "video VAE weight" not in video_text:
+            raise SystemExit("h3_video_encoder.c load_conv site changed")
+    else:
+        video.write_text(video_text.replace(video_old, video_new, 1), encoding="utf-8")
+    vision = root / "h3_vision_encoder.c"
+    vision_old = '''    for (int layer = 0; layer < VISION_LAYERS && ok; layer++) {
+        vision_block_weights block;
+        ok = load_block_weights(weights, gpu, layer, &block,
+'''
+    vision_new = '''    for (int layer = 0; layer < VISION_LAYERS && ok; layer++) {
+        extern void rife60_h3_note(const char *text);
+        extern int rife60_h3_cancelled(void);
+        char step[64];
+        snprintf(step, sizeof(step), "Qwen vision layer %d/%d", layer + 1, VISION_LAYERS);
+        rife60_h3_note(step);
+        if (rife60_h3_cancelled()) {
+            fail(error, error_size, "generation cancelled during %s", step);
+            ok = 0;
+            break;
+        }
+        if (progress) progress(layer, VISION_LAYERS, progress_opaque);
+        vision_block_weights block;
+        ok = load_block_weights(weights, gpu, layer, &block,
+'''
+    vision_text = vision.read_text(encoding="utf-8")
+    if vision_old not in vision_text:
+        if "Qwen vision layer" not in vision_text:
+            raise SystemExit("h3_vision_encoder.c layer loop changed")
+    else:
+        vision.write_text(vision_text.replace(vision_old, vision_new, 1), encoding="utf-8")
+    gpu_old = '''        for (NSString *name in names) {
+            id<MTLFunction> function = [gpu.library newFunctionWithName:name];
+'''
+    gpu_new = '''        NSUInteger built = 0;
+        for (NSString *name in names) {
+            extern void rife60_h3_note(const char *text);
+            extern int rife60_h3_cancelled(void);
+            char step[128];
+            snprintf(step, sizeof(step), "Metal pipeline %s %lu/%lu",
+                     name.UTF8String, (unsigned long)built, (unsigned long)names.count);
+            rife60_h3_note(step);
+            if (rife60_h3_cancelled()) {
+                if (error && error_size) snprintf(error, error_size, "generation cancelled during %s", step);
+                return NULL;
+            }
+            built++;
+            id<MTLFunction> function = [gpu.library newFunctionWithName:name];
+'''
+    gpu_text = gpu.read_text(encoding="utf-8")
+    if gpu_old not in gpu_text:
+        if "Metal pipeline" not in gpu_text:
+            raise SystemExit("h3_gpu.m pipeline loop changed")
+    else:
+        gpu.write_text(gpu_text.replace(gpu_old, gpu_new, 1), encoding="utf-8")
+    submit_old = '''        [command commit];
+        [gpu.inflightCommands addObject:command];
+        for (id<MTLCommandBuffer> pending in gpu.inflightCommands)
+            [pending waitUntilCompleted];
+'''
+    submit_new = '''        [command commit];
+        [gpu.inflightCommands addObject:command];
+        extern int rife60_h3_cancelled(void);
+        extern void rife60_h3_note(const char *text);
+        for (id<MTLCommandBuffer> pending in gpu.inflightCommands) {
+            while (pending.status != MTLCommandBufferStatusCompleted &&
+                   pending.status != MTLCommandBufferStatusError) {
+                if (rife60_h3_cancelled()) {
+                    h3_gpu_set_error(gpu, @"generation cancelled while waiting for Metal");
+                    [gpu.inflightCommands removeAllObjects];
+                    return 0;
+                }
+                char step[64];
+                snprintf(step, sizeof(step), "Metal wait status %lu",
+                         (unsigned long)pending.status);
+                rife60_h3_note(step);
+                usleep(200000);
+            }
+        }
+'''
+    gpu_text = gpu.read_text(encoding="utf-8")
+    if submit_old not in gpu_text:
+        if "Metal wait status" not in gpu_text:
+            raise SystemExit("h3_gpu.m submit wait changed")
+    else:
+        gpu.write_text(gpu_text.replace(submit_old, submit_new, 1), encoding="utf-8")
     print(f"Patched pinned H3 runtime in {root} for GGUF streaming")
 
 if __name__ == "__main__":

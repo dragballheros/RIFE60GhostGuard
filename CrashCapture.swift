@@ -76,6 +76,37 @@ private let crashExceptionHandler: @convention(c) (NSException) -> Void = { exce
     DiagnosticsLogger.shared.logSync("CRASH \(text)")
 }
 
+private let h3ActivityLock = NSLock()
+private var h3ActivityText = "idle"
+private var h3ActivityChanged = Date()
+private var h3CancelFlag = false
+
+@_cdecl("rife60_h3_note")
+func rife60H3Note(_ text: UnsafePointer<CChar>?) {
+    let value = text.map { String(cString: $0) } ?? ""
+    h3ActivityLock.lock()
+    if value != h3ActivityText {
+        h3ActivityText = value
+        h3ActivityChanged = Date()
+    }
+    h3ActivityLock.unlock()
+    CrashCapture.note(value)
+}
+
+@_cdecl("rife60_h3_stage")
+func rife60H3Stage(_ text: UnsafePointer<CChar>?) {
+    let value = text.map { String(cString: $0) } ?? ""
+    rife60H3Note(text)
+    CrashCapture.step(value)
+}
+
+@_cdecl("rife60_h3_cancelled")
+func rife60H3Cancelled() -> Int32 {
+    h3ActivityLock.lock()
+    defer { h3ActivityLock.unlock() }
+    return h3CancelFlag ? 1 : 0
+}
+
 enum CrashCapture {
     private static var installed = false
 
@@ -138,6 +169,35 @@ enum CrashCapture {
         remember("\(text) • \(memoryLine())")
     }
 
+    static func requestH3Cancel() {
+        h3ActivityLock.lock()
+        h3CancelFlag = true
+        h3ActivityLock.unlock()
+    }
+
+    static func resetH3Activity() {
+        h3ActivityLock.lock()
+        h3CancelFlag = false
+        h3ActivityText = "starting"
+        h3ActivityChanged = Date()
+        h3ActivityLock.unlock()
+    }
+
+    static func h3ActivityAge() -> (text: String, seconds: TimeInterval) {
+        h3ActivityLock.lock()
+        defer { h3ActivityLock.unlock() }
+        return (h3ActivityText, Date().timeIntervalSince(h3ActivityChanged))
+    }
+
+    /// Logs the stage that stopped moving and a stack snapshot for every thread.
+    static func logH3Stall(after seconds: TimeInterval) -> String {
+        let activity = h3ActivityAge()
+        let stacks = threadSnapshots()
+        let text = "H3 stalled \(Int(seconds))s during \(activity.text)\n\(memoryLine())\n\(stacks)"
+        step(text)
+        return text
+    }
+
     static func memoryLine() -> String {
         let available = os_proc_available_memory()
         let physical = ProcessInfo.processInfo.physicalMemory
@@ -149,6 +209,36 @@ enum CrashCapture {
             strncpy(crashStepBuffer, source, crashStepCapacity - 1)
             crashStepBuffer[crashStepCapacity - 1] = 0
         }
+    }
+
+    private static func threadSnapshots() -> String {
+        var threads: thread_act_array_t?
+        var count: mach_msg_type_number_t = 0
+        guard task_threads(mach_task_self_, &threads, &count) == KERN_SUCCESS, let threads else {
+            return Thread.callStackSymbols.joined(separator: "\n")
+        }
+        defer {
+            for index in 0..<Int(count) {
+                mach_port_deallocate(mach_task_self_, threads[index])
+            }
+            vm_deallocate(mach_task_self_, vm_address_t(UInt(bitPattern: threads)), vm_size_t(Int(count) * MemoryLayout<thread_t>.size))
+        }
+        var lines: [String] = []
+        for index in 0..<Int(count) {
+            var state = arm_thread_state64_t()
+            var stateCount = mach_msg_type_number_t(MemoryLayout<arm_thread_state64_t>.size / MemoryLayout<UInt32>.size)
+            let result = withUnsafeMutablePointer(to: &state) { pointer in
+                pointer.withMemoryRebound(to: natural_t.self, capacity: Int(stateCount)) { rebound in
+                    thread_get_state(threads[index], thread_state_flavor_t(ARM_THREAD_STATE64), rebound, &stateCount)
+                }
+            }
+            if result == KERN_SUCCESS {
+                lines.append(String(format: "thread %d pc=0x%llx sp=0x%llx", index, state.__pc, state.__sp))
+            } else {
+                lines.append("thread \(index) state unavailable")
+            }
+        }
+        return lines.joined(separator: "\n")
     }
 
     private static func crashFileURL() -> URL {
