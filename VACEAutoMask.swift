@@ -24,7 +24,7 @@ enum VACEMaskMode: String, CaseIterable, Identifiable {
         case .wholeFrame:
             return "No mask. The prompt restyles the whole frame."
         case .drawManually:
-            return "Tap the character on any frame, or brush a few strokes. That one frame is tracked through the clip on device and re-anchored at each shot cut."
+            return "Paint the character once. The same brush as watermark removal is tracked through the clip, including big pose changes and shot cuts."
         }
     }
 }
@@ -179,6 +179,100 @@ enum VACESubjectSegmenter {
         let time = CMTime(seconds: max(0, seconds), preferredTimescale: 600)
         let result = try await generator.image(at: time)
         return result.image
+    }
+
+    /// Connected anime regions. `guide` keeps the instances that overlap a drawn mask.
+    static func characterInstances(cgImage: CGImage, guide: [UInt8]?) throws -> [(pixels: [UInt8], coverage: Double)] {
+        let width = cgImage.width
+        let height = cgImage.height
+        guard let confidence = try VACEAnimeSegmenter.confidence(cgImage: cgImage), confidence.count == width * height else {
+            return []
+        }
+        let binary = threshold(confidence, above: 128)
+        var seen = [UInt8](repeating: 0, count: binary.count)
+        var instances: [(pixels: [UInt8], coverage: Double)] = []
+        let minimum = max(16, width * height / 200)
+        for start in binary.indices where binary[start] > 127 && seen[start] == 0 {
+            var stack = [start]
+            var pixels = [UInt8](repeating: 0, count: binary.count)
+            var count = 0
+            var overlap = 0
+            seen[start] = 1
+            while let index = stack.popLast() {
+                pixels[index] = 255
+                count += 1
+                if let guide, index < guide.count, guide[index] > 127 { overlap += 1 }
+                let x = index % width
+                let y = index / width
+                for (nx, ny) in [(x - 1, y), (x + 1, y), (x, y - 1), (x, y + 1)] {
+                    guard nx >= 0, ny >= 0, nx < width, ny < height else { continue }
+                    let next = ny * width + nx
+                    guard binary[next] > 127, seen[next] == 0 else { continue }
+                    seen[next] = 1
+                    stack.append(next)
+                }
+            }
+            guard count >= minimum else { continue }
+            if let guide, overlap == 0 { continue }
+            instances.append((pixels, Double(count) / Double(binary.count)))
+        }
+        return instances
+    }
+
+    static func appearanceHistogram(cgImage: CGImage, mask: [UInt8]) -> [Float] {
+        let width = cgImage.width
+        let height = cgImage.height
+        guard let data = cgImage.dataProvider?.data, let bytes = CFDataGetBytePtr(data) else {
+            return [Float](repeating: 0, count: 64)
+        }
+        let row = cgImage.bytesPerRow
+        let bpp = max(cgImage.bitsPerPixel / 8, 1)
+        let length = CFDataGetLength(data)
+        var bins = [Float](repeating: 0, count: 64)
+        var total: Float = 0
+        let count = min(mask.count, width * height)
+        for index in 0..<count where mask[index] > 127 {
+            let y = index / width
+            let x = index % width
+            let offset = y * row + x * bpp
+            guard offset + bpp <= length else { continue }
+            let r = bytes[offset]
+            let g = bpp > 1 ? bytes[offset + 1] : r
+            let b = bpp > 2 ? bytes[offset + 2] : r
+            let bin = (Int(r) / 64) * 16 + (Int(g) / 64) * 4 + (Int(b) / 64)
+            bins[bin] += 1
+            total += 1
+        }
+        if total > 0 {
+            for index in bins.indices { bins[index] /= total }
+        }
+        return bins
+    }
+
+    static func histogramSimilarity(_ lhs: [Float], _ rhs: [Float]) -> Double {
+        let count = min(lhs.count, rhs.count)
+        guard count > 0 else { return 0 }
+        var score: Float = 0
+        for index in 0..<count { score += min(lhs[index], rhs[index]) }
+        return Double(score)
+    }
+
+    static func rgbaFrame(from image: CGImage) throws -> VACERGBAFrame {
+        let width = image.width
+        let height = image.height
+        var bytes = [UInt8](repeating: 0, count: width * height * 4)
+        let status = bytes.withUnsafeMutableBytes { raw -> Bool in
+            guard let context = CGContext(
+                data: raw.baseAddress, width: width, height: height,
+                bitsPerComponent: 8, bytesPerRow: width * 4,
+                space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+            ) else { return false }
+            context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+            return true
+        }
+        guard status else { throw VACESubjectSegmentationError.unreadableFrame }
+        return try VACERGBAFrame(width: width, height: height, bytes: bytes)
     }
 
     static func paint(_ mask: VACEMaskPlane, x: Int, y: Int, radius: Int, erase: Bool) -> VACEMaskPlane {

@@ -74,13 +74,30 @@ struct VACEVideoEditView: View {
     @State private var previewTime: Double = 0
     @State private var previewDuration: Double = 1
     @State private var brushErase = false
-    @State private var manualMask: VACEMaskPlane?
+    @State private var brushPercent = 0.8
+    @State private var brushDraft: WatermarkBrushStroke?
+    @State private var draftFrameIndex = 0
+    @State private var keyframeStrokes: [Int: WatermarkBrushMask] = [:]
+    @State private var keyframeMasks: [Int: VACEMaskKeyframe] = [:]
+    @State private var previewFrameIndex = 0
+    @State private var previewFPS = 24.0
+    @State private var previewUIImage: UIImage?
+    @State private var trackLabel: String?
+    @State private var paintingThisFrame = true
     @State private var previewFrame: CGImage?
+
+    private var canvasMask: WatermarkBrushMask {
+        var mask = keyframeStrokes[previewFrameIndex] ?? WatermarkBrushMask()
+        if let brushDraft, draftFrameIndex == previewFrameIndex {
+            mask.strokes.append(brushDraft)
+        }
+        return mask
+    }
 
     private var generateDisableReasons: [String] {
         var reasons: [String] = []
         if sourceURL == nil { reasons.append("source video") }
-        if maskMode.needsHandDrawnMask && maskURL == nil && manualMask == nil { reasons.append("a tap or brush stroke") }
+        if maskMode.needsHandDrawnMask && maskURL == nil && keyframeMasks.isEmpty { reasons.append("a tap or brush stroke") }
         if prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { reasons.append("prompt text") }
         return reasons
     }
@@ -105,19 +122,44 @@ struct VACEVideoEditView: View {
                     Text(maskMode.caption)
                         .font(.caption).foregroundStyle(.secondary)
                     if maskMode == .drawManually {
-                        Text("Scrub to a frame, tap the character, or brush what should change.")
+                        Text("Paint the character on one frame. Every other frame is tracked on device.")
                             .font(.caption).foregroundStyle(.secondary)
-                        Picker("Tool", selection: $brushErase) {
-                            Text("Brush").tag(false)
-                            Text("Erase").tag(true)
+                        VStack(alignment: .leading, spacing: 0) {
+                            Text("Tool").font(.subheadline).foregroundStyle(.secondary)
+                            ForEach([false, true], id: \.self) { isEraser in
+                                Button {
+                                    brushErase = isEraser
+                                } label: {
+                                    HStack {
+                                        Text(isEraser ? "Eraser" : "Brush").foregroundStyle(.primary)
+                                        Spacer()
+                                        Image(systemName: brushErase == isEraser ? "checkmark.circle.fill" : "circle")
+                                            .foregroundStyle(brushErase == isEraser ? Color.accentColor : Color.secondary)
+                                    }
+                                    .padding(.vertical, 6)
+                                }
+                                .buttonStyle(.plain)
+                            }
                         }
-                        .pickerStyle(.segmented)
-                        .disabled(isRunning)
-                        PhotosPicker(selection: $maskItem, matching: .images) {
-                            Label(maskURL == nil ? "Import a mask image" : "Change imported mask",
-                                  systemImage: "photo")
+                        HStack {
+                            Text("Brush size")
+                            Slider(value: $brushPercent, in: 0.2...4)
+                            Text(String(format: "%.1f%%", brushPercent)).monospacedDigit()
                         }
-                        .disabled(isRunning)
+                        HStack {
+                            Button("Undo") {
+                                var strokes = keyframeStrokes[previewFrameIndex] ?? WatermarkBrushMask()
+                                if !strokes.strokes.isEmpty { strokes.strokes.removeLast() }
+                                keyframeStrokes[previewFrameIndex] = strokes
+                                commitBrush(on: previewFrameIndex)
+                            }
+                            .disabled((keyframeStrokes[previewFrameIndex]?.strokes ?? []).isEmpty)
+                            Button("Clear frame") {
+                                keyframeStrokes[previewFrameIndex] = WatermarkBrushMask()
+                                keyframeMasks[previewFrameIndex] = nil
+                                brushDraft = nil
+                            }
+                        }
                     }
                     if sourceURL != nil {
                         Slider(value: $previewTime, in: 0...max(previewDuration, 0.1)) { editing in
@@ -127,13 +169,54 @@ struct VACEVideoEditView: View {
                         Text(String(format: "Preview %.1f s", previewTime))
                             .font(.caption).foregroundStyle(.secondary)
                     }
-                    if let maskPreview {
-                        maskPreviewImage(maskPreview)
-                        if let maskCoverageText {
-                            Text(maskCoverageText)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
+                    if maskMode == .drawManually, let previewUIImage, paintingThisFrame || keyframeStrokes[previewFrameIndex] != nil {
+                        WatermarkBrushCanvas(image: previewUIImage, mask: canvasMask, showMask: true) { point, ended in
+                            let frameIndex = previewFrameIndex
+                            if brushDraft == nil, (keyframeStrokes[frameIndex]?.strokes.count ?? 0) < 256 {
+                                draftFrameIndex = frameIndex
+                                let radius = brushPercent / 200
+                                brushDraft = WatermarkBrushStroke(
+                                    points: [],
+                                    radiusX: radius,
+                                    radiusY: radius * Double(previewUIImage.size.width / max(previewUIImage.size.height, 1)),
+                                    erase: brushErase
+                                )
+                            }
+                            if let point, var stroke = brushDraft, draftFrameIndex == frameIndex, stroke.points.count < 4096 {
+                                if stroke.points.last != point { stroke.points.append(point) }
+                                brushDraft = stroke
+                            }
+                            if ended {
+                                if let brushDraft, brushDraft.isValid, draftFrameIndex == frameIndex {
+                                    var stored = keyframeStrokes[frameIndex] ?? WatermarkBrushMask()
+                                    stored.strokes.append(brushDraft)
+                                    keyframeStrokes[frameIndex] = stored
+                                }
+                                self.brushDraft = nil
+                                commitBrush(on: frameIndex)
+                            }
                         }
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 280)
+                    } else if maskMode == .drawManually, maskPreview != nil, !paintingThisFrame {
+                        Button("Touch up this frame") { paintingThisFrame = true }
+                            .font(.caption)
+                    }
+                    if maskMode != .drawManually || (!paintingThisFrame && keyframeStrokes[previewFrameIndex] == nil), let maskPreview {
+                        Image(uiImage: maskPreview)
+                            .resizable()
+                            .scaledToFit()
+                            .frame(maxHeight: 220)
+                    }
+                    if let maskCoverageText {
+                        Text(maskCoverageText)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    if let trackLabel {
+                        Text(trackLabel)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                     }
                     if let maskPreviewNote {
                         Text(maskPreviewNote).font(.caption).foregroundStyle(.orange)
@@ -250,7 +333,7 @@ struct VACEVideoEditView: View {
     private func runEdit() async {
         guard let sourceURL else { errorText = VACEVideoEditInputError.missingVideo.localizedDescription; return }
         if maskMode.needsHandDrawnMask {
-            guard maskURL != nil || manualMask != nil else { errorText = VACEVideoEditInputError.missingMask.localizedDescription; return }
+            guard maskURL != nil || !keyframeMasks.isEmpty else { errorText = VACEVideoEditInputError.missingMask.localizedDescription; return }
         }
         isRunning = true
         progress = 0
@@ -271,16 +354,13 @@ struct VACEVideoEditView: View {
             guard width > 0, height > 0 else { throw VACEVideoEditInputError.invalidVideoDimensions }
             let provider: VACEFrameMaskProvider
             if maskMode == .drawManually {
-                let seedMask: VACEMaskPlane
-                if let manualMask {
-                    seedMask = manualMask
-                } else if let maskURL {
-                    seedMask = try Self.loadMask(url: maskURL, width: width, height: height)
-                } else {
-                    throw VACEVideoEditInputError.missingMask
+                var frames = Array(keyframeMasks.values)
+                if frames.isEmpty, let maskURL {
+                    let seedMask = try Self.loadMask(url: maskURL, width: width, height: height)
+                    frames = [VACEMaskKeyframe(frameIndex: 0, mask: seedMask, appearance: [])]
                 }
-                guard seedMask.activePixelCount > 0 else { throw VACEVideoEditInputError.noEditableMaskPixels }
-                provider = VACEManualTrackMaskProvider(seed: seedMask)
+                guard frames.contains(where: { $0.mask.activePixelCount > 0 }) else { throw VACEVideoEditInputError.noEditableMaskPixels }
+                provider = VACEManualTrackMaskProvider(keyframes: frames)
             } else {
                 provider = autoProvider
             }
@@ -344,27 +424,33 @@ struct VACEVideoEditView: View {
         let mode = maskMode
         let manualURL = maskURL
         let seconds = previewTime
-        let painted = manualMask
+        let masks = keyframeMasks
         do {
             let asset = AVURLAsset(url: sourceURL)
             let duration = try await asset.load(.duration).seconds
             if duration.isFinite, duration > 0 {
                 previewDuration = duration
             }
+            if let track = try await asset.loadTracks(withMediaType: .video).first {
+                let rate = try await track.load(.nominalFrameRate)
+                if rate > 1 { previewFPS = Double(rate) }
+            }
+            let frameIndex = max(0, Int((seconds * previewFPS).rounded()))
+            previewFrameIndex = frameIndex
+            if keyframeStrokes[frameIndex] == nil {
+                paintingThisFrame = false
+            }
             let frame = try await VACESubjectSegmenter.frameImage(url: sourceURL, at: seconds)
             previewFrame = frame
+            previewUIImage = UIImage(cgImage: frame)
             let built: VACESegmentationDecision
-            if mode == .drawManually, let painted {
-                let point = Self.centroid(of: painted)
-                if abs(seconds) < 0.05 {
-                    let fraction = VACESubjectSegmenter.coverage(of: painted.pixels)
-                    built = VACESegmentationDecision(mask: painted, foundSubject: fraction > 0, method: "tap-select", coverage: fraction)
-                } else if let tracked = try? VACESubjectSegmenter.tapSelect(cgImage: frame, x: point.x * frame.width / max(painted.width, 1), y: point.y * frame.height / max(painted.height, 1)), tracked.foundSubject {
-                    built = VACESegmentationDecision(mask: tracked.mask, foundSubject: true, method: "manual-tracked", coverage: tracked.coverage)
-                } else {
-                    let fraction = VACESubjectSegmenter.coverage(of: painted.pixels)
-                    built = VACESegmentationDecision(mask: painted, foundSubject: fraction > 0, method: "manual-tracked", coverage: fraction)
-                }
+            if mode == .drawManually, !masks.isEmpty {
+                let tracked = try await Self.propagatedMask(url: sourceURL, fps: previewFPS, target: frameIndex, keyframes: masks, targetImage: frame)
+                let fraction = VACESubjectSegmenter.coverage(of: tracked.mask.pixels)
+                built = VACESegmentationDecision(mask: tracked.mask, foundSubject: fraction > 0, method: "manual-tracked", coverage: fraction)
+                trackLabel = frameIndex == tracked.anchorFrame
+                    ? "Drawn on this frame"
+                    : "Tracked from frame \(tracked.anchorFrame + 1)"
             } else if mode == .drawManually, let manualURL {
                 let plane = try Self.loadMask(url: manualURL, width: frame.width, height: frame.height)
                 let fraction = VACESubjectSegmenter.coverage(of: plane.pixels)
@@ -386,6 +472,7 @@ struct VACEVideoEditView: View {
                 fraction = 1
                 note = "No subject found. Using the whole frame."
             }
+            if mode != .drawManually { trackLabel = nil }
             maskPreview = VACESubjectSegmenter.previewImage(base: frame, mask: mask)
             maskCoverageText = String(format: "Coverage %.0f%% · %@", fraction * 100, VACEMaskPreviewLabel.displayName(for: method))
             maskPreviewNote = note
@@ -397,96 +484,41 @@ struct VACEVideoEditView: View {
         }
     }
 
-    @ViewBuilder
-    private func maskPreviewImage(_ image: UIImage) -> some View {
-        GeometryReader { geo in
-            Image(uiImage: image)
-                .resizable()
-                .scaledToFit()
-                .frame(width: geo.size.width, height: geo.size.height)
-                .contentShape(Rectangle())
-                .gesture(
-                    DragGesture(minimumDistance: 0)
-                        .onChanged { value in
-                            guard maskMode == .drawManually, let frame = previewFrame else { return }
-                            let travel = hypot(value.translation.width, value.translation.height)
-                            if travel >= 8 {
-                                applyBrush(at: value.location, frame: frame, viewSize: geo.size)
-                            }
-                        }
-                        .onEnded { value in
-                            guard maskMode == .drawManually, let frame = previewFrame else { return }
-                            let travel = hypot(value.translation.width, value.translation.height)
-                            if travel < 12 {
-                                applyTap(at: value.startLocation, frame: frame, viewSize: geo.size)
-                            }
-                        }
-                )
-                .accessibilityLabel("Mask preview. Tap the character or drag to brush.")
+    private func commitBrush(on frameIndex: Int) {
+        guard let frame = previewFrame, let strokes = keyframeStrokes[frameIndex], strokes.strokes.contains(where: { !$0.erase }) else {
+            keyframeMasks[frameIndex] = nil
+            return
         }
-        .frame(height: 220)
+        let raster = strokes.raster(width: frame.width, height: frame.height, padding: 0)
+        guard let plane = try? VACEMaskPlane(width: frame.width, height: frame.height, pixels: raster), plane.activePixelCount > 0 else {
+            keyframeMasks[frameIndex] = nil
+            return
+        }
+        let appearance = VACESubjectSegmenter.appearanceHistogram(cgImage: frame, mask: raster)
+        keyframeMasks[frameIndex] = VACEMaskKeyframe(frameIndex: frameIndex, mask: plane, appearance: appearance)
+        paintingThisFrame = true
+        Task { await refreshMaskPreview() }
     }
 
-    private func applyTap(at location: CGPoint, frame: CGImage, viewSize: CGSize) {
-        guard let pixel = pixel(at: location, frame: frame, viewSize: viewSize) else { return }
-        Task {
-            do {
-                let decision = try VACESubjectSegmenter.tapSelect(cgImage: frame, x: pixel.x, y: pixel.y)
-                await MainActor.run {
-                    if decision.foundSubject {
-                        manualMask = decision.mask
-                        maskURL = nil
-                    }
-                }
-                await refreshMaskPreview()
-            } catch {
-                await MainActor.run { maskPreviewNote = error.localizedDescription }
+    /// Walks from the nearest earlier keyframe to the scrubbed frame and caches each step.
+    private static func propagatedMask(url: URL, fps: Double, target: Int, keyframes: [Int: VACEMaskKeyframe], targetImage: CGImage) async throws -> VACETrackedFrame {
+        let start = keyframes.keys.filter { $0 <= target }.max() ?? target
+        let tracker = VACEManualTrackMaskProvider(keyframes: Array(keyframes.values))
+        var last: VACETrackedFrame?
+        for index in start...target {
+            let image: CGImage
+            if index == target {
+                image = targetImage
+            } else {
+                image = try await VACESubjectSegmenter.frameImage(url: url, at: Double(index) / max(fps, 1))
             }
+            let rgba = try VACESubjectSegmenter.rgbaFrame(from: image)
+            let time = CMTime(seconds: Double(index) / max(fps, 1), preferredTimescale: 600)
+            last = try tracker.track(frameIndex: index, presentationTime: time, image: image, rgba: rgba)
         }
-    }
-
-    private func applyBrush(at location: CGPoint, frame: CGImage, viewSize: CGSize) {
-        guard let pixel = pixel(at: location, frame: frame, viewSize: viewSize) else { return }
-        var mask = manualMask ?? (try? VACEMaskPlane(width: frame.width, height: frame.height, pixels: [UInt8](repeating: 0, count: frame.width * frame.height)))
-        guard var mask else { return }
-        if mask.width != frame.width || mask.height != frame.height {
-            mask = (try? VACEMaskPlane(width: frame.width, height: frame.height, pixels: [UInt8](repeating: 0, count: frame.width * frame.height))) ?? mask
-        }
-        let radius = max(8, min(frame.width, frame.height) / 40)
-        manualMask = VACESubjectSegmenter.paint(mask, x: pixel.x, y: pixel.y, radius: radius, erase: brushErase)
-        if let preview = VACESubjectSegmenter.previewImage(base: frame, mask: manualMask!) {
-            maskPreview = preview
-            let fraction = VACESubjectSegmenter.coverage(of: manualMask!.pixels)
-            maskCoverageText = String(format: "Coverage %.0f%% · %@", fraction * 100, VACEMaskPreviewLabel.displayName(for: "manual-tracked"))
-        }
-    }
-
-    private func pixel(at location: CGPoint, frame: CGImage, viewSize: CGSize) -> (x: Int, y: Int)? {
-        let imageSize = CGSize(width: frame.width, height: frame.height)
-        let scale = min(viewSize.width / imageSize.width, viewSize.height / imageSize.height)
-        guard scale > 0 else { return nil }
-        let drawn = CGSize(width: imageSize.width * scale, height: imageSize.height * scale)
-        let origin = CGPoint(x: (viewSize.width - drawn.width) / 2, y: (viewSize.height - drawn.height) / 2)
-        let local = CGPoint(x: location.x - origin.x, y: location.y - origin.y)
-        guard local.x >= 0, local.y >= 0, local.x <= drawn.width, local.y <= drawn.height else { return nil }
-        let x = Int(local.x / scale)
-        let y = Int(local.y / scale)
-        return (min(max(0, x), frame.width - 1), min(max(0, y), frame.height - 1))
-    }
-
-    private static func centroid(of mask: VACEMaskPlane) -> (x: Int, y: Int) {
-        var sumX = 0
-        var sumY = 0
-        var count = 0
-        for y in 0..<mask.height {
-            for x in 0..<mask.width where mask.pixels[y * mask.width + x] > 127 {
-                sumX += x
-                sumY += y
-                count += 1
-            }
-        }
-        guard count > 0 else { return (mask.width / 2, mask.height / 2) }
-        return (sumX / count, sumY / count)
+        if let last { return last }
+        let empty = try VACEMaskPlane(width: targetImage.width, height: targetImage.height, pixels: [UInt8](repeating: 0, count: targetImage.width * targetImage.height))
+        return VACETrackedFrame(mask: empty, confidence: 0, anchorFrame: start, usedFallback: true)
     }
 
     private static func loadMask(url: URL, width: Int, height: Int) throws -> VACEMaskPlane {

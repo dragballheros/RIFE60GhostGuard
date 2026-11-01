@@ -1,68 +1,178 @@
 import CoreMedia
 import Foundation
 
-/// Tracks one drawn or tapped keyframe through the clip. Each later frame
-/// re-selects the anime region under the previous mask's centre. A shot cut
-/// drops the track and asks the anime segmenter for the subject again.
+struct VACEMaskKeyframe {
+    var frameIndex: Int
+    var mask: VACEMaskPlane
+    var appearance: [Float]
+}
+
+struct VACETrackedFrame {
+    var mask: VACEMaskPlane
+    var confidence: Double
+    var anchorFrame: Int
+    var usedFallback: Bool
+}
+
+/// One drawn mask identifies the target. Later frames are chosen by optical flow
+/// plus a fresh anime segmentation, scored against the previous mask. A shot cut
+/// is re-acquired from the seeded colour histogram, not from where the stroke sat.
 final class VACEManualTrackMaskProvider: VACEFrameMaskProvider {
-    private let seed: VACEMaskPlane
+    private var keyframes: [VACEMaskKeyframe]
+    private var previousImage: VACERGBAFrame?
     private var previousMask: VACEMaskPlane?
     private var previousSignature: VACEFrameSignature?
+    private var previousIndex = -1
+    private(set) var anchorFrame = 0
 
-    init(seed: VACEMaskPlane) {
-        self.seed = seed
+    init(keyframes: [VACEMaskKeyframe]) {
+        self.keyframes = keyframes.sorted { $0.frameIndex < $1.frameIndex }
+        self.anchorFrame = self.keyframes.first?.frameIndex ?? 0
     }
 
     func mask(for frameIndex: Int, presentationTime: CMTime, source: VACERGBAFrame) async throws -> VACEMaskPlane {
-        _ = frameIndex
-        _ = presentationTime
-        let fitted = try fit(seed, to: source)
-        let signature = VACEShotCut.signature(of: source)
-        guard let previousMask, let previousSignature else {
-            self.previousMask = fitted
-            self.previousSignature = signature
-            CrashCapture.step("VACE manual-tracked keyframe coverage \(Int(VACESubjectSegmenter.coverage(of: fitted.pixels) * 100))%")
-            return fitted
-        }
-        let comparison = VACEShotCut.isCut(from: previousSignature, to: signature)
-        self.previousSignature = signature
-        if comparison.cut {
-            VACEShotCut.logCut(at: presentationTime, histogramDistance: comparison.histogramDistance, frameDifference: comparison.frameDifference)
-            let decision = try VACESubjectSegmenter.editMask(frame: source, mode: .autoSubject)
-            let mask = decision.foundSubject ? decision.mask : fitted
-            self.previousMask = mask
-            CrashCapture.step("VACE manual-tracked re-anchored at a shot cut with \(decision.method)")
-            return mask
-        }
-        let point = centroid(of: previousMask)
         guard let image = VACESubjectSegmenter.cgImage(from: source) else {
-            return previousMask
+            throw VACESubjectSegmentationError.unreadableFrame
         }
-        let decision = try VACESubjectSegmenter.tapSelect(cgImage: image, x: point.x, y: point.y)
-        let mask = decision.foundSubject ? decision.mask : previousMask
-        self.previousMask = mask
-        return mask
+        let tracked = try track(frameIndex: frameIndex, presentationTime: presentationTime, image: image, rgba: source)
+        return tracked.mask
     }
 
-    private func fit(_ mask: VACEMaskPlane, to frame: VACERGBAFrame) throws -> VACEMaskPlane {
-        if mask.width == frame.width && mask.height == frame.height { return mask }
-        guard let image = cgImage(mask),
+    func track(frameIndex: Int, presentationTime: CMTime, image: CGImage, rgba: VACERGBAFrame) throws -> VACETrackedFrame {
+        let signature = VACEShotCut.signature(of: rgba)
+        let cut: Bool
+        if let previousSignature {
+            let comparison = VACEShotCut.isCut(from: previousSignature, to: signature)
+            cut = comparison.cut
+            if cut {
+                VACEShotCut.logCut(at: presentationTime, histogramDistance: comparison.histogramDistance, frameDifference: comparison.frameDifference)
+            }
+        } else {
+            cut = false
+        }
+        self.previousSignature = signature
+
+        if let keyframe = keyframes.first(where: { $0.frameIndex == frameIndex }) {
+            let seeded = try seed(image: image, guide: keyframe.mask)
+            anchorFrame = frameIndex
+            remember(index: frameIndex, image: rgba, mask: seeded.mask)
+            log(frameIndex: frameIndex, confidence: seeded.confidence, fallback: false, note: "keyframe")
+            return VACETrackedFrame(mask: seeded.mask, confidence: seeded.confidence, anchorFrame: frameIndex, usedFallback: false)
+        }
+
+        let seedAppearance = keyframes.last(where: { $0.frameIndex <= frameIndex })?.appearance
+            ?? keyframes.first?.appearance
+            ?? []
+        let canFlow = previousIndex == frameIndex - 1 && !cut
+        let warped: VACEMaskPlane?
+        if canFlow, let previousImage, let previousMask {
+            warped = try? VACEOpticalFlowMaskProvider.warpMask(previousMask, from: previousImage, to: rgba)
+        } else {
+            warped = nil
+        }
+
+        let instances = (try? VACESubjectSegmenter.characterInstances(cgImage: image, guide: nil)) ?? []
+        var bestScore = 0.0
+        var bestPixels: [UInt8]?
+        for instance in instances {
+            let appearance = VACESubjectSegmenter.appearanceHistogram(cgImage: image, mask: instance.pixels)
+            let appearanceScore = VACESubjectSegmenter.histogramSimilarity(appearance, seedAppearance)
+            let overlapScore: Double
+            if let warped {
+                overlapScore = overlap(instance.pixels, warped.pixels)
+            } else {
+                overlapScore = appearanceScore
+            }
+            let score = cut || warped == nil ? appearanceScore : (0.55 * overlapScore + 0.45 * appearanceScore)
+            if score > bestScore {
+                bestScore = score
+                bestPixels = instance.pixels
+            }
+        }
+
+        let lowConfidence = bestScore < 0.28 || bestPixels == nil
+        let chosen: VACEMaskPlane
+        if lowConfidence {
+            let fallback = try VACESubjectSegmenter.editMask(cgImage: image, mode: .autoSubject)
+            chosen = fallback.foundSubject ? fallback.mask : (previousMask ?? blank(like: rgba))
+            log(frameIndex: frameIndex, confidence: bestScore, fallback: true, note: cut ? "shot-cut" : "low-confidence")
+        } else {
+            chosen = try VACEMaskPlane(width: image.width, height: image.height, pixels: bestPixels ?? [])
+            log(frameIndex: frameIndex, confidence: bestScore, fallback: false, note: cut ? "shot-cut-appearance" : "flow-and-segment")
+        }
+        if let key = keyframes.last(where: { $0.frameIndex <= frameIndex }) {
+            anchorFrame = key.frameIndex
+        }
+        remember(index: frameIndex, image: rgba, mask: chosen)
+        return VACETrackedFrame(mask: chosen, confidence: bestScore, anchorFrame: anchorFrame, usedFallback: lowConfidence)
+    }
+
+    private func seed(image: CGImage, guide: VACEMaskPlane) throws -> (mask: VACEMaskPlane, confidence: Double) {
+        let fitted = try fit(guide, width: image.width, height: image.height)
+        let instances = try VACESubjectSegmenter.characterInstances(cgImage: image, guide: fitted.pixels)
+        guard !instances.isEmpty else {
+            return (fitted, 1)
+        }
+        var pixels = [UInt8](repeating: 0, count: image.width * image.height)
+        for instance in instances {
+            for index in pixels.indices where instance.pixels[index] > 127 {
+                pixels[index] = 255
+            }
+        }
+        return (try VACEMaskPlane(width: image.width, height: image.height, pixels: pixels), 1)
+    }
+
+    private func overlap(_ lhs: [UInt8], _ rhs: [UInt8]) -> Double {
+        let count = min(lhs.count, rhs.count)
+        guard count > 0 else { return 0 }
+        var intersection = 0
+        var union = 0
+        for index in 0..<count {
+            let left = lhs[index] > 127
+            let right = rhs[index] > 127
+            if left || right { union += 1 }
+            if left && right { intersection += 1 }
+        }
+        guard union > 0 else { return 0 }
+        return Double(intersection) / Double(union)
+    }
+
+    private func remember(index: Int, image: VACERGBAFrame, mask: VACEMaskPlane) {
+        previousIndex = index
+        previousImage = image
+        previousMask = mask
+    }
+
+    private func log(frameIndex: Int, confidence: Double, fallback: Bool, note: String) {
+        let line = String(format: "VACE track frame %d confidence %.2f fallback %@ %@", frameIndex, confidence, fallback ? "yes" : "no", note)
+        DiagnosticsLogger.shared.log(line)
+        CrashCapture.step(line)
+    }
+
+    private func blank(like frame: VACERGBAFrame) -> VACEMaskPlane {
+        if let previousMask { return previousMask }
+        return try! VACEMaskPlane(width: frame.width, height: frame.height, pixels: [UInt8](repeating: 0, count: frame.width * frame.height))
+    }
+
+    private func fit(_ mask: VACEMaskPlane, width: Int, height: Int) throws -> VACEMaskPlane {
+        if mask.width == width && mask.height == height { return mask }
+        guard let image = grayImage(mask),
               let context = CGContext(
-                data: nil, width: frame.width, height: frame.height,
-                bitsPerComponent: 8, bytesPerRow: frame.width,
+                data: nil, width: width, height: height,
+                bitsPerComponent: 8, bytesPerRow: width,
                 space: CGColorSpaceCreateDeviceGray(),
                 bitmapInfo: CGImageAlphaInfo.none.rawValue
               ) else {
             throw VACESubjectSegmentationError.unreadableFrame
         }
         context.interpolationQuality = .none
-        context.draw(image, in: CGRect(x: 0, y: 0, width: frame.width, height: frame.height))
+        context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
         guard let data = context.data else { throw VACESubjectSegmentationError.unreadableFrame }
-        let pixels = Array(UnsafeBufferPointer(start: data.bindMemory(to: UInt8.self, capacity: frame.width * frame.height), count: frame.width * frame.height))
-        return try VACEMaskPlane(width: frame.width, height: frame.height, pixels: pixels)
+        let pixels = Array(UnsafeBufferPointer(start: data.bindMemory(to: UInt8.self, capacity: width * height), count: width * height))
+        return try VACEMaskPlane(width: width, height: height, pixels: pixels)
     }
 
-    private func cgImage(_ mask: VACEMaskPlane) -> CGImage? {
+    private func grayImage(_ mask: VACEMaskPlane) -> CGImage? {
         let data = Data(mask.pixels) as CFData
         guard let provider = CGDataProvider(data: data) else { return nil }
         return CGImage(
@@ -72,20 +182,5 @@ final class VACEManualTrackMaskProvider: VACEFrameMaskProvider {
             bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.none.rawValue),
             provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent
         )
-    }
-
-    private func centroid(of mask: VACEMaskPlane) -> (x: Int, y: Int) {
-        var sumX = 0
-        var sumY = 0
-        var count = 0
-        for y in 0..<mask.height {
-            for x in 0..<mask.width where mask.pixels[y * mask.width + x] > 127 {
-                sumX += x
-                sumY += y
-                count += 1
-            }
-        }
-        guard count > 0 else { return (mask.width / 2, mask.height / 2) }
-        return (sumX / count, sumY / count)
     }
 }
