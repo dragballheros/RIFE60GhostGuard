@@ -44,8 +44,13 @@ def main() -> None:
     import torch
     import coremltools as ct
 
-    sys.path.insert(0, str(work))
-    from model.isnet import ISNetDIS
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("anime_isnet", work / "model" / "isnet.py")
+    if spec is None or spec.loader is None:
+        raise SystemExit("anime-seg isnet.py could not be loaded")
+    isnet_module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(isnet_module)
+    ISNetDIS = isnet_module.ISNetDIS
 
     class AnimeISNet(torch.nn.Module):
         def __init__(self, net):
