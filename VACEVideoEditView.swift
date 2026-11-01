@@ -60,13 +60,24 @@ struct VACEVideoEditView: View {
     @State private var maskItem: PhotosPickerItem?
     @State private var sourceURL: URL?
     @State private var maskURL: URL?
+    @State private var maskMode: VACEMaskMode = .autoSubject
+    @State private var maskPreview: UIImage?
+    @State private var maskPreviewNote: String?
     @State private var prompt = "Describe the desired change while keeping the overall scene coherent."
     @State private var negativePrompt = "flicker, inconsistent subject, warped geometry, duplicate objects, text, watermark"
     @State private var isRunning = false
     @State private var progress = 0.0
-    @State private var status = "Choose a video and a matching white-on-black edit mask."
+    @State private var status = "Choose a video. Auto (subject) builds the mask on this iPhone."
     @State private var errorText: String?
     @State private var outputURL: URL?
+
+    private var generateDisableReasons: [String] {
+        var reasons: [String] = []
+        if sourceURL == nil { reasons.append("source video") }
+        if maskMode.needsHandDrawnMask && maskURL == nil { reasons.append("hand-drawn mask") }
+        if prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { reasons.append("prompt text") }
+        return reasons
+    }
     var body: some View {
         NavigationStack {
             Form {
@@ -79,16 +90,34 @@ struct VACEVideoEditView: View {
                     if let sourceURL {
                         Text(sourceURL.lastPathComponent).font(.caption).foregroundStyle(.secondary)
                     }
-                    PhotosPicker(selection: $maskItem, matching: .images) {
-                        Label(maskURL == nil ? "Choose edit mask image" : "Change edit mask",
-                              systemImage: "paintbrush.pointed")
+                    Picker("Mask", selection: $maskMode) {
+                        ForEach(VACEMaskMode.allCases) { mode in
+                            Text(mode.rawValue).tag(mode)
+                        }
                     }
                     .disabled(isRunning)
-                    if let maskURL {
-                        Text(maskURL.lastPathComponent).font(.caption).foregroundStyle(.secondary)
-                    }
-                    Text("Use a black-and-white mask with white over the area to change and black everywhere to preserve. The mask is tracked locally with optical flow; hard scene cuts stop propagation.")
+                    Text(maskMode.caption)
                         .font(.caption).foregroundStyle(.secondary)
+                    if maskMode == .drawManually {
+                        PhotosPicker(selection: $maskItem, matching: .images) {
+                            Label(maskURL == nil ? "Choose edit mask image" : "Change edit mask",
+                                  systemImage: "paintbrush.pointed")
+                        }
+                        .disabled(isRunning)
+                        if let maskURL {
+                            Text(maskURL.lastPathComponent).font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                    if let maskPreview {
+                        Image(uiImage: maskPreview)
+                            .resizable()
+                            .scaledToFit()
+                            .frame(maxHeight: 220)
+                            .accessibilityLabel("Mask preview on the first frame")
+                    }
+                    if let maskPreviewNote {
+                        Text(maskPreviewNote).font(.caption).foregroundStyle(.orange)
+                    }
                 }
 
                 Section("Generation prompt") {
@@ -120,8 +149,12 @@ struct VACEVideoEditView: View {
                             Label("Generate masked video edit", systemImage: "wand.and.stars")
                         }
                     }
-                    .disabled(isRunning || sourceURL == nil || maskURL == nil ||
-                              prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .disabled(isRunning || !generateDisableReasons.isEmpty)
+                    if !generateDisableReasons.isEmpty && !isRunning {
+                        Text("Needs: \(generateDisableReasons.joined(separator: ", "))")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                     if isRunning {
                         ProgressView(value: progress)
                     }
@@ -145,16 +178,25 @@ struct VACEVideoEditView: View {
                     Button("Done") { dismiss() }.disabled(isRunning)
                 }
             }
+            .onChange(of: maskMode) { _ in
+                maskPreview = nil
+                maskPreviewNote = nil
+                Task { await refreshMaskPreview() }
+            }
             .onChange(of: videoItem) { item in
                 guard let item else { return }
                 Task {
                     do {
                         let picked = try await item.loadTransferable(type: VACEPickedVideo.self)
+                        let url = picked?.url
                         await MainActor.run {
-                            sourceURL = picked?.url
+                            sourceURL = url
                             outputURL = nil
                             errorText = nil
+                            maskPreview = nil
+                            maskPreviewNote = nil
                         }
+                        await refreshMaskPreview()
                     } catch {
                         CrashCapture.step("VACE source import failed: \(error.localizedDescription)")
                         await MainActor.run { errorText = error.localizedDescription }
@@ -166,11 +208,13 @@ struct VACEVideoEditView: View {
                 Task {
                     do {
                         let picked = try await item.loadTransferable(type: VACEPickedMaskImage.self)
+                        let url = picked?.url
                         await MainActor.run {
-                            maskURL = picked?.url
+                            maskURL = url
                             outputURL = nil
                             errorText = nil
                         }
+                        await refreshMaskPreview()
                     } catch {
                         CrashCapture.step("VACE mask import failed: \(error.localizedDescription)")
                         await MainActor.run { errorText = error.localizedDescription }
@@ -183,14 +227,18 @@ struct VACEVideoEditView: View {
     @MainActor
     private func runEdit() async {
         guard let sourceURL else { errorText = VACEVideoEditInputError.missingVideo.localizedDescription; return }
-        guard let maskURL else { errorText = VACEVideoEditInputError.missingMask.localizedDescription; return }
+        if maskMode.needsHandDrawnMask {
+            guard maskURL != nil else { errorText = VACEVideoEditInputError.missingMask.localizedDescription; return }
+        }
         isRunning = true
         progress = 0
         outputURL = nil
         errorText = nil
+        CrashCapture.step("VACE mask mode: \(maskMode.rawValue)")
         status = "Preparing the local Wan VACE model…"
         defer { isRunning = false }
 
+        let autoProvider = VACEAutoMaskProvider(mode: maskMode)
         do {
             let asset = AVURLAsset(url: sourceURL)
             let tracks = try await asset.loadTracks(withMediaType: .video)
@@ -199,8 +247,15 @@ struct VACEVideoEditView: View {
             let width = Int(abs(naturalSize.width).rounded())
             let height = Int(abs(naturalSize.height).rounded())
             guard width > 0, height > 0 else { throw VACEVideoEditInputError.invalidVideoDimensions }
-            let seedMask = try Self.loadMask(url: maskURL, width: width, height: height)
-            guard seedMask.activePixelCount > 0 else { throw VACEVideoEditInputError.noEditableMaskPixels }
+            let provider: VACEFrameMaskProvider
+            if maskMode == .drawManually {
+                guard let maskURL else { throw VACEVideoEditInputError.missingMask }
+                let seedMask = try Self.loadMask(url: maskURL, width: width, height: height)
+                guard seedMask.activePixelCount > 0 else { throw VACEVideoEditInputError.noEditableMaskPixels }
+                provider = VACEOpticalFlowMaskProvider(firstFrameMask: seedMask)
+            } else {
+                provider = autoProvider
+            }
 
             let engine = DrawThingsLocalVACEReconstructionEngine()
             try await engine.prepare { file, written, expected in
@@ -215,7 +270,6 @@ struct VACEVideoEditView: View {
             options.maximumCropHeight = 480
             options.tileOverlapPixels = 64
 
-            let provider = VACEOpticalFlowMaskProvider(firstFrameMask: seedMask)
             let processor = VACESelectiveVideoPipeline(
                 maskProvider: provider, reconstructionEngine: engine, options: options
             )
@@ -237,11 +291,52 @@ struct VACEVideoEditView: View {
             }
             outputURL = destination
             progress = 1
-            status = "Generated MOV saved. Output uses the source video's dimensions; model crops were inferred at 512 × 512."
+            if autoProvider.fellBackToWholeFrame {
+                status = "No subject found, so the whole frame was edited. Generated MOV saved at the source dimensions; model crops were inferred at 512 × 512."
+                maskPreviewNote = "No subject found. Using the whole frame."
+            } else {
+                status = "Generated MOV saved. Output uses the source video's dimensions; model crops were inferred at 512 × 512."
+            }
         } catch {
             CrashCapture.step("VACE edit failed: \(error.localizedDescription)")
             errorText = error.localizedDescription
             status = "Stopped without exporting a substitute video."
+        }
+    }
+
+    @MainActor
+    private func refreshMaskPreview() async {
+        guard let sourceURL, !maskMode.needsHandDrawnMask || maskURL != nil else {
+            maskPreview = nil
+            maskPreviewNote = maskMode.needsHandDrawnMask ? nil : maskPreviewNote
+            return
+        }
+        let mode = maskMode
+        let manualURL = maskURL
+        do {
+            let frame = try await VACESubjectSegmenter.firstFrameImage(url: sourceURL)
+            let built: (VACEMaskPlane, Bool)
+            if mode == .drawManually, let manualURL {
+                let plane = try Self.loadMask(url: manualURL, width: frame.width, height: frame.height)
+                built = (plane, plane.activePixelCount > 0)
+            } else if mode == .wholeFrame {
+                built = (try VACEMaskPlane(width: frame.width, height: frame.height, pixels: [UInt8](repeating: 255, count: frame.width * frame.height)), true)
+            } else {
+                built = try VACESubjectSegmenter.editMask(cgImage: frame, mode: mode)
+            }
+            var note: String?
+            var mask = built.0
+            if mode != .wholeFrame && mode != .drawManually && !built.1 {
+                CrashCapture.step("VACE segmentation found nothing; using whole frame")
+                mask = try VACEMaskPlane(width: frame.width, height: frame.height, pixels: [UInt8](repeating: 255, count: frame.width * frame.height))
+                note = "No subject found. Using the whole frame."
+            }
+            maskPreview = VACESubjectSegmenter.previewImage(base: frame, mask: mask)
+            maskPreviewNote = note
+        } catch {
+            CrashCapture.step("VACE segmentation failed: \(error.localizedDescription)")
+            maskPreview = nil
+            maskPreviewNote = "Mask preview failed: \(error.localizedDescription)"
         }
     }
 

@@ -112,7 +112,7 @@ struct ContentView: View {
                             Label("Open Local Wan VACE Video Editor", systemImage: "wand.and.stars")
                         }
                         .disabled(vm.isBusy || vm.isImporting || vm.isBenchmarking)
-                        Text("Imports a source video and white-on-black edit mask, tracks the mask locally with Vision optical flow, runs native local Wan VACE on 5-frame temporal windows, then exports a reconstructed MOV with the original audio. The explicitly selected experimental profile is 1.3B Q8 at 512×512 inference, not the unavailable 14B/720p path.")
+                        Text("Imports a source video, builds the edit mask on this iPhone (or uses a whole-frame restyle), runs native local Wan VACE on 5-frame temporal windows, then exports a reconstructed MOV with the original audio. The explicitly selected experimental profile is 1.3B Q8 at 512×512 inference, not the unavailable 14B/720p path.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
