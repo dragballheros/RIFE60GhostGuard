@@ -30,6 +30,9 @@ final class PipelineStageTimer: @unchecked Sendable {
         lock.lock()
         metrics[name] = milliseconds
         lock.unlock()
+        if name.hasSuffix("Ms") {
+            DiagnosticsLogger.shared.log(String(format: "Frame stage %@ %.2f ms/frame", name, milliseconds))
+        }
     }
 
     func recordText(_ name: String, _ value: String) {

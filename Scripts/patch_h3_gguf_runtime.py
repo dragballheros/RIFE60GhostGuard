@@ -11,8 +11,136 @@ def replace_once(path: Path, old: str, new: str) -> None:
         raise SystemExit(f"{path.name} patch site is not unique")
     path.write_text(text.replace(old, new, 1), encoding="utf-8")
 
+def patch_dit(root: Path) -> None:
+    dit = root / "h3_dit.c"
+    replace_once(
+        dit,
+        '#include "h3_weights.h"\n',
+        '#include "h3_weights.h"\n#include "h3_weight_pool.h"\n',
+    )
+    replace_once(
+        dit,
+        "        if (!allocate_stream_slot(dit, &dit->stream_slots[0],\n"
+        "                                  error, error_size) ||\n"
+        "            !allocate_stream_slot(dit, &dit->stream_slots[1],\n"
+        "                                  error, error_size)) return 0;\n",
+        "        if (!allocate_stream_slot(dit, &dit->stream_slots[0],\n"
+        "                                  error, error_size)) return 0;\n"
+        "        {\n"
+        "            uint64_t slot_bytes = (uint64_t)INNER * 3 * HIDDEN * sizeof(uint16_t);\n"
+        "            if (h3_weight_pool_allow_second_slot(h3_weight_pool_available_bytes(),\n"
+        "                                                slot_bytes) &&\n"
+        "                !allocate_stream_slot(dit, &dit->stream_slots[1],\n"
+        "                                      error, error_size)) return 0;\n"
+        "        }\n",
+    )
+    replace_once(
+        dit,
+        "        for (unsigned block = 0; block < H3_DIT_BLOCKS; block++) {\n"
+        "            int fused_token_adaln = carried_attention_adaln;\n",
+        "        for (unsigned block = 0; block < H3_DIT_BLOCKS; block++) {\n"
+        "            h3_weight_pool_layer_boundary();\n"
+        "            int fused_token_adaln = carried_attention_adaln;\n",
+    )
+    replace_once(
+        dit,
+        "                stream_job = (h3_dit_stream_job){\n"
+        "                    .dit = dit,\n"
+        "                    .layer = future,\n"
+        "                    .slot = dit->stream_ready_slot ^ 1u\n"
+        "                };\n"
+        "                int thread_error = pthread_create(\n"
+        "                    &stream_thread, NULL, read_stream_layer_thread,\n"
+        "                    &stream_job);\n",
+        "                stream_job = (h3_dit_stream_job){\n"
+        "                    .dit = dit,\n"
+        "                    .layer = future,\n"
+        "                    .slot = dit->stream_slots[1].qkv\n"
+        "                        ? dit->stream_ready_slot ^ 1u\n"
+        "                        : dit->stream_ready_slot\n"
+        "                };\n"
+        "                int thread_error = dit->stream_slots[1].qkv ? pthread_create(\n"
+        "                    &stream_thread, NULL, read_stream_layer_thread,\n"
+        "                    &stream_job) : EAGAIN;\n",
+    )
+    replace_once(
+        dit,
+        "                if (thread_error) {\n"
+        "                    fail(error, error_size,\n"
+        "                         \"cannot start DiT SSD prefetch for block %u: %s\",\n"
+        "                         future, strerror(thread_error));\n"
+        "                    return 0;\n"
+        "                }\n"
+        "                stream_started = 1;\n",
+        "                if (thread_error && dit->stream_slots[1].qkv) {\n"
+        "                    fail(error, error_size,\n"
+        "                         \"cannot start DiT SSD prefetch for block %u: %s\",\n"
+        "                         future, strerror(thread_error));\n"
+        "                    return 0;\n"
+        "                }\n"
+        "                stream_started = dit->stream_slots[1].qkv != NULL;\n",
+    )
+    replace_once(
+        dit,
+        "            int block_ok = run_block(\n",
+        "            double compute_started = stream_now();\n"
+        "            int block_ok = run_block(\n",
+    )
+    replace_once(
+        dit,
+        "                dit->stream_ready_layer = stream_job.layer;\n"
+        "                dit->stream_ready_slot = stream_job.slot;\n"
+        "                OP(h3_gpu_begin(dit->gpu),\n"
+        "                   \"continue after streamed DiT block\");\n"
+        "            }\n",
+        "                dit->stream_ready_layer = stream_job.layer;\n"
+        "                dit->stream_ready_slot = stream_job.slot;\n"
+        "                {\n"
+        "                    char note[192];\n"
+        "                    snprintf(note, sizeof(note),\n"
+        "                             \"H3 layer %u load %.1f ms compute %.1f ms available %llu\",\n"
+        "                             block, stream_job.seconds * 1000.0,\n"
+        "                             (stream_now() - compute_started) * 1000.0,\n"
+        "                             (unsigned long long)h3_weight_pool_available_bytes());\n"
+        "                    extern void rife60_h3_stage(const char *);\n"
+        "                    rife60_h3_stage(note);\n"
+        "                }\n"
+        "                OP(h3_gpu_begin(dit->gpu),\n"
+        "                   \"continue after streamed DiT block\");\n"
+        "            } else if (dit->ssd_streaming && dit->stream_slots[1].qkv == NULL) {\n"
+        "                int gpu_ok = gpu_op(dit, h3_gpu_submit(dit->gpu),\n"
+        "                                    error, error_size,\n"
+        "                                    \"submit streamed DiT block\");\n"
+        "                if (!gpu_ok) return 0;\n"
+        "                if (!read_stream_layer(&stream_job)) {\n"
+        "                    fail(error, error_size,\n"
+        "                         \"cannot stream DiT block %u: %s\",\n"
+        "                         stream_job.layer, stream_job.error);\n"
+        "                    return 0;\n"
+        "                }\n"
+        "                dit->stream_bytes += stream_job.bytes;\n"
+        "                dit->stream_read_seconds += stream_job.seconds;\n"
+        "                dit->stream_ready_layer = stream_job.layer;\n"
+        "                dit->stream_ready_slot = 0;\n"
+        "                {\n"
+        "                    char note[192];\n"
+        "                    snprintf(note, sizeof(note),\n"
+        "                             \"H3 layer %u load %.1f ms compute %.1f ms available %llu single-buffer\",\n"
+        "                             block, stream_job.seconds * 1000.0,\n"
+        "                             (stream_now() - compute_started) * 1000.0,\n"
+        "                             (unsigned long long)h3_weight_pool_available_bytes());\n"
+        "                    extern void rife60_h3_stage(const char *);\n"
+        "                    rife60_h3_stage(note);\n"
+        "                }\n"
+        "                OP(h3_gpu_begin(dit->gpu),\n"
+        "                   \"continue after streamed DiT block\");\n"
+        "            }\n",
+    )
+
+
 def main() -> None:
     root = Path(sys.argv[1])
+    patch_dit(root)
     weights = root / "h3_weights.c"
     gpu = root / "h3_gpu.m"
     core = root / "h3.c"

@@ -91,6 +91,17 @@ if vae_names.returncode:
 else:
     print("PASS: H3 VAE weight names resolve against the published safetensors headers")
 
+pool_test = subprocess.run(
+    ["cc", "-std=c11", "-DH3_WEIGHT_POOL_TEST", "-I", "Vendor/h3-gguf", "-o", "/tmp/h3pool",
+     "Vendor/h3-gguf/h3_weight_pool.c"],
+    check=False,
+)
+if pool_test.returncode or subprocess.run(["/tmp/h3pool"], check=False).returncode:
+    failed.append("H3 weight-buffer pool reuse, prefetch order, and pressure")
+    print("FAIL: H3 weight-buffer pool reuse, prefetch order, and pressure")
+else:
+    print("PASS: H3 weight-buffer pool reuse, prefetch order, and pressure")
+
 gguf_test = subprocess.run(
     ["cc", "-std=c11", "-DH3_GGUF_TEST", "-I", "Vendor/h3-gguf", "-o", "/tmp/h3gguf",
      "Vendor/h3-gguf/h3_gguf.c"],
