@@ -144,10 +144,11 @@ final class RestorationPass {
             try await checkpoint.append(frame, at: pts)
         }
 
-        while let sample = output.copyNextSampleBuffer() {
+        let ahead = FrameAheadReader(output: output, depth: 2)
+        while let item = ahead.next() {
             try await checkpoint.checkCancellation()
-            guard let decoded = CMSampleBufferGetImageBuffer(sample) else { continue }
-            let pts = CMSampleBufferGetPresentationTimeStamp(sample)
+            let decoded = item.buffer
+            let pts = item.time
             if CMTimeCompare(pts, checkpoint.resumeTime) <= 0 { continue }
             let frame = try autoreleasepool { try processFrame(decoded) }
             sourceFrames += 1
@@ -264,6 +265,10 @@ final class RestorationPass {
         finalTelemetry.outlineMsPerFrame = outlined > 0 ? outlineSeconds * 1000 / Double(outlined) : 0
         finalTelemetry.thermalState = currentThermalStateName()
         telemetry(finalTelemetry)
+        PipelineStageTimer.current?.record("restorationDecodeMs", milliseconds: ahead.averageDecodeMilliseconds)
+        PipelineStageTimer.current?.record("watermarkMs", milliseconds: sourceFrames > 0 ? watermarkSeconds * 1000 / Double(sourceFrames) : 0)
+        PipelineStageTimer.current?.record("compressionMs", milliseconds: finalTelemetry.compressionMsPerFrame)
+        PipelineStageTimer.current?.record("restorationOutlineMs", milliseconds: finalTelemetry.outlineMsPerFrame)
 
         return RestorationPassResult(
             url: completedURL,

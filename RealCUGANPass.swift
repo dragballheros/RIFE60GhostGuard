@@ -167,19 +167,16 @@ final class RealCUGANPass {
         let alpha = try MLMultiArray(shape: [1], dataType: .float16)
         alpha[0] = NSNumber(value: alphaValue)
         var frames = 0
-        var decodeSeconds = 0.0
         var inferenceSeconds = 0.0
         var encodeSeconds = 0.0
         let passStart = CFAbsoluteTimeGetCurrent()
         var encodeTask: Task<Void, Error>?
+        let ahead = FrameAheadReader(output: output, depth: 2)
 
-        while true {
-            let decodeStarted = CFAbsoluteTimeGetCurrent()
-            guard let sample = output.copyNextSampleBuffer() else { break }
-            decodeSeconds += CFAbsoluteTimeGetCurrent() - decodeStarted
+        while let item = ahead.next() {
             try await checkpoint.checkCancellation()
-            guard let decodedFrame = CMSampleBufferGetImageBuffer(sample) else { continue }
-            let pts = CMSampleBufferGetPresentationTimeStamp(sample)
+            let decodedFrame = item.buffer
+            let pts = item.time
             if CMTimeCompare(pts, checkpoint.resumeTime) <= 0 { continue }
             let frameNumber = frames + 1
 
@@ -191,11 +188,12 @@ final class RealCUGANPass {
             let upscaled = try upscaleNative2x(decodedFrame, model: model, alpha: alpha, frameNumber: frameNumber, profile: profile)
             inferenceSeconds += CFAbsoluteTimeGetCurrent() - inferenceStart
 
-            if let encodeTask { try await encodeTask.value }
             let encodeStart = CFAbsoluteTimeGetCurrent()
+            let previousEncode = encodeTask
             encodeTask = Task {
                 try await checkpoint.append10Bit(upscaled, at: pts)
             }
+            if let previousEncode { try await previousEncode.value }
             frames += 1
             encodeSeconds += CFAbsoluteTimeGetCurrent() - encodeStart
 
@@ -232,7 +230,7 @@ final class RealCUGANPass {
         let completedURL = try await checkpoint.finish()
         let completedBytes = (try? FileManager.default.attributesOfItem(atPath: completedURL.path)[.size] as? NSNumber)?.int64Value ?? 0
         let count = Double(frames)
-        PipelineStageTimer.current?.record("cuganDecodeMs", milliseconds: decodeSeconds * 1000 / count)
+        PipelineStageTimer.current?.record("cuganDecodeMs", milliseconds: ahead.averageDecodeMilliseconds)
         PipelineStageTimer.current?.record("cuganPackMs", milliseconds: renderInSeconds * 1000 / count)
         PipelineStageTimer.current?.record("cuganPredictMs", milliseconds: predictionSeconds * 1000 / count)
         PipelineStageTimer.current?.record("cuganStitchMs", milliseconds: stitchSeconds * 1000 / count)
@@ -264,7 +262,9 @@ final class RealCUGANPass {
         DiagnosticsLogger.shared.log("Real-CUGAN still image • \(stillWidth)x\(stillHeight) -> \(stillWidth * 2)x\(stillHeight * 2) • tile=\(stillProfile.width)x\(stillProfile.height)")
         let started = CFAbsoluteTimeGetCurrent()
         let result = try upscaleNative2x(source, model: stillModel, alpha: stillAlpha, frameNumber: 1, profile: stillProfile)
-        DiagnosticsLogger.shared.log(String(format: "Frame stage imageUpscaleMs %.2f ms/frame", (CFAbsoluteTimeGetCurrent() - started) * 1000))
+        let imageMs = (CFAbsoluteTimeGetCurrent() - started) * 1000
+        PipelineStageTimer.current?.record("imageUpscaleMs", milliseconds: imageMs)
+        DiagnosticsLogger.shared.log(String(format: "Frame stage imageUpscaleMs %.2f ms/frame", imageMs))
         return result
     }
 
@@ -289,7 +289,8 @@ final class RealCUGANPass {
             kCVPixelBufferWidthKey as String: profile.width,
             kCVPixelBufferHeightKey as String: profile.height,
             kCVPixelBufferMetalCompatibilityKey as String: true,
-            kCVPixelBufferIOSurfacePropertiesKey as String: [:]
+            kCVPixelBufferIOSurfacePropertiesKey as String: [:],
+            kCVPixelBufferPoolMinimumBufferCountKey as String: 3
         ]
         var pool: CVPixelBufferPool?
         guard CVPixelBufferPoolCreate(kCFAllocatorDefault, nil, attrs as CFDictionary, &pool) == kCVReturnSuccess, let pool else {
@@ -302,7 +303,8 @@ final class RealCUGANPass {
             kCVPixelBufferWidthKey as String: profile.width * 2,
             kCVPixelBufferHeightKey as String: profile.height * 2,
             kCVPixelBufferMetalCompatibilityKey as String: true,
-            kCVPixelBufferIOSurfacePropertiesKey as String: [:]
+            kCVPixelBufferIOSurfacePropertiesKey as String: [:],
+            kCVPixelBufferPoolMinimumBufferCountKey as String: 3
         ]
         var outputPool: CVPixelBufferPool?
         guard CVPixelBufferPoolCreate(kCFAllocatorDefault, nil, outputAttrs as CFDictionary, &outputPool) == kCVReturnSuccess, let outputPool else {
@@ -315,7 +317,8 @@ final class RealCUGANPass {
             kCVPixelBufferWidthKey as String: targetWidth,
             kCVPixelBufferHeightKey as String: targetHeight,
             kCVPixelBufferMetalCompatibilityKey as String: true,
-            kCVPixelBufferIOSurfacePropertiesKey as String: [:]
+            kCVPixelBufferIOSurfacePropertiesKey as String: [:],
+            kCVPixelBufferPoolMinimumBufferCountKey as String: 3
         ]
         var stitched: CVPixelBufferPool?
         guard CVPixelBufferPoolCreate(kCFAllocatorDefault, nil, stitchedAttrs as CFDictionary, &stitched) == kCVReturnSuccess, let stitched else {

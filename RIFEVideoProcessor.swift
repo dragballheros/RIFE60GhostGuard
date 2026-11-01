@@ -229,15 +229,14 @@ final class RIFEVideoProcessor {
             telemetry(t)
         }
 
-        while true {
-            let decodeStarted = CFAbsoluteTimeGetCurrent()
-            guard let sample = output.copyNextSampleBuffer() else { break }
-            decodeSeconds += CFAbsoluteTimeGetCurrent() - decodeStarted
+        let ahead = FrameAheadReader(output: output, depth: 2)
+        while let item = ahead.next() {
             try await checkpoint.checkCancellation()
-            guard let decodedPB = CMSampleBufferGetImageBuffer(sample) else { continue }
+            let decodedPB = item.buffer
             sourceFrames += 1
+            decodeSeconds = ahead.averageDecodeMilliseconds * Double(sourceFrames) / 1000
 
-            let currentTime = CMSampleBufferGetPresentationTimeStamp(sample)
+            let currentTime = item.time
             var currentPB = decodedPB
 
             if let compressionGuard {

@@ -10,7 +10,7 @@ import VideoToolbox
 final class FinalOutlinePass {
     private var transferSession: VTPixelTransferSession?
     private let ciContext = FinalOutlinePass.sharedContext
-    static let sharedContext = CIContext(options: [.cacheIntermediates: false])
+    static let sharedContext = FrameStageResources.makeCIContext()
     private let colorSpace = CGColorSpaceCreateDeviceRGB()
     private var blendPool: CVPixelBufferPool?
     private var workingPool: CVPixelBufferPool?
@@ -132,10 +132,11 @@ final class FinalOutlinePass {
         var colorRebuildSeconds = 0.0, outlineRebuildSeconds = 0.0
         let passStart = CFAbsoluteTimeGetCurrent()
 
-        while let sample = output.copyNextSampleBuffer() {
+        let ahead = FrameAheadReader(output: output, depth: 2)
+        while let item = ahead.next() {
             try await checkpoint.checkCancellation()
-            guard let decoded = CMSampleBufferGetImageBuffer(sample) else { continue }
-            let pts = CMSampleBufferGetPresentationTimeStamp(sample)
+            let decoded = item.buffer
+            let pts = item.time
             if CMTimeCompare(pts, checkpoint.resumeTime) <= 0 { continue }
 
             // IMPORTANT: dark chroma cleanup happens before Sharpie. It preserves
@@ -239,6 +240,7 @@ final class FinalOutlinePass {
             let split = String(format: "Sharpie split averages • downscale=%.1fms • pack=%.1fms • predict=%.1fms • unpack=%.1fms • visionRefine=%.1fms • upscaleDissolve=%.1fms", downscaleTotal * 1000 / count, packTotal * 1000 / count, predictTotal * 1000 / count, unpackTotal * 1000 / count, refineTotal * 1000 / count, dissolveTotal * 1000 / count)
             DiagnosticsLogger.shared.log(split)
             PipelineStageTimer.current?.note(split)
+            PipelineStageTimer.current?.record("outlineDecodeMs", milliseconds: ahead.averageDecodeMilliseconds)
             PipelineStageTimer.current?.record("sharpieDownscaleMs", milliseconds: downscaleTotal * 1000 / count)
             PipelineStageTimer.current?.record("sharpiePackMs", milliseconds: packTotal * 1000 / count)
             PipelineStageTimer.current?.record("sharpiePredictMs", milliseconds: predictTotal * 1000 / count)
@@ -311,7 +313,8 @@ final class FinalOutlinePass {
             kCVPixelBufferWidthKey as String: width,
             kCVPixelBufferHeightKey as String: height,
             kCVPixelBufferMetalCompatibilityKey as String: true,
-            kCVPixelBufferIOSurfacePropertiesKey as String: [:]
+            kCVPixelBufferIOSurfacePropertiesKey as String: [:],
+            kCVPixelBufferPoolMinimumBufferCountKey as String: 3
         ]
         var pool: CVPixelBufferPool?
         guard CVPixelBufferPoolCreate(kCFAllocatorDefault, nil, attrs as CFDictionary, &pool) == kCVReturnSuccess, let pool else { throw ProcessorError.conversionFailed("could not create final outline pool") }
