@@ -52,11 +52,29 @@ enum H3RuntimePreflight {
             atPath: modelDirectory.path,
             isDirectory: &isDirectory
         ) && isDirectory.boolValue
-        let requiredFiles = [
+        // Every path h3_load_dir or generation fopen's after tier-1 setup.
+        // Video VAE stats live in video_vae/config.json (the runtime opens
+        // source/../config.json). Audio stats live in audio_vae/config.json.
+        let runtimePaths = [
             "FL2VA/transformer/config.json",
+            "FL2VA/transformer/minimax_h3_ref2va_pruned-Q8_0.gguf",
             "FL2VA/tokenizer/tokenizer.json",
+            "FL2VA/text_encoder/config.json",
+            "FL2VA/text_encoder/qwen3vl_32b_minimax_h3-Q4_K_M.gguf",
+            "FL2VA/video_vae/config.json",
+            "FL2VA/video_vae/source/minimax_h3_video_vae_fp16.safetensors",
+            "FL2VA/audio_vae/config.json",
+            "FL2VA/audio_vae/minimax_h3_audio_vae_fp32.safetensors",
             "Ref2VA/transformer/config.json",
-            "Ref2VA/transformer/model.safetensors.index.json"
+            "Ref2VA/transformer/model.safetensors.index.json",
+            "Ref2VA/transformer/minimax_h3_ref2va_pruned-Q8_0.gguf",
+            "Ref2VA/tokenizer/tokenizer.json",
+            "Ref2VA/text_encoder/" + "config.json",
+            "Ref2VA/text_encoder/qwen3vl_32b_minimax_h3-Q4_K_M.gguf",
+            "Ref2VA/video_vae/config.json",
+            "Ref2VA/video_vae/source/minimax_h3_video_vae_fp16.safetensors",
+            "Ref2VA/audio_vae/config.json",
+            "Ref2VA/audio_vae/minimax_h3_audio_vae_fp32.safetensors"
         ]
         let weightFiles = [
             ("minimax_h3_ref2va_pruned-Q8_0.gguf", "Ref2VA transformer Q8_0 weights"),
@@ -98,8 +116,18 @@ enum H3RuntimePreflight {
         if !present("FL2VA/tokenizer/tokenizer.json") {
             missing.append("FL2VA/tokenizer/tokenizer.json (bundled tokenizer)")
         }
-        for relative in requiredFiles where !relative.hasSuffix("tokenizer.json") && !present(relative) {
-            missing.append(relative)
+        for relative in runtimePaths where !present(relative) {
+            if !missing.contains(where: { $0.hasPrefix(relative) }) {
+                missing.append(relative)
+            }
+        }
+        for relative in ["FL2VA/audio_vae/config.json", "Ref2VA/audio_vae/config.json", "FL2VA/video_vae/config.json", "Ref2VA/video_vae/config.json"] {
+            let url = modelDirectory.appendingPathComponent(relative)
+            guard FileManager.default.fileExists(atPath: url.path),
+                  let text = try? String(contentsOf: url, encoding: .utf8) else { continue }
+            if !text.contains("\"latents_mean\"") || !text.contains("\"latents_std\"") {
+                missing.append("\(relative) (latents_mean and latents_std)")
+            }
         }
         let layoutIsValid = exists && missing.isEmpty
 

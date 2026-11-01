@@ -179,6 +179,10 @@ struct H3VideoEditView: View {
                 if tier1ManifestURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     tier1ManifestURL = H3Tier1OnDeviceConverter.defaultManifestURLString
                 }
+                repairInstalledH3Layout()
+            }
+            .onChange(of: h3ModelDirectoryURL) { _ in
+                repairInstalledH3Layout()
             }
             .onChange(of: h3ModelDownloader.state) { state in
                 if state == .completed {
@@ -193,6 +197,22 @@ struct H3VideoEditView: View {
                     }
                 }
             }
+        }
+    }
+
+    @MainActor
+    private func repairInstalledH3Layout() {
+        guard let modelURL = h3ModelDirectoryURL else { return }
+        let hasSecurityScope = modelURL.startAccessingSecurityScopedResource()
+        defer { if hasSecurityScope { modelURL.stopAccessingSecurityScopedResource() } }
+        do {
+            try H3Tier1OnDeviceConverter.stageTier1Layout(into: modelURL)
+            let report = H3RuntimePreflight.inspect(modelDirectory: modelURL)
+            if !report.modelLayoutIsValid {
+                errorText = report.message
+            }
+        } catch {
+            errorText = error.localizedDescription
         }
     }
 
