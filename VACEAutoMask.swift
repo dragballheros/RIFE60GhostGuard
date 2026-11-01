@@ -24,7 +24,19 @@ enum VACEMaskMode: String, CaseIterable, Identifiable {
         case .wholeFrame:
             return "No mask. The prompt restyles the whole frame."
         case .drawManually:
-            return "Optional. White in the image is edited; black is kept. Optical flow tracks that mask."
+            return "Tap the character on any frame, or brush a few strokes. That one frame is tracked through the clip on device and re-anchored at each shot cut."
+        }
+    }
+}
+
+enum VACEMaskPreviewLabel {
+    static func displayName(for method: String) -> String {
+        switch method {
+        case "anime-isnet": return "anime-segmenter"
+        case "tap-select": return "tap-select"
+        case "manual-tracked", "draw-manually": return "manual-tracked"
+        case "vision-person", "vision-foreground": return "vision-fallback"
+        default: return method
         }
     }
 }
@@ -133,47 +145,211 @@ enum VACESubjectSegmenter {
         var coverage: Double
     }
 
+    /// Keeps the connected region under a tap. A close-up that fills most of the frame stays.
+    static func tapSelect(cgImage: CGImage, x: Int, y: Int) throws -> VACESegmentationDecision {
+        let width = cgImage.width
+        let height = cgImage.height
+        let clampedX = min(max(0, x), width - 1)
+        let clampedY = min(max(0, y), height - 1)
+        if let confidence = try VACEAnimeSegmenter.confidence(cgImage: cgImage),
+           let refined = refineComponent(confidence, width: width, height: height, x: clampedX, y: clampedY, method: "tap-select") {
+            let plane = try VACEMaskPlane(width: width, height: height, pixels: refined.pixels)
+            CrashCapture.step(String(format: "VACE tap-select anime-segmenter coverage %.1f%%", refined.coverage * 100))
+            return VACESegmentationDecision(mask: plane, foundSubject: true, method: "tap-select", coverage: refined.coverage)
+        }
+        let person = try self.confidence(cgImage: cgImage, request: personRequest())
+        if let refined = refineComponent(person, width: width, height: height, x: clampedX, y: clampedY, method: "tap-select") {
+            let plane = try VACEMaskPlane(width: width, height: height, pixels: refined.pixels)
+            return VACESegmentationDecision(mask: plane, foundSubject: true, method: "tap-select", coverage: refined.coverage)
+        }
+        return VACESegmentationDecision(
+            mask: try solid(width: width, height: height, value: 0),
+            foundSubject: false,
+            method: "tap-select",
+            coverage: 0
+        )
+    }
+
+    static func frameImage(url: URL, at seconds: Double) async throws -> CGImage {
+        let asset = AVURLAsset(url: url)
+        let generator = AVAssetImageGenerator(asset: asset)
+        generator.appliesPreferredTrackTransform = true
+        generator.requestedTimeToleranceBefore = .zero
+        generator.requestedTimeToleranceAfter = .zero
+        let time = CMTime(seconds: max(0, seconds), preferredTimescale: 600)
+        let result = try await generator.image(at: time)
+        return result.image
+    }
+
+    static func paint(_ mask: VACEMaskPlane, x: Int, y: Int, radius: Int, erase: Bool) -> VACEMaskPlane {
+        var pixels = mask.pixels
+        let value: UInt8 = erase ? 0 : 255
+        let r = max(1, radius)
+        for dy in -r...r {
+            for dx in -r...r where dx * dx + dy * dy <= r * r {
+                let px = x + dx
+                let py = y + dy
+                guard px >= 0, py >= 0, px < mask.width, py < mask.height else { continue }
+                pixels[py * mask.width + px] = value
+            }
+        }
+        return (try? VACEMaskPlane(width: mask.width, height: mask.height, pixels: pixels)) ?? mask
+    }
+
     private static func bestSubjectMask(cgImage: CGImage) throws -> RefinedMask? {
-        var candidates: [RefinedMask] = []
         do {
-            if let confidence = try VACEAnimeSegmenter.confidence(cgImage: cgImage),
-               let refined = refine(confidence, width: cgImage.width, height: cgImage.height, method: "anime-isnet") {
-                candidates.append(refined)
+            if let confidence = try VACEAnimeSegmenter.confidence(cgImage: cgImage) {
+                let raw = coverage(of: threshold(confidence, above: 128))
+                CrashCapture.step(String(format: "VACE anime frame coverage before cleanup %.1f%%", raw * 100))
+                if let refined = refine(confidence, width: cgImage.width, height: cgImage.height, method: "anime-isnet") {
+                    CrashCapture.step(String(format: "VACE preferred anime-segmenter coverage %.1f%%", refined.coverage * 100))
+                    return refined
+                }
+                CrashCapture.step("VACE anime segmenter ran but the mask was below 3% after cleanup")
+            } else {
+                CrashCapture.step("VACE anime segmenter unavailable; using Vision")
             }
         } catch {
             CrashCapture.step("VACE segmentation failed: anime-isnet \(error.localizedDescription)")
         }
+        return try visionFallback(cgImage: cgImage)
+    }
+
+    private static func visionFallback(cgImage: CGImage) throws -> RefinedMask? {
+        var rejected: [String] = []
         do {
             let person = try self.confidence(cgImage: cgImage, request: personRequest())
-            if let refined = refine(person, width: cgImage.width, height: cgImage.height, method: "vision-person") {
-                candidates.append(refined)
+            if let refined = refine(person, width: cgImage.width, height: cgImage.height, method: "vision-person", allowBackgroundLike: false) {
+                return refined
             }
+            rejected.append("vision-person")
         } catch {
             CrashCapture.step("VACE segmentation failed: vision-person \(error.localizedDescription)")
         }
         if #available(iOS 17.0, *) {
             do {
                 if let foreground = try foregroundConfidence(cgImage: cgImage),
-                   let refined = refine(foreground, width: cgImage.width, height: cgImage.height, method: "vision-foreground") {
-                    candidates.append(refined)
+                   let refined = refine(foreground, width: cgImage.width, height: cgImage.height, method: "vision-foreground", allowBackgroundLike: false) {
+                    return refined
                 }
+                rejected.append("vision-foreground")
             } catch {
                 CrashCapture.step("VACE segmentation failed: vision-foreground \(error.localizedDescription)")
             }
         }
-        return candidates.max { $0.coverage < $1.coverage }
+        if !rejected.isEmpty {
+            CrashCapture.step("VACE rejected Vision mask as background-like: \(rejected.joined(separator: ", "))")
+        }
+        return nil
     }
 
-    private static func refine(_ confidence: [UInt8], width: Int, height: Int, method: String) -> RefinedMask? {
+    private static func refine(_ confidence: [UInt8], width: Int, height: Int, method: String, allowBackgroundLike: Bool = true) -> RefinedMask? {
         guard confidence.count == width * height else { return nil }
-        var binary = threshold(confidence, above: 128)
+        var binary = orientForeground(threshold(confidence, above: 128), width: width, height: height)
         binary = largestComponents(binary, width: width, height: height)
         binary = fillHoles(binary, width: width, height: height)
         let fraction = coverage(of: binary)
-        guard fraction >= minimumCoverage else { return nil }
+        guard fraction >= minimumCoverage, fraction <= 0.98 else { return nil }
+        if !allowBackgroundLike && isBackgroundLike(binary, width: width, height: height) {
+            let inverted = orientForeground(binary.map { 255 &- $0 }, width: width, height: height)
+            let invertedCoverage = coverage(of: inverted)
+            if invertedCoverage >= minimumCoverage && invertedCoverage <= 0.98 && !isBackgroundLike(inverted, width: width, height: height) {
+                binary = largestComponents(inverted, width: width, height: height)
+            } else {
+                return nil
+            }
+        }
+        let kept = coverage(of: binary)
+        guard kept >= minimumCoverage else { return nil }
         let radius = max(2, min(width, height) / 180)
         let soft = feather(dilate(binary, width: width, height: height, radius: radius), width: width, height: height, radius: max(2, radius / 2))
+        return RefinedMask(pixels: soft, method: method, coverage: kept)
+    }
+
+    private static func refineComponent(_ confidence: [UInt8], width: Int, height: Int, x: Int, y: Int, method: String) -> RefinedMask? {
+        guard confidence.count == width * height else { return nil }
+        let binary = orientForeground(threshold(confidence, above: 128), width: width, height: height)
+        guard var component = component(containing: x, y: y, in: binary, width: width, height: height) else { return nil }
+        component = fillHoles(component, width: width, height: height)
+        let fraction = coverage(of: component)
+        guard fraction >= minimumCoverage, fraction <= 0.98 else { return nil }
+        let radius = max(2, min(width, height) / 180)
+        let soft = feather(dilate(component, width: width, height: height, radius: radius), width: width, height: height, radius: max(2, radius / 2))
         return RefinedMask(pixels: soft, method: method, coverage: fraction)
+    }
+
+    /// A mask that hugs the frame border and leaves the centre empty is background.
+    /// A body close-up at 60–95% covers the centre, so it stays.
+    static func isBackgroundLike(_ pixels: [UInt8], width: Int, height: Int) -> Bool {
+        guard width > 8, height > 8, pixels.count == width * height else { return false }
+        let marginX = max(1, width / 12)
+        let marginY = max(1, height / 12)
+        var border = 0
+        var center = 0
+        var total = 0
+        for y in 0..<height {
+            for x in 0..<width {
+                guard pixels[y * width + x] > 127 else { continue }
+                total += 1
+                if x < marginX || y < marginY || x >= width - marginX || y >= height - marginY { border += 1 }
+                if x > width / 4 && x < (width * 3) / 4 && y > height / 4 && y < (height * 3) / 4 { center += 1 }
+            }
+        }
+        guard total > 0 else { return true }
+        let coverage = Double(total) / Double(pixels.count)
+        let centerShare = Double(center) / Double(total)
+        if coverage >= 0.55 && centerShare >= 0.2 { return false }
+        return centerShare < 0.2 && Double(border) / Double(total) > 0.5
+    }
+
+    /// Flips a mask whose border is lit and whose centre is empty.
+    private static func orientForeground(_ binary: [UInt8], width: Int, height: Int) -> [UInt8] {
+        guard isBackgroundLike(binary, width: width, height: height) else { return binary }
+        let inverted = binary.map { 255 &- $0 }
+        if isBackgroundLike(inverted, width: width, height: height) { return binary }
+        CrashCapture.step("VACE inverted a border-heavy mask so the centre is the subject")
+        return inverted
+    }
+
+    private static func component(containing x: Int, y: Int, in binary: [UInt8], width: Int, height: Int) -> [UInt8]? {
+        let radius = max(8, min(width, height) / 25)
+        var seedX = x
+        var seedY = y
+        var found = binary[y * width + x] > 127
+        if !found {
+            var best = Int.max
+            for dy in -radius...radius {
+                for dx in -radius...radius where dx * dx + dy * dy <= radius * radius {
+                    let px = x + dx
+                    let py = y + dy
+                    guard px >= 0, py >= 0, px < width, py < height, binary[py * width + px] > 127 else { continue }
+                    let distance = dx * dx + dy * dy
+                    if distance < best {
+                        best = distance
+                        seedX = px
+                        seedY = py
+                        found = true
+                    }
+                }
+            }
+        }
+        guard found else { return nil }
+        var labels = [UInt8](repeating: 0, count: binary.count)
+        var stack = [(seedX, seedY)]
+        labels[seedY * width + seedX] = 255
+        var head = 0
+        while head < stack.count {
+            let (px, py) = stack[head]
+            head += 1
+            for (nx, ny) in [(px - 1, py), (px + 1, py), (px, py - 1), (px, py + 1)] {
+                guard nx >= 0, ny >= 0, nx < width, ny < height else { continue }
+                let index = ny * width + nx
+                guard binary[index] > 127, labels[index] == 0 else { continue }
+                labels[index] = 255
+                stack.append((nx, ny))
+            }
+        }
+        return labels
     }
 
     static func coverage(of pixels: [UInt8]) -> Double {
@@ -397,7 +573,7 @@ enum VACESubjectSegmenter {
         try VACEMaskPlane(width: width, height: height, pixels: [UInt8](repeating: value, count: width * height))
     }
 
-    private static func cgImage(from frame: VACERGBAFrame) -> CGImage? {
+    static func cgImage(from frame: VACERGBAFrame) -> CGImage? {
         let data = Data(frame.bytes) as CFData
         guard let provider = CGDataProvider(data: data) else { return nil }
         return CGImage(

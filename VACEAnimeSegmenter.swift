@@ -113,20 +113,74 @@ enum VACEAnimeSegmenter {
         }
         let features = try MLDictionaryFeatureProvider(dictionary: [inputName: array])
         let result = try model.prediction(from: features)
-        guard let outputName = model.modelDescription.outputDescriptionsByName.keys.first,
-              let output = result.featureValue(for: outputName)?.multiArrayValue else {
-            throw VACESubjectSegmentationError.visionFailed("Anime segmenter returned no mask.")
-        }
+        let output = try maskArray(in: result, model: model)
         let count = output.count
         var values = [Float](repeating: 0, count: count)
+        let strides = output.strides.map { $0.intValue }
         if output.dataType == .float16 {
             let pointer = output.dataPointer.bindMemory(to: Float16.self, capacity: count)
-            for index in 0..<count { values[index] = Float(pointer[index]) }
+            for index in 0..<count { values[index] = Float(pointer[strided(index, shape: output.shape, strides: strides)]) }
         } else {
             let pointer = output.dataPointer.bindMemory(to: Float.self, capacity: count)
-            for index in 0..<count { values[index] = pointer[index] }
+            for index in 0..<count { values[index] = pointer[strided(index, shape: output.shape, strides: strides)] }
         }
+        let shape = output.shape.map(\.intValue)
+        var minimum = Float.greatestFiniteMagnitude
+        var maximum = -Float.greatestFiniteMagnitude
+        var sum = Float(0)
+        for value in values {
+            minimum = min(minimum, value)
+            maximum = max(maximum, value)
+            sum += value
+        }
+        let mean = values.isEmpty ? 0 : sum / Float(values.count)
+        if maximum > 1.5 || minimum < -0.2 {
+            for index in values.indices {
+                let logit = values[index]
+                values[index] = 1 / (1 + exp(-logit))
+            }
+            CrashCapture.step(String(format: "VACE anime output looked like logits min %.3f max %.3f; applied sigmoid", minimum, maximum))
+        }
+        let active = values.reduce(0) { $0 + ($1 > 0.5 ? 1 : 0) }
+        let rawCoverage = values.isEmpty ? 0 : Double(active) / Double(values.count)
+        CrashCapture.step(String(
+            format: "VACE anime run shape %@ min %.3f max %.3f mean %.3f rawCoverage %.1f%%",
+            shape.map(String.init).joined(separator: "x"),
+            minimum, maximum, mean, rawCoverage * 100
+        ))
         return values
+    }
+
+    /// Picks the spatial mask plane when Core ML exposes more than one output.
+    private static func maskArray(in result: MLFeatureProvider, model: MLModel) throws -> MLMultiArray {
+        var chosen: MLMultiArray?
+        var chosenArea = 0
+        for name in model.modelDescription.outputDescriptionsByName.keys.sorted() {
+            guard let array = result.featureValue(for: name)?.multiArrayValue else { continue }
+            let shape = array.shape.map(\.intValue)
+            let area = shape.suffix(2).reduce(1, *)
+            if area > chosenArea {
+                chosen = array
+                chosenArea = area
+            }
+        }
+        guard let chosen else {
+            throw VACESubjectSegmentationError.visionFailed("Anime segmenter returned no mask.")
+        }
+        return chosen
+    }
+
+    private static func strided(_ index: Int, shape: [NSNumber], strides: [Int]) -> Int {
+        guard !strides.isEmpty, strides.count == shape.count else { return index }
+        var remainder = index
+        var offset = 0
+        for dimension in stride(from: shape.count - 1, through: 0, by: -1) {
+            let size = max(shape[dimension].intValue, 1)
+            let coordinate = remainder % size
+            remainder /= size
+            offset += coordinate * strides[dimension]
+        }
+        return offset
     }
 
     private static func cropAndScale(
