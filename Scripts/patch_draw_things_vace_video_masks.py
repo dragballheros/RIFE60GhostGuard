@@ -132,17 +132,21 @@ replace_once(
           .CPU, .NHWC(decodedMasks.count, targetHeight, targetWidth, 1))
         // Every temporal mask element is assigned by the validated loops below.
         for (frameIndex, decodedMask) in decodedMasks.enumerated() {
-          guard decodedMask.shape.count == 4, decodedMask.shape[0] == 1,
-            decodedMask.shape[1] == targetHeight, decodedMask.shape[2] == targetWidth,
-            decodedMask.shape[3] == 1
-          else {
-            completion(.failure(.generationFailed("A decoded Wan VACE mask had an invalid tensor shape.")))
+          // ImageConverter.grayscaleTensor returns NC(height, width). A 4-D
+          // NHWC mask is also accepted. Both are one channel in 0...1 after this loop.
+          let shape = decodedMask.shape
+          let matchesNC = shape.count == 2 && shape[0] == targetHeight && shape[1] == targetWidth
+          let matchesNHWC = shape.count == 4 && shape[0] == 1 && shape[1] == targetHeight
+            && shape[2] == targetWidth && shape[3] == 1
+          guard matchesNC || matchesNHWC else {
+            let message = "A decoded Wan VACE mask had an invalid tensor shape. Expected [1, \(targetHeight), \(targetWidth), 1] or [\(targetHeight), \(targetWidth)], got \(shape)."
+            completion(.failure(.generationFailed(message)))
             return
           }
           for y in 0..<targetHeight {
             for x in 0..<targetWidth {
-              temporalVideoMask[frameIndex, y, x, 0] =
-                decodedMask[0, y, x, 0] == 0 ? 0 : 1
+              let sample: UInt8 = matchesNC ? decodedMask[y, x] : decodedMask[0, y, x, 0]
+              temporalVideoMask[frameIndex, y, x, 0] = sample == 0 ? 0 : 1
             }
           }
         }
