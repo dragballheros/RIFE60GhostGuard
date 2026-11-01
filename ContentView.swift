@@ -13,6 +13,8 @@ struct ContentView: View {
     @StateObject private var pipController = ProcessingPiPController()
     @State private var showingImporter = false
     @State private var showingAIImageStudio = false
+    @State private var showingVACEComponentTest = false
+    @State private var showingVACEVideoEditor = false
     @State private var showingH3VideoEditor = false
     @State private var showingWatermarkEditor = false
     @State private var showingPhotosPicker = false
@@ -104,6 +106,26 @@ struct ContentView: View {
                         }
                     }
 
+
+                    Section("Wan VACE — Local Video Editing") {
+                        Button { showingVACEVideoEditor = true } label: {
+                            Label("Open Local Wan VACE Video Editor", systemImage: "wand.and.stars")
+                        }
+                        .disabled(vm.isBusy || vm.isImporting || vm.isBenchmarking)
+                        Text("Imports a source video and white-on-black edit mask, tracks the mask locally with Vision optical flow, runs native local Wan VACE on 5-frame temporal windows, then exports a reconstructed MOV with the original audio. The explicitly selected experimental profile is 1.3B Q8 at 512×512 inference, not the unavailable 14B/720p path.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    Section("Wan VACE — On-device Component Test") {
+                        Button { showingVACEComponentTest = true } label: {
+                            Label("Open VACE Component Test Lab", systemImage: "cpu")
+                        }
+                        .disabled(vm.isBusy || vm.isImporting || vm.isBenchmarking)
+                        Text("Experimental local Core ML smoke test for exported Wan VAE components. This does not perform VACE video editing and does not contain the 14B transformer.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
 
                     Section("MiniMax H3") {
                         Button { showingH3VideoEditor = true } label: {
@@ -607,6 +629,12 @@ struct ContentView: View {
         .simultaneousGesture(DragGesture(minimumDistance: 0).onChanged { _ in registerPostRenderInteraction() })
         .sheet(isPresented: $vm.showingDiagnosticsShare) {
             DiagnosticsActivityView(items: vm.diagnosticsShareItems)
+        }
+        .sheet(isPresented: $showingVACEComponentTest) {
+            VACEComponentTestView()
+        }
+        .sheet(isPresented: $showingVACEVideoEditor) {
+            VACEVideoEditView()
         }
         .sheet(isPresented: $showingH3VideoEditor) {
             H3VideoEditView()

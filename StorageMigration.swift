@@ -1,6 +1,6 @@
 import Foundation
 
-/// One-time cleanup of retired Wan VACE weight files. Export folders are left in place.
+/// Launch cleanup. Wan VACE checkpoints stay on disk. Temporary frame folders are removed.
 enum StorageMigration {
     private static let retiredNames = [
         "wan_v2.1_1.3b_480p_q8p.ckpt",
@@ -11,22 +11,8 @@ enum StorageMigration {
 
     static func removeRetiredVACEWeights() {
         let fm = FileManager.default
-        let documents = fm.urls(for: .documentDirectory, in: .userDomainMask)[0]
-        var roots = [
-            documents.appendingPathComponent("Models", isDirectory: true)
-        ]
-        if let support = try? fm.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: false) {
-            roots.append(support.appendingPathComponent("RIFE60GhostGuard/Models", isDirectory: true))
-        }
-        for root in roots {
-            for name in retiredNames {
-                let url = root.appendingPathComponent(name)
-                if fm.fileExists(atPath: url.path) {
-                    try? fm.removeItem(at: url)
-                    DiagnosticsLogger.shared.log("Removed retired VACE weight \(name)")
-                }
-            }
-        }
+        // Wan VACE is back in the app. Leave the 1.3B checkpoints in place.
+        DiagnosticsLogger.shared.log("VACE weights kept: \(retiredNames.joined(separator: ", "))")
         let tmp = fm.temporaryDirectory
         if let items = try? fm.contentsOfDirectory(at: tmp, includingPropertiesForKeys: nil) {
             for item in items where item.lastPathComponent.hasPrefix("RIFE-VACE-frames-") {

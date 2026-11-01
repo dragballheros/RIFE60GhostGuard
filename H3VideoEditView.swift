@@ -84,6 +84,7 @@ struct H3VideoEditView: View {
     @AppStorage(H3Tier1OnDeviceConverter.manifestDefaultsKey) private var tier1ManifestURL = ""
     @State private var h3CancellationToken: H3CancellationToken?
     @State private var isImportingReference = false
+    @State private var isConfirmingH3ModelDelete = false
     @StateObject private var h3ModelDownloader = H3ModelDownloader()
 
     /// Conditions that keep Generate disabled. Prompt text, preflight, checksum
@@ -160,6 +161,13 @@ struct H3VideoEditView: View {
                     }
                     .disabled(isRunning)
                     H3DownloadStatus(downloader: h3ModelDownloader)
+                    Button("Clear downloaded H3 model and free storage", role: .destructive) {
+                        isConfirmingH3ModelDelete = true
+                    }
+                    .disabled(isRunning || h3ModelDownloader.state == .downloading || h3ModelDownloader.state == .listing)
+                    Text("Removes the downloaded weights (about 45 GB), the generated MiniMax-H3 layout, and the saved folder bookmark. The model must be downloaded again.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
                 Section("Reference video") {
                     PhotosPicker(selection: $videoItem, matching: .videos) {
@@ -205,6 +213,18 @@ struct H3VideoEditView: View {
                 }
             }
             .navigationTitle("Local MiniMax H3")
+            .confirmationDialog(
+                "Clear the downloaded MiniMax H3 model?",
+                isPresented: $isConfirmingH3ModelDelete,
+                titleVisibility: .visible
+            ) {
+                Button("Clear model and free storage", role: .destructive) {
+                    clearDownloadedH3Model()
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("This permanently deletes the downloaded H3 weights from this iPhone (about 45 GB), including the generated layout, links, configs, and markers in Documents/MiniMax-H3, and the saved folder bookmark. The model must be downloaded again before Generate can run.")
+            }
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Close") { dismiss() } }
             }
@@ -251,6 +271,25 @@ struct H3VideoEditView: View {
                     }
                 }
             }
+        }
+    }
+
+    @MainActor
+    private func clearDownloadedH3Model() {
+        guard h3ModelDownloader.state != .downloading && h3ModelDownloader.state != .listing else {
+            errorText = "Wait until the H3 download finishes or pause it before clearing the model."
+            return
+        }
+        do {
+            try h3ModelDownloader.deleteDownloadedModel()
+            h3ModelDirectoryURL = nil
+            UserDefaults.standard.removeObject(forKey: "RIFE60.H3.ModelFolderBookmark")
+            errorText = nil
+            status = "Downloaded H3 model removed. Generate needs the model again."
+            CrashCapture.step("H3 downloaded model deleted")
+        } catch {
+            errorText = "Could not delete the downloaded H3 model: \(error.localizedDescription)"
+            CrashCapture.step("H3 model delete failed: \(error.localizedDescription)")
         }
     }
 
