@@ -18,7 +18,7 @@ enum VACEMaskMode: String, CaseIterable, Identifiable {
     var caption: String {
         switch self {
         case .autoSubject:
-            return "People and other foreground subjects are masked on this iPhone. White is edited; the rest of the frame is kept."
+            return "An on-device anime segmenter masks the character. Vision is the fallback. White is edited; the rest of the frame is kept."
         case .background:
             return "The subject stays. The background is the edit region."
         case .wholeFrame:
@@ -41,38 +41,52 @@ enum VACESubjectSegmentationError: LocalizedError {
     }
 }
 
-/// On-device subject mask. Person segmentation first, then the iOS 17 foreground
-/// instance mask for subjects Vision does not label as people. The result stays
-/// at the source frame size.
-enum VACESubjectSegmenter {
-    private static let minimumSubjectPixels = 48
+struct VACESegmentationDecision {
+    var mask: VACEMaskPlane
+    var foundSubject: Bool
+    var method: String
+    var coverage: Double
+}
 
-    static func editMask(cgImage: CGImage, mode: VACEMaskMode) throws -> (mask: VACEMaskPlane, foundSubject: Bool) {
+/// On-device subject mask. Anime ISNet is the primary path. Vision person and
+/// foreground masks are fallbacks. The result stays at the source frame size.
+enum VACESubjectSegmenter {
+    static let minimumCoverage = 0.03
+
+    static func editMask(cgImage: CGImage, mode: VACEMaskMode) throws -> VACESegmentationDecision {
         let width = cgImage.width
         let height = cgImage.height
         if mode == .wholeFrame {
-            return (try solid(width: width, height: height, value: 255), true)
+            let plane = try solid(width: width, height: height, value: 255)
+            return VACESegmentationDecision(mask: plane, foundSubject: true, method: "whole-frame", coverage: 1)
         }
-        let subject = try subjectConfidence(cgImage: cgImage)
-        let binary = threshold(subject, above: 128)
-        let found = binary.reduce(into: 0) { if $1 == 255 { $0 += 1 } } >= minimumSubjectPixels
-        guard found else {
-            return (try solid(width: width, height: height, value: 0), false)
+        let chosen = try bestSubjectMask(cgImage: cgImage)
+        guard var refined = chosen else {
+            return VACESegmentationDecision(
+                mask: try solid(width: width, height: height, value: 0),
+                foundSubject: false,
+                method: "none",
+                coverage: 0
+            )
         }
-        let radius = max(2, min(width, height) / 180)
-        var soft = feather(dilate(binary, width: width, height: height, radius: radius), width: width, height: height, radius: max(2, radius / 2))
         if mode == .background {
-            for index in soft.indices { soft[index] = 255 &- soft[index] }
+            for index in refined.pixels.indices { refined.pixels[index] = 255 &- refined.pixels[index] }
+            refined.coverage = coverage(of: refined.pixels)
+            if refined.coverage < minimumCoverage {
+                return VACESegmentationDecision(
+                    mask: try solid(width: width, height: height, value: 0),
+                    foundSubject: false,
+                    method: refined.method,
+                    coverage: refined.coverage
+                )
+            }
         }
-        let plane = try VACEMaskPlane(width: width, height: height, pixels: soft)
-        let editable = plane.pixels.reduce(into: 0) { if $1 > 16 { $0 += 1 } }
-        if editable < minimumSubjectPixels {
-            return (try solid(width: width, height: height, value: 0), false)
-        }
-        return (plane, true)
+        let plane = try VACEMaskPlane(width: width, height: height, pixels: refined.pixels)
+        CrashCapture.step(String(format: "VACE mask method %@ coverage %.1f%%", refined.method, refined.coverage * 100))
+        return VACESegmentationDecision(mask: plane, foundSubject: true, method: refined.method, coverage: refined.coverage)
     }
 
-    static func editMask(frame: VACERGBAFrame, mode: VACEMaskMode) throws -> (mask: VACEMaskPlane, foundSubject: Bool) {
+    static func editMask(frame: VACERGBAFrame, mode: VACEMaskMode) throws -> VACESegmentationDecision {
         guard let image = cgImage(from: frame) else { throw VACESubjectSegmentationError.unreadableFrame }
         return try editMask(cgImage: image, mode: mode)
     }
@@ -113,27 +127,141 @@ enum VACESubjectSegmenter {
         return result.image
     }
 
-    private static func subjectConfidence(cgImage: CGImage) throws -> [UInt8] {
-        let width = cgImage.width
-        let height = cgImage.height
+    private struct RefinedMask {
+        var pixels: [UInt8]
+        var method: String
+        var coverage: Double
+    }
+
+    private static func bestSubjectMask(cgImage: CGImage) throws -> RefinedMask? {
+        var candidates: [RefinedMask] = []
         do {
-            let person = try confidence(cgImage: cgImage, request: personRequest())
-            let strong = person.reduce(into: 0) { if $1 > 128 { $0 += 1 } }
-            if strong >= minimumSubjectPixels { return person }
+            if let confidence = try VACEAnimeSegmenter.confidence(cgImage: cgImage),
+               let refined = refine(confidence, width: cgImage.width, height: cgImage.height, method: "anime-isnet") {
+                candidates.append(refined)
+            }
         } catch {
-            CrashCapture.step("VACE segmentation failed: \(error.localizedDescription)")
+            CrashCapture.step("VACE segmentation failed: anime-isnet \(error.localizedDescription)")
+        }
+        do {
+            let person = try self.confidence(cgImage: cgImage, request: personRequest())
+            if let refined = refine(person, width: cgImage.width, height: cgImage.height, method: "vision-person") {
+                candidates.append(refined)
+            }
+        } catch {
+            CrashCapture.step("VACE segmentation failed: vision-person \(error.localizedDescription)")
         }
         if #available(iOS 17.0, *) {
             do {
-                if let foreground = try foregroundConfidence(cgImage: cgImage) {
-                    let strong = foreground.reduce(into: 0) { if $1 > 128 { $0 += 1 } }
-                    if strong >= minimumSubjectPixels { return foreground }
+                if let foreground = try foregroundConfidence(cgImage: cgImage),
+                   let refined = refine(foreground, width: cgImage.width, height: cgImage.height, method: "vision-foreground") {
+                    candidates.append(refined)
                 }
             } catch {
-                CrashCapture.step("VACE segmentation failed: \(error.localizedDescription)")
+                CrashCapture.step("VACE segmentation failed: vision-foreground \(error.localizedDescription)")
             }
         }
-        return [UInt8](repeating: 0, count: width * height)
+        return candidates.max { $0.coverage < $1.coverage }
+    }
+
+    private static func refine(_ confidence: [UInt8], width: Int, height: Int, method: String) -> RefinedMask? {
+        guard confidence.count == width * height else { return nil }
+        var binary = threshold(confidence, above: 128)
+        binary = largestComponents(binary, width: width, height: height)
+        binary = fillHoles(binary, width: width, height: height)
+        let fraction = coverage(of: binary)
+        guard fraction >= minimumCoverage else { return nil }
+        let radius = max(2, min(width, height) / 180)
+        let soft = feather(dilate(binary, width: width, height: height, radius: radius), width: width, height: height, radius: max(2, radius / 2))
+        return RefinedMask(pixels: soft, method: method, coverage: fraction)
+    }
+
+    static func coverage(of pixels: [UInt8]) -> Double {
+        guard !pixels.isEmpty else { return 0 }
+        var active = 0
+        for pixel in pixels where pixel > 127 { active += 1 }
+        return Double(active) / Double(pixels.count)
+    }
+
+    private static func largestComponents(_ pixels: [UInt8], width: Int, height: Int) -> [UInt8] {
+        let count = pixels.count
+        var labels = [Int](repeating: 0, count: count)
+        var parent: [Int] = [0]
+        func find(_ label: Int) -> Int {
+            var label = label
+            while parent[label] != label {
+                parent[label] = parent[parent[label]]
+                label = parent[label]
+            }
+            return label
+        }
+        func unite(_ left: Int, _ right: Int) {
+            let a = find(left)
+            let b = find(right)
+            if a != b { parent[b] = a }
+        }
+        var nextLabel = 1
+        for y in 0..<height {
+            for x in 0..<width {
+                let index = y * width + x
+                guard pixels[index] > 127 else { continue }
+                let left = x > 0 ? labels[index - 1] : 0
+                let up = y > 0 ? labels[index - width] : 0
+                if left == 0 && up == 0 {
+                    parent.append(nextLabel)
+                    labels[index] = nextLabel
+                    nextLabel += 1
+                } else if left != 0 && up != 0 {
+                    labels[index] = left
+                    unite(left, up)
+                } else {
+                    labels[index] = left != 0 ? left : up
+                }
+            }
+        }
+        var area = [Int](repeating: 0, count: nextLabel)
+        for index in 0..<count where labels[index] != 0 {
+            area[find(labels[index])] += 1
+        }
+        let largest = area.max() ?? 0
+        guard largest > 0 else { return [UInt8](repeating: 0, count: count) }
+        let minimum = max(1, largest / 5)
+        var kept = [UInt8](repeating: 0, count: count)
+        for index in 0..<count where labels[index] != 0 && area[find(labels[index])] >= minimum {
+            kept[index] = 255
+        }
+        return kept
+    }
+
+    private static func fillHoles(_ pixels: [UInt8], width: Int, height: Int) -> [UInt8] {
+        var outside = [UInt8](repeating: 0, count: pixels.count)
+        var stack: [Int] = []
+        func push(_ index: Int) {
+            guard pixels[index] <= 127, outside[index] == 0 else { return }
+            outside[index] = 1
+            stack.append(index)
+        }
+        for x in 0..<width {
+            push(x)
+            push((height - 1) * width + x)
+        }
+        for y in 0..<height {
+            push(y * width)
+            push(y * width + width - 1)
+        }
+        while let index = stack.popLast() {
+            let x = index % width
+            let y = index / width
+            if x > 0 { push(index - 1) }
+            if x + 1 < width { push(index + 1) }
+            if y > 0 { push(index - width) }
+            if y + 1 < height { push(index + width) }
+        }
+        var filled = pixels
+        for index in filled.indices where filled[index] <= 127 && outside[index] == 0 {
+            filled[index] = 255
+        }
+        return filled
     }
 
     private static func personRequest() -> VNGeneratePersonSegmentationRequest {
@@ -282,45 +410,74 @@ enum VACESubjectSegmenter {
     }
 }
 
-/// Per-frame on-device mask. A frame with no subject keeps the previous mask so
-/// the edit region stays tracked. If the first frame has no subject, every frame
-/// uses the whole frame.
+/// Per-frame on-device mask. Tracking and temporal smoothing stay inside one
+/// shot. A hard cut clears the previous mask and segments that frame on its own.
 final class VACEAutoMaskProvider: VACEFrameMaskProvider {
     let mode: VACEMaskMode
     private var previous: VACEMaskPlane?
-    private var useWholeFrame = false
+    private var previousCoverage = 0.0
+    private var previousSignature: VACEFrameSignature?
     private(set) var fellBackToWholeFrame = false
-    private var loggedFailure = false
 
     init(mode: VACEMaskMode) {
         self.mode = mode
     }
 
     func mask(for frameIndex: Int, presentationTime: CMTime, source: VACERGBAFrame) async throws -> VACEMaskPlane {
-        _ = presentationTime
-        if mode == .wholeFrame || useWholeFrame {
-            return try VACEMaskPlane(width: source.width, height: source.height, pixels: [UInt8](repeating: 255, count: source.width * source.height))
+        if mode == .wholeFrame {
+            return try wholeFrame(width: source.width, height: source.height)
         }
+        let signature = VACEShotCut.signature(of: source)
+        var newShot = previousSignature == nil
+        if let previousSignature {
+            let comparison = VACEShotCut.isCut(from: previousSignature, to: signature)
+            if comparison.cut {
+                newShot = true
+                previous = nil
+                previousCoverage = 0
+                VACEShotCut.logCut(at: presentationTime, histogramDistance: comparison.histogramDistance, frameDifference: comparison.frameDifference)
+            }
+        }
+        self.previousSignature = signature
         do {
             let result = try VACESubjectSegmenter.editMask(frame: source, mode: mode)
-            if result.foundSubject, result.mask.activePixelCount > 0 {
-                previous = result.mask
-                return result.mask
+            if result.foundSubject {
+                let dropped = !newShot && previous != nil && previousCoverage >= VACESubjectSegmenter.minimumCoverage
+                    && result.coverage < previousCoverage * 0.5
+                if dropped, let previous {
+                    CrashCapture.step(String(format: "VACE mask method previous-track coverage %.1f%%", previousCoverage * 100))
+                    return previous
+                }
+                let mask = try smoothed(result.mask, newShot: newShot)
+                previous = mask
+                previousCoverage = VACESubjectSegmenter.coverage(of: mask.pixels)
+                return mask
             }
-            if let previous { return previous }
-            useWholeFrame = true
-            fellBackToWholeFrame = true
-            CrashCapture.step("VACE segmentation found nothing; using whole frame")
-            return try VACEMaskPlane(width: source.width, height: source.height, pixels: [UInt8](repeating: 255, count: source.width * source.height))
         } catch {
-            if !loggedFailure {
-                loggedFailure = true
-                CrashCapture.step("VACE segmentation failed: \(error.localizedDescription)")
-            }
-            if let previous { return previous }
-            useWholeFrame = true
-            fellBackToWholeFrame = true
-            return try VACEMaskPlane(width: source.width, height: source.height, pixels: [UInt8](repeating: 255, count: source.width * source.height))
+            CrashCapture.step("VACE segmentation failed: \(error.localizedDescription)")
         }
+        if !newShot, let previous {
+            CrashCapture.step(String(format: "VACE mask method previous-track coverage %.1f%%", previousCoverage * 100))
+            return previous
+        }
+        fellBackToWholeFrame = true
+        CrashCapture.step("VACE segmentation found nothing; using whole frame")
+        let filled = try wholeFrame(width: source.width, height: source.height)
+        previous = filled
+        previousCoverage = 1
+        return filled
+    }
+
+    private func smoothed(_ mask: VACEMaskPlane, newShot: Bool) throws -> VACEMaskPlane {
+        guard !newShot, let previous, previous.width == mask.width, previous.height == mask.height else { return mask }
+        var pixels = mask.pixels
+        for index in pixels.indices {
+            pixels[index] = UInt8((Int(pixels[index]) * 2 + Int(previous.pixels[index])) / 3)
+        }
+        return try VACEMaskPlane(width: mask.width, height: mask.height, pixels: pixels)
+    }
+
+    private func wholeFrame(width: Int, height: Int) throws -> VACEMaskPlane {
+        try VACEMaskPlane(width: width, height: height, pixels: [UInt8](repeating: 255, count: width * height))
     }
 }

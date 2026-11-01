@@ -62,6 +62,7 @@ struct VACEVideoEditView: View {
     @State private var maskURL: URL?
     @State private var maskMode: VACEMaskMode = .autoSubject
     @State private var maskPreview: UIImage?
+    @State private var maskCoverageText: String?
     @State private var maskPreviewNote: String?
     @State private var prompt = "Describe the desired change while keeping the overall scene coherent."
     @State private var negativePrompt = "flicker, inconsistent subject, warped geometry, duplicate objects, text, watermark"
@@ -114,6 +115,11 @@ struct VACEVideoEditView: View {
                             .scaledToFit()
                             .frame(maxHeight: 220)
                             .accessibilityLabel("Mask preview on the first frame")
+                        if let maskCoverageText {
+                            Text(maskCoverageText)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
                     }
                     if let maskPreviewNote {
                         Text(maskPreviewNote).font(.caption).foregroundStyle(.orange)
@@ -180,6 +186,7 @@ struct VACEVideoEditView: View {
             }
             .onChange(of: maskMode) { _ in
                 maskPreview = nil
+                maskCoverageText = nil
                 maskPreviewNote = nil
                 Task { await refreshMaskPreview() }
             }
@@ -194,6 +201,7 @@ struct VACEVideoEditView: View {
                             outputURL = nil
                             errorText = nil
                             maskPreview = nil
+                            maskCoverageText = nil
                             maskPreviewNote = nil
                         }
                         await refreshMaskPreview()
@@ -308,6 +316,7 @@ struct VACEVideoEditView: View {
     private func refreshMaskPreview() async {
         guard let sourceURL, !maskMode.needsHandDrawnMask || maskURL != nil else {
             maskPreview = nil
+            maskCoverageText = nil
             maskPreviewNote = maskMode.needsHandDrawnMask ? nil : maskPreviewNote
             return
         }
@@ -315,27 +324,35 @@ struct VACEVideoEditView: View {
         let manualURL = maskURL
         do {
             let frame = try await VACESubjectSegmenter.firstFrameImage(url: sourceURL)
-            let built: (VACEMaskPlane, Bool)
+            let built: VACESegmentationDecision
             if mode == .drawManually, let manualURL {
                 let plane = try Self.loadMask(url: manualURL, width: frame.width, height: frame.height)
-                built = (plane, plane.activePixelCount > 0)
+                let fraction = VACESubjectSegmenter.coverage(of: plane.pixels)
+                built = VACESegmentationDecision(mask: plane, foundSubject: fraction > 0, method: "draw-manually", coverage: fraction)
             } else if mode == .wholeFrame {
-                built = (try VACEMaskPlane(width: frame.width, height: frame.height, pixels: [UInt8](repeating: 255, count: frame.width * frame.height)), true)
+                let plane = try VACEMaskPlane(width: frame.width, height: frame.height, pixels: [UInt8](repeating: 255, count: frame.width * frame.height))
+                built = VACESegmentationDecision(mask: plane, foundSubject: true, method: "whole-frame", coverage: 1)
             } else {
                 built = try VACESubjectSegmenter.editMask(cgImage: frame, mode: mode)
             }
             var note: String?
-            var mask = built.0
-            if mode != .wholeFrame && mode != .drawManually && !built.1 {
+            var mask = built.mask
+            var method = built.method
+            var fraction = built.coverage
+            if mode != .wholeFrame && mode != .drawManually && !built.foundSubject {
                 CrashCapture.step("VACE segmentation found nothing; using whole frame")
                 mask = try VACEMaskPlane(width: frame.width, height: frame.height, pixels: [UInt8](repeating: 255, count: frame.width * frame.height))
+                method = "whole-frame"
+                fraction = 1
                 note = "No subject found. Using the whole frame."
             }
             maskPreview = VACESubjectSegmenter.previewImage(base: frame, mask: mask)
+            maskCoverageText = String(format: "Coverage %.0f%% · %@", fraction * 100, method)
             maskPreviewNote = note
         } catch {
             CrashCapture.step("VACE segmentation failed: \(error.localizedDescription)")
             maskPreview = nil
+            maskCoverageText = nil
             maskPreviewNote = "Mask preview failed: \(error.localizedDescription)"
         }
     }

@@ -612,6 +612,14 @@ jobs:
           test ! -e Models/DeepCreamBar.pb
           test ! -e Models/DeepCreamMosaic.pb
 
+      - name: Convert Apache-2.0 anime segmenter to Core ML
+        timeout-minutes: 40
+        run: |
+          set -euo pipefail
+          python3 -m pip install torch torchvision pytorch-lightning huggingface_hub kornia 'timm==0.9.16' opencv-python-headless scipy
+          python3 Scripts/export_vace_anime_segmenter.py
+          test -f Models/VACEAnimeSeg.mlpackage/Manifest.json
+
       - name: Stage pinned MiniMax H3 native sources for the iOS target
         run: bash Scripts/vendor_h3_runtime.sh
 
