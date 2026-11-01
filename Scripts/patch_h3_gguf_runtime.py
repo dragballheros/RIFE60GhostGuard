@@ -390,6 +390,69 @@ static void h3_progress_emit(h3_generation_progress *state, const char *phase,
             raise SystemExit("h3_gpu.m submit wait changed")
     else:
         gpu.write_text(gpu_text.replace(submit_old, submit_new, 1), encoding="utf-8")
+    decode_old = '''        h3_progress_emit(&progress, "audio VAE", 0, 7);
+        if (!h3_audio_vae_decode(audio_vae_path, "h3_shaders.metal", audio,
+'''
+    decode_new = '''        const char *keep_source_audio = getenv("H3_KEEP_SOURCE_AUDIO");
+        if (keep_source_audio && *keep_source_audio && strcmp(keep_source_audio, "0")) {
+            /* Reference audio latents were already encoded for Ref2VA
+             * conditioning. Skip only the decoder that builds the output
+             * soundtrack; the joint video denoise is unchanged. */
+            waveform.pcm = NULL;
+            waveform.samples = 0;
+            waveform.channels = 0;
+            waveform.sample_rate = 0;
+            h3_progress_emit(&progress, "original audio", 1, 1);
+        } else {
+        h3_progress_emit(&progress, "audio VAE", 0, 7);
+        if (!h3_audio_vae_decode(audio_vae_path, "h3_shaders.metal", audio,
+'''
+    core_now = core.read_text(encoding="utf-8")
+    if decode_old not in core_now:
+        if "H3_KEEP_SOURCE_AUDIO" not in core_now:
+            raise SystemExit("h3.c audio decode site changed")
+    else:
+        core_now = core_now.replace(decode_old, decode_new, 1)
+        close = '''        }
+    }
+    /* The PCM handed to the encoder (the AAC track itself is not bit-exact). */
+'''
+        # The original else branch must be closed before the waveform hash.
+        marker = '''    /* The PCM handed to the encoder (the AAC track itself is not bit-exact). */
+'''
+        if marker not in core_now:
+            raise SystemExit("h3.c waveform hash marker missing")
+        core_now = core_now.replace(marker, "        }\n" + marker, 1)
+        core.write_text(core_now, encoding="utf-8")
+    writer = root / "h3_av_writer.m"
+    writer_old = '''        height < 2 || fps < 1 || width % 2 || height % 2 || !pcm ||
+        samples < 1 || channels < 1 || sample_rate < 1) {
+        h3_av_set_error(error, error_size, @"invalid AVFoundation A/V output arguments");
+'''
+    writer_new = '''        height < 2 || fps < 1 || width % 2 || height % 2 ||
+        (pcm && (samples < 1 || channels < 1 || sample_rate < 1))) {
+        h3_av_set_error(error, error_size, @"invalid AVFoundation A/V output arguments");
+'''
+    writer_text = writer.read_text(encoding="utf-8")
+    if writer_old not in writer_text:
+        if "pcm && (samples < 1" not in writer_text:
+            raise SystemExit("h3_av_writer.m rgb writer guard changed")
+    else:
+        writer_text = writer_text.replace(writer_old, writer_new, 1)
+    open_old = '''        width % 2 || height % 2 || !pcm || samples < 1 || channels < 1 ||
+        sample_rate < 1) {
+        h3_av_set_error(error, error_size, @"invalid AVFoundation A/V writer arguments");
+'''
+    open_new = '''        width % 2 || height % 2 ||
+        (pcm && (samples < 1 || channels < 1 || sample_rate < 1))) {
+        h3_av_set_error(error, error_size, @"invalid AVFoundation A/V writer arguments");
+'''
+    if open_old not in writer_text:
+        if writer_text.count("pcm && (samples < 1") < 2 and "H3_KEEP" not in writer_text:
+            raise SystemExit("h3_av_writer.m open guard changed")
+    else:
+        writer_text = writer_text.replace(open_old, open_new, 1)
+    writer.write_text(writer_text, encoding="utf-8")
     print(f"Patched pinned H3 runtime in {root} for GGUF streaming")
 
 if __name__ == "__main__":

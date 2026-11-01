@@ -80,6 +80,7 @@ struct H3VideoEditView: View {
     @State private var h3ModelDirectoryURL: URL?
     @State private var isChoosingH3Model = false
     @AppStorage("RIFE60.H3.AuthorizedUseAccepted") private var acceptedH3License = false
+    @AppStorage("RIFE60.H3.KeepOriginalAudio") private var keepOriginalAudio = true
     @AppStorage(H3Tier1OnDeviceConverter.manifestDefaultsKey) private var tier1ManifestURL = ""
     @State private var h3CancellationToken: H3CancellationToken?
     @State private var isImportingReference = false
@@ -165,6 +166,11 @@ struct H3VideoEditView: View {
                         Label(sourceURL == nil ? "Choose reference video" : "Change reference video", systemImage: "film")
                     }
                     Text("Official Ref2VA accepts reference clips of 2–15 seconds.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Toggle("Keep original audio", isOn: $keepOriginalAudio)
+                    Text(keepOriginalAudio
+                         ? "The reference soundtrack is copied onto the result without re-encoding. The reference audio is still encoded as Ref2VA conditioning so the picture does not change."
+                         : "H3 generates a new soundtrack.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 Section("Generation prompt") {
@@ -325,6 +331,11 @@ struct H3VideoEditView: View {
         let hasSecurityScope = modelURL.startAccessingSecurityScopedResource()
         defer { if hasSecurityScope { modelURL.stopAccessingSecurityScopedResource() } }
         do {
+            let keepAudio = keepOriginalAudio
+            setenv("H3_KEEP_SOURCE_AUDIO", keepAudio ? "1" : "0", 1)
+            CrashCapture.step(keepAudio
+                ? "H3 audio mode: keep original. Reference audio VAE encoder stays for Ref2VA conditioning. Audio VAE decoder is skipped."
+                : "H3 audio mode: generated soundtrack.")
             try H3Tier1OnDeviceConverter.installBundledTokenizer(into: modelURL)
             let referenceAsset = AVURLAsset(url: sourceURL)
             let referenceDuration = try await referenceAsset.load(.duration)
@@ -372,6 +383,10 @@ struct H3VideoEditView: View {
             let exportedDuration = try await exportedAsset.load(.duration)
             guard !exportedVideoTracks.isEmpty, exportedDuration.seconds.isFinite, exportedDuration.seconds > 0 else {
                 throw H3NativeRuntime.RuntimeError.generationFailed("H3 output exists but does not contain a playable video track with a valid duration.")
+            }
+            if keepAudio {
+                status = "Copying original audio…"
+                try await H3OriginalAudio.attach(reference: sourceURL, generated: result.outputURL)
             }
             outputURL = result.outputURL
             progress = 1
