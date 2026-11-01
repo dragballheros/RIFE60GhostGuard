@@ -5,10 +5,14 @@
 #include <time.h>
 
 #if defined(__APPLE__)
-#include <os/proc.h>
+#include <TargetConditionals.h>
 extern void *objc_autoreleasePoolPush(void);
 extern void objc_autoreleasePoolPop(void *);
 static void *h3_weight_layer_pool;
+#endif
+#if defined(__APPLE__) && TARGET_OS_IPHONE && !TARGET_OS_SIMULATOR
+#include <os/proc.h>
+#define H3_HAS_PROC_AVAILABLE 1
 #endif
 
 struct h3_weight_pool {
@@ -99,7 +103,7 @@ size_t h3_weight_pool_scratch_bytes(const h3_weight_pool *pool) {
 }
 
 uint64_t h3_weight_pool_available_bytes(void) {
-#if defined(__APPLE__)
+#if defined(H3_HAS_PROC_AVAILABLE)
     return os_proc_available_memory();
 #else
     return UINT64_MAX;

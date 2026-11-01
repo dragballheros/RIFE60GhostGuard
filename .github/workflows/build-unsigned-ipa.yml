@@ -616,8 +616,9 @@ jobs:
         timeout-minutes: 40
         run: |
           set -euo pipefail
-          python3 -m pip install torch torchvision pytorch-lightning huggingface_hub kornia 'timm==0.9.16' opencv-python-headless scipy
-          python3 Scripts/export_vace_anime_segmenter.py
+          python3 -m venv /tmp/anime-ml
+          /tmp/anime-ml/bin/pip install torch torchvision 'coremltools==9.0' 'numpy==1.26.4'
+          /tmp/anime-ml/bin/python Scripts/export_vace_anime_segmenter.py
           test -f Models/VACEAnimeSeg.mlpackage/Manifest.json
 
       - name: Stage pinned MiniMax H3 native sources for the iOS target

@@ -44,17 +44,30 @@ def main() -> None:
     import torch
     import coremltools as ct
 
-    original_load = torch.load
-
-    def load_checkpoint(*args, **kwargs):
-        kwargs.setdefault("weights_only", False)
-        return original_load(*args, **kwargs)
-
-    torch.load = load_checkpoint
     sys.path.insert(0, str(work))
-    from train import AnimeSegmentation
+    from model.isnet import ISNetDIS
 
-    network = AnimeSegmentation.try_load("isnet_is", str(checkpoint), "cpu", img_size=1024)
+    class AnimeISNet(torch.nn.Module):
+        def __init__(self, net):
+            super().__init__()
+            self.net = net
+
+        def forward(self, x):
+            return self.net(x)[0][0].sigmoid()
+
+    blob = torch.load(checkpoint, map_location="cpu", weights_only=False)
+    state = blob["state_dict"] if isinstance(blob, dict) and "state_dict" in blob else blob
+    weights = {}
+    for key, value in state.items():
+        if key.startswith("net."):
+            weights[key[len("net."):]] = value
+    bare = ISNetDIS()
+    missing, unexpected = bare.load_state_dict(weights, strict=False)
+    if unexpected:
+        raise SystemExit("anime-seg checkpoint has unexpected tensors: " + ", ".join(unexpected[:8]))
+    if not weights:
+        raise SystemExit("anime-seg checkpoint did not contain net.* weights")
+    network = AnimeISNet(bare)
     network.eval()
     example = torch.zeros(1, 3, 1024, 1024)
     with torch.no_grad():

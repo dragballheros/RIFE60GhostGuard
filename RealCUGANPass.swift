@@ -167,12 +167,16 @@ final class RealCUGANPass {
         let alpha = try MLMultiArray(shape: [1], dataType: .float16)
         alpha[0] = NSNumber(value: alphaValue)
         var frames = 0
+        var decodeSeconds = 0.0
         var inferenceSeconds = 0.0
         var encodeSeconds = 0.0
         let passStart = CFAbsoluteTimeGetCurrent()
         var encodeTask: Task<Void, Error>?
 
-        while let sample = output.copyNextSampleBuffer() {
+        while true {
+            let decodeStarted = CFAbsoluteTimeGetCurrent()
+            guard let sample = output.copyNextSampleBuffer() else { break }
+            decodeSeconds += CFAbsoluteTimeGetCurrent() - decodeStarted
             try await checkpoint.checkCancellation()
             guard let decodedFrame = CMSampleBufferGetImageBuffer(sample) else { continue }
             let pts = CMSampleBufferGetPresentationTimeStamp(sample)
@@ -228,6 +232,7 @@ final class RealCUGANPass {
         let completedURL = try await checkpoint.finish()
         let completedBytes = (try? FileManager.default.attributesOfItem(atPath: completedURL.path)[.size] as? NSNumber)?.int64Value ?? 0
         let count = Double(frames)
+        PipelineStageTimer.current?.record("cuganDecodeMs", milliseconds: decodeSeconds * 1000 / count)
         PipelineStageTimer.current?.record("cuganPackMs", milliseconds: renderInSeconds * 1000 / count)
         PipelineStageTimer.current?.record("cuganPredictMs", milliseconds: predictionSeconds * 1000 / count)
         PipelineStageTimer.current?.record("cuganStitchMs", milliseconds: stitchSeconds * 1000 / count)
@@ -257,7 +262,10 @@ final class RealCUGANPass {
         let stillAlpha = try MLMultiArray(shape: [1], dataType: .float16)
         stillAlpha[0] = NSNumber(value: Float(1.0 / max(intensity, 0.01)))
         DiagnosticsLogger.shared.log("Real-CUGAN still image • \(stillWidth)x\(stillHeight) -> \(stillWidth * 2)x\(stillHeight * 2) • tile=\(stillProfile.width)x\(stillProfile.height)")
-        return try upscaleNative2x(source, model: stillModel, alpha: stillAlpha, frameNumber: 1, profile: stillProfile)
+        let started = CFAbsoluteTimeGetCurrent()
+        let result = try upscaleNative2x(source, model: stillModel, alpha: stillAlpha, frameNumber: 1, profile: stillProfile)
+        DiagnosticsLogger.shared.log(String(format: "Frame stage imageUpscaleMs %.2f ms/frame", (CFAbsoluteTimeGetCurrent() - started) * 1000))
+        return result
     }
 
     private func loadModel(named name: String, preferNeuralEngine: Bool = false) throws -> MLModel {

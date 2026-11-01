@@ -204,6 +204,7 @@ final class RIFEVideoProcessor {
         var rifeSeconds = 0.0
         var ghostSeconds = 0.0
         var encodeSeconds = 0.0
+        var decodeSeconds = 0.0
         let benchmarkStart = CFAbsoluteTimeGetCurrent()
 
         func emitTelemetry() {
@@ -216,6 +217,7 @@ final class RIFEVideoProcessor {
             t.outlineMsPerFrame = outlined > 0 ? outlineSeconds * 1000.0 / Double(outlined) : 0
             t.rifeMsPerGeneratedFrame = generated > 0 ? rifeSeconds * 1000.0 / Double(generated) : 0
             let generatedCount = Double(max(generated, 1))
+            PipelineStageTimer.current?.record("rifeDecodeMs", milliseconds: sourceFrames > 0 ? decodeSeconds * 1000 / Double(sourceFrames) : 0)
             PipelineStageTimer.current?.record("rifePushMs", milliseconds: tiledHQ.pushSeconds * 1000 / generatedCount)
             PipelineStageTimer.current?.record("rifeExtractMs", milliseconds: tiledHQ.extractSeconds * 1000 / generatedCount)
             PipelineStageTimer.current?.record("rifeStitchMs", milliseconds: tiledHQ.stitchSeconds * 1000 / generatedCount)
@@ -227,7 +229,10 @@ final class RIFEVideoProcessor {
             telemetry(t)
         }
 
-        while let sample = output.copyNextSampleBuffer() {
+        while true {
+            let decodeStarted = CFAbsoluteTimeGetCurrent()
+            guard let sample = output.copyNextSampleBuffer() else { break }
+            decodeSeconds += CFAbsoluteTimeGetCurrent() - decodeStarted
             try await checkpoint.checkCancellation()
             guard let decodedPB = CMSampleBufferGetImageBuffer(sample) else { continue }
             sourceFrames += 1
