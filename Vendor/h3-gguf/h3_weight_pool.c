@@ -6,9 +6,11 @@
 
 #if defined(__APPLE__)
 #include <TargetConditionals.h>
+#if !defined(H3_WEIGHT_POOL_TEST)
 extern void *objc_autoreleasePoolPush(void);
 extern void objc_autoreleasePoolPop(void *);
 static void *h3_weight_layer_pool;
+#endif
 #endif
 #if defined(__APPLE__) && TARGET_OS_IPHONE && !TARGET_OS_SIMULATOR
 #include <os/proc.h>
@@ -119,10 +121,9 @@ int h3_weight_pool_allow_second_slot(uint64_t available_bytes, uint64_t slot_byt
 }
 
 void h3_weight_pool_layer_boundary(void) {
-#if defined(__APPLE__)
+#if defined(__APPLE__) && !defined(H3_WEIGHT_POOL_TEST)
     if (h3_weight_layer_pool) objc_autoreleasePoolPop(h3_weight_layer_pool);
     h3_weight_layer_pool = objc_autoreleasePoolPush();
-#else
 #endif
 }
 
