@@ -29,11 +29,7 @@ enum H3Tier1OnDeviceConverter {
             return nil
         }
         func link(directory: String, name: String, from source: URL) throws {
-            let folder = modelDirectory.appendingPathComponent(directory, isDirectory: true)
-            try fm.createDirectory(at: folder, withIntermediateDirectories: true)
-            let destination = folder.appendingPathComponent(name)
-            if fm.fileExists(atPath: destination.path) { return }
-            try fm.createSymbolicLink(at: destination, withDestinationURL: source)
+            try placeExistingWeight(named: name, from: source, in: directory, modelDirectory: modelDirectory)
         }
         let ref = found.appendingPathComponent("minimax_h3_ref2va_pruned-Q8_0.gguf")
         try link(directory: "FL2VA/transformer", name: ref.lastPathComponent, from: ref)
@@ -83,6 +79,67 @@ enum H3Tier1OnDeviceConverter {
         CrashCapture.step("H3 staged Q8_0 transformer, Q4_K_M text encoder, both VAE files, and the configs the runtime opens")
     }
 
+    /// Points the runtime at a weight that is already on disk. A matching file or
+    /// hard link is left in place. A new name is a same-volume hard link, or a
+    /// symlink if the volume refuses the link. This never copies the shard.
+    private static func placeExistingWeight(named name: String, from source: URL, in directory: String, modelDirectory: URL) throws {
+        let fm = FileManager.default
+        let folder = modelDirectory.appendingPathComponent(directory, isDirectory: true)
+        try fm.createDirectory(at: folder, withIntermediateDirectories: true)
+        let destination = folder.appendingPathComponent(name)
+        if destination.standardizedFileURL.path == source.standardizedFileURL.path { return }
+        let sourceInfo = fileIdentity(source)
+        let destinationInfo = fileIdentity(destination)
+        if destinationInfo.exists {
+            let sameSize = sourceInfo.size != nil && destinationInfo.size == sourceInfo.size
+            let markerMatches = verifiedMarkerMatches(name: name, size: destinationInfo.size, modelDirectory: modelDirectory)
+            if sameSize || markerMatches || !destinationInfo.symlink {
+                return
+            }
+            // A dangling symlink is not a weight. Removing it does not delete the source file.
+            unlink(destination.path)
+        }
+        guard sourceInfo.exists, sourceInfo.size != nil else { return }
+        if link(source.path, destination.path) == 0 || errno == EEXIST { return }
+        do {
+            try fm.createSymbolicLink(at: destination, withDestinationURL: source)
+        } catch CocoaError.fileWriteFileExists {
+            return
+        }
+    }
+
+    private struct FileIdentity {
+        var exists: Bool
+        var symlink: Bool
+        var size: Int64?
+    }
+
+    private static func fileIdentity(_ url: URL) -> FileIdentity {
+        var info = stat()
+        guard lstat(url.path, &info) == 0 else { return FileIdentity(exists: false, symlink: false, size: nil) }
+        let symlink = (info.st_mode & S_IFMT) == S_IFLNK
+        var followed = stat()
+        if stat(url.path, &followed) == 0 {
+            return FileIdentity(exists: true, symlink: symlink, size: Int64(followed.st_size))
+        }
+        return FileIdentity(exists: true, symlink: symlink, size: nil)
+    }
+
+    private static func verifiedMarkerMatches(name: String, size: Int64?, modelDirectory: URL) -> Bool {
+        guard let size else { return false }
+        let markers = [
+            modelDirectory.appendingPathComponent("tier1-verified.json"),
+            modelDirectory.appendingPathComponent("tier1-weights/tier1-verified.json")
+        ]
+        for marker in markers {
+            guard let data = try? Data(contentsOf: marker),
+                  let map = try? JSONDecoder().decode([String: VerifiedRecord].self, from: data) else { continue }
+            if map.values.contains(where: { $0.bytes == size && $0.sha256.count == 64 }) { return true }
+            if map[name]?.bytes == size { return true }
+        }
+        return false
+    }
+
     private static func writeIfAbsent(_ relative: String, data: Data, into modelDirectory: URL) throws {
         let url = modelDirectory.appendingPathComponent(relative)
         if FileManager.default.fileExists(atPath: url.path) { return }
@@ -126,7 +183,11 @@ enum H3Tier1OnDeviceConverter {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
             let destination = directory.appendingPathComponent("tokenizer.json")
             if FileManager.default.fileExists(atPath: destination.path) { continue }
-            try FileManager.default.copyItem(at: bundled, to: destination)
+            do {
+                try FileManager.default.copyItem(at: bundled, to: destination)
+            } catch CocoaError.fileWriteFileExists {
+                continue
+            }
         }
     }
     static let peakScratchCeilingBytes: Int64 = 150 * 1_073_741_824

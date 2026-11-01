@@ -596,8 +596,11 @@ static int h3_link_file(const char *directory, const char *name, const char *sou
     if (mkdir(directory, 0755) != 0 && errno != EEXIST) return 0;
     char destination[1024];
     snprintf(destination, sizeof(destination), "%s/%s", directory, name);
-    if (access(destination, F_OK) == 0) return 1;
-    return symlink(source, destination) == 0;
+    struct stat existing;
+    if (lstat(destination, &existing) == 0) return 1;
+    if (link(source, destination) == 0) return 1;
+    if (errno == EEXIST) return 1;
+    return symlink(source, destination) == 0 || errno == EEXIST;
 }
 
 static int h3_ensure_dir(const char *path) {
