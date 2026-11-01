@@ -8,10 +8,15 @@ private struct H3PickedVideo: Transferable {
     let url: URL
 
     static var transferRepresentation: some TransferRepresentation {
-        FileRepresentation(importedContentType: .movie) { received in
+        FileRepresentation(contentType: .movie) { video in
+            SentTransferredFile(video.url)
+        } importing: { received in
             let ext = received.file.pathExtension.isEmpty ? "mov" : received.file.pathExtension
             let destination = FileManager.default.temporaryDirectory
                 .appendingPathComponent("MiniMaxH3-Source-\(UUID().uuidString).\(ext)")
+            if FileManager.default.fileExists(atPath: destination.path) {
+                try FileManager.default.removeItem(at: destination)
+            }
             try FileManager.default.copyItem(at: received.file, to: destination)
             return H3PickedVideo(url: destination)
         }
@@ -77,7 +82,24 @@ struct H3VideoEditView: View {
     @AppStorage("RIFE60.H3.AuthorizedUseAccepted") private var acceptedH3License = false
     @AppStorage(H3Tier1OnDeviceConverter.manifestDefaultsKey) private var tier1ManifestURL = ""
     @State private var h3CancellationToken: H3CancellationToken?
+    @State private var isImportingReference = false
     @StateObject private var h3ModelDownloader = H3ModelDownloader()
+
+    /// Conditions that keep Generate disabled. Prompt text, preflight, checksum
+    /// verification, duration, and memory are not in this list: they run when
+    /// generation starts and report their own errors.
+    private var generateDisableReasons: [String] {
+        var reasons: [String] = []
+        if !acceptedH3License { reasons.append("license confirmation") }
+        if h3ModelDirectoryURL == nil { reasons.append("local H3 model folder") }
+        if isImportingReference {
+            reasons.append("reference video (importing)")
+        } else if sourceURL == nil {
+            reasons.append("reference video")
+        }
+        if isRunning { reasons.append("generation in progress") }
+        return reasons
+    }
 
     var body: some View {
         NavigationStack {
@@ -160,7 +182,12 @@ struct H3VideoEditView: View {
                     Button { Task { await runH3ReferenceEdit() } } label: {
                         Label("Generate H3 reference video", systemImage: "wand.and.stars")
                     }
-                    .disabled(!acceptedH3License || isRunning || sourceURL == nil || h3ModelDirectoryURL == nil)
+                    .disabled(!acceptedH3License || isRunning || sourceURL == nil || h3ModelDirectoryURL == nil || isImportingReference)
+                    if !generateDisableReasons.isEmpty {
+                        Text("Needs: \(generateDisableReasons.joined(separator: ", "))")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                     if let errorText {
                         Text(errorText).foregroundStyle(.red)
                             .copyPasteBar(text: errorText) { _ in }
@@ -179,6 +206,7 @@ struct H3VideoEditView: View {
                 if tier1ManifestURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     tier1ManifestURL = H3Tier1OnDeviceConverter.defaultManifestURLString
                 }
+                restoreDownloadedModelFolder()
                 repairInstalledH3Layout()
             }
             .onChange(of: h3ModelDirectoryURL) { _ in
@@ -191,13 +219,42 @@ struct H3VideoEditView: View {
             }
             .onChange(of: videoItem) { item in
                 guard let item else { return }
+                isImportingReference = true
+                status = "Importing reference video…"
+                errorText = nil
                 Task {
-                    if let picked = try? await item.loadTransferable(type: H3PickedVideo.self) {
-                        await MainActor.run { sourceURL = picked.url }
+                    do {
+                        guard let picked = try await item.loadTransferable(type: H3PickedVideo.self) else {
+                            throw CocoaError(.fileReadUnknown, userInfo: [NSLocalizedDescriptionKey: "Photos did not return a movie file."])
+                        }
+                        await MainActor.run {
+                            sourceURL = picked.url
+                            isImportingReference = false
+                            status = "Reference video ready."
+                        }
+                    } catch {
+                        await MainActor.run {
+                            sourceURL = nil
+                            isImportingReference = false
+                            errorText = "Reference video was not saved: \(error.localizedDescription)"
+                            status = "Needs: reference video"
+                        }
                     }
                 }
             }
         }
+    }
+
+    @MainActor
+    private func restoreDownloadedModelFolder() {
+        guard h3ModelDirectoryURL == nil else { return }
+        let folder = h3ModelDownloader.destinationURL
+        let candidates = [
+            folder.appendingPathComponent("minimax_h3_ref2va_pruned-Q8_0.gguf"),
+            folder.appendingPathComponent("tier1-weights/minimax_h3_ref2va_pruned-Q8_0.gguf")
+        ]
+        guard candidates.contains(where: { FileManager.default.fileExists(atPath: $0.path) }) else { return }
+        h3ModelDirectoryURL = folder
     }
 
     @MainActor
