@@ -9,7 +9,7 @@ func expect(_ condition: Bool, _ message: String) throws {
     if !condition { throw SpeedPolicyError.message(message) }
 }
 
-try expect(SharpieTileStrategy.unbenchmarkedDefault() == .batched256, "unbenchmarked Sharpie must batch the 256 tile")
+try expect(SharpieTileStore.unbenchmarkedDefault() == .batched256, "unbenchmarked Sharpie must batch the 256 tile")
 try expect(SharpieTileStrategy.batched256.tile == SharpieTileStrategy.sequential256.tile, "batched Sharpie tile must match sequential 256")
 try expect(SharpieTileStrategy.batched256.resourceName == SharpieTileStrategy.sequential256.resourceName, "batched Sharpie must use the same model")
 try expect(SharpieTileStrategy.batched256.usesUnbackedBatch, "batched Sharpie must take the unbacked batch path")
