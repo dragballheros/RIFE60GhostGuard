@@ -1,8 +1,8 @@
 import Foundation
 
 /// Saved Sharpie tile size and whether tiles are predicted together.
-/// The default stays the shipped 256 sequential path until Benchmark mode
-/// picks a faster bundled variant.
+/// The first render times the same-tile candidates itself and saves the winner.
+/// Benchmark Models is optional and is not required for that choice.
 enum SharpieTileStrategy: String, Codable, CaseIterable, Identifiable {
     case sequential256
     case batched256
@@ -65,12 +65,29 @@ enum SharpieTileStore {
     /// Batching only groups predictions; it does not change the seam.
     static func unbenchmarkedDefault() -> SharpieTileStrategy { .batched256 }
 
+    static func needsAutomaticBenchmark() -> Bool {
+        guard SharpieTileStrategy.isBundled(.batched256) else { return false }
+        guard let record = load(),
+              RealCUGANStrategyStore.installIsCurrent(
+                device: record.deviceModel,
+                system: record.systemVersion,
+                build: record.buildNumber,
+                needsRebenchmark: record.needsRebenchmark
+              ),
+              SharpieTileStrategy(rawValue: record.strategy) != nil else {
+            return true
+        }
+        return false
+    }
+
     static func plan() -> SharpieTileStrategy {
         guard let record = load(),
-              !record.needsRebenchmark,
-              record.deviceModel == RealCUGANStrategyStore.deviceModel(),
-              record.systemVersion == RealCUGANStrategyStore.systemVersion(),
-              record.buildNumber == RealCUGANStrategyStore.buildNumber(),
+              RealCUGANStrategyStore.installIsCurrent(
+                device: record.deviceModel,
+                system: record.systemVersion,
+                build: record.buildNumber,
+                needsRebenchmark: record.needsRebenchmark
+              ),
               let strategy = SharpieTileStrategy(rawValue: record.strategy),
               SharpieTileStrategy.isBundled(strategy) else {
             let fallback = unbenchmarkedDefault()

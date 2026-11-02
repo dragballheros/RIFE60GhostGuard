@@ -21,7 +21,9 @@ final class OutlineEnhancer {
     }
 
     private let tile: Int
-    private let useUnbackedBatch: Bool
+    private var useUnbackedBatch: Bool
+    private var pendingAutomaticBenchmark: Bool
+    private var didLogSharpieDefer = false
     private let shrink = 20
     private let inputName = "x"
     private let outputName = "var_244"
@@ -58,8 +60,10 @@ final class OutlineEnhancer {
 
     init() throws {
         let selected = SharpieTileStore.plan()
+        let probe = SharpieTileStore.needsAutomaticBenchmark()
         self.tile = selected.tile
-        self.useUnbackedBatch = selected.usesUnbackedBatch
+        self.pendingAutomaticBenchmark = probe
+        self.useUnbackedBatch = selected.usesUnbackedBatch || probe
         let modelURL = try Self.compiledModelURL(resource: selected.resourceName)
         let configuration = MLModelConfiguration()
         // Auto prefers the Neural Engine. `.all` has been scheduling this 256 tile
@@ -69,7 +73,7 @@ final class OutlineEnhancer {
         configuration.computeUnits = preference == .auto ? .cpuAndNeuralEngine : preference.units
         configuration.allowLowPrecisionAccumulationOnGPU = true
         let tier = currentRenderPerformanceSnapshot().tier
-        let copies = selected.usesUnbackedBatch ? (tier == .safe ? 1 : Self.batchCopies) : 1
+        let copies = (selected.usesUnbackedBatch || probe) ? (tier == .safe ? 1 : Self.batchCopies) : 1
         var loaded: [MLModel] = []
         for _ in 0..<copies {
             loaded.append(try MLModel(contentsOf: modelURL, configuration: configuration))
@@ -82,7 +86,7 @@ final class OutlineEnhancer {
         var arrays: [MLMultiArray] = []
         var outputs: [MLMultiArray] = []
         let dataType = inputConstraint?.dataType ?? .float32
-        let arrayCount = selected.usesUnbackedBatch ? Self.maxWorkers * 2 * copies : Self.maxWorkers
+        let arrayCount = (selected.usesUnbackedBatch || probe) ? Self.maxWorkers * 2 * copies : Self.maxWorkers
         for _ in 0..<arrayCount {
             arrays.append(try MLMultiArray(shape: shape, dataType: dataType))
             outputs.append(try MLMultiArray(shape: shape, dataType: dataType))
@@ -177,6 +181,22 @@ final class OutlineEnhancer {
         lastHandoffSeconds = 0
         lastPredictWallSeconds = 0
         timingLock.unlock()
+
+        if pendingAutomaticBenchmark {
+            chooseStrategyFromRealTiles(
+                tileCount: tileCount, tilesAcross: tilesAcross, core: core,
+                width: width, height: height, src: src, srcRow: srcRow, isBGRA: isBGRA
+            )
+            timingLock.lock()
+            lastPackSeconds = 0
+            lastPredictSeconds = 0
+            lastUnpackSeconds = 0
+            lastQueueWaitSeconds = 0
+            lastBatchAssemblySeconds = 0
+            lastHandoffSeconds = 0
+            lastPredictWallSeconds = 0
+            timingLock.unlock()
+        }
 
         // Tiles write to disjoint core regions of the destination and only READ the source, so they
         // can run in parallel. Previously ~120 tiles per 4K frame ran strictly one after another,
@@ -511,6 +531,62 @@ final class OutlineEnhancer {
             timingLock.unlock()
         }
         if let launchError { throw launchError }
+    }
+
+    /// Times a few real tiles both ways, then the rest of this frame uses the winner.
+    /// The probe predictions are discarded, so the saved pixels come from one strategy.
+    /// Larger tiles stay out of this choice because their seams differ. Benchmark Models can still time those.
+    private func chooseStrategyFromRealTiles(
+        tileCount: Int, tilesAcross: Int, core: Int,
+        width: Int, height: Int,
+        src: UnsafeMutablePointer<UInt8>, srcRow: Int, isBGRA: Bool
+    ) {
+        let sampleCount = min(4, tileCount)
+        guard sampleCount > 0 else { return }
+        if currentRenderPerformanceSnapshot().tier == .safe {
+            useUnbackedBatch = false
+            if !didLogSharpieDefer {
+                didLogSharpieDefer = true
+                DiagnosticsLogger.shared.log("Sharpie automatic probe deferred • Thermal Safe • sequential 256 until the phone cools • Benchmark Models is not required")
+            }
+            return
+        }
+        pendingAutomaticBenchmark = false
+        func origin(_ tileIndex: Int) -> (Int, Int) {
+            ((tileIndex % tilesAcross) * core, (tileIndex / tilesAcross) * core)
+        }
+        do {
+            var sequential = 0.0
+            for tileIndex in 0..<sampleCount {
+                let (coreX, coreY) = origin(tileIndex)
+                try packTile(coreX: coreX, coreY: coreY, width: width, height: height, src: src, srcRow: srcRow, isBGRA: isBGRA, input: inputArrays[0])
+                let provider = try MLDictionaryFeatureProvider(dictionary: [inputName: MLFeatureValue(multiArray: inputArrays[0])])
+                let started = CFAbsoluteTimeGetCurrent()
+                _ = try models[0].prediction(from: provider)
+                sequential += CFAbsoluteTimeGetCurrent() - started
+            }
+            var batched = Double.greatestFiniteMagnitude
+            if inputArrays.count >= sampleCount {
+                var providers: [MLFeatureProvider] = []
+                for tileIndex in 0..<sampleCount {
+                    let (coreX, coreY) = origin(tileIndex)
+                    try packTile(coreX: coreX, coreY: coreY, width: width, height: height, src: src, srcRow: srcRow, isBGRA: isBGRA, input: inputArrays[tileIndex])
+                    providers.append(try MLDictionaryFeatureProvider(dictionary: [inputName: MLFeatureValue(multiArray: inputArrays[tileIndex])]))
+                }
+                let started = CFAbsoluteTimeGetCurrent()
+                _ = try models[0].predictions(from: MLArrayBatchProvider(array: providers), options: MLPredictionOptions())
+                batched = CFAbsoluteTimeGetCurrent() - started
+            }
+            let sequentialPerTile = sequential / Double(sampleCount)
+            let batchedPerTile = batched / Double(sampleCount)
+            let winner: SharpieTileStrategy = batchedPerTile < sequentialPerTile ? .batched256 : .sequential256
+            useUnbackedBatch = winner.usesUnbackedBatch
+            SharpieTileStore.save(winner, medianMilliseconds: min(sequential, batched))
+            DiagnosticsLogger.shared.log(String(format: "Sharpie automatic probe • real tiles=%d • sequential=%.1fms/tile • batched=%.1fms/tile • winner=%@ • saved for this device, iOS, and app build", sampleCount, sequentialPerTile, batchedPerTile, winner.rawValue))
+        } catch {
+            useUnbackedBatch = false
+            DiagnosticsLogger.shared.log("Sharpie automatic probe failed • \(error.localizedDescription) • this pass stays sequential 256")
+        }
     }
 
     private func packTile(

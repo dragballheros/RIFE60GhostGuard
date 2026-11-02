@@ -441,46 +441,122 @@ final class RealCUGANPass {
         return specs
     }
 
-    /// Times one backed tile against two concurrent tiles on the already loaded
-    /// model, then saves the winner so the next frame does not stay on sequentialBacked.
-    private func benchmarkAndSave(model: MLModel, alpha: MLMultiArray, profile: TileProfile) {
+    /// Times the first real tiles of this frame. Those predictions are discarded.
+    /// The frame is then rendered entirely with the saved winner, so the output
+    /// matches that one strategy. A new iOS version or app build misses the record
+    /// and this runs again. Benchmark Models is not required.
+    private func benchmarkAndSave(source: CVPixelBuffer, model: MLModel, alpha: MLMultiArray, profile: TileProfile) {
         let existing = RealCUGANStrategyStore.plan(modelName: profile.modelName, tileWidth: profile.width, tileHeight: profile.height)
         if existing.medianMilliseconds != nil { return }
         let snap = currentRenderPerformanceSnapshot()
+        if snap.tier == .safe {
+            DiagnosticsLogger.shared.log("Real-CUGAN automatic probe deferred • Thermal Safe • this pass stays sequential • Benchmark Models is not required")
+            return
+        }
         guard let tileInputPool, let tileOutputPool else { return }
-        func makeProvider() throws -> (MLFeatureProvider, CVPixelBuffer, MLPredictionOptions) {
+        let sourceWidth = CVPixelBufferGetWidth(source)
+        let sourceHeight = CVPixelBufferGetHeight(source)
+        let specs = Array(tileSpecs(sourceWidth: sourceWidth, sourceHeight: sourceHeight, profile: profile).prefix(2))
+        guard !specs.isEmpty else { return }
+        func croppedInput(_ spec: TileSpec) throws -> CVPixelBuffer {
             var input: CVPixelBuffer?
-            var output: CVPixelBuffer?
-            guard CVPixelBufferPoolCreatePixelBuffer(nil, tileInputPool, &input) == kCVReturnSuccess, let input,
-                  CVPixelBufferPoolCreatePixelBuffer(nil, tileOutputPool, &output) == kCVReturnSuccess, let output else {
-                throw ProcessorError.conversionFailed("benchmark tile allocation failed")
+            guard CVPixelBufferPoolCreatePixelBuffer(nil, tileInputPool, &input) == kCVReturnSuccess, let input else {
+                throw ProcessorError.conversionFailed("automatic probe tile allocation failed")
             }
-            let provider = try MLDictionaryFeatureProvider(dictionary: [
-                "image": MLFeatureValue(pixelBuffer: input),
-                "alpha": MLFeatureValue(multiArray: alpha)
-            ])
+            CVPixelBufferLockBaseAddress(source, .readOnly)
+            CVPixelBufferLockBaseAddress(input, [])
+            defer {
+                CVPixelBufferUnlockBaseAddress(input, [])
+                CVPixelBufferUnlockBaseAddress(source, .readOnly)
+            }
+            guard let sourceBase = CVPixelBufferGetBaseAddress(source), let tileBase = CVPixelBufferGetBaseAddress(input) else {
+                throw ProcessorError.conversionFailed("automatic probe tile address is unavailable")
+            }
+            RealCUGANTileCopy.crop(
+                source: sourceBase.assumingMemoryBound(to: UInt8.self),
+                sourceStride: CVPixelBufferGetBytesPerRow(source),
+                sourceWidth: sourceWidth,
+                sourceHeight: sourceHeight,
+                destination: tileBase.assumingMemoryBound(to: UInt8.self),
+                destinationStride: CVPixelBufferGetBytesPerRow(input),
+                ciOriginX: spec.x - profile.overlap,
+                ciOriginY: spec.y - profile.overlap,
+                tileWidth: profile.width,
+                tileHeight: profile.height
+            )
+            return input
+        }
+        func backedOptions(for output: CVPixelBuffer) throws -> MLPredictionOptions {
             let options = MLPredictionOptions()
             let backing = try RealCUGANOutputBacking.imageBacking(named: "output", model: model, reusing: output)
             options.outputBackings = backing.dictionary
-            return (provider, output, options)
+            return options
         }
         do {
-            let (provider, _, options) = try makeProvider()
-            _ = try model.prediction(from: provider, options: options)
+            let first = try croppedInput(specs[0])
+            var firstOutput: CVPixelBuffer?
+            guard CVPixelBufferPoolCreatePixelBuffer(nil, tileOutputPool, &firstOutput) == kCVReturnSuccess, let firstOutput else { return }
+            let firstProvider = try MLDictionaryFeatureProvider(dictionary: [
+                "image": MLFeatureValue(pixelBuffer: first),
+                "alpha": MLFeatureValue(multiArray: alpha)
+            ])
+            let firstOptions = try backedOptions(for: firstOutput)
+            _ = try model.prediction(from: firstProvider, options: firstOptions)
             let sequentialStart = CFAbsoluteTimeGetCurrent()
-            _ = try model.prediction(from: provider, options: options)
-            let sequentialMs = (CFAbsoluteTimeGetCurrent() - sequentialStart) * 1000
+            _ = try model.prediction(from: firstProvider, options: firstOptions)
+            var sequentialMs = (CFAbsoluteTimeGetCurrent() - sequentialStart) * 1000
+            if specs.count > 1 {
+                let second = try croppedInput(specs[1])
+                var secondOutput: CVPixelBuffer?
+                guard CVPixelBufferPoolCreatePixelBuffer(nil, tileOutputPool, &secondOutput) == kCVReturnSuccess, let secondOutput else { return }
+                let secondProvider = try MLDictionaryFeatureProvider(dictionary: [
+                    "image": MLFeatureValue(pixelBuffer: second),
+                    "alpha": MLFeatureValue(multiArray: alpha)
+                ])
+                let secondOptions = try backedOptions(for: secondOutput)
+                let extraStart = CFAbsoluteTimeGetCurrent()
+                _ = try model.prediction(from: secondProvider, options: secondOptions)
+                sequentialMs += (CFAbsoluteTimeGetCurrent() - extraStart) * 1000
+            }
             var winner = RealCUGANTileStrategy.sequentialBacked
             var slots = 1
-            var median = sequentialMs
-            if let candidate = RealCUGANStrategyStore.concurrentCandidate(availableMB: snap.availableMemoryMB, tierSafe: snap.tier == .safe) {
-                let (firstProvider, _, firstOptions) = try makeProvider()
-                let (secondProvider, _, secondOptions) = try makeProvider()
-                let concurrentStart = CFAbsoluteTimeGetCurrent()
+            var best = sequentialMs / Double(specs.count)
+            if snap.availableMemoryMB >= 600 {
+                let inputs = try specs.map(croppedInput)
+                let providers = try inputs.map { input in
+                    try MLDictionaryFeatureProvider(dictionary: [
+                        "image": MLFeatureValue(pixelBuffer: input),
+                        "alpha": MLFeatureValue(multiArray: alpha)
+                    ]) as MLFeatureProvider
+                }
+                let batchStart = CFAbsoluteTimeGetCurrent()
+                _ = try model.predictions(from: MLArrayBatchProvider(array: providers), options: MLPredictionOptions())
+                let batchPerTile = (CFAbsoluteTimeGetCurrent() - batchStart) * 1000 / Double(specs.count)
+                if batchPerTile < best {
+                    winner = .batchedUnbacked
+                    slots = specs.count
+                    best = batchPerTile
+                }
+            }
+            if let candidate = RealCUGANStrategyStore.concurrentCandidate(availableMB: snap.availableMemoryMB, tierSafe: false), specs.count > 1 {
+                let inputs = try specs.map(croppedInput)
+                var outputs: [CVPixelBuffer] = []
+                var pairs: [(MLFeatureProvider, MLPredictionOptions)] = []
+                for input in inputs {
+                    var output: CVPixelBuffer?
+                    guard CVPixelBufferPoolCreatePixelBuffer(nil, tileOutputPool, &output) == kCVReturnSuccess, let output else { throw ProcessorError.conversionFailed("concurrent probe output failed") }
+                    outputs.append(output)
+                    let provider = try MLDictionaryFeatureProvider(dictionary: [
+                        "image": MLFeatureValue(pixelBuffer: input),
+                        "alpha": MLFeatureValue(multiArray: alpha)
+                    ])
+                    pairs.append((provider, try backedOptions(for: output)))
+                }
                 let group = DispatchGroup()
                 let failureLock = NSLock()
                 var failed = false
-                for pair in [(firstProvider, firstOptions), (secondProvider, secondOptions)] {
+                let concurrentStart = CFAbsoluteTimeGetCurrent()
+                for pair in pairs {
                     group.enter()
                     DispatchQueue.global(qos: .userInitiated).async {
                         defer { group.leave() }
@@ -490,17 +566,17 @@ final class RealCUGANPass {
                     }
                 }
                 group.wait()
-                let concurrentMs = (CFAbsoluteTimeGetCurrent() - concurrentStart) * 1000
-                if !failed && concurrentMs < sequentialMs {
+                let concurrentPerTile = (CFAbsoluteTimeGetCurrent() - concurrentStart) * 1000 / Double(specs.count)
+                if !failed && concurrentPerTile < best {
                     winner = .concurrentBacked
                     slots = candidate.slots
-                    median = concurrentMs / 2
+                    best = concurrentPerTile
                 }
             }
             RealCUGANStrategyStore.save(RealCUGANStrategyRecord(
                 strategy: winner.rawValue,
                 slots: slots,
-                medianMilliseconds: median,
+                medianMilliseconds: best,
                 peakExtraMB: 0,
                 modelName: profile.modelName,
                 tileWidth: profile.width,
@@ -510,9 +586,9 @@ final class RealCUGANPass {
                 buildNumber: RealCUGANStrategyStore.buildNumber(),
                 needsRebenchmark: false
             ))
-            DiagnosticsLogger.shared.log("Real-CUGAN benchmark saved • \(winner.rawValue) • slots=\(slots) • \(String(format: "%.1f", median))ms/tile")
+            DiagnosticsLogger.shared.log("Real-CUGAN automatic probe • real tiles=\(specs.count) • winner=\(winner.rawValue) • slots=\(slots) • \(String(format: "%.1f", best))ms/tile • saved for this device, iOS, and app build")
         } catch {
-            DiagnosticsLogger.shared.log("Real-CUGAN benchmark skipped • \(error.localizedDescription)")
+            DiagnosticsLogger.shared.log("Real-CUGAN automatic probe skipped • \(error.localizedDescription)")
         }
     }
 
@@ -526,9 +602,9 @@ final class RealCUGANPass {
         if forceCopyForRestOfPass {
             return try renderFrame(source, model: model, alpha: alpha, frameNumber: frameNumber, profile: profile, strategy: .sequentialBacked, slots: 1, forceCopy: true)
         }
-        if !didBenchmarkStrategy {
+        if !didBenchmarkStrategy && currentRenderPerformanceSnapshot().tier != .safe {
             didBenchmarkStrategy = true
-            benchmarkAndSave(model: model, alpha: alpha, profile: profile)
+            benchmarkAndSave(source: source, model: model, alpha: alpha, profile: profile)
         }
         let plan = RealCUGANStrategyStore.plan(modelName: profile.modelName, tileWidth: profile.width, tileHeight: profile.height)
         activeStrategyName = plan.strategy.rawValue

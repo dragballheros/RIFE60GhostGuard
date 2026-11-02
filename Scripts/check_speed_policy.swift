@@ -24,4 +24,24 @@ try expect(tight == nil, "low memory must stay sequential")
 let untouched = RealCUGANStrategyStore.plan(modelName: "RealCUGAN2xNoise3_Tile704x608", tileWidth: 704, tileHeight: 608)
 try expect(untouched.strategy == .sequentialBacked && untouched.slots == 1, "plan() with no record stays sequentialBacked")
 
+RealCUGANStrategyStore.deviceModelOverride = "iPhone15,3"
+RealCUGANStrategyStore.systemVersionOverride = "Version 18.0 (Build 22A3354)"
+RealCUGANStrategyStore.buildNumberOverride = "1101"
+try expect(
+    RealCUGANStrategyStore.installIsCurrent(device: "iPhone15,3", system: "Version 18.0 (Build 22A3354)", build: "1101", needsRebenchmark: false),
+    "the current device, iOS, and app build should reuse a saved winner"
+)
+try expect(
+    !RealCUGANStrategyStore.installIsCurrent(device: "iPhone15,3", system: "Version 18.0 (Build 22A3354)", build: "1102", needsRebenchmark: false),
+    "a new app build must time the strategies again"
+)
+try expect(
+    !RealCUGANStrategyStore.installIsCurrent(device: "iPhone15,3", system: "Version 18.1 (Build 22B83)", build: "1101", needsRebenchmark: false),
+    "a new iOS build must time the strategies again"
+)
+try expect(
+    !RealCUGANStrategyStore.installIsCurrent(device: "iPhone15,3", system: "Version 18.0 (Build 22A3354)", build: "1101", needsRebenchmark: true),
+    "a failed strategy must be timed again"
+)
+
 print("Sharpie batch policy and CUGAN slot policy passed")

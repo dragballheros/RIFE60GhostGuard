@@ -63,7 +63,7 @@ enum ModelBenchmark {
         }
         rows.append(contentsOf: try benchmarkStrategies(progress: progress))
         rows.append(contentsOf: try benchmarkSharpieTiles(progress: progress))
-        rows.append("Policies permit CPU fallback; these labels do not prove every operation used the named accelerator. Sharpie production also uses parallel tiles. The fastest Real-CUGAN strategy that stays inside memory headroom is saved for this model, tile, device, iOS version, and app build. The next render uses it. Before a benchmark, renders use sequential backed predictions.")
+        rows.append("Policies permit CPU fallback; these labels do not prove every operation used the named accelerator. Sharpie production also uses parallel tiles. This button is optional. The first render already times Real-CUGAN and Sharpie on real tiles and saves the winner for this device, iOS version, and app build.")
         let report = rows.joined(separator: "\n")
         DiagnosticsLogger.shared.log(report)
         return report

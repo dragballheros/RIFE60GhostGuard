@@ -176,6 +176,12 @@ enum RealCUGANStrategyStore {
         return Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "0"
     }
 
+    /// A saved winner is reused only for this device, iOS version, and app build.
+    /// Any of those changing makes the next render time the candidates again.
+    static func installIsCurrent(device: String, system: String, build: String, needsRebenchmark: Bool) -> Bool {
+        !needsRebenchmark && device == deviceModel() && system == systemVersion() && build == buildNumber()
+    }
+
     static func allowedConcurrentSlots(availableMB: Double) -> Int {
         if availableMB >= 1_600 { return 4 }
         if availableMB >= 1_100 { return 3 }
@@ -198,9 +204,12 @@ enum RealCUGANStrategyStore {
             record.modelName == modelName
                 && record.tileWidth == tileWidth
                 && record.tileHeight == tileHeight
-                && record.deviceModel == deviceModel()
-                && record.systemVersion == systemVersion()
-                && record.buildNumber == buildNumber()
+                && installIsCurrent(
+                device: record.deviceModel,
+                system: record.systemVersion,
+                build: record.buildNumber,
+                needsRebenchmark: record.needsRebenchmark
+            )
         }
     }
 
