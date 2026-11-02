@@ -486,12 +486,6 @@ final class RealCUGANPass {
             )
             return input
         }
-        func backedOptions(for output: CVPixelBuffer) throws -> MLPredictionOptions {
-            let options = MLPredictionOptions()
-            let backing = try RealCUGANOutputBacking.imageBacking(named: "output", model: model, reusing: output)
-            options.outputBackings = backing.dictionary
-            return options
-        }
         do {
             let first = try croppedInput(specs[0])
             var firstOutput: CVPixelBuffer?
@@ -500,7 +494,7 @@ final class RealCUGANPass {
                 "image": MLFeatureValue(pixelBuffer: first),
                 "alpha": MLFeatureValue(multiArray: alpha)
             ])
-            let firstOptions = try backedOptions(for: firstOutput)
+            let firstOptions = try Self.probeBackedOptions(model: model, output: firstOutput)
             _ = try model.prediction(from: firstProvider, options: firstOptions)
             let sequentialStart = CFAbsoluteTimeGetCurrent()
             _ = try model.prediction(from: firstProvider, options: firstOptions)
@@ -513,7 +507,7 @@ final class RealCUGANPass {
                     "image": MLFeatureValue(pixelBuffer: second),
                     "alpha": MLFeatureValue(multiArray: alpha)
                 ])
-                let secondOptions = try backedOptions(for: secondOutput)
+                let secondOptions = try Self.probeBackedOptions(model: model, output: secondOutput)
                 let extraStart = CFAbsoluteTimeGetCurrent()
                 _ = try model.prediction(from: secondProvider, options: secondOptions)
                 sequentialMs += (CFAbsoluteTimeGetCurrent() - extraStart) * 1000
@@ -530,7 +524,7 @@ final class RealCUGANPass {
                     ]) as MLFeatureProvider
                 }
                 let batchStart = CFAbsoluteTimeGetCurrent()
-                _ = try model.predictions(from: MLArrayBatchProvider(array: providers), options: MLPredictionOptions())
+                try Self.probeUnbackedBatch(model: model, providers: providers)
                 let batchPerTile = (CFAbsoluteTimeGetCurrent() - batchStart) * 1000 / Double(specs.count)
                 if batchPerTile < best {
                     winner = .batchedUnbacked
@@ -550,7 +544,7 @@ final class RealCUGANPass {
                         "image": MLFeatureValue(pixelBuffer: input),
                         "alpha": MLFeatureValue(multiArray: alpha)
                     ])
-                    pairs.append((provider, try backedOptions(for: output)))
+                    pairs.append((provider, try Self.probeBackedOptions(model: model, output: output)))
                 }
                 let group = DispatchGroup()
                 let failureLock = NSLock()
@@ -590,6 +584,19 @@ final class RealCUGANPass {
         } catch {
             DiagnosticsLogger.shared.log("Real-CUGAN automatic probe skipped • \(error.localizedDescription)")
         }
+    }
+
+    /// Single-tile probe only. Output backings are valid on prediction(from:options:).
+    private static func probeBackedOptions(model: MLModel, output: CVPixelBuffer) throws -> MLPredictionOptions {
+        let options = MLPredictionOptions()
+        let backing = try RealCUGANOutputBacking.imageBacking(named: "output", model: model, reusing: output)
+        options.outputBackings = backing.dictionary
+        return options
+    }
+
+    /// Batch probe only. This function must not set output backings.
+    private static func probeUnbackedBatch(model: MLModel, providers: [MLFeatureProvider]) throws {
+        _ = try model.predictions(from: MLArrayBatchProvider(array: providers), options: MLPredictionOptions())
     }
 
     private func upscaleNative2x(
