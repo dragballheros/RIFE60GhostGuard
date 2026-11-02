@@ -142,8 +142,8 @@ struct AIImageStudioView: View {
     @State private var errorText = ""
     @State private var generatedImage: UIImage?
     @State private var generatedURL: URL?
-    @State private var outlineRebuildEnabled = true
-    @State private var outlineRebuildStrength = 0.5
+    @AppStorage("RIFE60.AIImageStudio.outlineRebuildEnabled") private var outlineRebuildEnabled = true
+    @AppStorage("RIFE60.AIImageStudio.outlineRebuildStrength") private var outlineRebuildStrength = 0.5
     @State private var showSaveAlert = false
     @State private var saveMessage = ""
 
@@ -188,6 +188,7 @@ struct AIImageStudioView: View {
             .navigationTitle("AI Image Studio")
             .navigationBarTitleDisplayMode(.inline)
             .onAppear {
+                outlineRebuildStrength = min(max(outlineRebuildStrength, 0.1), 1)
                 restoreGenerationDraft()
                 if let warning = OnDeviceImageGenerator.previousGenerationWarning() {
                     generationStatus = warning

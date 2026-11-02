@@ -274,6 +274,7 @@ jobs:
           python3 Scripts/patch_draw_things_vace_video_masks.py
           python3 Scripts/test_wan_vace_video_bridge.py
           python3 Scripts/test_vace_mask_layout.py
+          python3 Scripts/test_render_governor.py
           python3 - <<'PY'
           from pathlib import Path
           path = Path("Vendor/draw-things-community/Package.swift")

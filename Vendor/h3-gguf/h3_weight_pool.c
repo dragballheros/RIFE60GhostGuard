@@ -26,6 +26,22 @@ struct h3_weight_pool {
     size_t scratch_bytes[2];
 };
 
+static h3_weight_pool *h3_live_pools[8];
+static int h3_live_count;
+
+static void h3_remember_pool(h3_weight_pool *pool) {
+    if (!pool || h3_live_count >= 8) return;
+    h3_live_pools[h3_live_count++] = pool;
+}
+
+static void h3_forget_pool(h3_weight_pool *pool) {
+    for (int index = 0; index < h3_live_count; index++) {
+        if (h3_live_pools[index] != pool) continue;
+        h3_live_pools[index] = h3_live_pools[--h3_live_count];
+        return;
+    }
+}
+
 h3_weight_pool *h3_weight_pool_create(size_t slot_bytes, int want_slots) {
     if (!slot_bytes || want_slots < 1) return NULL;
     h3_weight_pool *pool = calloc(1, sizeof(*pool));
@@ -39,11 +55,13 @@ h3_weight_pool *h3_weight_pool_create(size_t slot_bytes, int want_slots) {
             return NULL;
         }
     }
+    h3_remember_pool(pool);
     return pool;
 }
 
 void h3_weight_pool_free(h3_weight_pool *pool) {
     if (!pool) return;
+    h3_forget_pool(pool);
     for (int index = 0; index < 2; index++) {
         free(pool->scratch[index]);
         free(pool->storage[index]);
@@ -70,6 +88,24 @@ int h3_weight_pool_prefetch_slot(const h3_weight_pool *pool, int compute_slot) {
 void *h3_weight_pool_contents(h3_weight_pool *pool, int slot) {
     if (!pool || slot < 0 || slot >= h3_weight_pool_slot_count(pool)) return NULL;
     return pool->storage[slot];
+}
+
+size_t h3_weight_pool_reclaimable_bytes(void) {
+    size_t total = 0;
+    for (int index = 0; index < h3_live_count; index++) total += h3_weight_pool_live_bytes(h3_live_pools[index]);
+    return total;
+}
+
+void h3_weight_pool_trim_idle(void) {
+    for (int index = 0; index < h3_live_count; index++) {
+        h3_weight_pool *pool = h3_live_pools[index];
+        h3_weight_pool_set_pressure(pool, 1);
+        free(pool->scratch[1]);
+        pool->scratch[1] = NULL;
+        pool->scratch_bytes[1] = 0;
+        free(pool->storage[1]);
+        pool->storage[1] = NULL;
+    }
 }
 
 size_t h3_weight_pool_live_bytes(const h3_weight_pool *pool) {

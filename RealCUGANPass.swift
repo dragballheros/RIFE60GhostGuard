@@ -254,6 +254,9 @@ final class RealCUGANPass {
             tileInputPool = nil
             tileOutputPool = nil
             stitchedFramePool = nil
+            ReclaimableMemoryRegistry.shared.remove(name: "cugan-tile-input")
+            ReclaimableMemoryRegistry.shared.remove(name: "cugan-tile-output")
+            ReclaimableMemoryRegistry.shared.remove(name: "cugan-stitched")
         }
         let stillPreferNeuralEngine = stillProfile.modelName == fast1080Profile.modelName && ModelComputePreference.current == .auto
         let stillModel = try loadModel(named: stillProfile.modelName, preferNeuralEngine: stillPreferNeuralEngine)
@@ -297,6 +300,7 @@ final class RealCUGANPass {
             throw ProcessorError.conversionFailed("could not create Real-CUGAN input tile pool")
         }
         tileInputPool = pool
+        ReclaimableMemoryRegistry.shared.trackPixelPool(pool, name: "cugan-tile-input", width: profile.width, height: profile.height)
 
         let outputAttrs: [String: Any] = [
             kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
@@ -311,6 +315,7 @@ final class RealCUGANPass {
             throw ProcessorError.conversionFailed("could not create Real-CUGAN output tile pool")
         }
         tileOutputPool = outputPool
+        ReclaimableMemoryRegistry.shared.trackPixelPool(outputPool, name: "cugan-tile-output", width: profile.width * 2, height: profile.height * 2)
 
         let stitchedAttrs: [String: Any] = [
             kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
@@ -325,6 +330,7 @@ final class RealCUGANPass {
             throw ProcessorError.conversionFailed("could not create native 2x Real-CUGAN frame pool")
         }
         stitchedFramePool = stitched
+        ReclaimableMemoryRegistry.shared.trackPixelPool(stitched, name: "cugan-stitched", width: targetWidth, height: targetHeight)
     }
 
     private struct TileSpec {

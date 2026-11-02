@@ -132,6 +132,7 @@ final class OutlineEnhancer {
             }
             outputPool = pool
             outputPoolSize = (width, height)
+            ReclaimableMemoryRegistry.shared.trackPixelPool(pool, name: "sharpie-output", width: width, height: height, slots: 2)
         }
         var destination: CVPixelBuffer?
         guard let outputPool,

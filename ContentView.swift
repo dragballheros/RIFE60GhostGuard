@@ -414,7 +414,7 @@ struct ContentView: View {
                         if vm.inputKind == .video {
                         Section("Live Performance") {
                             LabeledContent("Thermal / mode", value: vm.telemetry.thermalState)
-                            LabeledContent("Memory headroom", value: String(format: "%.0f MB available", vm.telemetry.availableMemoryMB))
+                            LabeledContent("Memory headroom", value: String(format: "%.0f MB effective (%.0f MB raw)", vm.telemetry.effectiveMemoryMB, vm.telemetry.availableMemoryMB))
                             LabeledContent("Compression", value: String(format: "%.1f ms/source", vm.telemetry.compressionMsPerFrame))
                             LabeledContent("Final outline", value: String(format: "%.1f ms/frame", vm.telemetry.outlineMsPerFrame))
                             LabeledContent("RIFE HQ", value: String(format: "%.1f ms/generated", vm.telemetry.rifeMsPerGeneratedFrame))

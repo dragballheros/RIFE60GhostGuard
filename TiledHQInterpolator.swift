@@ -243,6 +243,7 @@ final class TiledHQInterpolator {
                 throw ProcessorError.conversionFailed("could not allocate tiled HQ frame")
             }
             bufferPools[key] = pool
+            ReclaimableMemoryRegistry.shared.trackPixelPool(pool, name: "rife-\(key)", width: width, height: height, slots: 2)
         }
         var buffer: CVPixelBuffer?
         guard let pool = bufferPools[key],

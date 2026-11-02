@@ -19,6 +19,8 @@ void h3_weight_pool_set_pressure(h3_weight_pool *pool, int pressure);
 int h3_weight_pool_prefetch_slot(const h3_weight_pool *pool, int compute_slot);
 void *h3_weight_pool_contents(h3_weight_pool *pool, int slot);
 size_t h3_weight_pool_live_bytes(const h3_weight_pool *pool);
+size_t h3_weight_pool_reclaimable_bytes(void);
+void h3_weight_pool_trim_idle(void);
 int h3_weight_pool_bind_scratch(h3_weight_pool *pool, int slot, size_t bytes);
 void h3_weight_pool_recycle_slot(h3_weight_pool *pool, int slot);
 size_t h3_weight_pool_scratch_bytes(const h3_weight_pool *pool);

@@ -56,18 +56,18 @@ final class VideoProcessorViewModel: ObservableObject {
     @Published var importProgress: Double? = nil
     @Published var ghostProtection = true
     @Published var sceneCutProtection = true
-    @Published var compressionProtection = true
-    @Published var outlineProtection = true
-    @Published var colorRebuildEnabled = true
-    @Published var colorRebuildStrength = 0.45
-    @Published var outlineRebuildEnabled = true
-    @Published var outlineRebuildStrength = 0.5
+    @Published var compressionProtection = true { didSet { ProcessingSettings.save(compressionProtection, ProcessingSettings.compression) } }
+    @Published var outlineProtection = true { didSet { ProcessingSettings.save(outlineProtection, ProcessingSettings.outline) } }
+    @Published var colorRebuildEnabled = true { didSet { ProcessingSettings.save(colorRebuildEnabled, ProcessingSettings.colorRebuild) } }
+    @Published var colorRebuildStrength = 0.45 { didSet { ProcessingSettings.save(colorRebuildStrength, ProcessingSettings.colorRebuildStrength) } }
+    @Published var outlineRebuildEnabled = true { didSet { ProcessingSettings.save(outlineRebuildEnabled, ProcessingSettings.outlineRebuild) } }
+    @Published var outlineRebuildStrength = 0.5 { didSet { ProcessingSettings.save(outlineRebuildStrength, ProcessingSettings.outlineRebuildStrength) } }
     @Published var watermarkRemovalEnabled = false
     @Published var watermarkModel: WatermarkModel = .lama
     @Published var watermarkRegions: [WatermarkRegion] = [] { didSet { saveSelectedMask() } }
     @Published var watermarkPaddingPixels = 1.0
-    @Published var colorPopEnabled = true
-    @Published var colorPopStrength = 1.0
+    @Published var colorPopEnabled = true { didSet { ProcessingSettings.save(colorPopEnabled, ProcessingSettings.colorPop) } }
+    @Published var colorPopStrength = 1.0 { didSet { ProcessingSettings.save(colorPopStrength, ProcessingSettings.colorPopStrength) } }
     @Published var upscaleTo4K = true
     @Published var upscaleFirst = false
     @Published var computePreference = ModelComputePreference.current { didSet { computePreference.persist() } }
@@ -126,6 +126,7 @@ final class VideoProcessorViewModel: ObservableObject {
     private let exportFolderBookmarkKey = "RIFE60.ExportFolderBookmark.v1"
 
     init() {
+        restoreProcessingSettings()
         refreshExportFolderName()
         if let job = RecoveryStore.existingJob() {
             // The toggles are greyed out while recovery data exists, so they MUST show the
@@ -377,7 +378,7 @@ final class VideoProcessorViewModel: ObservableObject {
         Export folder: \(exportFolderName)
         Thermal: \(telemetry.thermalState)
         Performance tier: \(telemetry.performanceMode)
-        Memory headroom: \(String(format: "%.0f", telemetry.availableMemoryMB)) MB
+        Memory headroom: \(String(format: "%.0f", telemetry.effectiveMemoryMB)) MB effective (\(String(format: "%.0f", telemetry.availableMemoryMB)) MB raw)
         Physical memory: \(String(format: "%.0f", telemetry.physicalMemoryMB)) MB
         Source frames: \(telemetry.sourceFrames)
         Generated frames: \(telemetry.generatedFrames)
@@ -1301,5 +1302,40 @@ final class VideoProcessorViewModel: ObservableObject {
         return ["pipeline-v5-colorpop", "hq", "ghost=\(guardEnabled)", "cuts=\(cuts)", "compression=\(compressionEnabled)", "outline=\(outlineEnabled)", "colorpop=\(colorPop)", "colorpopStrength=\(gradeStrength)", "warmthMode=\(warmthMode)", "skinToneMode=\(skinToneMode)", "watermark=\(watermark.enabled)", "watermarkMasks=\(watermark.serializedRegions)", "watermarkPadding=\(watermark.paddingPixels)", "watermarkModel=\(WatermarkConfiguration.modelID)", String(format: "sensitivity=%.2f", sensitivity), "audio=\(audio)", "reddit=\(redditMode)", "videoToGIF=\(videoToGIFEnabled)", "upscale=\(upscale)", "upscaleFirst=\(upscaleBeforeRIFE)", "computeUnits=\(modelCompute)", "fps=60"].joined(separator: "|")
     }
 
+    private func restoreProcessingSettings() {
+        compressionProtection = ProcessingSettings.loadBool(ProcessingSettings.compression, default: true)
+        outlineProtection = ProcessingSettings.loadBool(ProcessingSettings.outline, default: true)
+        colorRebuildEnabled = ProcessingSettings.loadBool(ProcessingSettings.colorRebuild, default: true)
+        colorRebuildStrength = ProcessingSettings.loadDouble(ProcessingSettings.colorRebuildStrength, default: 0.45, range: 0.1...1)
+        outlineRebuildEnabled = ProcessingSettings.loadBool(ProcessingSettings.outlineRebuild, default: true)
+        outlineRebuildStrength = ProcessingSettings.loadDouble(ProcessingSettings.outlineRebuildStrength, default: 0.5, range: 0.1...1)
+        colorPopEnabled = ProcessingSettings.loadBool(ProcessingSettings.colorPop, default: true)
+        colorPopStrength = ProcessingSettings.loadDouble(ProcessingSettings.colorPopStrength, default: 1, range: 0.1...1)
+    }
+
+}
+
+private enum ProcessingSettings {
+    static let compression = "RIFE60.processing.compressionProtection"
+    static let outline = "RIFE60.processing.outlineProtection"
+    static let colorRebuild = "RIFE60.processing.colorRebuildEnabled"
+    static let colorRebuildStrength = "RIFE60.processing.colorRebuildStrength"
+    static let outlineRebuild = "RIFE60.processing.outlineRebuildEnabled"
+    static let outlineRebuildStrength = "RIFE60.processing.outlineRebuildStrength"
+    static let colorPop = "RIFE60.processing.colorPopEnabled"
+    static let colorPopStrength = "RIFE60.processing.colorPopStrength"
+
+    static func loadBool(_ key: String, default fallback: Bool) -> Bool {
+        guard UserDefaults.standard.object(forKey: key) != nil else { return fallback }
+        return UserDefaults.standard.bool(forKey: key)
+    }
+
+    static func loadDouble(_ key: String, default fallback: Double, range: ClosedRange<Double>) -> Double {
+        guard UserDefaults.standard.object(forKey: key) != nil else { return fallback }
+        return min(max(UserDefaults.standard.double(forKey: key), range.lowerBound), range.upperBound)
+    }
+
+    static func save(_ value: Bool, _ key: String) { UserDefaults.standard.set(value, forKey: key) }
+    static func save(_ value: Double, _ key: String) { UserDefaults.standard.set(value, forKey: key) }
 }
 

@@ -318,6 +318,7 @@ final class FinalOutlinePass {
         ]
         var pool: CVPixelBufferPool?
         guard CVPixelBufferPoolCreate(kCFAllocatorDefault, nil, attrs as CFDictionary, &pool) == kCVReturnSuccess, let pool else { throw ProcessorError.conversionFailed("could not create final outline pool") }
+        ReclaimableMemoryRegistry.shared.trackPixelPool(pool, name: "outline-\(width)x\(height)", width: width, height: height)
         return pool
     }
 
