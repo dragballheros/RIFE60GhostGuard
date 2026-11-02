@@ -34,7 +34,7 @@ final class ReclaimableMemoryRegistry: @unchecked Sendable {
     func trackPixelPool(_ pool: CVPixelBufferPool, name: String, width: Int, height: Int, slots: Int = 3, bytesPerPixel: Int = 4) {
         let held = max(0, width) * max(0, height) * max(1, slots) * max(1, bytesPerPixel)
         track(name: name, bytes: held) {
-            CVPixelBufferPoolFlushExcessBuffers(pool, [])
+            CVPixelBufferPoolFlush(pool, .excessBuffers)
         }
     }
 
