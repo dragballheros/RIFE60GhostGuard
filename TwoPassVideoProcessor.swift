@@ -275,6 +275,7 @@ final class TwoPassVideoProcessor {
                     }
                 )
                 stageTimer.end("rife")
+                stageTimer.freeze(["rifeHqMs", "rifePushMs", "rifeDecodeMs", "rifeExtractMs", "rifeStitchMs", "rifeBands"])
 
                 if let rifeCheckpoint {
                     try persistCheckpoint(from: generated, to: rifeCheckpoint)
@@ -295,6 +296,7 @@ final class TwoPassVideoProcessor {
         // For low-resolution sources below 1080p, automatically run two native
         // 2× passes when the 4× result fits the 40 MP working budget.
         var postCUGANSource: URL?
+        var fusedFinalURL: URL?
         if !outlineCheckpointValid {
             if upscaleTo4K {
                 if cugan4xCheckpointValid, let cugan4xCheckpoint {
@@ -322,6 +324,10 @@ final class TwoPassVideoProcessor {
                             colorPopStrength: cuganIsFinalVisualStage ? colorPopStrength : 0,
                             applyWarmthCorrection: cuganIsFinalVisualStage
                         )
+                        let fusePolish = visualPolish && automaticCuganPasses == 1
+                        let fusedOutline: FinalOutlinePass? = fusePolish
+                            ? FinalOutlinePass(colorPopStrength: colorPopStrength, colorRebuild: config.colorRebuild, colorRebuildStrength: config.colorRebuildStrength, outlineRebuild: config.outlineRebuild, outlineRebuildStrength: config.outlineRebuildStrength, sharpen: config.outlineProtection)
+                            : nil
                         let generated = try await cugan.run(
                             sourceURL: firstPassInput,
                             finalAudioBitrate: audioBitrate,
@@ -347,10 +353,27 @@ final class TwoPassVideoProcessor {
                                 combined.physicalMemoryMB = sample.physicalMemoryMB
                                 telemetry(combined)
                             },
-                            recoveryDirectory: recoveryDirectory
+                            recoveryDirectory: recoveryDirectory,
+                            fusedPolish: fusedOutline
                         )
                         stageTimer.end("cugan")
-                        if let cuganCheckpoint {
+                        stageTimer.freeze(["realCuganMs", "cuganDecodeMs", "cuganPackMs", "cuganPredictMs", "cuganStitchMs", "cuganSlots", "cuganStrategyLoaded"])
+                        if fusePolish {
+                            if let outlineCheckpoint {
+                                try persistCheckpoint(from: generated, to: outlineCheckpoint)
+                                try? fm.removeItem(at: generated)
+                                fusedFinalURL = outlineCheckpoint
+                                RecoveryStore.update(progress: 0.97, message: "Fused Real-CUGAN and final polish checkpoint saved", force: true)
+                                DiagnosticsLogger.shared.log("Checkpoint saved: fused Real-CUGAN and final polish.")
+                                IncrementalVideoCheckpointWriter.cleanup(recoveryDirectory: recoveryDirectory, stageID: "final-outline")
+                                IncrementalVideoCheckpointWriter.cleanup(recoveryDirectory: recoveryDirectory, stageID: "cugan")
+                                if let rifeCheckpoint { try? fm.removeItem(at: rifeCheckpoint) }
+                            } else {
+                                transientURLs.append(generated)
+                                fusedFinalURL = generated
+                            }
+                            firstPassOutput = fusedFinalURL ?? generated
+                        } else if let cuganCheckpoint {
                             try persistCheckpoint(from: generated, to: cuganCheckpoint)
                             try? fm.removeItem(at: generated)
                             firstPassOutput = cuganCheckpoint
@@ -426,7 +449,10 @@ final class TwoPassVideoProcessor {
         // FINAL VISUAL PASS: apply the slightly narrower Sharpie model only after
         // CUGAN. If CUGAN is disabled it still remains after RIFE.
         let videoForMux: URL
-        if visualPolish {
+        if let fusedFinalURL {
+            videoForMux = fusedFinalURL
+            progress(0.97, "Fused Real-CUGAN and final polish complete")
+        } else if visualPolish {
             if outlineCheckpointValid, let outlineCheckpoint {
                 videoForMux = outlineCheckpoint
                 progress(0.97, "Recovered checkpoint • Final Sharpie outline complete")
@@ -455,7 +481,6 @@ final class TwoPassVideoProcessor {
                         combined.outlineMsPerFrame = outlineSample.outlineMsPerFrame
                         combined.upscaledFrames = stageTelemetry.cugan.upscaledFrames
                         combined.cuganMsPerFrame = stageTelemetry.cugan.cuganMsPerFrame
-                        PipelineStageTimer.current?.record("realCuganMs", milliseconds: stageTelemetry.cugan.cuganMsPerFrame)
                         PipelineStageTimer.current?.record("finalOutlineMs", milliseconds: outlineSample.outlineMsPerFrame)
                         PipelineStageTimer.current?.record("encodeMs", milliseconds: outlineSample.encodeMsPerOutputFrame)
                         combined.upscaleFPS = stageTelemetry.cugan.upscaleFPS
@@ -469,6 +494,7 @@ final class TwoPassVideoProcessor {
                     recoveryDirectory: recoveryDirectory
                 )
                 stageTimer.end("sharpie")
+                stageTimer.freeze(["finalOutlineMs", "sharpiePredictMs", "sharpiePredictWallMs", "sharpiePackMs", "sharpieUnpackMs"])
 
                 if let outlineCheckpoint {
                     try persistCheckpoint(from: generated, to: outlineCheckpoint)

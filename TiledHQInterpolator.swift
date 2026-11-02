@@ -58,6 +58,9 @@ final class TiledHQInterpolator {
         self.tileHeight = adaptiveBands == 1 ? height : self.coreHeight + self.overlap * 2
 
         DiagnosticsLogger.shared.log("RIFE HQ layout • \(width)x\(height) • bands=\(adaptiveBands) • overlap=\(self.overlap) • \(currentThermalStateName())")
+        if adaptiveBands == 1 {
+            DiagnosticsLogger.shared.log("RIFE HQ single stateful stream • rifePushMs is one push per frame • bands stay 1 so overlap pixels stay the same")
+        }
 
         var sessions: [RifeStream] = []
         sessions.reserveCapacity(adaptiveBands)
@@ -107,6 +110,8 @@ final class TiledHQInterpolator {
         if memoryAdaptive { return try interpolateShared(current: current, timesteps: timesteps) }
 
         // Fast path: no extraction, stitching, overlap, or second RIFE stream.
+        // 1080p stays one band. The stream is stateful, so splitting it would
+        // change the overlap pixels. rifePushMs is this single push.
         if bandCount == 1 {
             let started = CFAbsoluteTimeGetCurrent()
             let outputs = try autoreleasepool {

@@ -31,8 +31,9 @@ final class OutlineEnhancer {
     private let models: [MLModel]
     private var model: MLModel { models[0] }
     private static let maxWorkers = 4
-    /// Two in-flight batches per model copy, so the next pack overlaps predict.
-    private static let batchCopies = 2
+    /// In-flight batches per model copy, so the next pack overlaps predict.
+    /// Three copies match the requested Sharpie worker count on a cool phone.
+    private static let batchCopies = 3
     private let inputArrays: [MLMultiArray]
     private let outputArrays: [MLMultiArray]
     private let timingLock = NSLock()
@@ -67,7 +68,8 @@ final class OutlineEnhancer {
         let preference = ModelComputePreference.current
         configuration.computeUnits = preference == .auto ? .cpuAndNeuralEngine : preference.units
         configuration.allowLowPrecisionAccumulationOnGPU = true
-        let copies = selected.usesUnbackedBatch ? Self.batchCopies : 1
+        let tier = currentRenderPerformanceSnapshot().tier
+        let copies = selected.usesUnbackedBatch ? (tier == .safe ? 1 : Self.batchCopies) : 1
         var loaded: [MLModel] = []
         for _ in 0..<copies {
             loaded.append(try MLModel(contentsOf: modelURL, configuration: configuration))
@@ -198,7 +200,9 @@ final class OutlineEnhancer {
         }
 
         if useUnbackedBatch {
+            let liveCopies = currentRenderPerformanceSnapshot().tier == .safe ? 1 : models.count
             try predictUnbackedBatches(
+                copies: liveCopies,
                 tileCount: tileCount, tilesAcross: tilesAcross, core: core,
                 width: width, height: height, src: src, dst: dst,
                 srcRow: srcRow, dstRow: dstRow, isBGRA: isBGRA
@@ -364,13 +368,14 @@ final class OutlineEnhancer {
     /// prediction, and the finished batch is unpacked on that same background
     /// turn. The blend matches the single-tile path.
     private func predictUnbackedBatches(
+        copies liveCopies: Int,
         tileCount: Int, tilesAcross: Int, core: Int,
         width: Int, height: Int,
         src: UnsafeMutablePointer<UInt8>, dst: UnsafeMutablePointer<UInt8>,
         srcRow: Int, dstRow: Int, isBGRA: Bool
     ) throws {
-        let copies = models.count
-        let batchSize = min(Self.maxWorkers, inputArrays.count / max(copies * 2, 1))
+        let copies = max(1, min(liveCopies, models.count))
+        let batchSize = min(Self.maxWorkers, inputArrays.count / max(models.count * 2, 1))
         let wallStart = CFAbsoluteTimeGetCurrent()
         let failure = TileFailure()
         DispatchQueue.concurrentPerform(iterations: copies) { copy in

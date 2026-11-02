@@ -61,6 +61,10 @@ enum SharpieTileStore {
             .appendingPathComponent("sharpie-tile.json")
     }()
 
+    /// Same 256 tile and the same compiled model as the sequential path.
+    /// Batching only groups predictions; it does not change the seam.
+    static func unbenchmarkedDefault() -> SharpieTileStrategy { .batched256 }
+
     static func plan() -> SharpieTileStrategy {
         guard let record = load(),
               !record.needsRebenchmark,
@@ -69,7 +73,8 @@ enum SharpieTileStore {
               record.buildNumber == RealCUGANStrategyStore.buildNumber(),
               let strategy = SharpieTileStrategy(rawValue: record.strategy),
               SharpieTileStrategy.isBundled(strategy) else {
-            return .sequential256
+            let fallback = unbenchmarkedDefault()
+            return SharpieTileStrategy.isBundled(fallback) ? fallback : .sequential256
         }
         return strategy
     }

@@ -183,6 +183,16 @@ enum RealCUGANStrategyStore {
         return 1
     }
 
+    /// Nil when this launch should stay on the sequential default (thermal safe,
+    /// or not enough memory for a second slot). The caller still times the
+    /// candidate once and saves the winner.
+    static func concurrentCandidate(availableMB: Double, tierSafe: Bool) -> RealCUGANStrategyPlan? {
+        if tierSafe { return nil }
+        let slots = allowedConcurrentSlots(availableMB: availableMB)
+        guard slots >= 2 else { return nil }
+        return RealCUGANStrategyPlan(strategy: .concurrentBacked, slots: slots, medianMilliseconds: nil)
+    }
+
     private static func matchingRecord(modelName: String, tileWidth: Int, tileHeight: Int) -> RealCUGANStrategyRecord? {
         loadRecords().first { record in
             record.modelName == modelName

@@ -10,6 +10,7 @@ final class PipelineStageTimer: @unchecked Sendable {
     private var texts: [String: String] = [:]
     private var rejections: [[String: Any]] = []
     private var open: [String: Date] = [:]
+    private var frozenMetrics: Set<String> = []
     private static let currentLock = NSLock()
     static weak var current: PipelineStageTimer?
 
@@ -26,8 +27,19 @@ final class PipelineStageTimer: @unchecked Sendable {
         lock.unlock()
     }
 
+    /// Later stages must not keep publishing a finished stage's ms/frame.
+    func freeze(_ names: [String]) {
+        lock.lock()
+        frozenMetrics.formUnion(names)
+        lock.unlock()
+    }
+
     func record(_ name: String, milliseconds: Double) {
         lock.lock()
+        if frozenMetrics.contains(name) {
+            lock.unlock()
+            return
+        }
         metrics[name] = milliseconds
         lock.unlock()
         if name.hasSuffix("Ms") {

@@ -505,6 +505,14 @@ jobs:
           swiftc -swift-version 5 RealCUGANTileStrategy.swift /tmp/cugan-strategy-check/main.swift -o /tmp/cugan-strategy-check/check
           /tmp/cugan-strategy-check/check
 
+      - name: Verify Sharpie batch and CUGAN slot policy
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/speed-policy-check
+          cp Scripts/check_speed_policy.swift /tmp/speed-policy-check/main.swift
+          swiftc -swift-version 5 RealCUGANTileStrategy.swift SharpieTileStrategy.swift /tmp/speed-policy-check/main.swift -o /tmp/speed-policy-check/check
+          /tmp/speed-policy-check/check
+
       - name: Verify Real-CUGAN output backings
         run: |
           set -euo pipefail
