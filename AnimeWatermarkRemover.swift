@@ -210,8 +210,6 @@ final class AnimeWatermarkRemover: WatermarkRemovalApplying {
         var pool: CVPixelBufferPool?
         guard CVPixelBufferPoolCreate(kCFAllocatorDefault, nil, attributes as CFDictionary, &pool) == kCVReturnSuccess,
               let pool else { throw ProcessorError.conversionFailed("could not create anime inpainting buffer pool") }
-        let bytesPerPixel = format == kCVPixelFormatType_OneComponent8 ? 1 : 4
-        ReclaimableMemoryRegistry.shared.trackPixelPool(pool, name: "watermark-\(width)x\(height)-\(format)", width: width, height: height, slots: 2, bytesPerPixel: bytesPerPixel)
         return pool
     }
 

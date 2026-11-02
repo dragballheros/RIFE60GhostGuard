@@ -287,6 +287,5 @@ final class AutoWarmthCorrection {
         pool = newPool
         poolWidth = width
         poolHeight = height
-        ReclaimableMemoryRegistry.shared.trackPixelPool(newPool, name: "warmth-\(width)x\(height)", width: width, height: height, slots: 2)
     }
 }

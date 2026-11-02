@@ -108,7 +108,6 @@ private final class ColorPopSkinToneCorrection {
         pool = newPool
         poolWidth = width
         poolHeight = height
-        ReclaimableMemoryRegistry.shared.trackPixelPool(newPool, name: "color-pop-skin-\(width)x\(height)", width: width, height: height, slots: 2)
     }
 }
 
@@ -216,7 +215,6 @@ final class ColorPopGrade {
         guard CVPixelBufferPoolCreate(kCFAllocatorDefault, nil, attributes as CFDictionary, &newPool) == kCVReturnSuccess,
               let newPool else { throw ProcessorError.conversionFailed("could not create Color Pop buffer pool") }
         pool = newPool
-        ReclaimableMemoryRegistry.shared.trackPixelPool(newPool, name: "color-pop-\(width)x\(height)", width: width, height: height, slots: 2)
         poolWidth = width
         poolHeight = height
     }

@@ -366,7 +366,6 @@ final class DeepCreamWatermarkRemover: WatermarkRemovalApplying {
         var pool: CVPixelBufferPool?
         guard CVPixelBufferPoolCreate(kCFAllocatorDefault, nil, attributes as CFDictionary, &pool) == kCVReturnSuccess,
               let pool else { throw ProcessorError.conversionFailed("could not create DeepCream output buffer pool") }
-        ReclaimableMemoryRegistry.shared.trackPixelPool(pool, name: "deepcream-\(width)x\(height)", width: width, height: height, slots: 2)
         return pool
     }
 
