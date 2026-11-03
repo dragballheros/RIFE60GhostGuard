@@ -173,17 +173,17 @@ final class AnimeRestorePass {
     /// Exact and near-duplicate anime frames reuse the restored picture.
     /// Static blocks keep the previous restoration. A scene cut drops that hold.
     private static func restoreFrame(model: AnimeRestoreTiledModel, source: CVPixelBuffer, strength: Double, pool: CVPixelBufferPool?, previousSource: inout CVPixelBuffer?, previousRestored: inout CVPixelBuffer?, reused: inout Int) throws -> CVPixelBuffer {
-        if let previousSource, let previousRestored {
-            let difference = blockDifference(previousSource, source)
+        if let priorSource = previousSource, let priorRestored = previousRestored {
+            let difference = blockDifference(priorSource, source)
             if difference.mean >= 0.20 {
                 previousSource = nil
                 previousRestored = nil
             } else if difference.mean <= 0.012 {
                 reused += 1
-                return try apply(model: model, source: source, restored: previousRestored, strength: strength, pool: pool, hold: nil)
+                return try apply(model: model, source: source, restored: priorRestored, strength: strength, pool: pool, hold: nil)
             } else {
                 let restored = try model.restore(source)
-                let held = try apply(model: model, source: source, restored: restored, strength: strength, pool: pool, hold: (previousRestored, difference.quiet))
+                let held = try apply(model: model, source: source, restored: restored, strength: strength, pool: pool, hold: (priorRestored, difference.quiet))
                 previousSource = source
                 previousRestored = held
                 return held
