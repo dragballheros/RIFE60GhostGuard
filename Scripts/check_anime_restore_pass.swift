@@ -45,7 +45,7 @@ let input = AVAssetWriterInput(mediaType: .video, outputSettings: [
     AVVideoWidthKey: 1280,
     AVVideoHeightKey: 720
 ])
-let adaptor = AVAssetWriterInputPixelBufferAdaptor(input: input, sourcePixelBufferAttributes: [
+let adaptor = AVAssetWriterInputPixelBufferAdaptor(assetWriterInput: input, sourcePixelBufferAttributes: [
     kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
     kCVPixelBufferWidthKey as String: 1280,
     kCVPixelBufferHeightKey as String: 720
@@ -68,7 +68,9 @@ for frame in 0..<2 {
     }
 }
 input.markAsFinished()
-await writer.finishWriting()
+await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+    writer.finishWriting { continuation.resume() }
+}
 require(writer.status == .completed, "synthetic 720p clip \(writer.error?.localizedDescription ?? "")")
 
 let result = try await AnimeRestorePass(strength: 0.8, quality: .apisr).run(sourceURL: source) { _, message in
