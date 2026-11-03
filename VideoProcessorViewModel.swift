@@ -67,7 +67,8 @@ final class VideoProcessorViewModel: ObservableObject {
     @Published var watermarkRegions: [WatermarkRegion] = [] { didSet { saveSelectedMask() } }
     @Published var watermarkPaddingPixels = 1.0
     @Published var animeRestoreEnabled = false { didSet { ProcessingSettings.save(animeRestoreEnabled, ProcessingSettings.animeRestore) } }
-    @Published var animeRestoreStrength = 1.0 { didSet { ProcessingSettings.save(animeRestoreStrength, ProcessingSettings.animeRestoreStrength) } }
+    @Published var animeRestoreStrength = 0.8 { didSet { ProcessingSettings.save(animeRestoreStrength, ProcessingSettings.animeRestoreStrength) } }
+    @Published var animeRestoreQuality = AnimeRestoreQuality.auto.rawValue { didSet { ProcessingSettings.save(animeRestoreQuality, ProcessingSettings.animeRestoreQuality) } }
     @Published private(set) var animeRestoreAutoNote = ""
     private var animeRestoreShortSide = false
     private var animeRestoreSuppressedURL: URL?
@@ -133,6 +134,7 @@ final class VideoProcessorViewModel: ObservableObject {
     private let exportFolderBookmarkKey = "RIFE60.ExportFolderBookmark.v1"
 
     init() {
+        AnimeRestoreRegistry.installDefault()
         restoreProcessingSettings()
         refreshExportFolderName()
         if let job = RecoveryStore.existingJob() {
@@ -503,6 +505,7 @@ final class VideoProcessorViewModel: ObservableObject {
         let animeRestoreUser = animeRestoreEnabled
         let animeRestoreUserStrength = animeRestoreStrength
         let animeRestoreSuppress = animeRestoreSuppressedURL == selectedSource
+        let animeRestoreQualityChoice = animeRestoreQuality
         let sensitivity = ghostSensitivity
         let colorPop = colorPopEnabled
         let gradeStrength = colorPopStrength
@@ -513,7 +516,7 @@ final class VideoProcessorViewModel: ObservableObject {
         let upscaleBeforeRIFE = upscaleFirst && upscale
         let modelCompute = computePreference.rawValue
         let selectedTargetFPS = self.selectedTargetFPS
-        let configKey = ["pipeline-v7-rebuild", "hq", "ghost=\(guardEnabled)", "cuts=\(cuts)", "compression=\(compressionEnabled)", "outline=\(outlineEnabled)", "colorRebuild=\(colorRebuild)", String(format: "colorRebuildStrength=%.2f", colorStrength), "outlineRebuild=\(lineRebuild)", String(format: "outlineRebuildStrength=%.2f", lineStrength), "animeRestore=\(animeRestoreUser)", String(format: "animeRestoreStrength=%.2f", animeRestoreUserStrength), "animeRestoreSuppressAuto=\(animeRestoreSuppress)", "colorpop=\(colorPop)", "colorpopStrength=\(gradeStrength)", "warmthMode=\(warmthMode)", "skinToneMode=\(skinToneMode)", "watermark=\(watermark.enabled)", "watermarkMasks=\(watermark.serializedRegions)", "watermarkPadding=\(watermark.paddingPixels)", "watermarkModel=\(watermark.model.rawValue)", String(format: "sensitivity=%.2f", sensitivity), "audio=\(audio)", "reddit=\(redditMode)", "videoToGIF=\(videoToGIFEnabled)", "upscale=\(upscale)", "upscaleFirst=\(upscaleBeforeRIFE)", "computeUnits=\(modelCompute)", "fps=60"].joined(separator: "|")
+        let configKey = ["pipeline-v7-rebuild", "hq", "ghost=\(guardEnabled)", "cuts=\(cuts)", "compression=\(compressionEnabled)", "outline=\(outlineEnabled)", "colorRebuild=\(colorRebuild)", String(format: "colorRebuildStrength=%.2f", colorStrength), "outlineRebuild=\(lineRebuild)", String(format: "outlineRebuildStrength=%.2f", lineStrength), "animeRestore=\(animeRestoreUser)", String(format: "animeRestoreStrength=%.2f", animeRestoreUserStrength), "animeRestoreSuppressAuto=\(animeRestoreSuppress)", "animeRestoreQuality=\(animeRestoreQualityChoice)", "colorpop=\(colorPop)", "colorpopStrength=\(gradeStrength)", "warmthMode=\(warmthMode)", "skinToneMode=\(skinToneMode)", "watermark=\(watermark.enabled)", "watermarkMasks=\(watermark.serializedRegions)", "watermarkPadding=\(watermark.paddingPixels)", "watermarkModel=\(watermark.model.rawValue)", String(format: "sensitivity=%.2f", sensitivity), "audio=\(audio)", "reddit=\(redditMode)", "videoToGIF=\(videoToGIFEnabled)", "upscale=\(upscale)", "upscaleFirst=\(upscaleBeforeRIFE)", "computeUnits=\(modelCompute)", "fps=60"].joined(separator: "|")
         DiagnosticsLogger.shared.log("Render requested • \(configKey)")
 
         currentTask = Task.detached(priority: .userInitiated) { [weak self] in
@@ -582,6 +585,7 @@ final class VideoProcessorViewModel: ObservableObject {
                     config.animeRestoreUserEnabled = animeRestoreUser
                     config.animeRestoreSuppressAuto = animeRestoreSuppress
                     config.animeRestoreStrength = animeRestoreUserStrength
+                    config.animeRestoreQuality = animeRestoreQualityChoice
                     let processor = TwoPassVideoProcessor(configuration: config, upscaleTo4K: upscale, colorPopEnabled: colorPop, colorPopStrength: gradeStrength, watermark: watermark, upscaleFirst: upscaleBeforeRIFE)
                     let generated = try await processor.process(sourceURL: job.sourceURL, recoveryDirectory: job.directory, progress: { p, message in
                         RecoveryStore.update(progress: p, message: message)
@@ -669,6 +673,7 @@ final class VideoProcessorViewModel: ObservableObject {
                 if let value = Double(pair[1]), value.isFinite { animeRestoreStrength = min(max(value, 0.1), 1) }
             case "animeRestoreSuppressAuto":
                 animeRestoreSuppressFromRecovery = enabled
+            case "animeRestoreQuality": animeRestoreQuality = pair[1]
             case "watermark": watermarkRemovalEnabled = enabled
             case "watermarkMasks": watermarkRegions = WatermarkConfiguration.decodeRegions(pair[1])
             case "watermarkPadding":
@@ -1321,7 +1326,7 @@ final class VideoProcessorViewModel: ObservableObject {
         let sensitivity = ghostSensitivity, audio = preserveAudio, upscale = upscaleTo4K
         let upscaleBeforeRIFE = upscaleFirst && upscale, modelCompute = computePreference.rawValue
         let watermark = WatermarkConfiguration(enabled: watermarkRemovalEnabled, regions: watermarkRegions, paddingPixels: Int(watermarkPaddingPixels), model: watermarkModel)
-        return ["pipeline-v5-colorpop", "hq", "ghost=\(guardEnabled)", "cuts=\(cuts)", "compression=\(compressionEnabled)", "outline=\(outlineEnabled)", "animeRestore=\(animeRestoreEnabled)", String(format: "animeRestoreStrength=%.2f", animeRestoreStrength), "colorpop=\(colorPop)", "colorpopStrength=\(gradeStrength)", "warmthMode=\(warmthMode)", "skinToneMode=\(skinToneMode)", "watermark=\(watermark.enabled)", "watermarkMasks=\(watermark.serializedRegions)", "watermarkPadding=\(watermark.paddingPixels)", "watermarkModel=\(WatermarkConfiguration.modelID)", String(format: "sensitivity=%.2f", sensitivity), "audio=\(audio)", "reddit=\(redditMode)", "videoToGIF=\(videoToGIFEnabled)", "upscale=\(upscale)", "upscaleFirst=\(upscaleBeforeRIFE)", "computeUnits=\(modelCompute)", "fps=60"].joined(separator: "|")
+        return ["pipeline-v5-colorpop", "hq", "ghost=\(guardEnabled)", "cuts=\(cuts)", "compression=\(compressionEnabled)", "outline=\(outlineEnabled)", "animeRestore=\(animeRestoreEnabled)", String(format: "animeRestoreStrength=%.2f", animeRestoreStrength), "animeRestoreQuality=\(animeRestoreQuality)", "colorpop=\(colorPop)", "colorpopStrength=\(gradeStrength)", "warmthMode=\(warmthMode)", "skinToneMode=\(skinToneMode)", "watermark=\(watermark.enabled)", "watermarkMasks=\(watermark.serializedRegions)", "watermarkPadding=\(watermark.paddingPixels)", "watermarkModel=\(WatermarkConfiguration.modelID)", String(format: "sensitivity=%.2f", sensitivity), "audio=\(audio)", "reddit=\(redditMode)", "videoToGIF=\(videoToGIFEnabled)", "upscale=\(upscale)", "upscaleFirst=\(upscaleBeforeRIFE)", "computeUnits=\(modelCompute)", "fps=60"].joined(separator: "|")
     }
 
     private func restoreProcessingSettings() {
@@ -1334,7 +1339,8 @@ final class VideoProcessorViewModel: ObservableObject {
         colorPopEnabled = ProcessingSettings.loadBool(ProcessingSettings.colorPop, default: true)
         colorPopStrength = ProcessingSettings.loadDouble(ProcessingSettings.colorPopStrength, default: 1, range: 0.1...1)
         animeRestoreEnabled = ProcessingSettings.loadBool(ProcessingSettings.animeRestore, default: false)
-        animeRestoreStrength = ProcessingSettings.loadDouble(ProcessingSettings.animeRestoreStrength, default: 1, range: 0.1...1)
+        animeRestoreStrength = ProcessingSettings.loadDouble(ProcessingSettings.animeRestoreStrength, default: 0.8, range: 0.1...1)
+        animeRestoreQuality = ProcessingSettings.loadString(ProcessingSettings.animeRestoreQuality, default: AnimeRestoreQuality.auto.rawValue)
     }
 
     var animeRestoreShown: Bool {
@@ -1403,6 +1409,7 @@ private enum ProcessingSettings {
     static let colorPopStrength = "RIFE60.processing.colorPopStrength"
     static let animeRestore = "RIFE60.processing.animeRestoreEnabled"
     static let animeRestoreStrength = "RIFE60.processing.animeRestoreStrength"
+    static let animeRestoreQuality = "RIFE60.processing.animeRestoreQuality"
 
     static func loadBool(_ key: String, default fallback: Bool) -> Bool {
         guard UserDefaults.standard.object(forKey: key) != nil else { return fallback }
@@ -1414,7 +1421,12 @@ private enum ProcessingSettings {
         return min(max(UserDefaults.standard.double(forKey: key), range.lowerBound), range.upperBound)
     }
 
+    static func loadString(_ key: String, default fallback: String) -> String {
+        UserDefaults.standard.string(forKey: key) ?? fallback
+    }
+
     static func save(_ value: Bool, _ key: String) { UserDefaults.standard.set(value, forKey: key) }
     static func save(_ value: Double, _ key: String) { UserDefaults.standard.set(value, forKey: key) }
+    static func save(_ value: String, _ key: String) { UserDefaults.standard.set(value, forKey: key) }
 }
 

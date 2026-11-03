@@ -231,9 +231,16 @@ struct ContentView: View {
                         if !vm.animeRestoreAutoNote.isEmpty {
                             Text(vm.animeRestoreAutoNote).font(.caption).foregroundStyle(.secondary)
                         }
+                        Picker("Anime Restore quality", selection: $vm.animeRestoreQuality) {
+                            ForEach(AnimeRestoreQuality.allCases) { quality in
+                                Text(quality.title).tag(quality.rawValue)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+                        .disabled(vm.queueLocked || vm.isImporting)
                         HStack { Text("Anime Restore strength"); Spacer(); Text(String(format: "%.2f", vm.animeRestoreStrength)) }
                         Slider(value: $vm.animeRestoreStrength, in: 0.1...1.0).disabled(vm.queueLocked || vm.isImporting)
-                        Text("Runs first, before Compression Guard, once a restoration model is installed. Until then the toggle and strength are saved and frames stay unchanged. Auto-enables when the short side is 720 px or less. Turning it off keeps that source off without turning auto on for a larger video.").font(.caption).foregroundStyle(.secondary)
+                        Text("Runs first, before Compression Guard. Auto downloads APISR or SPAN, restores at 2× in 256 tiles, then scales back to the source size. Auto quality keeps APISR when a frame stays within about a second after held-frame reuse, otherwise SPAN. Strength defaults to 0.80. Turning the toggle off leaves frames unchanged.").font(.caption).foregroundStyle(.secondary)
                         Toggle("Compression Guard", isOn: $vm.compressionProtection).disabled(vm.queueLocked || vm.isImporting)
                         Toggle("Color Rebuild", isOn: $vm.colorRebuildEnabled).disabled(vm.queueLocked || vm.isImporting)
                         if vm.colorRebuildEnabled {
@@ -437,6 +444,12 @@ struct ContentView: View {
                             LabeledContent("Rejected", value: "\(vm.telemetry.rejectedFrames)")
                         }
                         }
+                    }
+
+                    Section("About") {
+                        Text("Anime Restore uses APISR 2× RRDB (Kiteretsu77, CVPR 2024, GPL-3.0, academic use) and 2×HFA2k LUDVAE SPAN (Phhofm, CC-BY-4.0). Weights download on first use and are not in the app bundle.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                     }
 
                     Section("Diagnostics") {

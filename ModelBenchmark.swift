@@ -63,17 +63,55 @@ enum ModelBenchmark {
             }
             rows.append(([name] + values).joined(separator: " | "))
         }
-        if AnimeRestoreRegistry.isRegistered {
-            rows.append("Anime Restore | \(AnimeRestoreRegistry.displayName) | registered • timing uses the installed model on a real frame")
-        } else {
-            rows.append("Anime Restore | no model registered | skipped")
-        }
+        rows.append(contentsOf: benchmarkAnimeRestore(progress: progress))
         rows.append(contentsOf: try benchmarkStrategies(progress: progress))
         rows.append(contentsOf: try benchmarkSharpieTiles(progress: progress))
         rows.append("Policies permit CPU fallback; these labels do not prove every operation used the named accelerator. Sharpie production also uses parallel tiles. This button is optional. The first render already times Real-CUGAN and Sharpie on real tiles and saves the winner for this device, iOS version, and app build.")
         let report = rows.joined(separator: "\n")
         DiagnosticsLogger.shared.log(report)
         return report
+    }
+
+    private static func benchmarkAnimeRestore(progress: @escaping @Sendable (Double, String) -> Void) -> [String] {
+        AnimeRestoreRegistry.installDefault()
+        var rows = ["Anime Restore | model | Auto (.all) | GPU (CPU+GPU) | Neural Engine (CPU+ANE)"]
+        for variant in AnimeRestoreVariant.allCases {
+            var values: [String] = []
+            for preference in ModelComputePreference.allCases {
+                progress(1, "Anime Restore • \(variant.title) • \(preference.title)")
+                do {
+                    let package = try AnimeRestoreFiles.ensurePackage(variant)
+                    let compiled = try MLModel.compileModel(at: package)
+                    let configuration = MLModelConfiguration()
+                    configuration.computeUnits = preference.units
+                    configuration.allowLowPrecisionAccumulationOnGPU = true
+                    let model = try MLModel(contentsOf: compiled, configuration: configuration)
+                    let input = try MLMultiArray(shape: [1, 3, 256, 256], dataType: .float32)
+                    let provider = try MLDictionaryFeatureProvider(dictionary: ["input": input])
+                    for _ in 0..<2 { _ = try model.prediction(from: provider) }
+                    var samples: [Double] = []
+                    for _ in 0..<5 {
+                        let start = CFAbsoluteTimeGetCurrent()
+                        _ = try model.prediction(from: provider)
+                        samples.append((CFAbsoluteTimeGetCurrent() - start) * 1000)
+                    }
+                    let median = samples.sorted()[2]
+                    let tiles = AnimeRestoreChoice.tileCount(length: 1280) * AnimeRestoreChoice.tileCount(length: 720)
+                    let frame = median * Double(tiles) / AnimeRestoreChoice.duplicateDivisor
+                    values.append(String(format: "%.1f tile / %.0f frame", median, frame))
+                    DiagnosticsLogger.shared.log(String(format: "Anime Restore benchmark • %@ • %@ • %.1f ms/tile • %.0f ms/frame at 1280x720 after 2s reuse", variant.title, preference.title, median, frame))
+                } catch {
+                    let detail = benchmarkErrorText(error)
+                    values.append("FAILED: \(detail)")
+                    let line = "Anime Restore benchmark failure • \(variant.title) • \(preference.title) • \(detail)"
+                    DiagnosticsLogger.shared.log(line)
+                    CrashCapture.step(line)
+                }
+            }
+            rows.append(([variant.title] + values).joined(separator: " | "))
+        }
+        rows.append("Anime Restore frame estimate is 18 tiles at 1280×720 divided by 2 for held-frame reuse. It is a tile median, not a full video measurement.")
+        return rows
     }
 
     private static func benchmarkStrategies(progress: @escaping @Sendable (Double, String) -> Void) throws -> [String] {

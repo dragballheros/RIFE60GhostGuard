@@ -59,5 +59,4 @@ enum AnimeRestoreRegistry {
     static var displayName = "unregistered"
 
     static var isRegistered: Bool { factory != nil }
-
 }

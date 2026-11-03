@@ -161,6 +161,7 @@ final class TwoPassVideoProcessor {
         if rifeNeeded, !rifeCheckpointValid, needsRestoration, let restoredCheckpoint {
             restoredCheckpointValid = await validVideo(restoredCheckpoint, expectedDuration: sourceDuration)
         }
+        AnimeRestoreRegistry.installDefault()
         let animeDecision = AnimeRestorePolicy.decide(
             width: sourceWidth,
             height: sourceHeight,
@@ -204,7 +205,12 @@ final class TwoPassVideoProcessor {
                 if let animeRestoreCheckpoint { try? fm.removeItem(at: animeRestoreCheckpoint) }
                 progress(0.001, "Pass 1/4 • Starting Anime Restore…")
                 stageTimer.begin("anime-restore")
-                let restored = try await AnimeRestorePass(strength: config.animeRestoreStrength).run(
+                if upscaleTo4K {
+                    let note = "Over-processing note • Anime Restore and Real-CUGAN Noise 3 both run. CUGAN settings are unchanged."
+                    DiagnosticsLogger.shared.log(note)
+                    CrashCapture.step(note)
+                }
+                let restored = try await AnimeRestorePass(strength: config.animeRestoreStrength, quality: AnimeRestoreQuality(rawValue: config.animeRestoreQuality) ?? .auto).run(
                     sourceURL: sourceURL,
                     progress: { p, _ in progress(p * 0.03, "Pass 1/4 • Anime Restore") },
                     recoveryDirectory: recoveryDirectory
@@ -607,6 +613,7 @@ final class TwoPassVideoProcessor {
         let outputWidth = width * 2, outputHeight = height * 2
         let audioBitrate: Double
         if let audio = try await asset.loadTracks(withMediaType: .audio).first { audioBitrate = Double(try await audio.load(.estimatedDataRate)) } else { audioBitrate = 0 }
+        AnimeRestoreRegistry.installDefault()
         let animeDecision = AnimeRestorePolicy.decide(
             width: width,
             height: height,
@@ -647,7 +654,10 @@ final class TwoPassVideoProcessor {
                 let generated: URL
                 switch stage {
                 case "anime-restore":
-                    let result = try await AnimeRestorePass(strength: config.animeRestoreStrength).run(sourceURL: inputURL, progress: publish, recoveryDirectory: recoveryDirectory)
+                    let note = "Over-processing note • Anime Restore and Real-CUGAN Noise 3 both run. CUGAN settings are unchanged."
+                    DiagnosticsLogger.shared.log(note)
+                    CrashCapture.step(note)
+                    let result = try await AnimeRestorePass(strength: config.animeRestoreStrength, quality: AnimeRestoreQuality(rawValue: config.animeRestoreQuality) ?? .auto).run(sourceURL: inputURL, progress: publish, recoveryDirectory: recoveryDirectory)
                     generated = result.url
                 case "restored":
                     let result = try await RestorationPass(compressionEnabled: config.compressionProtection, outlineEnabled: false, watermark: watermark).run(sourceURL: inputURL, progress: { p, message in publish(p / 0.28, message) }, telemetry: { sample in combined = sample; telemetry(sample) }, recoveryDirectory: recoveryDirectory)

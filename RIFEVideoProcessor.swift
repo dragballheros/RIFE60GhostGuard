@@ -20,7 +20,8 @@ struct ProcessorConfiguration {
     var animeRestoreUserEnabled: Bool = false
     /// User turned the toggle off while this source would have auto-enabled.
     var animeRestoreSuppressAuto: Bool = false
-    var animeRestoreStrength: Double = 1
+    var animeRestoreStrength: Double = 0.8
+    var animeRestoreQuality: String = AnimeRestoreQuality.auto.rawValue
 }
 
 enum ProcessorError: LocalizedError {
