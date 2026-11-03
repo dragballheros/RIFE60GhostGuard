@@ -64,7 +64,7 @@ for frame in 0..<2 {
             memset(base, frame == 0 ? 40 : 180, CVPixelBufferGetBytesPerRow(buffer) * CVPixelBufferGetHeight(buffer))
         }
         CVPixelBufferUnlockBaseAddress(buffer, [])
-        require(adaptor.append(buffer, withPresentationTime: CMTime(value: CMTimeValue(frame), timescale: 30)), "append synthetic frame")
+        require(adaptor.append(buffer, withPresentationTime: CMTime(value: CMTimeValue(frame + 1), timescale: 30)), "append synthetic frame")
     }
 }
 input.markAsFinished()
