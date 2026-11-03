@@ -91,35 +91,73 @@ final class AnimeRestorePass {
         }
         defer { ReclaimableMemoryRegistry.shared.remove(name: "anime-restore-blend") }
 
+        let tiles = AnimeRestoreChoice.tileCount(length: width) * AnimeRestoreChoice.tileCount(length: height)
+        DiagnosticsLogger.shared.log("Anime Restore tiles • \(width)x\(height) • \(tiles) source tiles • each tile is restored at 256 then stitched, with no full 2× frame")
         var frames = 0
         var reused = 0
         var seconds = 0.0
         var previousSource: CVPixelBuffer?
         var previousRestored: CVPixelBuffer?
+        var active = model
+        var triedSPAN = variant == .span
+        var passthrough = false
         let ahead = FrameAheadReader(output: output, depth: 2)
         let started = CFAbsoluteTimeGetCurrent()
         while let item = ahead.next() {
             try await checkpoint.checkCancellation()
             try await adaptiveFrameBoundaryPacing()
             if CMTimeCompare(item.time, checkpoint.resumeTime) <= 0 { continue }
-            let frame: CVPixelBuffer
+            DiagnosticsLogger.shared.log("Anime Restore frame \(frames) • tiles=\(active.tileCount) • last=\(active.lastStep)")
             let began = CFAbsoluteTimeGetCurrent()
-            do {
-                frame = try autoreleasepool {
-                    try Self.restoreFrame(model: model, source: item.buffer, strength: strength, pool: blendPool, previousSource: &previousSource, previousRestored: &previousRestored, reused: &reused)
+            let frame: CVPixelBuffer
+            if passthrough {
+                frame = try Self.copyFrame(item.buffer)
+            } else {
+                do {
+                    frame = try autoreleasepool {
+                        try Self.restoreFrame(model: active, source: item.buffer, strength: strength, pool: blendPool, deadline: CFAbsoluteTimeGetCurrent() + 15, previousSource: &previousSource, previousRestored: &previousRestored, reused: &reused) { done, total in
+                            progress(min(0.99, Double(frames) / 300), "Anime Restore • \(frames) source frames • tile \(done)/\(total)")
+                        }
+                    }
+                } catch let stall as AnimeRestoreStall {
+                    let line = "\(stall) • in-flight tile stalled • source frames=\(frames)"
+                    DiagnosticsLogger.shared.log(line)
+                    CrashCapture.step(line)
+                    previousSource = nil
+                    previousRestored = nil
+                    if !triedSPAN {
+                        triedSPAN = true
+                        DiagnosticsLogger.shared.log("Anime Restore falling back to SPAN")
+                        CrashCapture.step("Anime Restore falling back to SPAN")
+                        active = try AnimeRestoreTiledModel(variant: .span)
+                        AnimeRestoreRegistry.displayName = AnimeRestoreVariant.span.title
+                        do {
+                            frame = try Self.restoreFrame(model: active, source: item.buffer, strength: strength, pool: blendPool, deadline: CFAbsoluteTimeGetCurrent() + 15, previousSource: &previousSource, previousRestored: &previousRestored, reused: &reused, onTile: nil)
+                        } catch {
+                            let skip = "Anime Restore skipped for this render • SPAN also stalled • \(error.localizedDescription)"
+                            DiagnosticsLogger.shared.log(skip)
+                            CrashCapture.step(skip)
+                            passthrough = true
+                            frame = try Self.copyFrame(item.buffer)
+                        }
+                    } else {
+                        passthrough = true
+                        let skip = "Anime Restore skipped for this render • SPAN also stalled • frames unchanged from here"
+                        DiagnosticsLogger.shared.log(skip)
+                        CrashCapture.step(skip)
+                        frame = try Self.copyFrame(item.buffer)
+                    }
+                } catch {
+                    let line = "Anime Restore failed • \(error.localizedDescription)"
+                    DiagnosticsLogger.shared.log(line)
+                    CrashCapture.step(line)
+                    throw error
                 }
-            } catch {
-                let line = "Anime Restore failed • \(error.localizedDescription)"
-                DiagnosticsLogger.shared.log(line)
-                CrashCapture.step(line)
-                throw error
             }
             seconds += CFAbsoluteTimeGetCurrent() - began
             try await checkpoint.append(frame, at: item.time)
             frames += 1
-            if frames == 1 || frames % 30 == 0 {
-                progress(min(0.99, Double(frames) / 300), "Anime Restore • \(frames) frames")
-            }
+            progress(min(0.99, Double(frames) / 300), "Anime Restore • \(frames) source frames")
         }
         let url = try await checkpoint.finish()
         let ms = frames > 0 ? seconds * 1000 / Double(frames) : 0
@@ -172,7 +210,7 @@ final class AnimeRestorePass {
 
     /// Exact and near-duplicate anime frames reuse the restored picture.
     /// Static blocks keep the previous restoration. A scene cut drops that hold.
-    private static func restoreFrame(model: AnimeRestoreTiledModel, source: CVPixelBuffer, strength: Double, pool: CVPixelBufferPool?, previousSource: inout CVPixelBuffer?, previousRestored: inout CVPixelBuffer?, reused: inout Int) throws -> CVPixelBuffer {
+    private static func restoreFrame(model: AnimeRestoreTiledModel, source: CVPixelBuffer, strength: Double, pool: CVPixelBufferPool?, deadline: CFAbsoluteTime, previousSource: inout CVPixelBuffer?, previousRestored: inout CVPixelBuffer?, reused: inout Int, onTile: ((Int, Int) -> Void)?) throws -> CVPixelBuffer {
         if let priorSource = previousSource, let priorRestored = previousRestored {
             let difference = blockDifference(priorSource, source)
             if difference.mean >= 0.20 {
@@ -182,14 +220,14 @@ final class AnimeRestorePass {
                 reused += 1
                 return try apply(model: model, source: source, restored: priorRestored, strength: strength, pool: pool, hold: nil)
             } else {
-                let restored = try model.restore(source)
+                let restored = try model.restore(source, deadline: deadline, onTile: onTile)
                 let held = try apply(model: model, source: source, restored: restored, strength: strength, pool: pool, hold: (priorRestored, difference.quiet))
                 previousSource = source
                 previousRestored = held
                 return held
             }
         }
-        let restored = try model.restore(source)
+        let restored = try model.restore(source, deadline: deadline, onTile: onTile)
         let blended = try apply(model: model, source: source, restored: restored, strength: strength, pool: pool, hold: nil)
         previousSource = source
         previousRestored = blended

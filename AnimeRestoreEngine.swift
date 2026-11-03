@@ -14,7 +14,9 @@ extension AnimeRestoreRegistry {
 enum AnimeRestoreFiles {
     static let remoteRoot = "https://raw.githubusercontent.com/dragballheros/RIFE60GhostGuard/cursor/rife60-quality-speed-h3-1273/Models/AnimeRestore"
 
+    static var cacheDirectoryOverride: URL?
     static func cacheDirectory() throws -> URL {
+        if let cacheDirectoryOverride { return cacheDirectoryOverride }
         let base = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
         let directory = base.appendingPathComponent("AnimeRestore", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -115,49 +117,68 @@ final class AnimeRestoreTiledModel: AnimeRestoreModel {
         inputArray = try MLMultiArray(shape: [1, 3, NSNumber(value: Self.tile), NSNumber(value: Self.tile)], dataType: .float32)
     }
 
+    private(set) var lastStep = "idle"
+    private(set) var tilesFinished = 0
+    private(set) var tileCount = 0
+
     func release() {}
 
     func restore(_ frame: CVPixelBuffer) throws -> CVPixelBuffer {
+        try restore(frame, deadline: CFAbsoluteTimeGetCurrent() + 15, onTile: nil)
+    }
+
+    /// Each 256 source tile is upscaled to 512, scaled back to 256, then stitched.
+    /// The full 2× frame is never allocated.
+    func restore(_ frame: CVPixelBuffer, deadline: CFAbsoluteTime, onTile: ((Int, Int) -> Void)? = nil) throws -> CVPixelBuffer {
         let width = CVPixelBufferGetWidth(frame)
         let height = CVPixelBufferGetHeight(frame)
-        let scaleWidth = max(2, width - width % 2)
-        let scaleHeight = max(2, height - height % 2)
-        let canvasW = scaleWidth * 2
-        let canvasH = scaleHeight * 2
-        var canvas = [Float](repeating: 0, count: canvasW * canvasH * 3)
-        var weights = [Float](repeating: 0, count: canvasW * canvasH)
-        let xs = Self.origins(scaleWidth)
-        let ys = Self.origins(scaleHeight)
-        CVPixelBufferLockBaseAddress(frame, .readOnly)
-        defer { CVPixelBufferUnlockBaseAddress(frame, .readOnly) }
+        let xs = Self.origins(width)
+        let ys = Self.origins(height)
+        tileCount = xs.count * ys.count
+        tilesFinished = 0
+        lastStep = "tile-plan \(tileCount)"
+        var canvas = [Float](repeating: 0, count: width * height * 3)
+        var weights = [Float](repeating: 0, count: width * height)
         for originY in ys {
             for originX in xs {
-                try predictTile(frame: frame, originX: originX, originY: originY, width: width, height: height, canvas: &canvas, weights: &weights, canvasW: canvasW)
+                if CFAbsoluteTimeGetCurrent() >= deadline {
+                    throw AnimeRestoreStall(variant: variant.title, tilesFinished: tilesFinished, tileCount: tileCount, lastStep: lastStep)
+                }
+                let tile = try predictSourceTile(frame: frame, originX: originX, originY: originY, width: width, height: height, deadline: deadline)
+                Self.blend(tile: tile, into: &canvas, weights: &weights, originX: originX, originY: originY, width: width, height: height)
+                tilesFinished += 1
+                lastStep = "stitched \(tilesFinished)/\(tileCount)"
+                onTile?(tilesFinished, tileCount)
             }
         }
-        return try Self.downscale(canvas: canvas, weights: weights, canvasW: canvasW, canvasH: canvasH, width: width, height: height)
+        lastStep = "pack"
+        return try Self.pack(canvas: canvas, weights: weights, width: width, height: height)
     }
 
     func milliseconds(forTileCount count: Int, frame: CVPixelBuffer) throws -> Double {
         let xs = Self.origins(CVPixelBufferGetWidth(frame))
         let ys = Self.origins(CVPixelBufferGetHeight(frame))
         guard let originX = xs.first, let originY = ys.first else { return 0 }
-        var canvas = [Float](repeating: 0, count: 512 * 512 * 3)
-        var weights = [Float](repeating: 0, count: 512 * 512)
-        CVPixelBufferLockBaseAddress(frame, .readOnly)
-        defer { CVPixelBufferUnlockBaseAddress(frame, .readOnly) }
         let samples = min(max(count, 1), 4)
         let started = CFAbsoluteTimeGetCurrent()
+        let deadline = CFAbsoluteTimeGetCurrent() + 15
         for _ in 0..<samples {
-            try predictTile(frame: frame, originX: originX, originY: originY, width: CVPixelBufferGetWidth(frame), height: CVPixelBufferGetHeight(frame), canvas: &canvas, weights: &weights, canvasW: 512)
+            _ = try predictSourceTile(frame: frame, originX: originX, originY: originY, width: CVPixelBufferGetWidth(frame), height: CVPixelBufferGetHeight(frame), deadline: deadline)
         }
         return (CFAbsoluteTimeGetCurrent() - started) * 1000 / Double(samples)
     }
 
-    private func predictTile(frame: CVPixelBuffer, originX: Int, originY: Int, width: Int, height: Int, canvas: inout [Float], weights: inout [Float], canvasW: Int) throws {
+    private func predictSourceTile(frame: CVPixelBuffer, originX: Int, originY: Int, width: Int, height: Int, deadline: CFAbsoluteTime) throws -> [UInt8] {
+        if CFAbsoluteTimeGetCurrent() >= deadline {
+            throw AnimeRestoreStall(variant: variant.title, tilesFinished: tilesFinished, tileCount: tileCount, lastStep: lastStep)
+        }
         let tile = Self.tile
         let pointer = inputArray.dataPointer.bindMemory(to: Float.self, capacity: 3 * tile * tile)
-        guard let base = CVPixelBufferGetBaseAddress(frame) else { throw ProcessorError.conversionFailed("Anime Restore source frame is unreadable") }
+        CVPixelBufferLockBaseAddress(frame, .readOnly)
+        guard let base = CVPixelBufferGetBaseAddress(frame) else {
+            CVPixelBufferUnlockBaseAddress(frame, .readOnly)
+            throw ProcessorError.conversionFailed("Anime Restore source frame is unreadable")
+        }
         let stride = CVPixelBufferGetBytesPerRow(frame)
         let pixels = base.assumingMemoryBound(to: UInt8.self)
         for y in 0..<tile {
@@ -172,35 +193,23 @@ final class AnimeRestoreTiledModel: AnimeRestoreModel {
                 pointer[2 * tile * tile + i] = Float(p[0]) / 255
             }
         }
+        CVPixelBufferUnlockBaseAddress(frame, .readOnly)
+        lastStep = "predict"
         let provider = try MLDictionaryFeatureProvider(dictionary: ["input": inputArray])
         let result = try model.prediction(from: provider)
         guard let output = result.featureValue(for: "output")?.multiArrayValue else {
             throw ProcessorError.conversionFailed("Anime Restore model returned no output")
         }
-        let overlap = Self.overlap * 2
-        for y in 0..<512 {
-            let weightY = Self.ramp(y, length: 512, overlap: overlap)
-            for x in 0..<512 {
-                let weight = weightY * Self.ramp(x, length: 512, overlap: overlap)
-                let dx = originX * 2 + x
-                let dy = originY * 2 + y
-                guard dx >= 0, dy >= 0, dx < canvasW, dy * canvasW + dx < weights.count else { continue }
-                let index = dy * canvasW + dx
-                canvas[index * 3] += Self.value(output, 0, y, x) * weight
-                canvas[index * 3 + 1] += Self.value(output, 1, y, x) * weight
-                canvas[index * 3 + 2] += Self.value(output, 2, y, x) * weight
-                weights[index] += weight
-            }
-        }
+        lastStep = "downscale-tile"
+        return try Self.downscaleTile(output)
     }
 
-    private static func value(_ array: MLMultiArray, _ channel: Int, _ y: Int, _ x: Int) -> Float {
-        let strides = array.strides.map(\.intValue)
+    private static func sample(_ raw: UnsafeMutableRawPointer, floats: Bool, strides: [Int], channel: Int, y: Int, x: Int) -> Float {
         let offset = channel * strides[1] + y * strides[2] + x * strides[3]
-        if array.dataType == .float16 {
-            return Float(array.dataPointer.assumingMemoryBound(to: Float16.self)[offset])
+        if floats {
+            return raw.assumingMemoryBound(to: Float.self)[offset]
         }
-        return array.dataPointer.assumingMemoryBound(to: Float.self)[offset]
+        return Float(raw.assumingMemoryBound(to: Float16.self)[offset])
     }
 
     static func origins(_ length: Int) -> [Int] {
@@ -231,24 +240,47 @@ final class AnimeRestoreTiledModel: AnimeRestoreModel {
         return Float(edge + 1) / Float(overlap + 1)
     }
 
-    private static func downscale(canvas: [Float], weights: [Float], canvasW: Int, canvasH: Int, width: Int, height: Int) throws -> CVPixelBuffer {
-        var upscaled = [UInt8](repeating: 0, count: canvasW * canvasH * 4)
-        for index in 0..<(canvasW * canvasH) {
-            let weight = max(weights[index], 1e-4)
-            upscaled[index * 4] = UInt8(min(255, max(0, canvas[index * 3 + 2] / weight * 255 + 0.5)))
-            upscaled[index * 4 + 1] = UInt8(min(255, max(0, canvas[index * 3 + 1] / weight * 255 + 0.5)))
-            upscaled[index * 4 + 2] = UInt8(min(255, max(0, canvas[index * 3] / weight * 255 + 0.5)))
-            upscaled[index * 4 + 3] = 255
-        }
-        var destinationData = [UInt8](repeating: 0, count: width * height * 4)
-        let error: vImage_Error = upscaled.withUnsafeMutableBytes { sourceRaw in
-            destinationData.withUnsafeMutableBytes { destinationRaw in
-                var sourceBuffer = vImage_Buffer(data: sourceRaw.baseAddress, height: vImagePixelCount(canvasH), width: vImagePixelCount(canvasW), rowBytes: canvasW * 4)
-                var destinationBuffer = vImage_Buffer(data: destinationRaw.baseAddress, height: vImagePixelCount(height), width: vImagePixelCount(width), rowBytes: width * 4)
-                return vImageScale_ARGB8888(&sourceBuffer, &destinationBuffer, nil, vImage_Flags(kvImageHighQualityResampling))
+    private static func downscaleTile(_ output: MLMultiArray) throws -> [UInt8] {
+        let strides = output.strides.map(\.intValue)
+        let floats = output.dataType != .float16
+        let raw = output.dataPointer
+        var big = [UInt8](repeating: 255, count: 512 * 512 * 4)
+        for y in 0..<512 {
+            for x in 0..<512 {
+                let index = (y * 512 + x) * 4
+                big[index] = byte(sample(raw, floats: floats, strides: strides, channel: 2, y: y, x: x))
+                big[index + 1] = byte(sample(raw, floats: floats, strides: strides, channel: 1, y: y, x: x))
+                big[index + 2] = byte(sample(raw, floats: floats, strides: strides, channel: 0, y: y, x: x))
             }
         }
-        guard error == kvImageNoError else { throw ProcessorError.conversionFailed("Anime Restore downscale failed") }
+        var small = [UInt8](repeating: 0, count: 256 * 256 * 4)
+        let error: vImage_Error = big.withUnsafeMutableBytes { sourceRaw in
+            small.withUnsafeMutableBytes { destinationRaw in
+                var source = vImage_Buffer(data: sourceRaw.baseAddress, height: 512, width: 512, rowBytes: 512 * 4)
+                var destination = vImage_Buffer(data: destinationRaw.baseAddress, height: 256, width: 256, rowBytes: 256 * 4)
+                return vImageScale_ARGB8888(&source, &destination, nil, vImage_Flags(kvImageHighQualityResampling))
+            }
+        }
+        guard error == kvImageNoError else { throw ProcessorError.conversionFailed("Anime Restore tile downscale failed") }
+        return small
+    }
+
+    private static func blend(tile: [UInt8], into canvas: inout [Float], weights: inout [Float], originX: Int, originY: Int, width: Int, height: Int) {
+        for y in 0..<tile where originY + y < height {
+            let weightY = ramp(y, length: tile, overlap: overlap)
+            for x in 0..<tile where originX + x < width {
+                let weight = weightY * ramp(x, length: tile, overlap: overlap)
+                let index = (originY + y) * width + originX + x
+                let pixel = (y * tile + x) * 4
+                canvas[index * 3] += Float(tile[pixel + 2]) / 255 * weight
+                canvas[index * 3 + 1] += Float(tile[pixel + 1]) / 255 * weight
+                canvas[index * 3 + 2] += Float(tile[pixel]) / 255 * weight
+                weights[index] += weight
+            }
+        }
+    }
+
+    private static func pack(canvas: [Float], weights: [Float], width: Int, height: Int) throws -> CVPixelBuffer {
         let attrs: [String: Any] = [
             kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
             kCVPixelBufferWidthKey as String: width,
@@ -264,14 +296,38 @@ final class AnimeRestoreTiledModel: AnimeRestoreModel {
         CVPixelBufferLockBaseAddress(buffer, [])
         if let destination = CVPixelBufferGetBaseAddress(buffer) {
             let rowBytes = CVPixelBufferGetBytesPerRow(buffer)
+            let pixels = destination.assumingMemoryBound(to: UInt8.self)
             for y in 0..<height {
-                destination.advanced(by: y * rowBytes).copyMemory(from: destinationData.withUnsafeBytes { $0.baseAddress!.advanced(by: y * width * 4) }, byteCount: width * 4)
+                let row = pixels.advanced(by: y * rowBytes)
+                for x in 0..<width {
+                    let index = y * width + x
+                    let weight = max(weights[index], 1e-4)
+                    let pixel = x * 4
+                    row[pixel] = byte(canvas[index * 3 + 2] / weight)
+                    row[pixel + 1] = byte(canvas[index * 3 + 1] / weight)
+                    row[pixel + 2] = byte(canvas[index * 3] / weight)
+                    row[pixel + 3] = 255
+                }
             }
         }
         CVPixelBufferUnlockBaseAddress(buffer, [])
         return buffer
     }
+
+    private static func byte(_ value: Float) -> UInt8 {
+        UInt8(min(255, max(0, value * 255 + 0.5)))
+    }
+
 }
+
+struct AnimeRestoreStall: Error, CustomStringConvertible {
+    let variant: String
+    let tilesFinished: Int
+    let tileCount: Int
+    let lastStep: String
+    var description: String { "Anime Restore stall • \(variant) • tiles \(tilesFinished)/\(tileCount) • last=\(lastStep)" }
+}
+
 
 enum AnimeRestoreProbe {
     static func resolve(quality: AnimeRestoreQuality, width: Int, height: Int, frame: CVPixelBuffer) throws -> AnimeRestoreVariant {

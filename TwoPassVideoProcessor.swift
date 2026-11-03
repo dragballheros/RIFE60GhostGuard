@@ -212,7 +212,7 @@ final class TwoPassVideoProcessor {
                 }
                 let restored = try await AnimeRestorePass(strength: config.animeRestoreStrength, quality: AnimeRestoreQuality(rawValue: config.animeRestoreQuality) ?? .auto).run(
                     sourceURL: sourceURL,
-                    progress: { p, _ in progress(p * 0.03, "Pass 1/4 • Anime Restore") },
+                    progress: { p, message in progress(0.001 + min(max(p, 0), 1) * 0.029, "Pass 1/4 • \(message)") },
                     recoveryDirectory: recoveryDirectory
                 )
                 stageTimer.end("anime-restore")

@@ -554,6 +554,10 @@ jobs:
           cp Scripts/check_anime_restore_ane.swift /tmp/anime-restore-ane/main.swift
           swiftc -swift-version 5 -framework CoreML /tmp/anime-restore-ane/main.swift -o /tmp/anime-restore-ane/check
           /tmp/anime-restore-ane/check /tmp/anime-restore-models
+          mkdir -p /tmp/anime-restore-pass
+          cp Scripts/check_anime_restore_pass.swift /tmp/anime-restore-pass/main.swift
+          swiftc -swift-version 5 -framework AVFoundation -framework CoreML -framework CoreVideo -framework VideoToolbox -framework Metal -framework CoreImage -framework Accelerate -framework CoreGraphics AnimeRestorePolicy.swift AnimeRestoreChoice.swift AnimeRestoreEngine.swift AnimeRestorePass.swift IncrementalVideoCheckpointWriter.swift FrameStageSupport.swift ReclaimableMemory.swift ModelComputePreference.swift RealCUGANTileStrategy.swift PipelineStageTimer.swift Scripts/h3_weight_stubs.c /tmp/anime-restore-pass/main.swift -o /tmp/anime-restore-pass/check
+          /tmp/anime-restore-pass/check /tmp/anime-restore-models
           swiftc -swift-version 5 ModelComputePreference.swift UpscaleFirstPlan.swift RIFEBandPlan.swift /tmp/speed-options-check/main.swift -o /tmp/speed-options-check/check
           /tmp/speed-options-check/check
 

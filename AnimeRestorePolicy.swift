@@ -17,9 +17,9 @@ enum AnimeRestorePolicy {
         width > 0 && height > 0 && min(width, height) <= shortSideLimit
     }
 
-    /// Persisted ON stays on for every source. Auto applies only for a short side of 720 px
-    /// or less, and only until the user turns the toggle off for that source.
-    /// Auto never writes the persisted toggle to ON.
+    /// The saved toggle allows restore at any resolution, including 1080p.
+    /// Auto applies only for a short side of 720 px or less, and only until the user
+    /// turns the toggle off for that source. Auto never writes the saved toggle to ON.
     static func decide(
         width: Int,
         height: Int,
