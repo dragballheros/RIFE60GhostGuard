@@ -417,10 +417,11 @@ final class RealCUGANPass {
         let overlapMs = max(0, predictMs + sharpieMs - busy)
         let stageSum = predictMs + sharpieMs + convertMs + readyMs
         let summary = String(
-            format: "Stage wall • frames=%.0f • pass=%.1fs • %.0fms/frame • cuganPredict=%.0fms • sharpie=%.0fms (predict %.0f • pack %.0f • refine %.0f • shadow %.0f • compression %.0f) • convert=%.0fms • encoderReady=%.0fms • append=%.0fms • sharpieWait=%.0fms • idle=%.0fms • stageSum=%.0fms • overlap=%.0fms",
+            format: "Stage wall • frames=%.0f • pass=%.1fs • %.0fms/frame • animeRestore=%.0fms • cuganPredict=%.0fms • sharpie=%.0fms (predict %.0f • pack %.0f • refine %.0f • shadow %.0f • compression %.0f) • convert=%.0fms • encoderReady=%.0fms • append=%.0fms • sharpieWait=%.0fms • idle=%.0fms • stageSum=%.0fms • overlap=%.0fms",
             count,
             passWall,
             passMs,
+            PipelineStageTimer.current?.metric("animeRestoreMs") ?? 0,
             predictMs,
             sharpieMs,
             predictWallMs,

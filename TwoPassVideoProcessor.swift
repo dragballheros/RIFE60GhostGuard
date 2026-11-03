@@ -100,6 +100,7 @@ final class TwoPassVideoProcessor {
             audioBitrate = 0
         }
 
+        let animeRestoreCheckpoint = recoveryDirectory?.appendingPathComponent("checkpoint-anime-restore.mov")
         let restoredCheckpoint = recoveryDirectory?.appendingPathComponent("checkpoint-restored.mov")
         let rifeCheckpoint = recoveryDirectory?.appendingPathComponent("checkpoint-rife60.mov")
         let cuganCheckpoint = recoveryDirectory?.appendingPathComponent("checkpoint-cugan2x.mov")
@@ -126,6 +127,7 @@ final class TwoPassVideoProcessor {
         var cuganCheckpointValid = false
         var rifeCheckpointValid = false
         var restoredCheckpointValid = false
+        var animeRestoreCheckpointValid = false
 
         if visualPolish, let outlineCheckpoint {
             outlineCheckpointValid = await validVideo(
@@ -159,6 +161,24 @@ final class TwoPassVideoProcessor {
         if rifeNeeded, !rifeCheckpointValid, needsRestoration, let restoredCheckpoint {
             restoredCheckpointValid = await validVideo(restoredCheckpoint, expectedDuration: sourceDuration)
         }
+        let animeDecision = AnimeRestorePolicy.decide(
+            width: sourceWidth,
+            height: sourceHeight,
+            persistedEnabled: config.animeRestoreUserEnabled,
+            suppressAutoForThisSource: config.animeRestoreSuppressAuto,
+            modelRegistered: AnimeRestoreRegistry.isRegistered
+        )
+        let animeLine = "Anime Restore • \(sourceWidth)x\(sourceHeight) • shortSide=\(min(sourceWidth, sourceHeight)) • \(animeDecision.reason) • strength=\(String(format: "%.2f", config.animeRestoreStrength))"
+        DiagnosticsLogger.shared.log(animeLine)
+        CrashCapture.step(animeLine)
+        if rifeNeeded, !rifeCheckpointValid, !restoredCheckpointValid, animeDecision.enabled, let animeRestoreCheckpoint {
+            animeRestoreCheckpointValid = await validVideo(
+                animeRestoreCheckpoint,
+                expectedDuration: sourceDuration,
+                expectedWidth: sourceWidth,
+                expectedHeight: sourceHeight
+            )
+        }
 
         if outlineCheckpointValid || cugan4xCheckpointValid || cuganCheckpointValid || rifeCheckpointValid || restoredCheckpointValid {
             let resumePoint = outlineCheckpointValid ? "final Sharpie"
@@ -174,6 +194,34 @@ final class TwoPassVideoProcessor {
         // IMPORTANT: Sharpie no longer runs here. Compression cleanup remains before
         // RIFE, while line art runs after Real-CUGAN, followed by optional Color Pop.
         var rifeSourceURL: URL?
+        var pipelineSource = sourceURL
+        if rifeNeeded && !rifeCheckpointValid && !restoredCheckpointValid && animeDecision.enabled {
+            if animeRestoreCheckpointValid, let animeRestoreCheckpoint {
+                pipelineSource = animeRestoreCheckpoint
+                progress(0.03, "Recovered checkpoint • Anime Restore complete")
+                DiagnosticsLogger.shared.log("Recovery: reused completed Anime Restore checkpoint.")
+            } else {
+                if let animeRestoreCheckpoint { try? fm.removeItem(at: animeRestoreCheckpoint) }
+                progress(0.001, "Pass 1/4 • Starting Anime Restore…")
+                stageTimer.begin("anime-restore")
+                let restored = try await AnimeRestorePass(strength: config.animeRestoreStrength).run(
+                    sourceURL: sourceURL,
+                    progress: { p, _ in progress(p * 0.03, "Pass 1/4 • Anime Restore") },
+                    recoveryDirectory: recoveryDirectory
+                )
+                stageTimer.end("anime-restore")
+                if let animeRestoreCheckpoint {
+                    try persistCheckpoint(from: restored.url, to: animeRestoreCheckpoint)
+                    pipelineSource = animeRestoreCheckpoint
+                    DiagnosticsLogger.shared.log("Checkpoint saved: Anime Restore.")
+                } else {
+                    transientURLs.append(restored.url)
+                    pipelineSource = restored.url
+                }
+            }
+        } else if !animeDecision.enabled {
+            PipelineStageTimer.current?.record("animeRestoreMs", milliseconds: 0)
+        }
 
         if rifeNeeded && !rifeCheckpointValid {
             if needsRestoration {
@@ -192,7 +240,7 @@ final class TwoPassVideoProcessor {
                         watermark: watermark
                     )
                     let result = try await restoration.run(
-                        sourceURL: sourceURL,
+                        sourceURL: pipelineSource,
                         progress: { p, message in
                             let local = min(max(p / 0.28, 0), 1)
                             let renamed = message
@@ -221,7 +269,7 @@ final class TwoPassVideoProcessor {
                     try await thermalHandoff(progress: progress, position: 0.10, next: "RIFE HQ")
                 }
             } else {
-                rifeSourceURL = sourceURL
+                rifeSourceURL = pipelineSource
             }
         }
 
@@ -559,14 +607,24 @@ final class TwoPassVideoProcessor {
         let outputWidth = width * 2, outputHeight = height * 2
         let audioBitrate: Double
         if let audio = try await asset.loadTracks(withMediaType: .audio).first { audioBitrate = Double(try await audio.load(.estimatedDataRate)) } else { audioBitrate = 0 }
+        let animeDecision = AnimeRestorePolicy.decide(
+            width: width,
+            height: height,
+            persistedEnabled: config.animeRestoreUserEnabled,
+            suppressAutoForThisSource: config.animeRestoreSuppressAuto,
+            modelRegistered: AnimeRestoreRegistry.isRegistered
+        )
+        let animeLine = "Anime Restore • \(width)x\(height) • shortSide=\(min(width, height)) • \(animeDecision.reason) • strength=\(String(format: "%.2f", config.animeRestoreStrength))"
+        DiagnosticsLogger.shared.log(animeLine)
+        CrashCapture.step(animeLine)
         let restore = config.compressionProtection || watermark.enabled
-        let stages = UpscaleFirstPlan.stages(restoration: restore, outline: config.outlineProtection || config.colorRebuild || config.outlineRebuild)
+        let stages = UpscaleFirstPlan.stages(restoration: restore, outline: config.outlineProtection || config.colorRebuild || config.outlineRebuild, animeRestore: animeDecision.enabled)
         let checkpoints = stages.map { recoveryDirectory?.appendingPathComponent("checkpoint-upscale-first-\($0).mov") }
         var inputURL = sourceURL
         var startIndex = 0
         let completedIndex = await UpscaleFirstPlan.furthestValid(stages: stages) { index, stage in
             guard let checkpoint = checkpoints[index] else { return false }
-            let isNative = stage == "restored"
+            let isNative = stage == "restored" || stage == "anime-restore"
             return await self.validVideo(checkpoint, expectedDuration: duration, expectedWidth: isNative ? width : outputWidth, expectedHeight: isNative ? height : outputHeight)
         }
         if let index = completedIndex, let checkpoint = checkpoints[index] {
@@ -588,6 +646,9 @@ final class TwoPassVideoProcessor {
                 }
                 let generated: URL
                 switch stage {
+                case "anime-restore":
+                    let result = try await AnimeRestorePass(strength: config.animeRestoreStrength).run(sourceURL: inputURL, progress: publish, recoveryDirectory: recoveryDirectory)
+                    generated = result.url
                 case "restored":
                     let result = try await RestorationPass(compressionEnabled: config.compressionProtection, outlineEnabled: false, watermark: watermark).run(sourceURL: inputURL, progress: { p, message in publish(p / 0.28, message) }, telemetry: { sample in combined = sample; telemetry(sample) }, recoveryDirectory: recoveryDirectory)
                     generated = result.url

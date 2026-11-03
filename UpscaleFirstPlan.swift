@@ -2,8 +2,10 @@ import Foundation
 
 /// Small, testable admission and checkpoint planner shared by the real pipeline.
 enum UpscaleFirstPlan {
-    static func stages(restoration: Bool, outline: Bool) -> [String] {
-        var result = restoration ? ["restored", "cugan", "rife"] : ["cugan", "rife"]
+    static func stages(restoration: Bool, outline: Bool, animeRestore: Bool = false) -> [String] {
+        var result: [String] = []
+        if animeRestore { result.append("anime-restore") }
+        result.append(contentsOf: restoration ? ["restored", "cugan", "rife"] : ["cugan", "rife"])
         if outline { result.append("outline") }
         return result
     }

@@ -63,6 +63,11 @@ enum ModelBenchmark {
             }
             rows.append(([name] + values).joined(separator: " | "))
         }
+        if AnimeRestoreRegistry.isRegistered {
+            rows.append("Anime Restore | \(AnimeRestoreRegistry.displayName) | registered • timing uses the installed model on a real frame")
+        } else {
+            rows.append("Anime Restore | no model registered | skipped")
+        }
         rows.append(contentsOf: try benchmarkStrategies(progress: progress))
         rows.append(contentsOf: try benchmarkSharpieTiles(progress: progress))
         rows.append("Policies permit CPU fallback; these labels do not prove every operation used the named accelerator. Sharpie production also uses parallel tiles. This button is optional. The first render already times Real-CUGAN and Sharpie on real tiles and saves the winner for this device, iOS version, and app build.")

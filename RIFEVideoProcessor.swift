@@ -16,6 +16,11 @@ struct ProcessorConfiguration {
     let ghostSensitivity: Double
     let preserveAudio: Bool
     let targetFPS: Double
+    /// Persisted user toggle. Auto for a short side of 720 px is decided in the pipeline and is not stored here as ON.
+    var animeRestoreUserEnabled: Bool = false
+    /// User turned the toggle off while this source would have auto-enabled.
+    var animeRestoreSuppressAuto: Bool = false
+    var animeRestoreStrength: Double = 1
 }
 
 enum ProcessorError: LocalizedError {

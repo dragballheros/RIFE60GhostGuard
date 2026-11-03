@@ -227,6 +227,13 @@ struct ContentView: View {
                     }
 
                     Section("Anime Processing") {
+                        Toggle("Anime Restore", isOn: Binding(get: { vm.animeRestoreShown }, set: { vm.setAnimeRestoreShown($0) })).disabled(vm.queueLocked || vm.isImporting)
+                        if !vm.animeRestoreAutoNote.isEmpty {
+                            Text(vm.animeRestoreAutoNote).font(.caption).foregroundStyle(.secondary)
+                        }
+                        HStack { Text("Anime Restore strength"); Spacer(); Text(String(format: "%.2f", vm.animeRestoreStrength)) }
+                        Slider(value: $vm.animeRestoreStrength, in: 0.1...1.0).disabled(vm.queueLocked || vm.isImporting)
+                        Text("Runs first, before Compression Guard, once a restoration model is installed. Until then the toggle and strength are saved and frames stay unchanged. Auto-enables when the short side is 720 px or less. Turning it off keeps that source off without turning auto on for a larger video.").font(.caption).foregroundStyle(.secondary)
                         Toggle("Compression Guard", isOn: $vm.compressionProtection).disabled(vm.queueLocked || vm.isImporting)
                         Toggle("Color Rebuild", isOn: $vm.colorRebuildEnabled).disabled(vm.queueLocked || vm.isImporting)
                         if vm.colorRebuildEnabled {

@@ -34,6 +34,13 @@ final class PipelineStageTimer: @unchecked Sendable {
         lock.unlock()
     }
 
+    func metric(_ name: String) -> Double {
+        lock.lock()
+        let value = metrics[name] ?? 0
+        lock.unlock()
+        return value
+    }
+
     func record(_ name: String, milliseconds: Double) {
         lock.lock()
         if frozenMetrics.contains(name) {
