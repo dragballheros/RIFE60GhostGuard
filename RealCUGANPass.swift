@@ -99,6 +99,7 @@ final class RealCUGANPass {
     private var loggedStrategyKey = ""
     private var forceCopyForRestOfPass = false
     private var didBenchmarkStrategy = false
+    private var fusedPolishActive = false
     private var lastFusedOutlineMs = 0.0
     // Keep the compiled 704x608 profile and reuse IOSurface-backed pixel-buffer pools.
     // Do not flush Core Image or pixel-buffer caches during normal CUGAN processing:
@@ -217,8 +218,10 @@ final class RealCUGANPass {
                 AVVideoYCbCrMatrixKey: AVVideoYCbCrMatrix_ITU_R_709_2
             ]
         ]
+        fusedPolishActive = fusedPolish != nil
         if fusedPolish != nil {
             try fusedPolish?.prepareStream(width: targetWidth, height: targetHeight)
+            DiagnosticsLogger.shared.log("Fused schedule • CUGAN concurrent slots capped at 2 while Sharpie runs • compute units unchanged so the pixels stay on the saved path")
             DiagnosticsLogger.shared.log("Fused Real-CUGAN + final polish • Sharpie runs on the upscaled frame while the next frame is upscaled • no intermediate 4K file")
         }
         let checkpoint = try IncrementalVideoCheckpointWriter(
@@ -248,7 +251,8 @@ final class RealCUGANPass {
         alpha[0] = NSNumber(value: alphaValue)
         var frames = 0
         var inferenceSeconds = 0.0
-        var encodeSeconds = 0.0
+        var handoffSeconds = 0.0
+        var polishWaitSeconds = 0.0
         let passStart = CFAbsoluteTimeGetCurrent()
         var encodeTask: Task<Void, Error>?
         let ahead = FrameAheadReader(output: output, depth: 2)
@@ -275,13 +279,16 @@ final class RealCUGANPass {
             }
 
             let inferenceStart = CFAbsoluteTimeGetCurrent()
-            let upscaled = try upscaleNative2x(decodedFrame, model: model, alpha: alpha, frameNumber: frameNumber, profile: profile)
+            let upscaled = try await Self.offTask {
+                try self.upscaleNative2x(decodedFrame, model: model, alpha: alpha, frameNumber: frameNumber, profile: profile)
+            }
             inferenceSeconds += CFAbsoluteTimeGetCurrent() - inferenceStart
 
-            let encodeStart = CFAbsoluteTimeGetCurrent()
+            let handoffStart = CFAbsoluteTimeGetCurrent()
             if let fusedPolish {
                 if let polishGroup {
-                    polishGroup.wait()
+                    await Self.wait(polishGroup)
+                    polishWaitSeconds += CFAbsoluteTimeGetCurrent() - handoffStart
                     if let error = polishBox.error { throw error }
                     guard let ready = polishBox.buffer else {
                         throw ProcessorError.conversionFailed("Fused polish produced no frame")
@@ -330,11 +337,11 @@ final class RealCUGANPass {
             if let previousEncode { try await previousEncode.value }
             frames += 1
             }
-            encodeSeconds += CFAbsoluteTimeGetCurrent() - encodeStart
+            handoffSeconds += CFAbsoluteTimeGetCurrent() - handoffStart
 
             if frames > 0 && (frames == 1 || frames % 20 == 0) {
                 let perTile = predictionSeconds * 1000 / Double(frames * max(tilesPerFrame, 1))
-                DiagnosticsLogger.shared.log(String(format: "Real-CUGAN breakdown (running averages) • frame=%d • tiles/frame=%d • prediction=%.1fms/frame • %.1fms/tile • render-in=%.1fms • stitch=%.1fms • convert+append/backpressure=%.1fms • thermal=%@", frames, tilesPerFrame, predictionSeconds * 1000 / Double(frames), perTile, renderInSeconds * 1000 / Double(frames), stitchSeconds * 1000 / Double(frames), encodeSeconds * 1000 / Double(frames), currentThermalStateName()))
+                DiagnosticsLogger.shared.log(String(format: "Real-CUGAN breakdown (running averages) • frame=%d • tiles/frame=%d • prediction=%.1fms/frame • %.1fms/tile • render-in=%.1fms • stitch=%.1fms • sharpieWait+submit=%.1fms • thermal=%@", frames, tilesPerFrame, predictionSeconds * 1000 / Double(frames), perTile, renderInSeconds * 1000 / Double(frames), stitchSeconds * 1000 / Double(frames), handoffSeconds * 1000 / Double(frames), currentThermalStateName()))
                 let memory = currentRenderPerformanceSnapshot()
                 DiagnosticsLogger.shared.log("Real-CUGAN frame \(frames) complete • \(tilesPerFrame) tiles/frame • inference=\(String(format: "%.1f", inferenceSeconds * 1000.0 / Double(frames)))ms/frame • headroom=\(Int(memory.availableMemoryMB.rounded())) MB • thermal=\(memory.thermalAndMode)")
             }
@@ -347,7 +354,7 @@ final class RealCUGANPass {
                 t.upscaledFrames = frames
                 t.cuganMsPerFrame = inferenceSeconds * 1000.0 / Double(frames)
                 t.outlineMsPerFrame = lastFusedOutlineMs
-                t.encodeMsPerOutputFrame = encodeSeconds * 1000.0 / Double(frames)
+                t.encodeMsPerOutputFrame = checkpoint.appendCallSeconds * 1000.0 / Double(max(frames, 1))
                 t.upscaleFPS = Double(frames) / elapsed
                 t.thermalState = currentThermalStateName()
                 telemetry(t)
@@ -403,12 +410,17 @@ final class RealCUGANPass {
         let convertMs = checkpoint.transferSeconds * 1000 / count
         let readyMs = checkpoint.readyWaitSeconds * 1000 / count
         let appendMs = checkpoint.appendCallSeconds * 1000 / count
+        let passMs = passWall * 1000 / count
+        let waitMs = polishWaitSeconds * 1000 / count
+        let busy = max(predictMs, sharpieMs)
+        let idleMs = max(0, passMs - busy - waitMs - convertMs - readyMs)
+        let overlapMs = max(0, predictMs + sharpieMs - busy)
         let stageSum = predictMs + sharpieMs + convertMs + readyMs
         let summary = String(
-            format: "Stage wall • frames=%.0f • pass=%.1fs • %.0fms/frame • cuganPredict=%.0fms • sharpie=%.0fms (predict %.0f • pack %.0f • refine %.0f • shadow %.0f • compression %.0f) • convert=%.0fms • encoderReady=%.0fms • append=%.0fms • stageSum=%.0fms • overlap=%.0fms",
+            format: "Stage wall • frames=%.0f • pass=%.1fs • %.0fms/frame • cuganPredict=%.0fms • sharpie=%.0fms (predict %.0f • pack %.0f • refine %.0f • shadow %.0f • compression %.0f) • convert=%.0fms • encoderReady=%.0fms • append=%.0fms • sharpieWait=%.0fms • idle=%.0fms • stageSum=%.0fms • overlap=%.0fms",
             count,
             passWall,
-            passWall * 1000 / count,
+            passMs,
             predictMs,
             sharpieMs,
             predictWallMs,
@@ -419,8 +431,10 @@ final class RealCUGANPass {
             convertMs,
             readyMs,
             appendMs,
+            waitMs,
+            idleMs,
             stageSum,
-            max(0, stageSum - passWall * 1000 / count)
+            overlapMs
         )
         DiagnosticsLogger.shared.log(summary)
         CrashCapture.step(summary)
@@ -709,6 +723,24 @@ final class RealCUGANPass {
         }
     }
 
+    /// Runs synchronous Core ML off the Swift task so an encoder continuation can run.
+    private static func offTask<T>(_ body: @escaping () throws -> T) async throws -> T {
+        try await withCheckedThrowingContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                do { continuation.resume(returning: try body()) }
+                catch { continuation.resume(throwing: error) }
+            }
+        }
+    }
+
+    private static func wait(_ group: DispatchGroup) async {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            group.notify(queue: .global(qos: .userInitiated)) {
+                continuation.resume()
+            }
+        }
+    }
+
     /// Single-tile probe only. Output backings are valid on prediction(from:options:).
     private static func probeBackedOptions(model: MLModel, output: CVPixelBuffer) throws -> MLPredictionOptions {
         let options = MLPredictionOptions()
@@ -794,7 +826,11 @@ final class RealCUGANPass {
             let available = currentRenderPerformanceSnapshot().availableMemoryMB
             let allowed = RealCUGANStrategyStore.allowedConcurrentSlots(availableMB: available)
             guard allowed >= 2 else { throw ProcessorError.conversionFailed("not enough memory headroom for concurrent Real-CUGAN tiles") }
-            return try renderConcurrent(source, model: model, alpha: alpha, profile: profile, slots: min(slots, allowed))
+            // Four slots filled the Neural Engine for the whole frame, so Sharpie
+            // could not issue a prediction until CUGAN finished. Two slots leave a
+            // gap between waves. The model and the tile pixels stay the same.
+            let fusedCap = fusedPolishActive ? 2 : slots
+            return try renderConcurrent(source, model: model, alpha: alpha, profile: profile, slots: min(fusedCap, allowed))
         case .fixedBatch2, .fixedBatch4:
             return try renderFixedBatch(source, modelName: profile.modelName, alpha: alpha, profile: profile, strategy: strategy)
         }

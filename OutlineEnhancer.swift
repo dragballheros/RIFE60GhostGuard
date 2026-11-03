@@ -202,15 +202,9 @@ final class OutlineEnhancer {
         // can run in parallel. Previously ~120 tiles per 4K frame ran strictly one after another,
         // alternating scalar CPU loops and a synchronous Core ML call, leaving the CPU idle while the
         // model ran and the model idle while the CPU ran. Worker count follows the memory governor.
-        let tier = currentRenderPerformanceSnapshot().tier
-        let desiredWorkers: Int
-        switch tier {
-        case .performance: desiredWorkers = 3
-        case .balanced: desiredWorkers = 2
-        case .safe: desiredWorkers = 1
-        }
-        let cpuLimit = max(ProcessInfo.processInfo.activeProcessorCount - 1, 1)
-        let workers = max(1, min(desiredWorkers, inputArrays.count, tileCount, cpuLimit))
+        // Sequential 256 was timed as one prediction at a time. Extra workers share
+        // that single model, so Core ML serializes them and the wall time doubles.
+        let workers = 1
         let failure = TileFailure()
         let segmentation = DispatchGroup()
         segmentation.enter()
