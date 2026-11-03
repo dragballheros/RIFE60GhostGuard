@@ -400,6 +400,7 @@ final class TwoPassVideoProcessor {
                                 combined.upscaledFrames = sample.upscaledFrames
                                 combined.cuganMsPerFrame = sample.cuganMsPerFrame
                                 combined.upscaleFPS = sample.upscaleFPS
+                                combined.applyCUGANBreakdown(from: sample)
                                 combined.encodeMsPerOutputFrame = sample.encodeMsPerOutputFrame
                                 combined.thermalState = sample.thermalState
                                 combined.performanceMode = sample.performanceMode
@@ -470,6 +471,7 @@ final class TwoPassVideoProcessor {
                                 combined.upscaledFrames = sample.upscaledFrames
                                 combined.cuganMsPerFrame = sample.cuganMsPerFrame
                                 combined.upscaleFPS = sample.upscaleFPS
+                                combined.applyCUGANBreakdown(from: sample)
                                 combined.encodeMsPerOutputFrame = sample.encodeMsPerOutputFrame
                                 combined.thermalState = sample.thermalState
                                 combined.performanceMode = sample.performanceMode
@@ -538,6 +540,7 @@ final class TwoPassVideoProcessor {
                         PipelineStageTimer.current?.record("finalOutlineMs", milliseconds: outlineSample.outlineMsPerFrame)
                         PipelineStageTimer.current?.record("encodeMs", milliseconds: outlineSample.encodeMsPerOutputFrame)
                         combined.upscaleFPS = stageTelemetry.cugan.upscaleFPS
+                        combined.applyCUGANBreakdown(from: stageTelemetry.cugan)
                         combined.encodeMsPerOutputFrame = outlineSample.encodeMsPerOutputFrame
                         combined.thermalState = outlineSample.thermalState
                         combined.performanceMode = outlineSample.performanceMode
@@ -665,7 +668,7 @@ final class TwoPassVideoProcessor {
                 case "cugan":
                     try requireUpscaleFirstMemory(width: outputWidth, height: outputHeight)
                     generated = try await RealCUGANPass(intensity: 1.30).run(sourceURL: inputURL, finalAudioBitrate: audioBitrate, progress: publish, telemetry: { sample in
-                        combined.upscaledFrames = sample.upscaledFrames; combined.cuganMsPerFrame = sample.cuganMsPerFrame; combined.upscaleFPS = sample.upscaleFPS
+                        combined.upscaledFrames = sample.upscaledFrames; combined.cuganMsPerFrame = sample.cuganMsPerFrame; combined.upscaleFPS = sample.upscaleFPS; combined.applyCUGANBreakdown(from: sample)
                         telemetry(combined)
                     }, recoveryDirectory: recoveryDirectory)
                 case "rife":

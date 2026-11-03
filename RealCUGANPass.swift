@@ -114,6 +114,8 @@ final class RealCUGANPass {
     private let colorPopGrade: ColorPopGrade?
     private var renderInSeconds = 0.0
     private var predictionSeconds = 0.0
+    private var waitInSeconds = 0.0
+    private var computeWaitSeconds = 0.0
     private var activeStrategyName = "sequentialBacked"
     private var activeStrategyLoaded = false
     private var activeStrategySlots = 1
@@ -256,6 +258,8 @@ final class RealCUGANPass {
         let passStart = CFAbsoluteTimeGetCurrent()
         var encodeTask: Task<Void, Error>?
         let ahead = FrameAheadReader(output: output, depth: 2)
+        var iterationStart = CFAbsoluteTimeGetCurrent()
+        var notedFrames = 0
         let polishQueue = DispatchQueue(label: "rife60.fused-polish", qos: .userInitiated)
         let polishBox = FusedPolishBox()
         var polishGroup: DispatchGroup?
@@ -268,11 +272,19 @@ final class RealCUGANPass {
         var polishRefineTotal = 0.0
 
         while let item = ahead.next() {
+            let waitIn = ahead.lastWaitSeconds
             try await checkpoint.checkCancellation()
             let decodedFrame = item.buffer
             let pts = item.time
-            if CMTimeCompare(pts, checkpoint.resumeTime) <= 0 { continue }
+            if CMTimeCompare(pts, checkpoint.resumeTime) <= 0 {
+                iterationStart = CFAbsoluteTimeGetCurrent()
+                continue
+            }
+            waitInSeconds += waitIn
             let frameNumber = frames + 1
+            let predictBefore = predictionSeconds
+            let copyBefore = renderInSeconds
+            let stitchBefore = stitchSeconds
 
             if frameNumber == 1 {
                 DiagnosticsLogger.shared.log("Real-CUGAN first frame decoded • pixel=\(CVPixelBufferGetWidth(decodedFrame))x\(CVPixelBufferGetHeight(decodedFrame)) • tiled prediction begin")
@@ -285,10 +297,12 @@ final class RealCUGANPass {
             inferenceSeconds += CFAbsoluteTimeGetCurrent() - inferenceStart
 
             let handoffStart = CFAbsoluteTimeGetCurrent()
+            var computeWait = 0.0
             if let fusedPolish {
                 if let polishGroup {
                     await Self.wait(polishGroup)
-                    polishWaitSeconds += CFAbsoluteTimeGetCurrent() - handoffStart
+                    computeWait += CFAbsoluteTimeGetCurrent() - handoffStart
+                    polishWaitSeconds += computeWait
                     if let error = polishBox.error { throw error }
                     guard let ready = polishBox.buffer else {
                         throw ProcessorError.conversionFailed("Fused polish produced no frame")
@@ -302,9 +316,11 @@ final class RealCUGANPass {
                     polishCompressionTotal += polishBox.compressionSeconds
                     polishPackTotal += polishBox.packSeconds
                     polishRefineTotal += polishBox.refineSeconds
+                    let submitStart = CFAbsoluteTimeGetCurrent()
                     await encodePipeline.submit {
                         try await checkpoint.append10Bit(ready, at: readyPTS)
                     }
+                    computeWait += CFAbsoluteTimeGetCurrent() - submitStart
                     frames += 1
                     if outline > 0 {
                         lastFusedOutlineMs = outline * 1000
@@ -331,13 +347,47 @@ final class RealCUGANPass {
                 polishGroup = group
             } else {
             let previousEncode = encodeTask
+            let encodeWaitStart = CFAbsoluteTimeGetCurrent()
             encodeTask = Task {
                 try await checkpoint.append10Bit(upscaled, at: pts)
             }
             if let previousEncode { try await previousEncode.value }
+            computeWait += CFAbsoluteTimeGetCurrent() - encodeWaitStart
             frames += 1
             }
+            computeWaitSeconds += computeWait
             handoffSeconds += CFAbsoluteTimeGetCurrent() - handoffStart
+            let predictMs = (predictionSeconds - predictBefore) * 1000
+            let stitchMs = (stitchSeconds - stitchBefore + renderInSeconds - copyBefore) * 1000
+            let wallMs = (CFAbsoluteTimeGetCurrent() - iterationStart) * 1000
+            let frameLine = String(
+                format: "CUGAN breakdown: wait_in %.1f ms, wait_compute %.1f ms, predict %.1f ms (%d tiles, %d concurrent), stitch %.1f ms, wall %.1f ms",
+                waitIn * 1000,
+                computeWait * 1000,
+                predictMs,
+                tilesPerFrame,
+                activeStrategySlots,
+                stitchMs,
+                wallMs
+            )
+            DiagnosticsLogger.shared.log(frameLine)
+            notedFrames += 1
+            let done = max(frames, 1)
+            let rolling = String(
+                format: "CUGAN breakdown: wait_in %.1f ms, wait_compute %.1f ms, predict %.1f ms (%d tiles, %d concurrent), stitch %.1f ms, wall %.1f ms",
+                waitInSeconds * 1000 / Double(done),
+                computeWaitSeconds * 1000 / Double(done),
+                predictionSeconds * 1000 / Double(done),
+                tilesPerFrame,
+                activeStrategySlots,
+                (stitchSeconds + renderInSeconds) * 1000 / Double(done),
+                (CFAbsoluteTimeGetCurrent() - passStart) * 1000 / Double(done)
+            )
+            if notedFrames == 1 || notedFrames % 12 == 0 {
+                DiagnosticsLogger.shared.log("CUGAN breakdown rolling • \(rolling)")
+                CrashCapture.step(rolling)
+            }
+            iterationStart = CFAbsoluteTimeGetCurrent()
 
             if frames > 0 && (frames == 1 || frames % 20 == 0) {
                 let perTile = predictionSeconds * 1000 / Double(frames * max(tilesPerFrame, 1))
@@ -348,16 +398,26 @@ final class RealCUGANPass {
 
             // UI/diagnostic publishing is deliberately less frequent during CUGAN.
             // It does not change inference output and avoids waking the main thread every 3 frames.
-            if frames > 0 && frames % 12 == 0 {
+            if notedFrames > 0 {
                 let elapsed = max(CFAbsoluteTimeGetCurrent() - passStart, 0.001)
                 var t = PerformanceTelemetry()
                 t.upscaledFrames = frames
-                t.cuganMsPerFrame = inferenceSeconds * 1000.0 / Double(frames)
+                t.cuganMsPerFrame = inferenceSeconds * 1000.0 / Double(max(frames, 1))
                 t.outlineMsPerFrame = lastFusedOutlineMs
                 t.encodeMsPerOutputFrame = checkpoint.appendCallSeconds * 1000.0 / Double(max(frames, 1))
-                t.upscaleFPS = Double(frames) / elapsed
+                t.upscaleFPS = frames > 0 ? Double(frames) / elapsed : 0
+                t.cuganWaitInMs = waitIn * 1000
+                t.cuganWaitComputeMs = computeWait * 1000
+                t.cuganPredictMs = predictMs
+                t.cuganTiles = tilesPerFrame
+                t.cuganConcurrency = activeStrategySlots
+                t.cuganStitchMs = stitchMs
+                t.cuganWallMs = wallMs
                 t.thermalState = currentThermalStateName()
                 telemetry(t)
+            }
+            if frames > 0 && frames % 12 == 0 {
+                let elapsed = max(CFAbsoluteTimeGetCurrent() - passStart, 0.001)
 
                 let frac = min(max(CMTimeGetSeconds(pts) / seconds, 0), 1)
                 let fps = Double(frames) / elapsed

@@ -435,7 +435,12 @@ struct ContentView: View {
                             LabeledContent("RIFE speed", value: String(format: "%.2f gen fps", vm.telemetry.generatedFPS))
                             if vm.upscaleTo4K {
                                 LabeledContent("Real-CUGAN", value: String(format: "%.1f ms/frame", vm.telemetry.cuganMsPerFrame))
-                                LabeledContent("Upscale speed", value: String(format: "%.2f fps", vm.telemetry.upscaleFPS))
+                                LabeledContent("Upscale speed (wall-clock)", value: String(format: "%.2f fps", vm.telemetry.upscaleFPS))
+                                LabeledContent("CUGAN wait for input", value: String(format: "%.1f ms", vm.telemetry.cuganWaitInMs))
+                                LabeledContent("CUGAN wait for compute", value: String(format: "%.1f ms", vm.telemetry.cuganWaitComputeMs))
+                                LabeledContent("CUGAN predict", value: String(format: "%.1f ms (%d tiles, %d concurrent)", vm.telemetry.cuganPredictMs, vm.telemetry.cuganTiles, vm.telemetry.cuganConcurrency))
+                                LabeledContent("CUGAN stitch and copy", value: String(format: "%.1f ms", vm.telemetry.cuganStitchMs))
+                                LabeledContent("CUGAN wall", value: String(format: "%.1f ms", vm.telemetry.cuganWallMs))
                                 LabeledContent("Upscaled", value: "\(vm.telemetry.upscaledFrames)")
                             }
                             LabeledContent("GhostGuard", value: String(format: "%.1f ms/generated", vm.telemetry.ghostMsPerGeneratedFrame))

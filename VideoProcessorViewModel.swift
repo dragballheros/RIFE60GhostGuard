@@ -396,7 +396,8 @@ final class VideoProcessorViewModel: ObservableObject {
         Generated frames: \(telemetry.generatedFrames)
         Upscaled frames: \(telemetry.upscaledFrames)
         RIFE gen fps: \(String(format: "%.3f", telemetry.generatedFPS))
-        Real-CUGAN fps: \(String(format: "%.3f", telemetry.upscaleFPS))
+        Real-CUGAN fps (wall-clock): \(String(format: "%.3f", telemetry.upscaleFPS))
+        CUGAN breakdown: wait_in \(String(format: "%.1f", telemetry.cuganWaitInMs)) ms, wait_compute \(String(format: "%.1f", telemetry.cuganWaitComputeMs)) ms, predict \(String(format: "%.1f", telemetry.cuganPredictMs)) ms (\(telemetry.cuganTiles) tiles, \(telemetry.cuganConcurrency) concurrent), stitch \(String(format: "%.1f", telemetry.cuganStitchMs)) ms, wall \(String(format: "%.1f", telemetry.cuganWallMs)) ms
         """
         UIPasteboard.general.string = report
         diagnosticsCopyStatus = "Error logs copied to clipboard"

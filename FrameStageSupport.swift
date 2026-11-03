@@ -51,6 +51,8 @@ final class FrameAheadReader: @unchecked Sendable {
     private var decodeCount = 0
     private var finished = false
     private var started = false
+    /// Time the last `next()` spent blocked until a decoded frame was available.
+    private(set) var lastWaitSeconds = 0.0
 
     init(output: AVAssetReaderOutput, depth: Int = 2) {
         self.output = output
@@ -65,6 +67,7 @@ final class FrameAheadReader: @unchecked Sendable {
     }
 
     func next() -> Item? {
+        let waited = CFAbsoluteTimeGetCurrent()
         start()
         lock.lock()
         while pending.isEmpty && !finished {
@@ -72,11 +75,13 @@ final class FrameAheadReader: @unchecked Sendable {
         }
         if pending.isEmpty {
             lock.unlock()
+            lastWaitSeconds = CFAbsoluteTimeGetCurrent() - waited
             return nil
         }
         let item = pending.removeFirst()
         lock.signal()
         lock.unlock()
+        lastWaitSeconds = CFAbsoluteTimeGetCurrent() - waited
         return item
     }
 

@@ -182,6 +182,14 @@ struct PerformanceTelemetry: Sendable {
     var cuganMsPerFrame: Double = 0
     var generatedFPS: Double = 0
     var upscaleFPS: Double = 0
+    /// Latest Real-CUGAN frame. Upscale fps stays wall-clock; these split that wall.
+    var cuganWaitInMs: Double = 0
+    var cuganWaitComputeMs: Double = 0
+    var cuganPredictMs: Double = 0
+    var cuganTiles: Int = 0
+    var cuganConcurrency: Int = 0
+    var cuganStitchMs: Double = 0
+    var cuganWallMs: Double = 0
 
     var thermalState: String
     var performanceMode: String
@@ -200,9 +208,19 @@ struct PerformanceTelemetry: Sendable {
         physicalMemoryMB = memory.physicalMemoryMB
     }
 
+    mutating func applyCUGANBreakdown(from sample: PerformanceTelemetry) {
+        cuganWaitInMs = sample.cuganWaitInMs
+        cuganWaitComputeMs = sample.cuganWaitComputeMs
+        cuganPredictMs = sample.cuganPredictMs
+        cuganTiles = sample.cuganTiles
+        cuganConcurrency = sample.cuganConcurrency
+        cuganStitchMs = sample.cuganStitchMs
+        cuganWallMs = sample.cuganWallMs
+    }
+
     var summary: String {
         String(
-            format: "Thermal: %@\nMode: %@\nMemory headroom: %.0f MB effective (%.0f MB raw + %.0f MB reclaimable) / %.0f MB physical\nCompression: %.1f ms/src\nOutline: %.1f ms/src\nRIFE HQ: %.1f ms/gen\nReal-CUGAN: %.1f ms/frame\nGhostGuard: %.1f ms/gen\nEncode: %.1f ms/out\nRIFE speed: %.2f gen fps\nUpscale speed: %.2f fps",
+            format: "Thermal: %@\nMode: %@\nMemory headroom: %.0f MB effective (%.0f MB raw + %.0f MB reclaimable) / %.0f MB physical\nCompression: %.1f ms/src\nOutline: %.1f ms/src\nRIFE HQ: %.1f ms/gen\nReal-CUGAN: %.1f ms/frame\nGhostGuard: %.1f ms/gen\nEncode: %.1f ms/out\nRIFE speed: %.2f gen fps\nUpscale speed (wall-clock): %.2f fps\nCUGAN breakdown: wait_in %.1f ms, wait_compute %.1f ms, predict %.1f ms (%d tiles, %d concurrent), stitch %.1f ms, wall %.1f ms",
             thermalState,
             performanceMode,
             effectiveMemoryMB,
@@ -216,7 +234,14 @@ struct PerformanceTelemetry: Sendable {
             ghostMsPerGeneratedFrame,
             encodeMsPerOutputFrame,
             generatedFPS,
-            upscaleFPS
+            upscaleFPS,
+            cuganWaitInMs,
+            cuganWaitComputeMs,
+            cuganPredictMs,
+            cuganTiles,
+            cuganConcurrency,
+            cuganStitchMs,
+            cuganWallMs
         )
     }
 }
