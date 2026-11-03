@@ -55,6 +55,9 @@ final class IncrementalVideoCheckpointWriter {
     private var segmentURL: URL?
     private var lastWrittenPTS: CMTime?
     private var transferSession: VTPixelTransferSession?
+    private(set) var readyWaitSeconds = 0.0
+    private(set) var transferSeconds = 0.0
+    private(set) var appendCallSeconds = 0.0
 
     private var manifestURL: URL { directory.appendingPathComponent("manifest.json") }
 
@@ -156,7 +159,9 @@ final class IncrementalVideoCheckpointWriter {
             throw ProcessorError.writer("pause checkpoint 10-bit pool unavailable")
         }
 
+        let readyStart = CFAbsoluteTimeGetCurrent()
         try await waitUntilReady(input)
+        readyWaitSeconds += CFAbsoluteTimeGetCurrent() - readyStart
 
         var destination: CVPixelBuffer?
         guard CVPixelBufferPoolCreatePixelBuffer(nil, pool, &destination) == kCVReturnSuccess,
@@ -172,9 +177,12 @@ final class IncrementalVideoCheckpointWriter {
             ) == noErr, let session else {
                 throw ProcessorError.conversionFailed("could not create pause checkpoint pixel transfer session")
             }
+            // Same VideoToolbox transfer into the writer's 10-bit pool as before.
+            // The session runs off the inference thread so the encoder can overlap it.
             transferSession = session
         }
 
+        let transferStart = CFAbsoluteTimeGetCurrent()
         guard let transferSession,
               VTPixelTransferSessionTransferImage(
                 transferSession,
@@ -183,10 +191,13 @@ final class IncrementalVideoCheckpointWriter {
               ) == noErr else {
             throw ProcessorError.conversionFailed("BGRA→P010 conversion failed for pause checkpoint")
         }
+        transferSeconds += CFAbsoluteTimeGetCurrent() - transferStart
 
+        let appendStart = CFAbsoluteTimeGetCurrent()
         guard adaptor.append(destination, withPresentationTime: localTime(presentationTime)) else {
             throw ProcessorError.writer("failed writing pause checkpoint 10-bit frame")
         }
+        appendCallSeconds += CFAbsoluteTimeGetCurrent() - appendStart
         lastWrittenPTS = presentationTime
     }
 

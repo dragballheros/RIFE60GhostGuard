@@ -11,9 +11,65 @@ private final class FusedPolishBox: @unchecked Sendable {
     var error: Error?
     var outlineSeconds = 0.0
     var predictWallSeconds = 0.0
+    var shadowSeconds = 0.0
+    var compressionSeconds = 0.0
+    var packSeconds = 0.0
+    var refineSeconds = 0.0
     func note(_ split: FinalOutlinePass.PolishSplit) {
         outlineSeconds = split.outlineSeconds
         predictWallSeconds = split.predictWallSeconds
+        shadowSeconds = split.shadowSeconds
+        compressionSeconds = split.compressionSeconds
+        packSeconds = split.packSeconds
+        refineSeconds = split.refineSeconds
+    }
+}
+
+/// Keeps at most two encodes in flight. `submit` returns once a slot is free,
+/// while the transfer and append keep running on the encode queue.
+private final class BoundedEncodeQueue: @unchecked Sendable {
+    private let slots = DispatchSemaphore(value: 2)
+    private let queue = DispatchQueue(label: "rife60.encode-append", qos: .userInitiated)
+    private let lock = NSLock()
+    private var failure: Error?
+
+    func submit(_ body: @escaping () async throws -> Void) async {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            DispatchQueue.global(qos: .userInitiated).async {
+                self.slots.wait()
+                self.queue.async {
+                    let done = DispatchSemaphore(value: 0)
+                    var thrown: Error?
+                    Task {
+                        do { try await body() } catch { thrown = error }
+                        done.signal()
+                    }
+                    done.wait()
+                    if let thrown {
+                        self.lock.lock()
+                        if self.failure == nil { self.failure = thrown }
+                        self.lock.unlock()
+                    }
+                    self.slots.signal()
+                }
+                continuation.resume()
+            }
+        }
+    }
+
+    func drain() async throws {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            DispatchQueue.global(qos: .userInitiated).async {
+                self.slots.wait()
+                self.slots.wait()
+                self.slots.signal()
+                self.slots.signal()
+                self.lock.lock()
+                let failure = self.failure
+                self.lock.unlock()
+                if let failure { continuation.resume(throwing: failure) } else { continuation.resume() }
+            }
+        }
     }
 }
 
@@ -199,6 +255,13 @@ final class RealCUGANPass {
         let polishQueue = DispatchQueue(label: "rife60.fused-polish", qos: .userInitiated)
         let polishBox = FusedPolishBox()
         var polishGroup: DispatchGroup?
+        let encodePipeline = BoundedEncodeQueue()
+        var polishOutlineTotal = 0.0
+        var polishPredictTotal = 0.0
+        var polishShadowTotal = 0.0
+        var polishCompressionTotal = 0.0
+        var polishPackTotal = 0.0
+        var polishRefineTotal = 0.0
 
         while let item = ahead.next() {
             try await checkpoint.checkCancellation()
@@ -223,17 +286,23 @@ final class RealCUGANPass {
                     guard let ready = polishBox.buffer else {
                         throw ProcessorError.conversionFailed("Fused polish produced no frame")
                     }
-                    let previousEncode = encodeTask
                     let readyPTS = polishBox.pts
-                    encodeTask = Task {
+                    let outline = polishBox.outlineSeconds
+                    let predict = polishBox.predictWallSeconds
+                    polishOutlineTotal += outline
+                    polishPredictTotal += predict
+                    polishShadowTotal += polishBox.shadowSeconds
+                    polishCompressionTotal += polishBox.compressionSeconds
+                    polishPackTotal += polishBox.packSeconds
+                    polishRefineTotal += polishBox.refineSeconds
+                    await encodePipeline.submit {
                         try await checkpoint.append10Bit(ready, at: readyPTS)
                     }
-                    if let previousEncode { try await previousEncode.value }
                     frames += 1
-                    if polishBox.outlineSeconds > 0 {
-                        lastFusedOutlineMs = polishBox.outlineSeconds * 1000
+                    if outline > 0 {
+                        lastFusedOutlineMs = outline * 1000
                         PipelineStageTimer.current?.record("finalOutlineMs", milliseconds: lastFusedOutlineMs)
-                        PipelineStageTimer.current?.record("sharpiePredictMs", milliseconds: polishBox.predictWallSeconds * 1000)
+                        PipelineStageTimer.current?.record("sharpiePredictMs", milliseconds: predict * 1000)
                     }
                 }
                 let group = DispatchGroup()
@@ -297,18 +366,21 @@ final class RealCUGANPass {
             guard let ready = polishBox.buffer else {
                 throw ProcessorError.conversionFailed("Fused polish produced no frame")
             }
-            let previousEncode = encodeTask
             let readyPTS = polishBox.pts
-            encodeTask = Task {
+            polishOutlineTotal += polishBox.outlineSeconds
+            polishPredictTotal += polishBox.predictWallSeconds
+            await encodePipeline.submit {
                 try await checkpoint.append10Bit(ready, at: readyPTS)
             }
-            if let previousEncode { try await previousEncode.value }
             frames += 1
             if polishBox.outlineSeconds > 0 {
                 lastFusedOutlineMs = polishBox.outlineSeconds * 1000
                 PipelineStageTimer.current?.record("finalOutlineMs", milliseconds: lastFusedOutlineMs)
                 PipelineStageTimer.current?.record("sharpiePredictMs", milliseconds: polishBox.predictWallSeconds * 1000)
             }
+        }
+        if fusedPolish != nil {
+            try await encodePipeline.drain()
         }
         if let encodeTask { try await encodeTask.value }
         if reader.status == .failed { throw ProcessorError.reader(reader.error?.localizedDescription ?? "Real-CUGAN decode failed") }
@@ -324,6 +396,37 @@ final class RealCUGANPass {
         PipelineStageTimer.current?.record("cuganStrategyLoaded", milliseconds: activeStrategyLoaded ? 1 : 0)
         PipelineStageTimer.current?.recordText("cuganStrategy", activeStrategyName)
         PipelineStageTimer.current?.recordText("cuganFallback", activeStrategyFallback.isEmpty ? "none" : activeStrategyFallback)
+        let passWall = max(CFAbsoluteTimeGetCurrent() - passStart, 0.001)
+        let predictMs = predictionSeconds * 1000 / count
+        let sharpieMs = polishOutlineTotal * 1000 / count
+        let predictWallMs = polishPredictTotal * 1000 / count
+        let convertMs = checkpoint.transferSeconds * 1000 / count
+        let readyMs = checkpoint.readyWaitSeconds * 1000 / count
+        let appendMs = checkpoint.appendCallSeconds * 1000 / count
+        let stageSum = predictMs + sharpieMs + convertMs + readyMs
+        let summary = String(
+            format: "Stage wall • frames=%.0f • pass=%.1fs • %.0fms/frame • cuganPredict=%.0fms • sharpie=%.0fms (predict %.0f • pack %.0f • refine %.0f • shadow %.0f • compression %.0f) • convert=%.0fms • encoderReady=%.0fms • append=%.0fms • stageSum=%.0fms • overlap=%.0fms",
+            count,
+            passWall,
+            passWall * 1000 / count,
+            predictMs,
+            sharpieMs,
+            predictWallMs,
+            polishPackTotal * 1000 / count,
+            polishRefineTotal * 1000 / count,
+            polishShadowTotal * 1000 / count,
+            polishCompressionTotal * 1000 / count,
+            convertMs,
+            readyMs,
+            appendMs,
+            stageSum,
+            max(0, stageSum - passWall * 1000 / count)
+        )
+        DiagnosticsLogger.shared.log(summary)
+        CrashCapture.step(summary)
+        PipelineStageTimer.current?.record("convertMs", milliseconds: convertMs)
+        PipelineStageTimer.current?.record("encoderReadyMs", milliseconds: readyMs)
+        PipelineStageTimer.current?.record("appendMs", milliseconds: appendMs)
         DiagnosticsLogger.shared.log("Real-CUGAN writer completed • native 2x=\(targetWidth)x\(targetHeight) • frames=\(frames) • strategy=\(activeStrategyName) • loaded=\(activeStrategyLoaded) • slots=\(activeStrategySlots) • file=\(formatStorageMB(completedBytes)) MB")
         return completedURL
     }

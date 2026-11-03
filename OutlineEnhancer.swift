@@ -228,6 +228,7 @@ final class OutlineEnhancer {
                 srcRow: srcRow, dstRow: dstRow, isBGRA: isBGRA
             )
         } else {
+        let wallStart = CFAbsoluteTimeGetCurrent()
         DispatchQueue.concurrentPerform(iterations: workers) { worker in
             let input = inputArrays[worker]
             let output = outputArrays[worker]
@@ -249,6 +250,10 @@ final class OutlineEnhancer {
                 tileIndex += workers
             }
         }
+        let wall = CFAbsoluteTimeGetCurrent() - wallStart
+        timingLock.lock()
+        lastPredictWallSeconds += wall
+        timingLock.unlock()
         }
         try failure.rethrowIfNeeded()
         segmentation.wait()
