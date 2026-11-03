@@ -9,7 +9,15 @@ func expect(_ condition: Bool, _ message: String) throws {
     if !condition { throw SpeedPolicyError.message(message) }
 }
 
-try expect(SharpieTileStore.unbenchmarkedDefault() == .batched256, "unbenchmarked Sharpie must batch the 256 tile")
+try expect(SharpieTileStore.unbenchmarkedDefault() == .sequential256, "before a measurement Sharpie stays sequential 256")
+let roomy = RealCUGANStrategyStore.ProbeHeadroom(rawMB: 420, reclaimableMB: 900, thermalSerious: false)
+try expect(roomy.canStart && roomy.effectiveMB == 1_320, "reclaimable bytes count toward probe headroom")
+let modelResident = RealCUGANStrategyStore.ProbeHeadroom(rawMB: 280, reclaimableMB: 0, thermalSerious: false)
+try expect(modelResident.stayedWithinBudget(postLoadRawMB: 300), "a model-sized raw drop is not a failed strategy")
+let leaking = RealCUGANStrategyStore.ProbeHeadroom(rawMB: 200, reclaimableMB: 0, thermalSerious: false)
+try expect(!leaking.stayedWithinBudget(postLoadRawMB: 700), "a further 500 MB drop during a probe is rejected")
+let hotProbe = RealCUGANStrategyStore.ProbeHeadroom(rawMB: 1_200, reclaimableMB: 0, thermalSerious: true)
+try expect(!hotProbe.canStart, "thermal serious still blocks a probe")
 try expect(SharpieTileStrategy.batched256.tile == SharpieTileStrategy.sequential256.tile, "batched Sharpie tile must match sequential 256")
 try expect(SharpieTileStrategy.batched256.resourceName == SharpieTileStrategy.sequential256.resourceName, "batched Sharpie must use the same model")
 try expect(SharpieTileStrategy.batched256.usesUnbackedBatch, "batched Sharpie must take the unbacked batch path")

@@ -8,7 +8,10 @@ enum ModelBenchmark {
     static func run(progress: @escaping @Sendable (Double, String) -> Void) throws -> String {
         let candidates = ["RealCUGAN2xNoise3_Tile704x608", "RealCUGAN2xNoise3_Tile512", "AnimeSharpieOutlineSubtle"]
         var rows = ["Model benchmark • 2 warm-ups + 5 timed predictions • median ms", "Model | Auto (.all) | GPU (CPU+GPU) | Neural Engine (CPU+ANE)"]
-        DiagnosticsLogger.shared.log("Benchmark started • \(ProcessInfo.processInfo.operatingSystemVersionString) • thermal=\(currentThermalStateName())")
+        ReclaimableMemoryRegistry.shared.flushAll()
+        let opening = currentRenderPerformanceSnapshot()
+        DiagnosticsLogger.shared.log("Benchmark started • \(ProcessInfo.processInfo.operatingSystemVersionString) • thermal=\(currentThermalStateName()) • raw=\(Int(opening.availableMemoryMB)) MB • reclaimable=\(Int(opening.reclaimableMemoryMB)) MB • effective=\(Int(opening.effectiveMemoryMB)) MB")
+        CrashCapture.step("Benchmark started • raw \(Int(opening.availableMemoryMB)) MB • effective \(Int(opening.effectiveMemoryMB)) MB • \(opening.thermalAndMode)")
         var completed = 0
         for name in candidates {
             var values: [String] = []
@@ -17,10 +20,7 @@ enum ModelBenchmark {
                 progress(Double(completed) / 9, "\(name) • \(preference.title)")
                 do {
                     let median = try autoreleasepool { () throws -> Double in
-                        let state = currentRenderPerformanceSnapshot()
-                        guard state.tier != .safe, name != candidates[0] || state.allowsWideCUGANTiles else {
-                            throw ProcessorError.conversionFailed("insufficient memory/thermal headroom; cool device and retry")
-                        }
+                        ReclaimableMemoryRegistry.shared.flushAll()
                         let url: URL
                         if name == "AnimeSharpieOutlineSubtle" { url = try OutlineEnhancer.compiledModelURL() }
                         else {
@@ -39,7 +39,6 @@ enum ModelBenchmark {
                         var samples: [Double] = []
                         for _ in 0..<5 {
                             try Task.checkCancellation()
-                            guard currentRenderPerformanceSnapshot().tier != .safe else { throw ProcessorError.conversionFailed("memory/thermal safety stop") }
                             let elapsed = try autoreleasepool { () throws -> Double in
                                 let start = CFAbsoluteTimeGetCurrent()
                                 _ = try model.prediction(from: provider)
@@ -53,8 +52,11 @@ enum ModelBenchmark {
                     DiagnosticsLogger.shared.log("Benchmark sample • \(name) • \(preference.title) • median=\(String(format: "%.1f", median))ms • \(currentThermalStateName())")
                 } catch is CancellationError { throw CancellationError() }
                 catch {
-                    values.append("FAILED")
-                    DiagnosticsLogger.shared.log("Benchmark failure • \(name) • \(preference.title) • \(error.localizedDescription)")
+                    let detail = benchmarkErrorText(error)
+                    values.append("FAILED: \(detail)")
+                    let line = "Benchmark failure • \(name) • \(preference.title) • \(detail)"
+                    DiagnosticsLogger.shared.log(line)
+                    CrashCapture.step(line)
                 }
                 completed += 1
                 progress(Double(completed) / 9, "\(completed)/9 configurations complete")
@@ -76,7 +78,8 @@ enum ModelBenchmark {
             guard let url = Bundle.main.url(forResource: name, withExtension: "mlmodelc") else { continue }
             let tileWidth = name.contains("704") ? 704 : 512
             let tileHeight = name.contains("608") ? 608 : 512
-            let available = currentRenderPerformanceSnapshot().availableMemoryMB
+            ReclaimableMemoryRegistry.shared.flushAll()
+            let available = currentRenderPerformanceSnapshot().effectiveMemoryMB
             var best: (RealCUGANTileStrategy, Int, Double, Double)?
             for strategy in RealCUGANTileStrategy.candidates(modelName: name, availableMB: available) {
                 try Task.checkCancellation()
@@ -90,8 +93,11 @@ enum ModelBenchmark {
                         best = (strategy, slots, sample.millisecondsPerTile, sample.extraMB)
                     }
                 } catch {
-                    rows.append("\(strategy.title) | \(name) | - | - | \(error.localizedDescription)")
-                    DiagnosticsLogger.shared.log("Real-CUGAN strategy discarded • \(strategy.rawValue) • \(name) • \(error.localizedDescription)")
+                    let detail = benchmarkErrorText(error)
+                    rows.append("\(strategy.title) | \(name) | - | - | \(detail)")
+                    let line = "Real-CUGAN strategy discarded • \(strategy.rawValue) • \(name) • \(detail)"
+                    DiagnosticsLogger.shared.log(line)
+                    CrashCapture.step(line)
                 }
             }
             if let best {
@@ -191,9 +197,25 @@ enum ModelBenchmark {
         return rows
     }
 
+    private static func benchmarkErrorText(_ error: Error) -> String {
+        let ns = error as NSError
+        let underlying = (ns.userInfo[NSUnderlyingErrorKey] as? NSError)?.localizedDescription
+        let reason = [ns.localizedDescription, underlying].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " • ")
+        return reason.isEmpty ? String(describing: error) : reason
+    }
+
     private static func timeStrategy(url: URL, strategy: RealCUGANTileStrategy, slots: Int, tileWidth: Int, tileHeight: Int) throws -> (millisecondsPerTile: Double, extraMB: Double) {
-        let before = currentRenderPerformanceSnapshot().availableMemoryMB
-        guard before >= 500 else { throw ProcessorError.conversionFailed("insufficient headroom") }
+        ReclaimableMemoryRegistry.shared.flushAll()
+        let beforeSnap = currentRenderPerformanceSnapshot()
+        let beforeHead = RealCUGANStrategyStore.ProbeHeadroom(
+            rawMB: beforeSnap.availableMemoryMB,
+            reclaimableMB: beforeSnap.reclaimableMemoryMB,
+            thermalSerious: beforeSnap.thermalState == .serious || beforeSnap.thermalState == .critical
+        )
+        guard beforeHead.canStart else {
+            throw ProcessorError.conversionFailed("insufficient headroom • \(beforeHead.summary)")
+        }
+        let before = beforeSnap.effectiveMemoryMB
         let options = MLModelConfiguration()
         options.computeUnits = ModelComputePreference.current == .auto ? .cpuAndNeuralEngine : ModelComputePreference.current.units
         let modelURL: URL
@@ -207,6 +229,7 @@ enum ModelBenchmark {
         }
         let model = try MLModel(contentsOf: modelURL, configuration: options)
         let provider = try syntheticInput(for: model)
+        let postLoadRaw = currentRenderPerformanceSnapshot().availableMemoryMB
         let repeats = 3
         // 1080p uses 6 wide tiles or 15 of the 512 tiles. Score the whole frame
         // so a serial concurrent launch is not divided into a fake per-tile win.
@@ -216,8 +239,15 @@ enum ModelBenchmark {
         for _ in 0..<repeats {
             try Task.checkCancellation()
             let now = currentRenderPerformanceSnapshot()
-            if now.tier == .safe || now.availableMemoryMB < 500 { throw ProcessorError.conversionFailed("exceeded memory headroom") }
-            lowest = min(lowest, now.availableMemoryMB)
+            let live = RealCUGANStrategyStore.ProbeHeadroom(
+                rawMB: now.availableMemoryMB,
+                reclaimableMB: now.reclaimableMemoryMB,
+                thermalSerious: now.thermalState == .serious || now.thermalState == .critical
+            )
+            if !live.stayedWithinBudget(postLoadRawMB: postLoadRaw) {
+                throw ProcessorError.conversionFailed("exceeded memory headroom • \(live.summary) • post-load raw \(Int(postLoadRaw)) MB")
+            }
+            lowest = min(lowest, now.effectiveMemoryMB)
             let elapsed = try autoreleasepool { () throws -> Double in
                 let start = CFAbsoluteTimeGetCurrent()
                 var remaining = frameTiles
@@ -241,9 +271,8 @@ enum ModelBenchmark {
                 return (CFAbsoluteTimeGetCurrent() - start) * 1000 / Double(frameTiles)
             }
             samples.append(elapsed)
-            lowest = min(lowest, currentRenderPerformanceSnapshot().availableMemoryMB)
+            lowest = min(lowest, currentRenderPerformanceSnapshot().effectiveMemoryMB)
         }
-        if lowest < 500 { throw ProcessorError.conversionFailed("exceeded memory headroom") }
         let extra = max(0, before - lowest)
         return (samples.sorted()[samples.count / 2], extra)
     }

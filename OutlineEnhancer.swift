@@ -541,13 +541,14 @@ final class OutlineEnhancer {
         width: Int, height: Int,
         src: UnsafeMutablePointer<UInt8>, srcRow: Int, isBGRA: Bool
     ) {
-        let sampleCount = min(4, tileCount)
+        let sampleCount = min(32, tileCount)
         guard sampleCount > 0 else { return }
-        if currentRenderPerformanceSnapshot().tier == .safe {
+        let snap = currentRenderPerformanceSnapshot()
+        if snap.thermalState == .serious || snap.thermalState == .critical {
             useUnbackedBatch = false
             if !didLogSharpieDefer {
                 didLogSharpieDefer = true
-                DiagnosticsLogger.shared.log("Sharpie automatic probe deferred • Thermal Safe • sequential 256 until the phone cools • Benchmark Models is not required")
+                DiagnosticsLogger.shared.log("Sharpie automatic probe deferred • \(snap.thermalAndMode) • sequential 256 until the phone cools • Benchmark Models is not required")
             }
             return
         }
@@ -565,27 +566,37 @@ final class OutlineEnhancer {
                 _ = try models[0].prediction(from: provider)
                 sequential += CFAbsoluteTimeGetCurrent() - started
             }
-            var batched = Double.greatestFiniteMagnitude
-            if inputArrays.count >= sampleCount {
-                var providers: [MLFeatureProvider] = []
-                for tileIndex in 0..<sampleCount {
-                    let (coreX, coreY) = origin(tileIndex)
-                    try packTile(coreX: coreX, coreY: coreY, width: width, height: height, src: src, srcRow: srcRow, isBGRA: isBGRA, input: inputArrays[tileIndex])
-                    providers.append(try MLDictionaryFeatureProvider(dictionary: [inputName: MLFeatureValue(multiArray: inputArrays[tileIndex])]))
+            var batched = 0.0
+            let wave = min(4, inputArrays.count, sampleCount)
+            if wave >= 1 {
+                var cursor = 0
+                while cursor < sampleCount {
+                    let count = min(wave, sampleCount - cursor)
+                    var providers: [MLFeatureProvider] = []
+                    for offset in 0..<count {
+                        let (coreX, coreY) = origin(cursor + offset)
+                        try packTile(coreX: coreX, coreY: coreY, width: width, height: height, src: src, srcRow: srcRow, isBGRA: isBGRA, input: inputArrays[offset])
+                        providers.append(try MLDictionaryFeatureProvider(dictionary: [inputName: MLFeatureValue(multiArray: inputArrays[offset])]))
+                    }
+                    let started = CFAbsoluteTimeGetCurrent()
+                    _ = try models[0].predictions(from: MLArrayBatchProvider(array: providers), options: MLPredictionOptions())
+                    batched += CFAbsoluteTimeGetCurrent() - started
+                    cursor += count
                 }
-                let started = CFAbsoluteTimeGetCurrent()
-                _ = try models[0].predictions(from: MLArrayBatchProvider(array: providers), options: MLPredictionOptions())
-                batched = CFAbsoluteTimeGetCurrent() - started
             }
             let sequentialPerTile = sequential / Double(sampleCount)
             let batchedPerTile = batched / Double(sampleCount)
             let winner: SharpieTileStrategy = batchedPerTile < sequentialPerTile ? .batched256 : .sequential256
             useUnbackedBatch = winner.usesUnbackedBatch
             SharpieTileStore.save(winner, medianMilliseconds: min(sequential, batched))
-            DiagnosticsLogger.shared.log(String(format: "Sharpie automatic probe • real tiles=%d • sequential=%.1fms/tile • batched=%.1fms/tile • winner=%@ • saved for this device, iOS, and app build", sampleCount, sequentialPerTile, batchedPerTile, winner.rawValue))
+            let line = String(format: "Sharpie automatic probe • real tiles=%d • sequential=%.1fms/tile • batched=%.1fms/tile • winner=%@ • saved for this device, iOS, and app build", sampleCount, sequentialPerTile, batchedPerTile, winner.rawValue)
+            DiagnosticsLogger.shared.log(line)
+            CrashCapture.step(line)
         } catch {
             useUnbackedBatch = false
-            DiagnosticsLogger.shared.log("Sharpie automatic probe failed • \(error.localizedDescription) • this pass stays sequential 256")
+            let line = "Sharpie automatic probe failed • \(error.localizedDescription) • this pass stays sequential 256"
+            DiagnosticsLogger.shared.log(line)
+            CrashCapture.step(line)
         }
     }
 

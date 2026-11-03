@@ -448,9 +448,18 @@ final class RealCUGANPass {
     private func benchmarkAndSave(source: CVPixelBuffer, model: MLModel, alpha: MLMultiArray, profile: TileProfile) {
         let existing = RealCUGANStrategyStore.plan(modelName: profile.modelName, tileWidth: profile.width, tileHeight: profile.height)
         if existing.medianMilliseconds != nil { return }
+        ReclaimableMemoryRegistry.shared.flushAll()
         let snap = currentRenderPerformanceSnapshot()
-        if snap.tier == .safe {
-            DiagnosticsLogger.shared.log("Real-CUGAN automatic probe deferred • Thermal Safe • this pass stays sequential • Benchmark Models is not required")
+        let thermalBlocks = snap.thermalState == .serious || snap.thermalState == .critical
+        let head = RealCUGANStrategyStore.ProbeHeadroom(
+            rawMB: snap.availableMemoryMB,
+            reclaimableMB: snap.reclaimableMemoryMB,
+            thermalSerious: thermalBlocks
+        )
+        if !head.canStart {
+            let line = "Real-CUGAN automatic probe deferred • \(head.summary) • thermal=\(snap.thermalAndMode) • this pass stays sequential until headroom recovers"
+            DiagnosticsLogger.shared.log(line)
+            CrashCapture.step(line)
             return
         }
         guard let tileInputPool, let tileOutputPool else { return }
@@ -515,7 +524,8 @@ final class RealCUGANPass {
             var winner = RealCUGANTileStrategy.sequentialBacked
             var slots = 1
             var best = sequentialMs / Double(specs.count)
-            if snap.availableMemoryMB >= 600 {
+            var notes = ["sequential \(String(format: "%.1f", sequentialMs / Double(specs.count))) ms/tile"]
+            if snap.effectiveMemoryMB >= 600 {
                 let inputs = try specs.map(croppedInput)
                 let providers = try inputs.map { input in
                     try MLDictionaryFeatureProvider(dictionary: [
@@ -526,13 +536,16 @@ final class RealCUGANPass {
                 let batchStart = CFAbsoluteTimeGetCurrent()
                 try Self.probeUnbackedBatch(model: model, providers: providers)
                 let batchPerTile = (CFAbsoluteTimeGetCurrent() - batchStart) * 1000 / Double(specs.count)
+                notes.append("batched \(String(format: "%.1f", batchPerTile)) ms/tile")
                 if batchPerTile < best {
                     winner = .batchedUnbacked
                     slots = specs.count
                     best = batchPerTile
                 }
+            } else {
+                notes.append("batched skipped • effective \(Int(snap.effectiveMemoryMB)) MB")
             }
-            if let candidate = RealCUGANStrategyStore.concurrentCandidate(availableMB: snap.availableMemoryMB, tierSafe: false), specs.count > 1 {
+            if let candidate = RealCUGANStrategyStore.concurrentCandidate(availableMB: snap.effectiveMemoryMB, tierSafe: thermalBlocks), specs.count > 1 {
                 let inputs = try specs.map(croppedInput)
                 var outputs: [CVPixelBuffer] = []
                 var pairs: [(MLFeatureProvider, MLPredictionOptions)] = []
@@ -561,11 +574,14 @@ final class RealCUGANPass {
                 }
                 group.wait()
                 let concurrentPerTile = (CFAbsoluteTimeGetCurrent() - concurrentStart) * 1000 / Double(specs.count)
+                notes.append("concurrent \(String(format: "%.1f", concurrentPerTile)) ms/tile\(failed ? " failed" : "")")
                 if !failed && concurrentPerTile < best {
                     winner = .concurrentBacked
                     slots = candidate.slots
                     best = concurrentPerTile
                 }
+            } else {
+                notes.append("concurrent skipped • effective \(Int(snap.effectiveMemoryMB)) MB")
             }
             RealCUGANStrategyStore.save(RealCUGANStrategyRecord(
                 strategy: winner.rawValue,
@@ -580,9 +596,13 @@ final class RealCUGANPass {
                 buildNumber: RealCUGANStrategyStore.buildNumber(),
                 needsRebenchmark: false
             ))
-            DiagnosticsLogger.shared.log("Real-CUGAN automatic probe • real tiles=\(specs.count) • winner=\(winner.rawValue) • slots=\(slots) • \(String(format: "%.1f", best))ms/tile • saved for this device, iOS, and app build")
+            let line = "Real-CUGAN automatic probe • \(head.summary) • \(notes.joined(separator: " • ")) • winner=\(winner.rawValue) • slots=\(slots) • \(String(format: "%.1f", best))ms/tile • saved for this device, iOS, and app build"
+            DiagnosticsLogger.shared.log(line)
+            CrashCapture.step(line)
         } catch {
-            DiagnosticsLogger.shared.log("Real-CUGAN automatic probe skipped • \(error.localizedDescription)")
+            let line = "Real-CUGAN automatic probe skipped • \(error.localizedDescription)"
+            DiagnosticsLogger.shared.log(line)
+            CrashCapture.step(line)
         }
     }
 
@@ -609,9 +629,13 @@ final class RealCUGANPass {
         if forceCopyForRestOfPass {
             return try renderFrame(source, model: model, alpha: alpha, frameNumber: frameNumber, profile: profile, strategy: .sequentialBacked, slots: 1, forceCopy: true)
         }
-        if !didBenchmarkStrategy && currentRenderPerformanceSnapshot().tier != .safe {
-            didBenchmarkStrategy = true
-            benchmarkAndSave(source: source, model: model, alpha: alpha, profile: profile)
+        if !didBenchmarkStrategy {
+            let snap = currentRenderPerformanceSnapshot()
+            let thermalBlocks = snap.thermalState == .serious || snap.thermalState == .critical
+            if !thermalBlocks {
+                didBenchmarkStrategy = true
+                benchmarkAndSave(source: source, model: model, alpha: alpha, profile: profile)
+            }
         }
         let plan = RealCUGANStrategyStore.plan(modelName: profile.modelName, tileWidth: profile.width, tileHeight: profile.height)
         activeStrategyName = plan.strategy.rawValue

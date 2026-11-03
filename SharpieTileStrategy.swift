@@ -61,9 +61,9 @@ enum SharpieTileStore {
             .appendingPathComponent("sharpie-tile.json")
     }()
 
-    /// Same 256 tile and the same compiled model as the sequential path.
-    /// Batching only groups predictions; it does not change the seam.
-    static func unbenchmarkedDefault() -> SharpieTileStrategy { .batched256 }
+    /// Same 256 tile and the same compiled model as the batched path.
+    /// Until a measurement is saved, stay sequential. A saved winner replaces this.
+    static func unbenchmarkedDefault() -> SharpieTileStrategy { .sequential256 }
 
     static func needsAutomaticBenchmark() -> Bool {
         guard SharpieTileStrategy.isBundled(.batched256) else { return false }

@@ -189,14 +189,38 @@ enum RealCUGANStrategyStore {
         return 1
     }
 
-    /// Nil when this launch should stay on the sequential default (thermal safe,
-    /// or not enough memory for a second slot). The caller still times the
-    /// candidate once and saves the winner.
+    /// Nil when this launch should stay on the sequential default (thermal serious
+    /// or critical, or not enough effective headroom for a second slot).
     static func concurrentCandidate(availableMB: Double, tierSafe: Bool) -> RealCUGANStrategyPlan? {
         if tierSafe { return nil }
         let slots = allowedConcurrentSlots(availableMB: availableMB)
         guard slots >= 2 else { return nil }
         return RealCUGANStrategyPlan(strategy: .concurrentBacked, slots: slots, medianMilliseconds: nil)
+    }
+
+    /// Headroom for a strategy probe. The loaded model already reduced raw
+    /// `os_proc_available_memory`, so a flat 500 MB check after that load
+    /// rejects strategies a normal render still runs.
+    struct ProbeHeadroom: Equatable {
+        var rawMB: Double
+        var reclaimableMB: Double
+        var thermalSerious: Bool
+        var effectiveMB: Double { rawMB + max(0, reclaimableMB) }
+
+        var canStart: Bool {
+            if thermalSerious { return false }
+            return effectiveMB >= 350 || rawMB >= 220
+        }
+
+        func stayedWithinBudget(postLoadRawMB: Double) -> Bool {
+            if thermalSerious { return false }
+            if rawMB < 180 { return false }
+            return postLoadRawMB - rawMB < 400
+        }
+
+        var summary: String {
+            String(format: "raw %.0f MB • reclaimable %.0f MB • effective %.0f MB", rawMB, reclaimableMB, effectiveMB)
+        }
     }
 
     private static func matchingRecord(modelName: String, tileWidth: Int, tileHeight: Int) -> RealCUGANStrategyRecord? {
