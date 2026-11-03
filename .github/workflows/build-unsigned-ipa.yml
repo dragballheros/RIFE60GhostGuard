@@ -551,8 +551,8 @@ jobs:
           /tmp/anime-restore-choice-check/check
           python3 -c 'import os,zipfile; os.makedirs("/tmp/anime-restore-models", exist_ok=True); [zipfile.ZipFile("Models/AnimeRestore/"+name).extractall("/tmp/anime-restore-models") for name in ("APISR2xRRDB.mlpackage.zip","SPAN2xHFA2k.mlpackage.zip")]'
           mkdir -p /tmp/anime-restore-ane
-          cp Scripts/check_anime_restore_ane.swift /tmp/anime-restore-ane/main.swift
-          swiftc -swift-version 5 -framework CoreML /tmp/anime-restore-ane/main.swift -o /tmp/anime-restore-ane/check
+          cp Scripts/check_anime_restore_ane.swift /tmp/anime-restore-ane/check.swift
+          swiftc -swift-version 5 -framework CoreML /tmp/anime-restore-ane/check.swift -o /tmp/anime-restore-ane/check
           /tmp/anime-restore-ane/check /tmp/anime-restore-models
           swiftc -swift-version 5 ModelComputePreference.swift UpscaleFirstPlan.swift RIFEBandPlan.swift /tmp/speed-options-check/main.swift -o /tmp/speed-options-check/check
           /tmp/speed-options-check/check
