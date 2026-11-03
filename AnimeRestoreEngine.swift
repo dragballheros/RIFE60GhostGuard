@@ -144,8 +144,10 @@ final class AnimeRestoreTiledModel: AnimeRestoreModel {
                 if CFAbsoluteTimeGetCurrent() >= deadline {
                     throw AnimeRestoreStall(variant: variant.title, tilesFinished: tilesFinished, tileCount: tileCount, lastStep: lastStep)
                 }
-                let tile = try predictSourceTile(frame: frame, originX: originX, originY: originY, width: width, height: height, deadline: deadline)
-                Self.blend(tile: tile, into: &canvas, weights: &weights, originX: originX, originY: originY, width: width, height: height)
+                let pixels = try predictSourceTile(frame: frame, originX: originX, originY: originY, width: width, height: height, deadline: deadline)
+                let tileWidth = min(Self.tile, width - originX)
+                let tileHeight = min(Self.tile, height - originY)
+                Self.blend(pixels: pixels, pixelsWide: Self.tile, tileWidth: tileWidth, tileHeight: tileHeight, into: &canvas, weights: &weights, originX: originX, originY: originY, width: width, height: height)
                 tilesFinished += 1
                 lastStep = "stitched \(tilesFinished)/\(tileCount)"
                 onTile?(tilesFinished, tileCount)
@@ -265,16 +267,16 @@ final class AnimeRestoreTiledModel: AnimeRestoreModel {
         return small
     }
 
-    private static func blend(tile: [UInt8], into canvas: inout [Float], weights: inout [Float], originX: Int, originY: Int, width: Int, height: Int) {
-        for y in 0..<tile where originY + y < height {
+    private static func blend(pixels: [UInt8], pixelsWide: Int, tileWidth: Int, tileHeight: Int, into canvas: inout [Float], weights: inout [Float], originX: Int, originY: Int, width: Int, height: Int) {
+        for y in 0..<tileHeight {
             let weightY = ramp(y, length: tile, overlap: overlap)
-            for x in 0..<tile where originX + x < width {
+            for x in 0..<tileWidth {
                 let weight = weightY * ramp(x, length: tile, overlap: overlap)
                 let index = (originY + y) * width + originX + x
-                let pixel = (y * tile + x) * 4
-                canvas[index * 3] += Float(tile[pixel + 2]) / 255 * weight
-                canvas[index * 3 + 1] += Float(tile[pixel + 1]) / 255 * weight
-                canvas[index * 3 + 2] += Float(tile[pixel]) / 255 * weight
+                let pixel = (y * pixelsWide + x) * 4
+                canvas[index * 3] += Float(pixels[pixel + 2]) / 255 * weight
+                canvas[index * 3 + 1] += Float(pixels[pixel + 1]) / 255 * weight
+                canvas[index * 3 + 2] += Float(pixels[pixel]) / 255 * weight
                 weights[index] += weight
             }
         }
