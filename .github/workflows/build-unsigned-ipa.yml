@@ -542,13 +542,18 @@ jobs:
           set -euo pipefail
           mkdir -p /tmp/speed-options-check
           cp Scripts/check_speed_options.swift /tmp/speed-options-check/main.swift
-          swiftc -swift-version 5 -framework CoreVideo AnimeRestorePolicy.swift Scripts/check_anime_restore_policy.swift -o /tmp/anime-restore-policy-check
-          /tmp/anime-restore-policy-check
-          swiftc -swift-version 5 AnimeRestoreChoice.swift RealCUGANTileStrategy.swift Scripts/check_anime_restore_choice.swift -o /tmp/anime-restore-choice-check
-          /tmp/anime-restore-choice-check
+          mkdir -p /tmp/anime-restore-policy-check /tmp/anime-restore-choice-check
+          cp Scripts/check_anime_restore_policy.swift /tmp/anime-restore-policy-check/main.swift
+          swiftc -swift-version 5 -framework CoreVideo AnimeRestorePolicy.swift /tmp/anime-restore-policy-check/main.swift -o /tmp/anime-restore-policy-check/check
+          /tmp/anime-restore-policy-check/check
+          cp Scripts/check_anime_restore_choice.swift /tmp/anime-restore-choice-check/main.swift
+          swiftc -swift-version 5 AnimeRestoreChoice.swift RealCUGANTileStrategy.swift /tmp/anime-restore-choice-check/main.swift -o /tmp/anime-restore-choice-check/check
+          /tmp/anime-restore-choice-check/check
           python3 -c 'import os,zipfile; os.makedirs("/tmp/anime-restore-models", exist_ok=True); [zipfile.ZipFile("Models/AnimeRestore/"+name).extractall("/tmp/anime-restore-models") for name in ("APISR2xRRDB.mlpackage.zip","SPAN2xHFA2k.mlpackage.zip")]'
-          swiftc -swift-version 5 -framework CoreML Scripts/check_anime_restore_ane.swift -o /tmp/anime-restore-ane-check
-          /tmp/anime-restore-ane-check /tmp/anime-restore-models
+          mkdir -p /tmp/anime-restore-ane
+          cp Scripts/check_anime_restore_ane.swift /tmp/anime-restore-ane/main.swift
+          swiftc -swift-version 5 -framework CoreML /tmp/anime-restore-ane/main.swift -o /tmp/anime-restore-ane/check
+          /tmp/anime-restore-ane/check /tmp/anime-restore-models
           swiftc -swift-version 5 ModelComputePreference.swift UpscaleFirstPlan.swift RIFEBandPlan.swift /tmp/speed-options-check/main.swift -o /tmp/speed-options-check/check
           /tmp/speed-options-check/check
 
