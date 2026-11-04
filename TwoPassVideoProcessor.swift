@@ -1,4 +1,3 @@
-import CoreML
 import Foundation
 import AVFoundation
 
@@ -379,15 +378,12 @@ final class TwoPassVideoProcessor {
                             colorPopStrength: cuganIsFinalVisualStage ? colorPopStrength : 0,
                             applyWarmthCorrection: cuganIsFinalVisualStage
                         )
-                        let fusePolish = visualPolish && automaticCuganPasses == 1
-                        if fusePolish {
-                            let line = "Fused Sharpie uses the GPU while Real-CUGAN keeps the Neural Engine"
-                            DiagnosticsLogger.shared.log(line)
-                            CrashCapture.step(line)
-                        }
-                        let fusedOutline: FinalOutlinePass? = fusePolish
-                            ? FinalOutlinePass(colorPopStrength: colorPopStrength, colorRebuild: config.colorRebuild, colorRebuildStrength: config.colorRebuildStrength, outlineRebuild: config.outlineRebuild, outlineRebuildStrength: config.outlineRebuildStrength, sharpen: config.outlineProtection, sharpieComputeUnits: .cpuAndGPU)
-                            : nil
+                        // Sharpie is a later pass so it does not share the Neural Engine with Real-CUGAN.
+                        let fusePolish = false
+                        let fusedOutline: FinalOutlinePass? = nil
+                        let separateSharpie = "Final Sharpie runs as its own pass after Real-CUGAN"
+                        DiagnosticsLogger.shared.log(separateSharpie)
+                        CrashCapture.step(separateSharpie)
                         let generated = try await cugan.run(
                             sourceURL: firstPassInput,
                             finalAudioBitrate: audioBitrate,
@@ -411,6 +407,8 @@ final class TwoPassVideoProcessor {
                                 combined.thermalState = sample.thermalState
                                 combined.performanceMode = sample.performanceMode
                                 combined.availableMemoryMB = sample.availableMemoryMB
+                                combined.effectiveMemoryMB = sample.effectiveMemoryMB
+                                combined.reclaimableMemoryMB = sample.reclaimableMemoryMB
                                 combined.physicalMemoryMB = sample.physicalMemoryMB
                                 telemetry(combined)
                             },
@@ -482,6 +480,8 @@ final class TwoPassVideoProcessor {
                                 combined.thermalState = sample.thermalState
                                 combined.performanceMode = sample.performanceMode
                                 combined.availableMemoryMB = sample.availableMemoryMB
+                                combined.effectiveMemoryMB = sample.effectiveMemoryMB
+                                combined.reclaimableMemoryMB = sample.reclaimableMemoryMB
                                 combined.physicalMemoryMB = sample.physicalMemoryMB
                                 telemetry(combined)
                             },

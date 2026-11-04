@@ -98,6 +98,7 @@ final class RealCUGANPass {
     private var fixedBatchModels: [String: MLModel] = [:]
     private var loggedStrategyKey = ""
     private var forceCopyForRestOfPass = false
+    private var staySequentialForRestOfPass = false
     private var didBenchmarkStrategy = false
     private var fusedPolishActive = false
     private var lastFusedOutlineMs = 0.0
@@ -841,27 +842,43 @@ final class RealCUGANPass {
             }
         }
         let plan = RealCUGANStrategyStore.plan(modelName: profile.modelName, tileWidth: profile.width, tileHeight: profile.height)
-        activeStrategyName = plan.strategy.rawValue
-        activeStrategySlots = plan.slots
+        let memory = currentRenderPerformanceSnapshot()
+        let allowed = RealCUGANStrategyStore.allowedConcurrentSlots(availableMB: memory.effectiveMemoryMB)
+        // The saved slot count comes from a two-tile probe, so it stays at 2 even when
+        // the current headroom allows 3 or 4. Use the headroom count for this frame.
+        let strategy: RealCUGANTileStrategy
+        let slots: Int
+        if !staySequentialForRestOfPass && allowed >= 2 && plan.strategy != .fixedBatch2 && plan.strategy != .fixedBatch4 {
+            strategy = .concurrentBacked
+            slots = allowed
+        } else {
+            strategy = plan.strategy
+            slots = plan.slots
+        }
+        activeStrategyName = strategy.rawValue
+        activeStrategySlots = slots
         activeStrategyLoaded = plan.medianMilliseconds != nil
-        let logKey = "\(profile.modelName)-\(plan.strategy.rawValue)-\(plan.slots)-\(fusedPolishActive)"
+        let logKey = "\(profile.modelName)-\(strategy.rawValue)-\(slots)-\(Int(memory.effectiveMemoryMB))"
         if loggedStrategyKey != logKey {
             loggedStrategyKey = logKey
             let timing = plan.medianMilliseconds.map { String(format: "%.1fms/tile", $0) } ?? "no benchmark yet"
-            DiagnosticsLogger.shared.log("Real-CUGAN strategy • \(plan.strategy.title) • slots=\(plan.slots) • \(timing) • model=\(profile.modelName) • tile=\(profile.width)x\(profile.height)")
+            let line = "Real-CUGAN strategy • \(strategy.rawValue) • slots=\(slots) • saved=\(plan.strategy.rawValue) slots=\(plan.slots) • effective=\(Int(memory.effectiveMemoryMB)) MB • raw=\(Int(memory.availableMemoryMB)) MB • \(timing) • model=\(profile.modelName) • tile=\(profile.width)x\(profile.height)"
+            DiagnosticsLogger.shared.log(line)
+            CrashCapture.step(line)
         }
         do {
-            return try renderFrame(source, model: model, alpha: alpha, frameNumber: frameNumber, profile: profile, strategy: plan.strategy, slots: plan.slots)
+            return try renderFrame(source, model: model, alpha: alpha, frameNumber: frameNumber, profile: profile, strategy: strategy, slots: slots)
         } catch {
-            let message = "Real-CUGAN strategy \(plan.strategy.rawValue) failed (\(error.localizedDescription)); falling back to sequential backed"
+            let message = "Real-CUGAN strategy \(strategy.rawValue) failed (\(error.localizedDescription)); falling back to sequential backed"
             activeStrategyFallback = message
             activeStrategyName = "sequentialBacked"
             activeStrategySlots = 1
             activeStrategyLoaded = false
+            staySequentialForRestOfPass = true
             DiagnosticsLogger.shared.log(message)
             PipelineStageTimer.note(message)
-            RealCUGANStrategyStore.markNeedsRebenchmark(modelName: profile.modelName, tileWidth: profile.width, tileHeight: profile.height, failed: plan.strategy)
-            if plan.strategy != .sequentialBacked {
+            RealCUGANStrategyStore.markNeedsRebenchmark(modelName: profile.modelName, tileWidth: profile.width, tileHeight: profile.height, failed: strategy)
+            if strategy != .sequentialBacked {
                 do {
                     return try renderFrame(source, model: model, alpha: alpha, frameNumber: frameNumber, profile: profile, strategy: .sequentialBacked, slots: 1)
                 } catch {
@@ -892,12 +909,11 @@ final class RealCUGANPass {
             return try renderBatched(source, model: model, alpha: alpha, profile: profile, batchSize: min(4, max(2, slots == 1 ? 2 : slots)))
         case .concurrentBacked:
             let memory = currentRenderPerformanceSnapshot()
-            let allowed = RealCUGANStrategyStore.allowedConcurrentSlots(availableMB: max(memory.availableMemoryMB, memory.effectiveMemoryMB))
-            guard allowed >= 2 else { throw ProcessorError.conversionFailed("not enough memory headroom for concurrent Real-CUGAN tiles") }
-            // Sharpie runs on the GPU during this pass, so CUGAN can use every
-            // slot the current headroom allows. The tile size and weights stay the same.
-            activeStrategySlots = allowed
-            return try renderConcurrent(source, model: model, alpha: alpha, profile: profile, slots: allowed)
+            let allowed = RealCUGANStrategyStore.allowedConcurrentSlots(availableMB: memory.effectiveMemoryMB)
+            let use = min(slots, allowed)
+            guard use >= 2 else { throw ProcessorError.conversionFailed("not enough memory headroom for concurrent Real-CUGAN tiles") }
+            activeStrategySlots = use
+            return try renderConcurrent(source, model: model, alpha: alpha, profile: profile, slots: use)
         case .fixedBatch2, .fixedBatch4:
             return try renderFixedBatch(source, modelName: profile.modelName, alpha: alpha, profile: profile, strategy: strategy)
         }
