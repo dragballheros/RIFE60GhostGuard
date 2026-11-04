@@ -1,3 +1,4 @@
+import CoreML
 import Foundation
 import AVFoundation
 
@@ -379,8 +380,13 @@ final class TwoPassVideoProcessor {
                             applyWarmthCorrection: cuganIsFinalVisualStage
                         )
                         let fusePolish = visualPolish && automaticCuganPasses == 1
+                        if fusePolish {
+                            let line = "Fused Sharpie uses the GPU while Real-CUGAN keeps the Neural Engine"
+                            DiagnosticsLogger.shared.log(line)
+                            CrashCapture.step(line)
+                        }
                         let fusedOutline: FinalOutlinePass? = fusePolish
-                            ? FinalOutlinePass(colorPopStrength: colorPopStrength, colorRebuild: config.colorRebuild, colorRebuildStrength: config.colorRebuildStrength, outlineRebuild: config.outlineRebuild, outlineRebuildStrength: config.outlineRebuildStrength, sharpen: config.outlineProtection)
+                            ? FinalOutlinePass(colorPopStrength: colorPopStrength, colorRebuild: config.colorRebuild, colorRebuildStrength: config.colorRebuildStrength, outlineRebuild: config.outlineRebuild, outlineRebuildStrength: config.outlineRebuildStrength, sharpen: config.outlineProtection, sharpieComputeUnits: .cpuAndGPU)
                             : nil
                         let generated = try await cugan.run(
                             sourceURL: firstPassInput,

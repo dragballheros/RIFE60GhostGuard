@@ -183,7 +183,7 @@ enum RealCUGANStrategyStore {
     }
 
     static func allowedConcurrentSlots(availableMB: Double) -> Int {
-        if availableMB >= 1_600 { return 4 }
+        if availableMB >= 1_500 { return 4 }
         if availableMB >= 1_100 { return 3 }
         if availableMB >= 700 { return 2 }
         return 1

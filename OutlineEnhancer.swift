@@ -58,7 +58,7 @@ final class OutlineEnhancer {
     private let segmentationHandler = VNSequenceRequestHandler()
     private let personSegmentationRequest: VNGeneratePersonSegmentationRequest
 
-    init() throws {
+    init(computeUnits: MLComputeUnits? = nil) throws {
         let selected = SharpieTileStore.plan()
         let probe = SharpieTileStore.needsAutomaticBenchmark()
         self.tile = selected.tile
@@ -70,7 +70,7 @@ final class OutlineEnhancer {
         // on GPU/CPU. Explicit GPU or Neural Engine choices are left unchanged.
         // Weights and model math stay the same.
         let preference = ModelComputePreference.current
-        configuration.computeUnits = preference == .auto ? .cpuAndNeuralEngine : preference.units
+        configuration.computeUnits = computeUnits ?? (preference == .auto ? .cpuAndNeuralEngine : preference.units)
         configuration.allowLowPrecisionAccumulationOnGPU = true
         let tier = currentRenderPerformanceSnapshot().tier
         let copies = (selected.usesUnbackedBatch || probe) ? (tier == .safe ? 1 : Self.batchCopies) : 1

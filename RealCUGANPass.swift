@@ -298,11 +298,15 @@ final class RealCUGANPass {
 
             let handoffStart = CFAbsoluteTimeGetCurrent()
             var computeWait = 0.0
+            var sharpieWait = 0.0
+            var encodeSlotWait = 0.0
             if let fusedPolish {
                 if let polishGroup {
+                    let sharpieStart = CFAbsoluteTimeGetCurrent()
                     await Self.wait(polishGroup)
-                    computeWait += CFAbsoluteTimeGetCurrent() - handoffStart
-                    polishWaitSeconds += computeWait
+                    sharpieWait = CFAbsoluteTimeGetCurrent() - sharpieStart
+                    computeWait += sharpieWait
+                    polishWaitSeconds += sharpieWait
                     if let error = polishBox.error { throw error }
                     guard let ready = polishBox.buffer else {
                         throw ProcessorError.conversionFailed("Fused polish produced no frame")
@@ -320,7 +324,8 @@ final class RealCUGANPass {
                     await encodePipeline.submit {
                         try await checkpoint.append10Bit(ready, at: readyPTS)
                     }
-                    computeWait += CFAbsoluteTimeGetCurrent() - submitStart
+                    encodeSlotWait = CFAbsoluteTimeGetCurrent() - submitStart
+                    computeWait += encodeSlotWait
                     frames += 1
                     if outline > 0 {
                         lastFusedOutlineMs = outline * 1000
@@ -352,7 +357,8 @@ final class RealCUGANPass {
                 try await checkpoint.append10Bit(upscaled, at: pts)
             }
             if let previousEncode { try await previousEncode.value }
-            computeWait += CFAbsoluteTimeGetCurrent() - encodeWaitStart
+            encodeSlotWait = CFAbsoluteTimeGetCurrent() - encodeWaitStart
+            computeWait += encodeSlotWait
             frames += 1
             }
             computeWaitSeconds += computeWait
@@ -371,6 +377,7 @@ final class RealCUGANPass {
                 wallMs
             )
             DiagnosticsLogger.shared.log(frameLine)
+            DiagnosticsLogger.shared.log(String(format: "CUGAN wait_compute split: sharpie %.1f ms, encode %.1f ms", sharpieWait * 1000, encodeSlotWait * 1000))
             notedFrames += 1
             let done = max(frames, 1)
             let rolling = String(
@@ -837,7 +844,7 @@ final class RealCUGANPass {
         activeStrategyName = plan.strategy.rawValue
         activeStrategySlots = plan.slots
         activeStrategyLoaded = plan.medianMilliseconds != nil
-        let logKey = "\(profile.modelName)-\(plan.strategy.rawValue)-\(plan.slots)"
+        let logKey = "\(profile.modelName)-\(plan.strategy.rawValue)-\(plan.slots)-\(fusedPolishActive)"
         if loggedStrategyKey != logKey {
             loggedStrategyKey = logKey
             let timing = plan.medianMilliseconds.map { String(format: "%.1fms/tile", $0) } ?? "no benchmark yet"
@@ -884,14 +891,13 @@ final class RealCUGANPass {
         case .batchedUnbacked:
             return try renderBatched(source, model: model, alpha: alpha, profile: profile, batchSize: min(4, max(2, slots == 1 ? 2 : slots)))
         case .concurrentBacked:
-            let available = currentRenderPerformanceSnapshot().availableMemoryMB
-            let allowed = RealCUGANStrategyStore.allowedConcurrentSlots(availableMB: available)
+            let memory = currentRenderPerformanceSnapshot()
+            let allowed = RealCUGANStrategyStore.allowedConcurrentSlots(availableMB: max(memory.availableMemoryMB, memory.effectiveMemoryMB))
             guard allowed >= 2 else { throw ProcessorError.conversionFailed("not enough memory headroom for concurrent Real-CUGAN tiles") }
-            // Four slots filled the Neural Engine for the whole frame, so Sharpie
-            // could not issue a prediction until CUGAN finished. Two slots leave a
-            // gap between waves. The model and the tile pixels stay the same.
-            let fusedCap = fusedPolishActive ? 2 : slots
-            return try renderConcurrent(source, model: model, alpha: alpha, profile: profile, slots: min(fusedCap, allowed))
+            // Sharpie runs on the GPU during this pass, so CUGAN can use every
+            // slot the current headroom allows. The tile size and weights stay the same.
+            activeStrategySlots = allowed
+            return try renderConcurrent(source, model: model, alpha: alpha, profile: profile, slots: allowed)
         case .fixedBatch2, .fixedBatch4:
             return try renderFixedBatch(source, modelName: profile.modelName, alpha: alpha, profile: profile, strategy: strategy)
         }

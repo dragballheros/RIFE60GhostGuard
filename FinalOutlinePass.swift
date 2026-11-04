@@ -1,3 +1,4 @@
+import CoreML
 import Foundation
 import AVFoundation
 import CoreImage
@@ -22,6 +23,7 @@ final class FinalOutlinePass {
     private let outlineRebuildEnabled: Bool
     private let outlineRebuildStrength: Double
     private let sharpen: Bool
+    private let sharpieUnits: MLComputeUnits?
     private var streamEnhancer: OutlineEnhancer?
     private var streamCompression = CompressionGuard()
     private var streamColorRebuild = ColorRebuild()
@@ -53,7 +55,8 @@ final class FinalOutlinePass {
         var buffer: CVPixelBuffer?
     }
 
-    init(colorPopStrength: Double = 0, applyWarmthCorrection: Bool = true, colorRebuild: Bool = false, colorRebuildStrength: Double = 0.45, outlineRebuild: Bool = false, outlineRebuildStrength: Double = 0.5, sharpen: Bool = true) {
+    init(colorPopStrength: Double = 0, applyWarmthCorrection: Bool = true, colorRebuild: Bool = false, colorRebuildStrength: Double = 0.45, outlineRebuild: Bool = false, outlineRebuildStrength: Double = 0.5, sharpen: Bool = true, sharpieComputeUnits: MLComputeUnits? = nil) {
+        self.sharpieUnits = sharpieComputeUnits
         self.colorPopGrade = (colorPopStrength > 0 || applyWarmthCorrection)
             ? ColorPopGrade(strength: colorPopStrength, warmthMode: applyWarmthCorrection ? nil : .off)
             : nil
@@ -251,7 +254,7 @@ final class FinalOutlinePass {
         streamHeight = height
         streamWorkingWidth = workingWidth
         streamWorkingHeight = workingHeight
-        streamEnhancer = sharpen ? try autoreleasepool { try OutlineEnhancer() } : nil
+        streamEnhancer = sharpen ? try autoreleasepool { try OutlineEnhancer(computeUnits: sharpieUnits) } : nil
         try preparePools(fullWidth: width, fullHeight: height, workingWidth: workingWidth, workingHeight: workingHeight)
     }
 
@@ -326,7 +329,7 @@ final class FinalOutlinePass {
         let workingHeight = max(2, Int((Double(height) * scale / 2.0).rounded() * 2.0))
         let needsResize = scale < 0.999
 
-        let enhancer: OutlineEnhancer? = sharpen ? try autoreleasepool { try OutlineEnhancer() } : nil
+        let enhancer: OutlineEnhancer? = sharpen ? try autoreleasepool { try OutlineEnhancer(computeUnits: sharpieUnits) } : nil
         let compressionGuard = CompressionGuard()
         try preparePools(fullWidth: width, fullHeight: height, workingWidth: workingWidth, workingHeight: workingHeight)
 
