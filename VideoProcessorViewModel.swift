@@ -71,7 +71,7 @@ final class VideoProcessorViewModel: ObservableObject {
     @Published private(set) var animeRestoreAutoNote = ""
     private var animeRestoreShortSide = false
     private var animeRestoreSuppressedURL: URL?
-    private var animeRestoreSuppressFromRecovery = false
+    private var animeRestoreSuppressFromSavedBatch = false
     private var animeRestoreDetectGeneration = 0
     @Published var colorPopEnabled = true { didSet { ProcessingSettings.save(colorPopEnabled, ProcessingSettings.colorPop) } }
     @Published var colorPopStrength = 1.0 { didSet { ProcessingSettings.save(colorPopStrength, ProcessingSettings.colorPopStrength) } }
@@ -127,14 +127,12 @@ final class VideoProcessorViewModel: ObservableObject {
     private var savedBrightness: CGFloat?
     private var savedIdleTimerDisabled: Bool?
     private var renderStartedAt: Date?
-    private var resumeBaseProgress: Double?
     private let exportFolderBookmarkKey = "RIFE60.ExportFolderBookmark.v1"
 
     init() {
         AnimeRestoreRegistry.installDefault()
         restoreProcessingSettings()
         refreshExportFolderName()
-        RecoveryStore.discardCurrent()
         DiagnosticsLogger.shared.log("App launched • render recovery disabled; every render starts from its source.")
         restoreMediaQueue()
     }
@@ -351,8 +349,6 @@ final class VideoProcessorViewModel: ObservableObject {
         Progress: \(String(format: "%.2f", progress * 100))%
         Status: \(statusText)
         Last error: \(errorText ?? "none")
-        Recovery available: \(recoveryAvailable)
-        Recovery status: \(recoveryStatusText)
         Export folder: \(exportFolderName)
         Thermal: \(telemetry.thermalState)
         Performance tier: \(telemetry.performanceMode)
@@ -566,7 +562,7 @@ final class VideoProcessorViewModel: ObservableObject {
         return currentTask
     }
 
-    private func applyRecoveredSettings(from key: String) {
+    private func applySavedBatchSettings(from key: String) {
         // Build 162 manifests predate Color Pop; missing fields mean the original look.
         upscaleFirst = false
         computePreference = .auto
@@ -637,7 +633,6 @@ final class VideoProcessorViewModel: ObservableObject {
         diagnosticsCopyStatus = ""
         elapsedSeconds = 0
         etaSeconds = nil
-        resumeBaseProgress = nil
         renderStartedAt = Date()
         statusText = "Preparing image…"
         if renderPowerMode { applyRenderPowerMode() }
@@ -767,10 +762,7 @@ final class VideoProcessorViewModel: ObservableObject {
         guard let renderStartedAt else { return }
         let elapsed = Date().timeIntervalSince(renderStartedAt)
         elapsedSeconds = elapsed
-        // After a resume the first reported progress is the recovered stage, not zero, so the
-        // ETA must be based on progress made during THIS run or it would read near zero.
-        if resumeBaseProgress == nil { resumeBaseProgress = progress }
-        let done = progress - (resumeBaseProgress ?? 0)
+        let done = progress
         if done > 0.025 && progress < 0.97 {
             let raw = elapsed * (1.0 - progress) / done
             etaSeconds = etaSeconds.map { $0 > 0 ? $0 * 0.72 + raw * 0.28 : raw } ?? raw
@@ -1093,7 +1085,7 @@ final class VideoProcessorViewModel: ObservableObject {
         do {
             guard let queue = try batchStore.load() else { return }
             mediaQueue = queue
-            if let settings = queue.settingsKey { applyRecoveredSettings(from: settings) }
+            if let settings = queue.settingsKey { applySavedBatchSettings(from: settings) }
             if let id = queue.nextItemID ?? queue.items.last?.id {
                 activateQueueItem(id)
                 if queue.nextItemID != nil {
