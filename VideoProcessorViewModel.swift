@@ -1186,15 +1186,15 @@ final class VideoProcessorViewModel: ObservableObject {
                     updated.items[index].state = self.batchCancelRequested ? .pending : .failed
                     try self.batchStore.save(updated); self.mediaQueue = updated
                     if self.batchCancelRequested { throw CancellationError() }
-                    throw ProcessorError.conversionFailed(self.errorText ?? "The media item did not finish; the queue has been paused")
+                    throw ProcessorError.conversionFailed(self.errorText ?? "The media item did not finish; the the media item did not finish; the queue stopped")
                 }
             }
             batchStatusText = "Batch complete • \(queue.items.count) saved"
             statusText = "Finished"
         } catch is CancellationError {
-            batchStatusText = "Queue paused • completed outputs saved; remaining items retained"
+            batchStatusText = "Queue stopped • completed outputs saved; remaining items retained"
         } catch {
-            batchStatusText = "Queue paused at this item • remaining items retained"
+            batchStatusText = "Queue stopped at this item • remaining items retained"
             errorText = error.localizedDescription
         }
     }
