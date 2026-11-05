@@ -245,7 +245,7 @@ final class VideoProcessorViewModel: ObservableObject {
     func cancelBenchmark() { benchmarkTask?.cancel() }
 
     /// Generate a disposable settings preview from the opening frames without setting
-    /// isProcessing/isBatchProcessing, touching recovery checkpoints, or locking render controls.
+    /// isProcessing/isBatchProcessing, touching persistent render state, or locking render controls.
     func generatePreview() {
         if isPreviewing { cancelPreview(); return }
         guard let source = inputURL, !isBusy, !isImporting, !isBenchmarking else { return }
@@ -292,7 +292,7 @@ final class VideoProcessorViewModel: ObservableObject {
                 }
                 self.previewURLs = urls
                 self.previewStatus = "Preview ready • \(urls.count) enhanced sample frames. Adjust settings and preview again; the full render has not started."
-                DiagnosticsLogger.shared.log("Settings preview complete • frames=\(urls.count) • source=\(source.lastPathComponent) • no render/recovery state changed")
+                DiagnosticsLogger.shared.log("Settings preview complete • frames=\(urls.count) • source=\(source.lastPathComponent) • no render state changed")
             } catch {
                 guard let self else { return }
                 self.previewStatus = Task.isCancelled ? "Preview cancelled" : "Preview failed • \(error.localizedDescription)"
@@ -600,7 +600,7 @@ final class VideoProcessorViewModel: ObservableObject {
             case "animeRestoreStrength":
                 if let value = Double(pair[1]), value.isFinite { animeRestoreStrength = min(max(value, 0.1), 1) }
             case "animeRestoreSuppressAuto":
-                animeRestoreSuppressFromRecovery = enabled
+                animeRestoreSuppressFromSavedBatch = enabled
             case "animeRestoreQuality": animeRestoreQuality = pair[1]
             case "watermark": watermarkRemovalEnabled = enabled
             case "watermarkMasks": watermarkRegions = WatermarkConfiguration.decodeRegions(pair[1])
