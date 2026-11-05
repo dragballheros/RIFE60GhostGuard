@@ -4,25 +4,14 @@ import VideoToolbox
 import CoreVideo
 
 final class IncrementalVideoCheckpointWriter {
-    private struct Manifest: Codable {
-        let version: Int
-        let stageID: String
-        var segments: [String]
-        var lastPTSSeconds: Double
-    }
-
-    let resumeTime: CMTime
-
     private let fm = FileManager.default
     private let directory: URL
     private let removesDirectoryOnFinish: Bool
-    private let stageID: String
     private let outputSettings: [String: Any]
     private let sourcePixelBufferAttributes: [String: Any]
     private let transform: CGAffineTransform
     private let fileType: AVFileType
 
-    private var manifest: Manifest
     private var writer: AVAssetWriter?
     private var input: AVAssetWriterInput?
     private var adaptor: AVAssetWriterInputPixelBufferAdaptor?
@@ -34,8 +23,6 @@ final class IncrementalVideoCheckpointWriter {
     private(set) var transferSeconds = 0.0
     private(set) var appendCallSeconds = 0.0
 
-    private var manifestURL: URL { directory.appendingPathComponent("manifest.json") }
-
     init(
         recoveryDirectory: URL?,
         stageID: String,
@@ -45,7 +32,6 @@ final class IncrementalVideoCheckpointWriter {
         fileType: AVFileType = .mov,
         segmentDuration: Double = 0
     ) throws {
-        self.stageID = stageID
         self.outputSettings = outputSettings
         self.sourcePixelBufferAttributes = sourcePixelBufferAttributes
         self.transform = transform
@@ -60,26 +46,8 @@ final class IncrementalVideoCheckpointWriter {
         }
         try fm.createDirectory(at: directory, withIntermediateDirectories: true)
 
-        let manifestURL = directory.appendingPathComponent("manifest.json")
-        if let data = try? Data(contentsOf: manifestURL),
-           let existing = try? JSONDecoder().decode(Manifest.self, from: data),
-           existing.version == 1,
-           existing.stageID == stageID {
-            self.manifest = existing
-        } else {
-            let initial = Manifest(version: 1, stageID: stageID, segments: [], lastPTSSeconds: -1)
-            self.manifest = initial
-            if let data = try? JSONEncoder().encode(initial) {
-                try? data.write(to: manifestURL, options: .atomic)
-            }
-        }
 
-        self.resumeTime = self.manifest.lastPTSSeconds >= 0
-            ? CMTime(seconds: self.manifest.lastPTSSeconds, preferredTimescale: 600)
-            : .zero
     }
-
-    var hasCheckpointedMedia: Bool { !manifest.segments.isEmpty }
 
     func checkCancellation() async throws {
         try Task.checkCancellation()
@@ -109,13 +77,13 @@ final class IncrementalVideoCheckpointWriter {
         try await checkCancellation()
         try await ensureWriter(startingAt: presentationTime)
         guard let input, let adaptor else {
-            throw ProcessorError.writer("pause checkpoint writer unavailable")
+            throw ProcessorError.writer("video stage writer unavailable")
         }
 
         try await waitUntilReady(input)
 
         guard adaptor.append(pixelBuffer, withPresentationTime: localTime(presentationTime)) else {
-            throw ProcessorError.writer("failed writing pause checkpoint frame")
+            throw ProcessorError.writer("failed writing video stage frame")
         }
         lastWrittenPTS = presentationTime
     }
@@ -125,7 +93,7 @@ final class IncrementalVideoCheckpointWriter {
         try await ensureWriter(startingAt: presentationTime)
 
         guard let input, let adaptor, let pool = adaptor.pixelBufferPool else {
-            throw ProcessorError.writer("pause checkpoint 10-bit pool unavailable")
+            throw ProcessorError.writer("video stage 10-bit pool unavailable")
         }
 
         let readyStart = CFAbsoluteTimeGetCurrent()
@@ -135,7 +103,7 @@ final class IncrementalVideoCheckpointWriter {
         var destination: CVPixelBuffer?
         guard CVPixelBufferPoolCreatePixelBuffer(nil, pool, &destination) == kCVReturnSuccess,
               let destination else {
-            throw ProcessorError.conversionFailed("could not allocate pause checkpoint 10-bit frame")
+            throw ProcessorError.conversionFailed("could not allocate video stage 10-bit frame")
         }
 
         if transferSession == nil {
@@ -144,7 +112,7 @@ final class IncrementalVideoCheckpointWriter {
                 allocator: kCFAllocatorDefault,
                 pixelTransferSessionOut: &session
             ) == noErr, let session else {
-                throw ProcessorError.conversionFailed("could not create pause checkpoint pixel transfer session")
+                throw ProcessorError.conversionFailed("could not create video stage pixel transfer session")
             }
             // Same VideoToolbox transfer into the writer's 10-bit pool as before.
             // The session runs off the inference thread so the encoder can overlap it.
@@ -158,41 +126,29 @@ final class IncrementalVideoCheckpointWriter {
                 from: source,
                 to: destination
               ) == noErr else {
-            throw ProcessorError.conversionFailed("BGRA→P010 conversion failed for pause checkpoint")
+            throw ProcessorError.conversionFailed("BGRA→P010 conversion failed for video stage")
         }
         transferSeconds += CFAbsoluteTimeGetCurrent() - transferStart
 
         let appendStart = CFAbsoluteTimeGetCurrent()
         guard adaptor.append(destination, withPresentationTime: localTime(presentationTime)) else {
-            throw ProcessorError.writer("failed writing pause checkpoint 10-bit frame")
+            throw ProcessorError.writer("failed writing video stage 10-bit frame")
         }
         appendCallSeconds += CFAbsoluteTimeGetCurrent() - appendStart
         lastWrittenPTS = presentationTime
     }
 
-    /// Finishes the active writer. If this is a normal completion with one segment,
-    /// return that file directly so the fast path does not add a composition/export.
-    /// If a pause/resume produced multiple segments, concatenate them once at the end.
     func finish() async throws -> URL {
-        try await finishCurrentSegment(persistManifest: false)
-        guard !manifest.segments.isEmpty else { throw ProcessorError.noOutput }
-
-        if manifest.segments.count == 1,
-           let only = manifest.segments.first {
-            let url = directory.appendingPathComponent(only)
-            guard fm.fileExists(atPath: url.path) else { throw ProcessorError.noOutput }
-            if removesDirectoryOnFinish {
-                let output = fm.temporaryDirectory.appendingPathComponent("rife-stage-output-\(UUID().uuidString).mov")
-                try fm.moveItem(at: url, to: output)
-                try? fm.removeItem(at: directory)
-                return output
-            }
-            return url
+        let url = directory.appendingPathComponent("00000.mov")
+        try await finishCurrentSegment()
+        guard fm.fileExists(atPath: url.path) else { throw ProcessorError.noOutput }
+        if removesDirectoryOnFinish {
+            let output = fm.temporaryDirectory.appendingPathComponent("rife-stage-output-\(UUID().uuidString).mov")
+            try fm.moveItem(at: url, to: output)
+            try? fm.removeItem(at: directory)
+            return output
         }
-
-        let output = try await composeSegments()
-        if removesDirectoryOnFinish { try? fm.removeItem(at: directory) }
-        return output
+        return url
     }
 
     func discardCheckpointMedia() {
@@ -200,9 +156,9 @@ final class IncrementalVideoCheckpointWriter {
     }
 
     static func cleanup(recoveryDirectory: URL?, stageID: String) {
-        let root = recoveryDirectory ?? FileManager.default.temporaryDirectory
+        guard let recoveryDirectory else { return }
         try? FileManager.default.removeItem(
-            at: root.appendingPathComponent("incremental-(stageID)", isDirectory: true)
+            at: recoveryDirectory.appendingPathComponent("incremental-\(stageID)", isDirectory: true)
         )
     }
 
@@ -210,7 +166,7 @@ final class IncrementalVideoCheckpointWriter {
         guard writer == nil else { return }
 
         let url = directory.appendingPathComponent(
-            String(format: "%05d.mov", manifest.segments.count)
+            "00000.mov"
         )
         try? fm.removeItem(at: url)
 
@@ -226,12 +182,12 @@ final class IncrementalVideoCheckpointWriter {
         )
 
         guard writer.canAdd(input) else {
-            throw ProcessorError.writer("cannot attach pause checkpoint writer input")
+            throw ProcessorError.writer("cannot attach video stage writer input")
         }
         writer.add(input)
 
         guard writer.startWriting() else {
-            throw ProcessorError.writer(writer.error?.localizedDescription ?? "pause checkpoint writer failed")
+            throw ProcessorError.writer(writer.error?.localizedDescription ?? "video stage writer failed")
         }
         writer.startSession(atSourceTime: .zero)
 
@@ -247,40 +203,15 @@ final class IncrementalVideoCheckpointWriter {
         return CMTimeSubtract(global, start)
     }
 
-    private func finishCurrentSegment(persistManifest: Bool) async throws {
-        guard let writer, let input, let url = segmentURL else {
-            if persistManifest, let lastWrittenPTS {
-                manifest.lastPTSSeconds = CMTimeGetSeconds(lastWrittenPTS)
-                try writeManifest()
-            }
-            return
-        }
-
+    private func finishCurrentSegment() async throws {
+        guard let writer, let input else { return }
         input.markAsFinished()
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
             writer.finishWriting { continuation.resume() }
         }
-
         guard writer.status == .completed else {
-            throw ProcessorError.writer(
-                writer.error?.localizedDescription ?? "pause checkpoint writer failed to finish"
-            )
+            throw ProcessorError.writer(writer.error?.localizedDescription ?? "video stage writer failed to finish")
         }
-
-        if !manifest.segments.contains(url.lastPathComponent) {
-            manifest.segments.append(url.lastPathComponent)
-        }
-        if let lastWrittenPTS {
-            manifest.lastPTSSeconds = CMTimeGetSeconds(lastWrittenPTS)
-        }
-
-        if persistManifest {
-            try writeManifest()
-            DiagnosticsLogger.shared.log(
-                "Pause checkpoint saved • stage=\(stageID) • pts=\(String(format: "%.3f", manifest.lastPTSSeconds))s • segments=\(manifest.segments.count)"
-            )
-        }
-
         self.writer = nil
         self.input = nil
         self.adaptor = nil
@@ -289,64 +220,5 @@ final class IncrementalVideoCheckpointWriter {
         self.lastWrittenPTS = nil
     }
 
-    private func composeSegments() async throws -> URL {
-        let assets = try await manifest.segments.map { name -> AVURLAsset in
-            let url = directory.appendingPathComponent(name)
-            guard fm.fileExists(atPath: url.path) else { throw ProcessorError.noOutput }
-            return AVURLAsset(url: url, options: [AVURLAssetPreferPreciseDurationAndTimingKey: true])
-        }
 
-        let composition = AVMutableComposition()
-        guard let videoTrack = composition.addMutableTrack(
-            withMediaType: .video,
-            preferredTrackID: kCMPersistentTrackID_Invalid
-        ) else {
-            throw ProcessorError.noOutput
-        }
-
-        var cursor = CMTime.zero
-        for asset in assets {
-            guard let sourceTrack = try await asset.loadTracks(withMediaType: .video).first else {
-                throw ProcessorError.missingVideoTrack
-            }
-            let range = try await sourceTrack.load(.timeRange)
-            try videoTrack.insertTimeRange(range, of: sourceTrack, at: cursor)
-            cursor = CMTimeAdd(cursor, range.duration)
-        }
-
-        if let first = assets.first,
-           let firstTrack = try await first.loadTracks(withMediaType: .video).first {
-            videoTrack.preferredTransform = try await firstTrack.load(.preferredTransform)
-        }
-
-        let finalURL = fm.temporaryDirectory
-            .appendingPathComponent("pause-checkpoint-complete-\(stageID)-\(UUID().uuidString).mov")
-        try? fm.removeItem(at: finalURL)
-
-        guard let exporter = AVAssetExportSession(
-            asset: composition,
-            presetName: AVAssetExportPresetPassthrough
-        ) else {
-            throw ProcessorError.writer("could not create pause checkpoint compositor")
-        }
-
-        exporter.outputURL = finalURL
-        exporter.outputFileType = .mov
-        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-            exporter.exportAsynchronously { continuation.resume() }
-        }
-
-        guard exporter.status == .completed else {
-            try? fm.removeItem(at: finalURL)
-            throw ProcessorError.writer(
-                exporter.error?.localizedDescription ?? "pause checkpoint composition failed"
-            )
-        }
-        return finalURL
-    }
-
-    private func writeManifest(_ value: Manifest? = nil) throws {
-        let data = try JSONEncoder().encode(value ?? manifest)
-        try data.write(to: manifestURL, options: .atomic)
-    }
 }
