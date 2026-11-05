@@ -92,7 +92,6 @@ final class RIFEVideoProcessor {
             "RIFE cadence • source=\(sourceFPSLabel) • target=\(String(format: "%.2f", config.targetFPS)) FPS • timestamp-driven interpolation"
         )
 
-        let sourceFrameStep = CMTime(seconds: 1.0 / max(detectedSourceFPS, 1.0), preferredTimescale: 600)
 
 
         let silentURL = FileManager.default.temporaryDirectory
@@ -143,7 +142,6 @@ final class RIFEVideoProcessor {
             transform: transform,
             segmentDuration: 5.0
         )
-        let resumeTime = CMTime.zero
         let guarder = GhostGuard(
             sensitivity: config.ghostSensitivity,
             enableSceneCuts: config.sceneCutProtection
@@ -246,17 +244,6 @@ final class RIFEVideoProcessor {
             }
 
             if previousPB == nil {
-                if resumeTime > .zero {
-                    // Decode one overlap source frame so the first post-checkpoint
-                    // interpolation still has a temporal predecessor. Its output
-                    // was already saved in the previous segment, so it is not
-                    // emitted again.
-                    previousPB = currentPB
-                    previousTime = currentTime
-                    try autoreleasepool { try tiledHQ.seed(currentPB) }
-                    continue
-                }
-
                 let started = CFAbsoluteTimeGetCurrent()
                 let firstOutputFrame = try colorPopGrade?.apply(currentPB) ?? currentPB
                 try await checkpoint.append10Bit(firstOutputFrame, at: .zero)
