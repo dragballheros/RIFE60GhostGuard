@@ -47,7 +47,6 @@ final class VideoProcessorViewModel: ObservableObject {
     @Published var errorText: String?
     @Published var saveStatusText = ""
     @Published var isProcessing = false
-    @Published private(set) var isPaused = false
     @Published var isImporting = false
     @Published private(set) var isPreviewing = false
     @Published private(set) var previewURLs: [URL] = []
@@ -95,8 +94,6 @@ final class VideoProcessorViewModel: ObservableObject {
     @Published var processingScreenAwake = false
     @Published var elapsedSeconds: Double = 0
     @Published var etaSeconds: Double? = nil
-    @Published var recoveryAvailable = false
-    @Published var recoveryStatusText = ""
     @Published var diagnosticsCopyStatus = ""
     @Published var showingDiagnosticsShare = false
     @Published var diagnosticsShareItems: [URL] = []
@@ -111,7 +108,7 @@ final class VideoProcessorViewModel: ObservableObject {
     private let batchStore = BatchMediaQueueStore()
     var isBusy: Bool { isProcessing || isBatchProcessing }
     var queueLocked: Bool {
-        isBusy || recoveryAvailable || (mediaQueue?.settingsKey != nil && mediaQueue?.nextItemID != nil)
+        isBusy || (mediaQueue?.settingsKey != nil && mediaQueue?.nextItemID != nil)
     }
     var selectedQueueItem: BatchMediaItem? { mediaQueue?.items.first { $0.id == selectedMediaID } }
     var queueHasRemaining: Bool { mediaQueue?.nextItemID != nil }
@@ -319,33 +316,18 @@ final class VideoProcessorViewModel: ObservableObject {
         }
     }
 
-    /// Pause is the only action that requests an incremental checkpoint.
-    /// The worker is cancelled immediately, but the active stage writer intercepts
-    /// that cancellation and finalizes its current encoded progress before returning.
-    func pause() {
-        guard isBusy else { return }
-        batchCancelRequested = true
-        isPaused = true
-        PauseCheckpointCoordinator.shared.request()
-        DiagnosticsLogger.shared.log("User paused render • requesting pause-only incremental stage checkpoint.")
-        currentTask?.cancel()
-    }
-
     func cancel() {
         batchCancelRequested = true
-        isPaused = false
-        PauseCheckpointCoordinator.shared.clear()
-        DiagnosticsLogger.shared.log("User cancelled render • no incremental checkpoint requested.")
+        DiagnosticsLogger.shared.log("User cancelled render.")
         currentTask?.cancel()
     }
     func clearRecoveryData() {
         guard !isBusy else { return }
-        do { try batchStore.discard(); mediaQueue = nil; selectedMediaID = nil; batchStatusText = "" }
+        do { try batchStore.discard() }
         catch { errorText = error.localizedDescription; return }
-        DiagnosticsLogger.shared.log("User chose Clear Recovery Data. Discarding recovery source and all checkpoints.")
-        RecoveryStore.discardCurrent()
-        recoveryAvailable = false
-        recoveryStatusText = ""
+        mediaQueue = nil
+        selectedMediaID = nil
+        batchStatusText = ""
         inputURL = nil
         scheduleAnimeRestoreDetection()
         outputURL = nil
@@ -354,7 +336,7 @@ final class VideoProcessorViewModel: ObservableObject {
         upscaleProgress = 0
         elapsedSeconds = 0
         etaSeconds = nil
-        statusText = "Recovery data cleared • select a new video"
+        statusText = "Media queue cleared • select a new video"
         errorText = nil
         saveStatusText = ""
         telemetry = PerformanceTelemetry()
@@ -572,13 +554,13 @@ final class VideoProcessorViewModel: ObservableObject {
                     self.saveStatusText = saved.message
                     self.progress = 1; self.restorationProgress = 1; self.upscaleProgress = upscale ? 1 : 0
                     self.updateClock(progress: 1); self.etaSeconds = 0; self.statusText = "Finished"
-                    self.recoveryAvailable = false; self.recoveryStatusText = ""; self.isProcessing = false; self.currentTask = nil; self.currentJobForcesGIF = false
+                    self.isProcessing = false; self.currentTask = nil; self.currentJobForcesGIF = false
                     self.blackScreenTask?.cancel(); self.processingScreenAwake = true; self.restoreDisplayState()
                 }
             } catch is CancellationError {
-                await MainActor.run { [weak self] in guard let self else { return }; self.statusText = self.isPaused ? "Paused • stage progress checkpoint saved" : "Cancelled • checkpoints kept"; self.recoveryAvailable = true; self.recoveryStatusText = self.isPaused ? "Resume available from the saved point in the interrupted stage" : "Resume available from the last completed checkpoint"; self.isProcessing = false; self.currentTask = nil; self.blackScreenTask?.cancel(); self.processingScreenAwake = true; self.restoreDisplayState() }
+                await MainActor.run { [weak self] in guard let self else { return }; self.statusText = "Cancelled"; self.isProcessing = false; self.currentTask = nil; self.blackScreenTask?.cancel(); self.processingScreenAwake = true; self.restoreDisplayState() }
             } catch {
-                await MainActor.run { [weak self] in guard let self else { return }; self.errorText = error.localizedDescription; self.statusText = "Failed • recovery data kept"; self.recoveryAvailable = RecoveryStore.existingJob() != nil; self.recoveryStatusText = self.recoveryAvailable ? "Resume available from the last completed checkpoint" : ""; self.isProcessing = false; self.currentTask = nil; self.blackScreenTask?.cancel(); self.processingScreenAwake = true; self.restoreDisplayState() }
+                await MainActor.run { [weak self] in guard let self else { return }; self.errorText = error.localizedDescription; self.statusText = "Failed"; self.isProcessing = false; self.currentTask = nil; self.blackScreenTask?.cancel(); self.processingScreenAwake = true; self.restoreDisplayState() }
             }
         }
         return currentTask
@@ -644,7 +626,6 @@ final class VideoProcessorViewModel: ObservableObject {
     private func startImage(source: URL) async -> Task<Void, Never>? {
         let generation = UUID(); renderGeneration = generation
         isProcessing = true
-        isPaused = false
         processingScreenAwake = false
         progress = 0
         restorationProgress = 0
@@ -1135,8 +1116,6 @@ final class VideoProcessorViewModel: ObservableObject {
         do { try store.save(staged) }
         catch { store.removeInputs(staged); throw error }
         if let old = mediaQueue { store.removeInputs(old) }
-        RecoveryStore.discardCurrent()
-        recoveryAvailable = false; recoveryStatusText = ""
         mediaQueue = staged
         errorText = nil; saveStatusText = ""; outputURL = nil
         if let first = staged.items.first { activateQueueItem(first.id) }
@@ -1154,11 +1133,6 @@ final class VideoProcessorViewModel: ObservableObject {
         scheduleAnimeRestoreDetection()
         watermarkRegions = item.masks
         loadingQueueSelection = false
-        // Never replace the selected queue item's source with the recovery
-        // directory's source copy here. That unconditional override allowed a
-        // stale recovery manifest to make a newly selected video process an old
-        // source. startSingle() verifies byte identity in RecoveryStore.prepare()
-        // before it can reuse checkpoints.
         if item.kind == .gif {
             videoToGIFEnabled = true
         }
