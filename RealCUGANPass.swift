@@ -421,9 +421,7 @@ final class RealCUGANPass {
                 t.cuganConcurrency = activeStrategySlots
                 t.cuganStitchMs = stitchMs
                 t.cuganWallMs = wallMs
-                t.thermalState = currentThermalStateName()
-                telemetry(t)
-            }
+                t.thermalState = currentThermalStateName()\n                DiagnosticsLogger.shared.log(runtimePassDiagnosticLine(\n                    pass: "Real-CUGAN",\n                    computeUnits: modelComputeUnitsLabel(model),\n                    decodeMs: waitIn * 1000.0,\n                    predictMs: predictMs,\n                    postMs: stitchMs + sharpieWait * 1000.0,\n                    encodeMs: checkpoint.appendCallSeconds * 1000.0 / Double(max(frames, 1)),\n                    ioMs: 0\n                ))\n                telemetry(t)\n            }
             if frames > 0 && frames % 12 == 0 {
                 let elapsed = max(CFAbsoluteTimeGetCurrent() - passStart, 0.001)
 
@@ -1459,6 +1457,18 @@ func availableDiskSpaceBytes(at url: URL) -> Int64? {
     try? url.deletingLastPathComponent()
         .resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey])
         .volumeAvailableCapacityForImportantUsage
+}
+
+private func modelComputeUnitsLabel(_ model: MLModel) -> String {
+    // MLModel.configuration.computeUnits is the actual configuration used when
+    // the model was loaded, rather than the app preference requested upstream.
+    switch model.configuration.computeUnits {
+    case .cpuOnly: return "CPU"
+    case .cpuAndGPU: return "CPU+GPU"
+    case .cpuAndNeuralEngine: return "CPU+ANE"
+    case .all: return "ALL"
+    @unknown default: return "UNKNOWN"
+    }
 }
 
 func formatStorageMB(_ bytes: Int64) -> String {
