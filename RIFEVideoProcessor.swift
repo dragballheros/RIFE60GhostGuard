@@ -93,16 +93,7 @@ final class RIFEVideoProcessor {
         )
 
         let sourceFrameStep = CMTime(seconds: 1.0 / max(detectedSourceFPS, 1.0), preferredTimescale: 600)
-        let resumeTimeHint: CMTime = {
-            if let recoveryDirectory,
-               let data = try? Data(contentsOf: recoveryDirectory.appendingPathComponent("incremental-rife/manifest.json")),
-               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-               let seconds = object["lastPTSSeconds"] as? Double,
-               seconds >= 0 {
-                return CMTime(seconds: seconds, preferredTimescale: 600)
-            }
-            return .zero
-        }()
+
 
         let silentURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("rife60-\(UUID().uuidString).mov")
@@ -152,12 +143,7 @@ final class RIFEVideoProcessor {
             transform: transform,
             segmentDuration: 5.0
         )
-        let resumeTime = checkpoint.resumeTime > .zero ? checkpoint.resumeTime : resumeTimeHint
-        if resumeTime > .zero {
-            let start = CMTimeMaximum(.zero, CMTimeSubtract(resumeTime, sourceFrameStep))
-            reader.timeRange = CMTimeRange(start: start, duration: CMTimeMaximum(.zero, CMTimeSubtract(duration, start)))
-            DiagnosticsLogger.shared.log("RIFE incremental resume • from output \(String(format: "%.3f", CMTimeGetSeconds(resumeTime)))s • reader overlap \(String(format: "%.3f", CMTimeGetSeconds(start)))s")
-        }
+        let resumeTime = CMTime.zero
         let guarder = GhostGuard(
             sensitivity: config.ghostSensitivity,
             enableSceneCuts: config.sceneCutProtection
@@ -194,7 +180,7 @@ final class RIFEVideoProcessor {
         }
 
         let frameStep = CMTime(value: 1, timescale: CMTimeScale(config.targetFPS.rounded()))
-        var nextOutputTime = resumeTime > .zero ? CMTimeAdd(resumeTime, frameStep) : CMTime.zero
+        var nextOutputTime = CMTime.zero
         var previousPB: CVPixelBuffer?
         var previousPreviousPB: CVPixelBuffer?
         var previousTime = CMTime.zero
