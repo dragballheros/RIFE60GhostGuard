@@ -695,7 +695,7 @@ struct ContentView: View {
 
     private var createButtonTitle: String {
         if let queue = vm.mediaQueue, queue.items.count > 1 {
-            return queue.settingsKey == nil ? "Process \(queue.items.count) Media in Order" : "Resume Media Queue"
+            return queue.settingsKey == nil ? "Process \(queue.items.count) Media in Order" : "Continue Media Queue"
         }
         if vm.inputKind == .gif {
             return vm.redditMode ? "Prepare Reddit GIF" : "Process GIF • Full Pipeline"
