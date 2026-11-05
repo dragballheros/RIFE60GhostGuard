@@ -133,6 +133,8 @@ final class VideoProcessorViewModel: ObservableObject {
         AnimeRestoreRegistry.installDefault()
         restoreProcessingSettings()
         refreshExportFolderName()
+        let legacyRecoveryDirectory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("Recovery", isDirectory: true)
+        try? FileManager.default.removeItem(at: legacyRecoveryDirectory)
         DiagnosticsLogger.shared.log("App launched • render recovery disabled; every render starts from its source.")
         restoreMediaQueue()
     }
@@ -319,7 +321,7 @@ final class VideoProcessorViewModel: ObservableObject {
         DiagnosticsLogger.shared.log("User cancelled render.")
         currentTask?.cancel()
     }
-    func clearRecoveryData() {
+    func clearMediaQueue() {
         guard !isBusy else { return }
         do { try batchStore.discard() }
         catch { errorText = error.localizedDescription; return }
@@ -1025,38 +1027,6 @@ final class VideoProcessorViewModel: ObservableObject {
         return candidate
     }
 
-    nonisolated private func persistDeliveryCheckpoint(from source: URL, in recoveryDirectory: URL) throws -> URL {
-        let fm = FileManager.default
-        for candidate in deliveryCheckpointCandidates(in: recoveryDirectory) { try? fm.removeItem(at: candidate) }
-        let ext = source.pathExtension.isEmpty ? "mp4" : source.pathExtension.lowercased()
-        let destination = recoveryDirectory.appendingPathComponent("checkpoint-delivery-ready.\(ext)")
-        do {
-            try fm.moveItem(at: source, to: destination)
-            DiagnosticsLogger.shared.log("Delivery-ready checkpoint persisted by move • future export retries skip render and mux")
-        } catch {
-            DiagnosticsLogger.shared.log("Delivery checkpoint move unavailable • falling back to copy: \(error.localizedDescription)")
-            try fm.copyItem(at: source, to: destination)
-        }
-        return destination
-    }
-
-    nonisolated private func existingDeliveryCheckpoint(in recoveryDirectory: URL) -> URL? {
-        let fm = FileManager.default
-        for candidate in deliveryCheckpointCandidates(in: recoveryDirectory) {
-            if fm.fileExists(atPath: candidate.path),
-               let attrs = try? fm.attributesOfItem(atPath: candidate.path),
-               let size = attrs[.size] as? NSNumber,
-               size.int64Value > 1_000_000 {
-                return candidate
-            }
-        }
-        return nil
-    }
-
-    nonisolated private func deliveryCheckpointCandidates(in recoveryDirectory: URL) -> [URL] {
-        ["mp4", "mov", "m4v"].map { recoveryDirectory.appendingPathComponent("checkpoint-delivery-ready.\($0)") }
-    }
-
     private func resolveSelectedExportFolder() -> URL? {
         guard let data = UserDefaults.standard.data(forKey: exportFolderBookmarkKey) else { return nil }
         var stale = false
@@ -1170,7 +1140,6 @@ final class VideoProcessorViewModel: ObservableObject {
         catch { errorText = error.localizedDescription }
     }
 
-    func clearMediaQueue() { clearRecoveryData() }
 
     func start() async {
         guard !isBusy, !isBenchmarking, !isImporting else { return }
