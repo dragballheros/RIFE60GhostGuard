@@ -3,32 +3,6 @@ import AVFoundation
 import VideoToolbox
 import CoreVideo
 
-/// Pause-only checkpoint writer.
-///
-/// Normal rendering uses one AVAssetWriter-backed segment for the entire stage.
-/// No manifest is written per frame and no rolling segment rotation occurs.
-/// When the user presses Pause, cancellation is intercepted at a safe frame
-/// boundary, the current writer is finalized, and only then is a small manifest
-/// written. Resume starts a new segment from that saved presentation timestamp.
-final class PauseCheckpointCoordinator {
-    static let shared = PauseCheckpointCoordinator()
-    private let lock = NSLock()
-    private var requested = false
-
-    func request() {
-        lock.lock(); requested = true; lock.unlock()
-    }
-
-    func clear() {
-        lock.lock(); requested = false; lock.unlock()
-    }
-
-    var isRequested: Bool {
-        lock.lock(); defer { lock.unlock() }
-        return requested
-    }
-}
-
 final class IncrementalVideoCheckpointWriter {
     private struct Manifest: Codable {
         let version: Int
@@ -41,6 +15,7 @@ final class IncrementalVideoCheckpointWriter {
 
     private let fm = FileManager.default
     private let directory: URL
+    private let removesDirectoryOnFinish: Bool
     private let stageID: String
     private let outputSettings: [String: Any]
     private let sourcePixelBufferAttributes: [String: Any]
@@ -76,8 +51,13 @@ final class IncrementalVideoCheckpointWriter {
         self.transform = transform
         self.fileType = fileType
 
-        let root = recoveryDirectory ?? fm.temporaryDirectory
-        self.directory = root.appendingPathComponent("incremental-\(stageID)", isDirectory: true)
+        if let recoveryDirectory {
+            self.directory = recoveryDirectory.appendingPathComponent("incremental-\(stageID)", isDirectory: true)
+            self.removesDirectoryOnFinish = false
+        } else {
+            self.directory = fm.temporaryDirectory.appendingPathComponent("rife-stage-\(UUID().uuidString)", isDirectory: true)
+            self.removesDirectoryOnFinish = true
+        }
         try fm.createDirectory(at: directory, withIntermediateDirectories: true)
 
         let manifestURL = directory.appendingPathComponent("manifest.json")
@@ -101,19 +81,8 @@ final class IncrementalVideoCheckpointWriter {
 
     var hasCheckpointedMedia: Bool { !manifest.segments.isEmpty }
 
-    /// Normal path: exactly the same cancellation check the old stages used.
-    /// Only the cancellation caused by the Pause button is converted into a
-    /// durable checkpoint; Cancel and system/task cancellation remain ordinary
-    /// cancellation with no incremental checkpoint save.
     func checkCancellation() async throws {
-        do {
-            try Task.checkCancellation()
-        } catch {
-            if PauseCheckpointCoordinator.shared.isRequested {
-                try await finishCurrentSegment(persistManifest: true)
-            }
-            throw error
-        }
+        try Task.checkCancellation()
     }
 
     private func waitUntilReady(_ input: AVAssetWriterInput) async throws {
@@ -212,10 +181,18 @@ final class IncrementalVideoCheckpointWriter {
            let only = manifest.segments.first {
             let url = directory.appendingPathComponent(only)
             guard fm.fileExists(atPath: url.path) else { throw ProcessorError.noOutput }
+            if removesDirectoryOnFinish {
+                let output = fm.temporaryDirectory.appendingPathComponent("rife-stage-output-\(UUID().uuidString).mov")
+                try fm.moveItem(at: url, to: output)
+                try? fm.removeItem(at: directory)
+                return output
+            }
             return url
         }
 
-        return try await composeSegments()
+        let output = try await composeSegments()
+        if removesDirectoryOnFinish { try? fm.removeItem(at: directory) }
+        return output
     }
 
     func discardCheckpointMedia() {
