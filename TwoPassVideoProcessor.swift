@@ -39,10 +39,13 @@ final class TwoPassVideoProcessor {
 
     func process(
         sourceURL: URL,
-        recoveryDirectory: URL? = nil,
+        recoveryDirectory _: URL? = nil,
         progress: @escaping @Sendable (Double, String) -> Void,
         telemetry: @escaping @Sendable (PerformanceTelemetry) -> Void = { _ in }
     ) async throws -> URL {
+        // Persistent stage recovery is intentionally disabled. Every render starts
+        // from the selected source, and all intermediate files are temporary.
+        let recoveryDirectory: URL? = nil
         if colorPopStrength > 0 {
             DiagnosticsLogger.shared.log("Color Pop active • strength=\(String(format: "%.2f", colorPopStrength)) • applied once in the final active visual stage")
         }
@@ -108,7 +111,7 @@ final class TwoPassVideoProcessor {
         let outlineCheckpoint = recoveryDirectory?.appendingPathComponent("checkpoint-final-outline.mov")
 
         // ------------------------------------------------------------------
-        // RESUME PLANNING
+        // TEMPORARY STAGE OUTPUTS
         //
         // Every finished stage deletes the checkpoint of the stage before it
         // (restored -> rife -> cugan -> outline) to save storage. Therefore a
@@ -189,7 +192,7 @@ final class TwoPassVideoProcessor {
                 : restorationName
             DiagnosticsLogger.shared.log("Recovery plan: furthest valid checkpoint is \(resumePoint). Stages before it will NOT be re-run.")
         } else if recoveryDirectory != nil {
-            DiagnosticsLogger.shared.log("Recovery plan: no valid checkpoints found. Starting from the first stage.")
+            DiagnosticsLogger.shared.log("Temporary processing path: starting from the selected source.")
         }
 
         // IMPORTANT: Sharpie no longer runs here. Compression cleanup remains before
@@ -199,8 +202,8 @@ final class TwoPassVideoProcessor {
         if rifeNeeded && !rifeCheckpointValid && !restoredCheckpointValid && animeDecision.enabled {
             if animeRestoreCheckpointValid, let animeRestoreCheckpoint {
                 pipelineSource = animeRestoreCheckpoint
-                progress(0.03, "Recovered checkpoint • Anime Restore complete")
-                DiagnosticsLogger.shared.log("Recovery: reused completed Anime Restore checkpoint.")
+                progress(0.03, "Stage already complete • Anime Restore complete")
+                DiagnosticsLogger.shared.log("Reused temporary stage output: Anime Restore checkpoint.")
             } else {
                 if let animeRestoreCheckpoint { try? fm.removeItem(at: animeRestoreCheckpoint) }
                 progress(0.001, "Pass 1/4 • Starting Anime Restore…")
