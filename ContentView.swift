@@ -20,7 +20,6 @@ struct ContentView: View {
     @State private var showingPhotosPicker = false
     @State private var showingPreview = false
     @State private var showingExportFolderPicker = false
-    @State private var showingClearRecoveryConfirmation = false
     @State private var photoItems: [PhotosPickerItem] = []
     @State private var showingMaskCopyConfirmation = false
     @State private var lastCompletedVideoURL: URL?
@@ -149,18 +148,6 @@ struct ContentView: View {
 
 
                     mediaQueueSection
-
-                    if vm.recoveryAvailable {
-                        Section("Crash Recovery") {
-                            Label("Recovery data found", systemImage: "arrow.clockwise.circle.fill").foregroundStyle(.orange)
-                            Text(vm.recoveryStatusText).font(.caption)
-                            if !vm.isBusy {
-                                Button { Task { await vm.start() } } label: { Label(vm.upscaleTo4K ? "Resume 2× 60 FPS Render" : "Resume 60 FPS Render", systemImage: "play.fill") }
-                                Button(role: .destructive) { showingClearRecoveryConfirmation = true } label: { Label("Clear Recovery Data", systemImage: "trash") }
-                            }
-                            Text("The batch and its masks are saved. Completed AI passes are kept in persistent storage. If iOS terminates the app, reopening it reuses every completed checkpoint instead of starting the whole render over.").font(.caption).foregroundStyle(.secondary)
-                        }
-                    }
 
                     Section("RIFE 4.26") {
                         if vm.inputKind == .image {
@@ -338,7 +325,7 @@ struct ContentView: View {
 
                     Section("Render Power") {
                         Toggle("Render power mode", isOn: $vm.renderPowerMode)
-                        Text("The processing screen turns completely black immediately. Tap once to wake it; after 20 seconds without a touch it returns to black. While processing, Picture in Picture is armed in the foreground so swiping Home can transition directly into a live progress card without suspending recovery/render work. Returning to the app closes PiP. When a render finishes, the screen gets a 1-minute grace period; if you do not touch the app, it goes black and iOS auto-lock is re-enabled.").font(.caption).foregroundStyle(.secondary)
+                        Text("The processing screen turns completely black immediately. Tap once to wake it; after 20 seconds without a touch it returns to black. While processing, Picture in Picture is armed in the foreground so swiping Home can transition directly into a live progress card without suspending processing. Returning to the app closes PiP. When a render finishes, the screen gets a 1-minute grace period; if you do not touch the app, it goes black and iOS auto-lock is re-enabled.").font(.caption).foregroundStyle(.secondary)
                     }
 
                     Section("Export to Files") {
@@ -389,7 +376,7 @@ struct ContentView: View {
                         Text("For videos to appear directly in On My iPhone instead of the app's private-looking folder, tap Set On My iPhone Save Location, select the On My iPhone folder, and tap Open once. iOS requires this one-time folder permission. The app remembers it and future completed videos are written there directly. Export Last Completed Video remains available after relaunch so a finished render is not lost if the app is closed.").font(.caption).foregroundStyle(.secondary)
                     }
 
-                    if vm.isBusy || vm.isPaused {
+                    if vm.isBusy {
                         Section((vm.mediaQueue?.items.count ?? 0) > 1 ? "Current Item Clock" : "Overall Clock") {
                             ProgressView(value: vm.progress)
                             LabeledContent("Complete", value: String(format: "%.1f%%", vm.progress * 100))
@@ -409,21 +396,7 @@ struct ContentView: View {
                                 .foregroundStyle(.secondary)
                             ProgressView(value: vm.progress)
                             Text(vm.statusText).font(.caption)
-                            HStack(spacing: 12) {
-                                Button("Cancel", role: .destructive) { vm.cancel() }
-                                Spacer()
-                                Button {
-                                    if vm.isPaused {
-                                        Task { await vm.start() }
-                                    } else {
-                                        vm.pause()
-                                    }
-                                } label: {
-                                    Label(vm.isPaused ? "Resume" : "Pause", systemImage: vm.isPaused ? "play.fill" : "pause.fill")
-                                }
-                                .buttonStyle(.bordered)
-                                .disabled((!vm.isBusy && !vm.isPaused) || vm.inputKind == .image)
-                            }
+                            Button("Cancel", role: .destructive) { vm.cancel() }
                         }
                         if vm.inputKind == .video {
                         Section("Live Performance") {
@@ -515,7 +488,7 @@ struct ContentView: View {
                     if let err = vm.errorText { Section("Error") { Text(err).foregroundStyle(.red) } }
                 }
                 .safeAreaInset(edge: .bottom, spacing: 0) {
-                    if !vm.isBusy && !vm.isPaused && !vm.recoveryAvailable {
+                    if !vm.isBusy {
                         VStack(spacing: 8) {
                             HStack {
                                 Label(vm.inputURL?.lastPathComponent ?? "No media selected",
@@ -638,10 +611,7 @@ struct ContentView: View {
                         WatermarkMaskEditor(sourceURL: source, isImage: vm.inputKind == .image, regions: $vm.watermarkRegions)
                     }
                 }
-                .alert("Clear Recovery Data?", isPresented: $showingClearRecoveryConfirmation) {
-                    Button("Clear Recovery Data", role: .destructive) { showingClearRecoveryConfirmation = false; vm.clearRecoveryData() }
-                    Button("Cancel", role: .cancel) { }
-                } message: { Text("This permanently deletes the saved source copy and completed render checkpoints for this interrupted job. It does not delete your last completed exported video.") }
+
             }
 
             if vm.isBusy && !vm.processingScreenAwake {
