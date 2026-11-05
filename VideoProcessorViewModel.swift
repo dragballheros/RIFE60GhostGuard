@@ -135,6 +135,10 @@ final class VideoProcessorViewModel: ObservableObject {
         refreshExportFolderName()
         let legacyRecoveryDirectory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("Recovery", isDirectory: true)
         try? FileManager.default.removeItem(at: legacyRecoveryDirectory)
+        let temporary = FileManager.default.temporaryDirectory
+        for legacyStage in ["incremental-rife", "incremental-cugan", "incremental-final-outline"] {
+            try? FileManager.default.removeItem(at: temporary.appendingPathComponent(legacyStage, isDirectory: true))
+        }
         DiagnosticsLogger.shared.log("App launched • render recovery disabled; every render starts from its source.")
         restoreMediaQueue()
     }
