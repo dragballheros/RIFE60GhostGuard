@@ -234,7 +234,6 @@ final class TwoPassVideoProcessor {
                 if restoredCheckpointValid, let restoredCheckpoint {
                     rifeSourceURL = restoredCheckpoint
                     progress(0.10, "Recovered checkpoint • \(restorationName) complete")
-                    RecoveryStore.update(progress: 0.10, message: "Recovered completed source restoration checkpoint", force: true)
                     DiagnosticsLogger.shared.log("Recovery: reused completed \(restorationName) checkpoint.")
                 } else {
                     if let restoredCheckpoint { try? fm.removeItem(at: restoredCheckpoint) }
@@ -265,7 +264,6 @@ final class TwoPassVideoProcessor {
                         try persistCheckpoint(from: result.url, to: restoredCheckpoint)
                         try? fm.removeItem(at: result.url)
                         rifeSourceURL = restoredCheckpoint
-                        RecoveryStore.update(progress: 0.10, message: "Pass 1/4 checkpoint saved • \(restorationName) complete", force: true)
                         DiagnosticsLogger.shared.log("Checkpoint saved: \(restorationName).")
                     } else {
                         transientURLs.append(result.url)
@@ -284,7 +282,6 @@ final class TwoPassVideoProcessor {
             if rifeCheckpointValid, let rifeCheckpoint {
                 rifeResult = rifeCheckpoint
                 progress(0.40, "Recovered checkpoint • RIFE HQ complete")
-                RecoveryStore.update(progress: 0.40, message: "Recovered completed RIFE HQ checkpoint", force: true)
                 DiagnosticsLogger.shared.log("Recovery: reused completed RIFE HQ checkpoint.")
             } else {
                 guard let rifeInput = rifeSourceURL else { throw ProcessorError.noOutput }
@@ -335,7 +332,6 @@ final class TwoPassVideoProcessor {
                     try persistCheckpoint(from: generated, to: rifeCheckpoint)
                     try? fm.removeItem(at: generated)
                     rifeResult = rifeCheckpoint
-                    RecoveryStore.update(progress: 0.40, message: "Pass 2/4 checkpoint saved • RIFE HQ complete", force: true)
                     DiagnosticsLogger.shared.log("Checkpoint saved: RIFE HQ.")
                     IncrementalVideoCheckpointWriter.cleanup(recoveryDirectory: recoveryDirectory, stageID: "rife")
                     if let restoredCheckpoint { try? fm.removeItem(at: restoredCheckpoint) }
@@ -356,7 +352,6 @@ final class TwoPassVideoProcessor {
                 if cugan4xCheckpointValid, let cugan4xCheckpoint {
                     postCUGANSource = cugan4xCheckpoint
                     progress(cuganEnd, "Recovered checkpoint • Real-CUGAN automatic 4× complete")
-                    RecoveryStore.update(progress: cuganEnd, message: "Recovered completed automatic 4× CUGAN checkpoint", force: true)
                     DiagnosticsLogger.shared.log("Recovery: reused completed Real-CUGAN automatic 4× checkpoint.")
                 } else {
                     guard let cuganInput = rifeResult ?? (cuganCheckpointValid ? cuganCheckpoint : nil) else { throw ProcessorError.noOutput }
@@ -422,7 +417,6 @@ final class TwoPassVideoProcessor {
                                 try persistCheckpoint(from: generated, to: outlineCheckpoint)
                                 try? fm.removeItem(at: generated)
                                 fusedFinalURL = outlineCheckpoint
-                                RecoveryStore.update(progress: 0.97, message: "Fused Real-CUGAN and final polish checkpoint saved", force: true)
                                 DiagnosticsLogger.shared.log("Checkpoint saved: fused Real-CUGAN and final polish.")
                                 IncrementalVideoCheckpointWriter.cleanup(recoveryDirectory: recoveryDirectory, stageID: "final-outline")
                                 IncrementalVideoCheckpointWriter.cleanup(recoveryDirectory: recoveryDirectory, stageID: "cugan")
@@ -436,7 +430,6 @@ final class TwoPassVideoProcessor {
                             try persistCheckpoint(from: generated, to: cuganCheckpoint)
                             try? fm.removeItem(at: generated)
                             firstPassOutput = cuganCheckpoint
-                            RecoveryStore.update(progress: 0.62, message: "Pass 3/4 checkpoint saved • Real-CUGAN native 2× complete", force: true)
                             DiagnosticsLogger.shared.log("Checkpoint saved: Real-CUGAN native 2×.")
                             IncrementalVideoCheckpointWriter.cleanup(recoveryDirectory: recoveryDirectory, stageID: "cugan")
                             if let rifeCheckpoint { try? fm.removeItem(at: rifeCheckpoint) }
@@ -491,7 +484,6 @@ final class TwoPassVideoProcessor {
                             try persistCheckpoint(from: generated4x, to: cugan4xCheckpoint)
                             try? fm.removeItem(at: generated4x)
                             postCUGANSource = cugan4xCheckpoint
-                            RecoveryStore.update(progress: cuganEnd, message: "Pass 4/4 checkpoint saved • Real-CUGAN automatic 4× complete", force: true)
                             DiagnosticsLogger.shared.log("Checkpoint saved: Real-CUGAN automatic 4×.")
                             if let cuganCheckpoint { try? fm.removeItem(at: cuganCheckpoint) }
                         } else {
@@ -518,7 +510,6 @@ final class TwoPassVideoProcessor {
             if outlineCheckpointValid, let outlineCheckpoint {
                 videoForMux = outlineCheckpoint
                 progress(0.97, "Recovered checkpoint • Final Sharpie outline complete")
-                RecoveryStore.update(progress: 0.97, message: "Recovered completed final Sharpie checkpoint", force: true)
                 DiagnosticsLogger.shared.log("Recovery: reused completed post-CUGAN Sharpie checkpoint.")
             } else {
                 guard let outlineInput = postCUGANSource else { throw ProcessorError.noOutput }
@@ -563,7 +554,6 @@ final class TwoPassVideoProcessor {
                     try persistCheckpoint(from: generated, to: outlineCheckpoint)
                     try? fm.removeItem(at: generated)
                     videoForMux = outlineCheckpoint
-                    RecoveryStore.update(progress: 0.97, message: "Final Sharpie checkpoint saved • post-CUGAN outline complete", force: true)
                     DiagnosticsLogger.shared.log("Checkpoint saved: final post-CUGAN Sharpie outline.")
                     IncrementalVideoCheckpointWriter.cleanup(recoveryDirectory: recoveryDirectory, stageID: "final-outline")
                     if let cuganCheckpoint { try? fm.removeItem(at: cuganCheckpoint) }
@@ -693,7 +683,6 @@ final class TwoPassVideoProcessor {
                 if let checkpoint = checkpoints[index] {
                     try persistCheckpoint(from: generated, to: checkpoint)
                     inputURL = checkpoint
-                    RecoveryStore.update(progress: lower + span, message: "Upscale-first \(stage) checkpoint complete", force: true)
                     for previous in 0..<index { if let old = checkpoints[previous] { try? fm.removeItem(at: old) } }
                 } else { inputURL = generated; transient.append(generated) }
                 try await thermalHandoff(progress: progress, position: lower + span, next: index + 1 < stages.count ? stages[index + 1] : "final export")
