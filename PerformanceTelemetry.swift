@@ -246,6 +246,31 @@ struct PerformanceTelemetry: Sendable {
     }
 }
 
+func runtimePassDiagnosticLine(
+    pass: String,
+    computeUnits: String,
+    decodeMs: Double,
+    predictMs: Double,
+    postMs: Double,
+    encodeMs: Double,
+    ioMs: Double
+) -> String {
+    let process = ProcessInfo.processInfo
+    let thermal = currentThermalStateName()
+    let power = process.isLowPowerModeEnabled ? "ON" : "OFF"
+    let appState: String
+    switch UIApplication.shared.applicationState {
+    case .active: appState = "foreground"
+    case .inactive: appState = "inactive"
+    case .background: appState = "background"
+    @unknown default: appState = "unknown"
+    }
+    return String(
+        format: "PASS %@ • units=%@ • thermal=%@ • lowPower=%@ • app=%@ • decode=%.1fms • predict=%.1fms • post=%.1fms • encode=%.1fms • io=%.1fms",
+        pass, computeUnits, thermal, power, appState, decodeMs, predictMs, postMs, encodeMs, ioMs
+    )
+}
+
 @inline(__always)
 func currentRenderPerformanceSnapshot() -> RenderPerformanceSnapshot {
     RenderPerformanceGovernor.shared.snapshot()
