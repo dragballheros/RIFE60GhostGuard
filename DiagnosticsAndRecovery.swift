@@ -26,6 +26,7 @@ final class DiagnosticsLogger: @unchecked Sendable {
     private let fm = FileManager.default
     private let maxBytes = 1_500_000
     private let formatter = ISO8601DateFormatter()
+    private var appendCount = 0
 
     private var directory: URL {
         let documents = fm.urls(for: .documentDirectory, in: .userDomainMask)[0]
@@ -67,10 +68,8 @@ final class DiagnosticsLogger: @unchecked Sendable {
             try? handle.seekToEnd()
             try? handle.write(contentsOf: Data(line.utf8))
         }
-        pruneLocked()
-    }
-
-    /// Drops log lines and diagnostic run files older than two days.
+        appendCount += 1
+        // Do not reread and rescan the entire diagnostic log for every frame.\n        // High-frequency frame telemetry can otherwise turn diagnostics into a\n        // CPU/disk workload that competes with the ML pipeline.\n        if appendCount % 64 == 0 || logFileSizeExceedsLimit() {\n            pruneLocked()\n        }\n    }\n\n    private func logFileSizeExceedsLimit() -> Bool {\n        guard let attrs = try? fm.attributesOfItem(atPath: logURL.path),\n              let size = attrs[.size] as? NSNumber else { return false }\n        return size.intValue > maxBytes\n    }\n\n    /// Drops log lines and diagnostic run files older than two days.
     private func pruneLocked() {
         let cutoff = Date().addingTimeInterval(-2 * 24 * 60 * 60)
         if let text = try? String(contentsOf: logURL, encoding: .utf8) {
