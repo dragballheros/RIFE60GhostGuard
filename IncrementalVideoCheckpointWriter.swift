@@ -16,7 +16,6 @@ final class IncrementalVideoCheckpointWriter {
     private var input: AVAssetWriterInput?
     private var adaptor: AVAssetWriterInputPixelBufferAdaptor?
     private var segmentStartPTS: CMTime?
-    private var frameCount = 0
     private var segmentURL: URL?
     private var lastWrittenPTS: CMTime?
     private var transferSession: VTPixelTransferSession?
@@ -58,13 +57,7 @@ final class IncrementalVideoCheckpointWriter {
         if input.isReadyForMoreMediaData { return }
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             let queue = DispatchQueue(label: "RIFE60.media-ready")
-            let gate = NSLock()
             input.requestMediaDataWhenReady(on: queue) {
-                gate.lock()
-                let already = frameCount > 0
-                if input.isReadyForMoreMediaData { frameCount += 1 }
-                gate.unlock()
-                if already { return }
                 if input.isReadyForMoreMediaData {
                     continuation.resume()
                 }
@@ -72,6 +65,7 @@ final class IncrementalVideoCheckpointWriter {
         }
         try await checkCancellation()
     }
+
 
     func append(_ pixelBuffer: CVPixelBuffer, at presentationTime: CMTime) async throws {
         try await checkCancellation()
