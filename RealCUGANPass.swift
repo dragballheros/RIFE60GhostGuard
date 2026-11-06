@@ -241,11 +241,7 @@ final class RealCUGANPass {
             transform: transform,
             segmentDuration: 5.0
         )
-        if checkpoint.resumeTime > .zero {
-            let start = checkpoint.resumeTime
-            reader.timeRange = CMTimeRange(start: start, duration: CMTimeMaximum(.zero, CMTimeSubtract(duration, start)))
-            DiagnosticsLogger.shared.log("Real-CUGAN incremental resume • from \(String(format: "%.3f", CMTimeGetSeconds(start)))s")
-        }
+
         guard reader.startReading() else { throw ProcessorError.reader(reader.error?.localizedDescription ?? "Real-CUGAN reader failed") }
         DiagnosticsLogger.shared.log("Real-CUGAN reader/writer started • target=\(targetWidth)x\(targetHeight) HEVC Main10 • bitrate=\(videoBitrate)")
 
@@ -277,10 +273,6 @@ final class RealCUGANPass {
             try await checkpoint.checkCancellation()
             let decodedFrame = item.buffer
             let pts = item.time
-            if CMTimeCompare(pts, checkpoint.resumeTime) <= 0 {
-                iterationStart = CFAbsoluteTimeGetCurrent()
-                continue
-            }
             waitInSeconds += waitIn
             let frameNumber = frames + 1
             let predictBefore = predictionSeconds
