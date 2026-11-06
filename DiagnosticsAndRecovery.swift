@@ -50,8 +50,22 @@ final class DiagnosticsLogger: @unchecked Sendable {
             try? handle.write(contentsOf: Data(line.utf8))
         }
         appendCount += 1
-        // Do not reread and rescan the entire diagnostic log for every frame.\n        // High-frequency frame telemetry can otherwise turn diagnostics into a\n        // CPU/disk workload that competes with the ML pipeline.\n        if appendCount % 64 == 0 || logFileSizeExceedsLimit() {\n            pruneLocked()\n        }\n    }\n\n    private func logFileSizeExceedsLimit() -> Bool {\n        guard let attrs = try? fm.attributesOfItem(atPath: logURL.path),\n              let size = attrs[.size] as? NSNumber else { return false }\n        return size.intValue > maxBytes\n    }\n\n    /// Drops log lines and diagnostic run files older than two days.
-    private func pruneLocked() {
+        // Do not reread and rescan the entire diagnostic log for every frame.
+        // High-frequency frame telemetry can otherwise turn diagnostics into a
+        // CPU/disk workload that competes with the ML pipeline.
+        if appendCount % 64 == 0 || logFileSizeExceedsLimit() {
+            pruneLocked()
+        }
+    }
+
+    private func logFileSizeExceedsLimit() -> Bool {
+        guard let attrs = try? fm.attributesOfItem(atPath: logURL.path),
+              let size = attrs[.size] as? NSNumber else { return false }
+        return size.intValue > maxBytes
+    }
+
+    /// Drops log lines and diagnostic run files older than two days.
+ {
         let cutoff = Date().addingTimeInterval(-2 * 24 * 60 * 60)
         if let text = try? String(contentsOf: logURL, encoding: .utf8) {
             var keep = false
