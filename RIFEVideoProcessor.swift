@@ -102,7 +102,7 @@ final class RIFEVideoProcessor {
         let output = AVAssetReaderTrackOutput(track: track, outputSettings: [
             kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA
         ])
-        output.alwaysCopiesSampleData = false
+        output.alwaysCopiesSampleData = true
         guard reader.canAdd(output) else {
             throw ProcessorError.reader("cannot attach video output")
         }
