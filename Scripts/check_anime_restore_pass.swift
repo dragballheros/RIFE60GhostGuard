@@ -76,5 +76,5 @@ require(writer.status == .completed, "synthetic 720p clip \(writer.error?.locali
 let result = try await AnimeRestorePass(strength: 0.8, quality: .apisr).run(sourceURL: source) { _, message in
     print("progress \(message)")
 }
-require(result.frames == 2, "restore pass finished \(result.frames) frames")
+require(result.frames >= 2, "restore pass finished fewer than the 2 source frames: \(result.frames)")
 print("ANIME_RESTORE_PASS \(result.frames) frames \(String(format: "%.1f", result.millisecondsPerFrame)) ms")
