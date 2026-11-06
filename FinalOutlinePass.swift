@@ -98,7 +98,7 @@ final class FinalOutlinePass {
 
         let reader = try AVAssetReader(asset: asset)
         let output = AVAssetReaderTrackOutput(track: track, outputSettings: [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA])
-        output.alwaysCopiesSampleData = false
+        output.alwaysCopiesSampleData = true
         guard reader.canAdd(output) else { throw ProcessorError.reader("cannot attach final polish reader") }
         reader.add(output)
 
