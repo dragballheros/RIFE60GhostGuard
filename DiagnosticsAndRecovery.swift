@@ -65,7 +65,7 @@ final class DiagnosticsLogger: @unchecked Sendable {
     }
 
     /// Drops log lines and diagnostic run files older than two days.
- {
+    private func pruneLocked() {
         let cutoff = Date().addingTimeInterval(-2 * 24 * 60 * 60)
         if let text = try? String(contentsOf: logURL, encoding: .utf8) {
             var keep = false
