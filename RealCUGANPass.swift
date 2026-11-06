@@ -177,7 +177,7 @@ final class RealCUGANPass {
             kCVPixelBufferMetalCompatibilityKey as String: true,
             kCVPixelBufferIOSurfacePropertiesKey as String: [:]
         ])
-        output.alwaysCopiesSampleData = false
+        output.alwaysCopiesSampleData = true
         guard reader.canAdd(output) else { throw ProcessorError.reader("cannot attach Real-CUGAN reader") }
         reader.add(output)
 
