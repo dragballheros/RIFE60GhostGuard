@@ -215,7 +215,18 @@ final class RIFEVideoProcessor {
             t.ghostMsPerGeneratedFrame = generated > 0 ? ghostSeconds * 1000.0 / Double(generated) : 0
             t.encodeMsPerOutputFrame = outputFrames > 0 ? encodeSeconds * 1000.0 / Double(outputFrames) : 0
             t.generatedFPS = Double(generated) / elapsed
-            t.thermalState = currentThermalStateName()\n            DiagnosticsLogger.shared.log(runtimePassDiagnosticLine(\n                pass: "RIFE",\n                computeUnits: "Metal",\n                decodeMs: sourceFrames > 0 ? decodeSeconds * 1000.0 / Double(sourceFrames) : 0,\n                predictMs: generated > 0 ? rifeSeconds * 1000.0 / Double(generated) : 0,\n                postMs: generated > 0 ? ghostSeconds * 1000.0 / Double(generated) : 0,\n                encodeMs: outputFrames > 0 ? encodeSeconds * 1000.0 / Double(outputFrames) : 0,\n                ioMs: 0\n            ))\n            telemetry(t)\n        }
+            t.thermalState = currentThermalStateName()
+            DiagnosticsLogger.shared.log(runtimePassDiagnosticLine(
+                pass: "RIFE",
+                computeUnits: "Metal",
+                decodeMs: sourceFrames > 0 ? decodeSeconds * 1000.0 / Double(sourceFrames) : 0,
+                predictMs: generated > 0 ? rifeSeconds * 1000.0 / Double(generated) : 0,
+                postMs: generated > 0 ? ghostSeconds * 1000.0 / Double(generated) : 0,
+                encodeMs: outputFrames > 0 ? encodeSeconds * 1000.0 / Double(outputFrames) : 0,
+                ioMs: 0
+            ))
+            telemetry(t)
+        }
 
         let ahead = FrameAheadReader(output: output, depth: 2)
         while let item = ahead.next() {
