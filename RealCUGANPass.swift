@@ -421,7 +421,18 @@ final class RealCUGANPass {
                 t.cuganConcurrency = activeStrategySlots
                 t.cuganStitchMs = stitchMs
                 t.cuganWallMs = wallMs
-                t.thermalState = currentThermalStateName()\n                DiagnosticsLogger.shared.log(runtimePassDiagnosticLine(\n                    pass: "Real-CUGAN",\n                    computeUnits: modelComputeUnitsLabel(model),\n                    decodeMs: waitIn * 1000.0,\n                    predictMs: predictMs,\n                    postMs: stitchMs + sharpieWait * 1000.0,\n                    encodeMs: checkpoint.appendCallSeconds * 1000.0 / Double(max(frames, 1)),\n                    ioMs: 0\n                ))\n                telemetry(t)\n            }
+                t.thermalState = currentThermalStateName()
+                DiagnosticsLogger.shared.log(runtimePassDiagnosticLine(
+                    pass: "Real-CUGAN",
+                    computeUnits: modelComputeUnitsLabel(model),
+                    decodeMs: waitIn * 1000.0,
+                    predictMs: predictMs,
+                    postMs: stitchMs + sharpieWait * 1000.0,
+                    encodeMs: checkpoint.appendCallSeconds * 1000.0 / Double(max(frames, 1)),
+                    ioMs: 0
+                ))
+                telemetry(t)
+            }
             if frames > 0 && frames % 12 == 0 {
                 let elapsed = max(CFAbsoluteTimeGetCurrent() - passStart, 0.001)
 
