@@ -28,7 +28,6 @@ final class AnimeRestorePass {
         guard let track = try await asset.loadTracks(withMediaType: .video).first else {
             throw ProcessorError.missingVideoTrack
         }
-        let duration = try await asset.load(.duration)
         let naturalSize = try await track.load(.naturalSize)
         let transform = try await track.load(.preferredTransform)
         let width = Int(abs(naturalSize.width).rounded())
@@ -77,10 +76,6 @@ final class AnimeRestorePass {
             transform: transform,
             segmentDuration: 5.0
         )
-        if checkpoint.resumeTime > .zero {
-            reader.timeRange = CMTimeRange(start: checkpoint.resumeTime, duration: CMTimeMaximum(.zero, CMTimeSubtract(duration, checkpoint.resumeTime)))
-            DiagnosticsLogger.shared.log("Anime Restore incremental resume • from \(String(format: "%.3f", CMTimeGetSeconds(checkpoint.resumeTime)))s")
-        }
         guard reader.startReading() else {
             throw ProcessorError.reader(reader.error?.localizedDescription ?? "anime restore reader failed")
         }
@@ -106,7 +101,6 @@ final class AnimeRestorePass {
         while let item = ahead.next() {
             try await checkpoint.checkCancellation()
             try await adaptiveFrameBoundaryPacing()
-            if CMTimeCompare(item.time, checkpoint.resumeTime) <= 0 { continue }
             DiagnosticsLogger.shared.log("Anime Restore frame \(frames) • tiles=\(active.tileCount) • last=\(active.lastStep)")
             let began = CFAbsoluteTimeGetCurrent()
             let frame: CVPixelBuffer
