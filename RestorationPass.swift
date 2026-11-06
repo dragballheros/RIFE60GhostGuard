@@ -70,11 +70,7 @@ final class RestorationPass {
             transform: transform,
             segmentDuration: 5.0
         )
-        if checkpoint.resumeTime > .zero {
-            let start = checkpoint.resumeTime
-            reader.timeRange = CMTimeRange(start: start, duration: CMTimeMaximum(.zero, CMTimeSubtract(duration, start)))
-            DiagnosticsLogger.shared.log("Restoration incremental resume • from \(String(format: "%.3f", CMTimeGetSeconds(start)))s")
-        }
+
 
         // Keep these resources scoped strictly to pass 1. They are destroyed when
         // this function returns, before the RIFE Metal graphs are created.
@@ -149,7 +145,6 @@ final class RestorationPass {
             try await checkpoint.checkCancellation()
             let decoded = item.buffer
             let pts = item.time
-            if CMTimeCompare(pts, checkpoint.resumeTime) <= 0 { continue }
             let frame = try autoreleasepool { try processFrame(decoded) }
             sourceFrames += 1
 
