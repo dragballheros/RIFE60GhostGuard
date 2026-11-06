@@ -147,11 +147,6 @@ final class FinalOutlinePass {
             transform: transform,
             segmentDuration: 5.0
         )
-        if checkpoint.resumeTime > .zero {
-            let start = checkpoint.resumeTime
-            reader.timeRange = CMTimeRange(start: start, duration: CMTimeMaximum(.zero, CMTimeSubtract(duration, start)))
-            DiagnosticsLogger.shared.log("Final Sharpie incremental resume • from \(String(format: "%.3f", CMTimeGetSeconds(start)))s")
-        }
         guard reader.startReading() else { throw ProcessorError.reader(reader.error?.localizedDescription ?? "final polish reader failed") }
 
         var frames = 0, shadowCleanedFrames = 0, finalCleanedFrames = 0
@@ -166,7 +161,6 @@ final class FinalOutlinePass {
             try await checkpoint.checkCancellation()
             let decoded = item.buffer
             let pts = item.time
-            if CMTimeCompare(pts, checkpoint.resumeTime) <= 0 { continue }
 
             let split = try polishPrepared(decoded)
             if split.shadowCleaned { shadowCleanedFrames += 1 }
