@@ -145,6 +145,24 @@ final class VACEOpticalFlowMaskProvider: VACEFrameMaskProvider {
         return fullResolutionMask
     }
 
+    /// Warps a mask from the previous frame onto the current frame with Vision optical flow.
+    static func warpMask(_ mask: VACEMaskPlane, from previous: VACERGBAFrame, to current: VACERGBAFrame) throws -> VACEMaskPlane {
+        let maximumDimension = 640
+        let previousProxy = try makeProxy(previous, maximumDimension: maximumDimension)
+        let currentProxy = try makeProxy(current, maximumDimension: maximumDimension)
+        let request = VNGenerateOpticalFlowRequest(targetedCVPixelBuffer: try makePixelBuffer(currentProxy))
+        request.computationAccuracy = .medium
+        request.outputPixelFormat = kCVPixelFormatType_TwoComponent32Float
+        let handler = VNImageRequestHandler(cvPixelBuffer: try makePixelBuffer(previousProxy), options: [:])
+        try handler.perform([request])
+        guard let flowBuffer = request.results?.first?.pixelBuffer else {
+            throw VACEOpticalFlowProviderError.flowUnavailable
+        }
+        let lowResolutionMask = try downsampleMaskByMaximum(mask, width: currentProxy.width, height: currentProxy.height)
+        let warped = try propagateProxyMask(lowResolutionMask, flowBuffer: flowBuffer, maximumDisplacementPixels: 64)
+        return try upsampleMaskBilinear(warped, width: current.width, height: current.height)
+    }
+
     private static func makeProxy(_ frame: VACERGBAFrame, maximumDimension: Int) throws -> VACERGBAFrame {
         let scale = min(1.0, Double(maximumDimension) / Double(max(frame.width, frame.height)))
         let width = max(1, Int((Double(frame.width) * scale).rounded(.down)))

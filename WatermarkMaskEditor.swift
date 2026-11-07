@@ -143,7 +143,7 @@ struct WatermarkMaskEditor: View {
     }
 }
 
-private struct WatermarkBrushCanvas: UIViewRepresentable {
+struct WatermarkBrushCanvas: UIViewRepresentable {
     let image: UIImage
     let mask: WatermarkBrushMask
     let showMask: Bool
@@ -174,7 +174,7 @@ private struct WatermarkBrushCanvas: UIViewRepresentable {
     }
 }
 
-private final class BrushScrollView: UIScrollView {
+final class BrushScrollView: UIScrollView {
     let canvas = BrushDrawingView()
     private var fittedSize = CGSize.zero
     override func layoutSubviews() {
@@ -191,7 +191,7 @@ private final class BrushScrollView: UIScrollView {
     }
 }
 
-private final class BrushDrawingView: UIView {
+final class BrushDrawingView: UIView {
     var image: UIImage?
     var brushMask = WatermarkBrushMask()
     var showMask = true

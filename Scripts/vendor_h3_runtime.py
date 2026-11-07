@@ -31,6 +31,8 @@ def main():
     subprocess.run(["git", "-C", str(temp), "checkout", "--quiet", REVISION], check=True)
     patcher = ROOT / "Scripts" / "patch_h3_ios_availability.py"
     subprocess.run(["python3", str(patcher), str(temp / "h3_gpu.m")], check=True)
+    subprocess.run(["python3", str(patcher), str(temp / "h3_metal.m")], check=True)
+    subprocess.run(["python3", str(patcher), str(temp / "h3_dit.c")], check=True)
 
     staged = target.with_name("minimax-h3.staging")
     shutil.rmtree(staged, ignore_errors=True)
@@ -48,6 +50,7 @@ def main():
     shutil.rmtree(target, ignore_errors=True)
     staged.rename(target)
     shutil.rmtree(temp, ignore_errors=True)
+    subprocess.run(["python3", str(ROOT / "Scripts" / "patch_h3_gguf_runtime.py"), str(target)], check=True)
     print(f"Staged {len(SOURCES)} pinned H3 runtime files from {REVISION} at {target}")
 
 if __name__ == "__main__":

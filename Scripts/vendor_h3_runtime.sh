@@ -42,5 +42,6 @@ test "$header_count" -gt 1
 test -s "$WORK_DIR/h3_shaders.metal"
 cp "$WORK_DIR/h3_shaders.metal" "$DEST_DIR/h3_shaders.metal"
 
+python3 Scripts/patch_h3_gguf_runtime.py "$DEST_DIR"
 echo "Vendored pinned H3 native source revision $H3_REVISION into $DEST_DIR."
 echo "C/Objective-C source files: ${#c_sources[@]}+${#objc_sources[@]}; headers: $header_count; model weights are excluded."

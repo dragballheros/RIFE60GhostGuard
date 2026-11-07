@@ -62,6 +62,8 @@ final class H3NativeRuntime {
     }
 
     static func load(modelDirectory: URL) throws -> H3NativeRuntime {
+        try H3Tier1OnDeviceConverter.stageTier1Layout(into: modelDirectory)
+        CrashCapture.step("H3 native load begin; stream Q8_0 and Q4_K per tensor into reused buffers")
         let preflight = H3RuntimePreflight.inspect(modelDirectory: modelDirectory)
         guard preflight.isOperatingSystemSupported else {
             throw RuntimeError.unsupportedOperatingSystem(preflight.message)
