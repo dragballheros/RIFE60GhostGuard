@@ -177,6 +177,11 @@ final class LocalizedColorArtifactGuard {
             let y0 = region.row * height / tileRows
             let y1 = min(height, ((region.row + 1) * height + tileRows - 1) / tileRows)
 
+            // Regions are used only for detection. Never leave a hard rectangular
+            // repair boundary in the image. Feather the repair into neighboring
+            // pixels so a localized chroma fix cannot itself become a visible block.
+            let feather = max(8, min(32, min(x1 - x0, y1 - y0) / 6))
+
             for y in y0..<y1 {
                 let p = pBase.advanced(by: y * pRowBytes).assumingMemoryBound(to: UInt8.self)
                 let c = cBase.advanced(by: y * cRowBytes).assumingMemoryBound(to: UInt8.self)
@@ -184,6 +189,14 @@ final class LocalizedColorArtifactGuard {
                 let o = oBase.advanced(by: y * oRowBytes).assumingMemoryBound(to: UInt8.self)
 
                 for x in x0..<x1 {
+                    let distanceToEdge = min(
+                        min(x - x0, x1 - 1 - x),
+                        min(y - y0, y1 - 1 - y)
+                    )
+                    let edgeFade = min(1.0, Double(distanceToEdge) / Double(feather))
+                    let smoothWeight = edgeFade * edgeFade * (3.0 - 2.0 * edgeFade)
+                    guard smoothWeight > 0 else { continue }
+
                     let i = x * 4
                     let pb = Float(p[i]) / 255, pg = Float(p[i + 1]) / 255, pr = Float(p[i + 2]) / 255
                     let cb = Float(c[i]) / 255, cg = Float(c[i + 1]) / 255, cr = Float(c[i + 2]) / 255
@@ -204,7 +217,7 @@ final class LocalizedColorArtifactGuard {
                     let deviation = sqrt(du * du + dv * dv)
                     guard deviation > 0.030 else { continue }
 
-                    let amount = min(max(Double(deviation) * 3.0, 0.60), 0.90)
+                    let amount = min(max(Double(deviation) * 3.0, 0.60), 0.90) * smoothWeight
                     let repairedU = candidateU * Float(1 - amount) + expectedU * Float(amount)
                     let repairedV = candidateV * Float(1 - amount) + expectedV * Float(amount)
                     let red = candidateY + repairedV
