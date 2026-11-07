@@ -127,20 +127,23 @@ final class DeepCreamWatermarkRemover: WatermarkRemovalApplying {
                 let masked = brushPixels.map { $0[sy * width + sx] != 0 } ?? target.contains(CGPoint(x: xCI, y: yCI))
                 let known: Float = masked ? 0 : 1
                 let pixel = (row * modelSize + col) * 3
-                for channel in 0..<3 {
+                    for channel in 0..<3 {
                     let value = Float(rgba[(row * modelSize + col) * 4 + channel]) / 255.0 * 2.0 - 1.0
-                    // The released checkpoint graph is fixed to batch=8. Until the
-                    // pipeline can batch independent crops, duplicate this crop so
-                    // its first prediction remains equivalent to single-crop inference.
-                    for batch in 0..<batchSize {
-                        let offset = batch * modelSize * modelSize * 3 + pixel + channel
-                        originalPtr[offset] = value
-                        maskPtr[offset] = known
-                        maskedPtr[offset] = DeepCreamInputPreprocessor.maskedInputPixel(
-                            sourceValue: value,
-                            knownMaskValue: known,
-                            model: configuration.model
-                        )
+                    let plane = modelSize * modelSize * 3
+                    let offset = pixel + channel
+                    originalPtr[offset] = value
+                    maskPtr[offset] = known
+                    maskedPtr[offset] = DeepCreamInputPreprocessor.maskedInputPixel(
+                        sourceValue: value,
+                        knownMaskValue: known,
+                        model: configuration.model
+                    )
+                    if row == modelSize - 1 && col == modelSize - 1 && channel == 2 {
+                        for batch in 1..<batchSize {
+                            memcpy(originalPtr.advanced(by: batch * plane), originalPtr, plane * MemoryLayout<Float>.size)
+                            memcpy(maskPtr.advanced(by: batch * plane), maskPtr, plane * MemoryLayout<Float>.size)
+                            memcpy(maskedPtr.advanced(by: batch * plane), maskedPtr, plane * MemoryLayout<Float>.size)
+                        }
                     }
                 }
             }
@@ -299,20 +302,24 @@ final class DeepCreamWatermarkRemover: WatermarkRemovalApplying {
                     ?? target.contains(CGPoint(x: xCI, y: yCI))
                 let known: Float = selected ? 0 : 1
                 let pixel = (row * modelSize + col) * 3
-                for channel in 0..<3 {
+                    for channel in 0..<3 {
                     let value = Float(rgba[(row * modelSize + col) * 4 + channel]) / 255 * 2 - 1
-                    for batch in 0..<batchSize {
-                        let offset = batch * modelSize * modelSize * 3 + pixel + channel
-                        originalPtr[offset] = value
-                        maskPtr[offset] = known
-                        maskedPtr[offset] = DeepCreamInputPreprocessor.maskedInputPixel(
-                            sourceValue: value,
-                            knownMaskValue: known,
-                            model: configuration.model
-                        )
-                    }
+                    let offset = pixel + channel
+                    originalPtr[offset] = value
+                    maskPtr[offset] = known
+                    maskedPtr[offset] = DeepCreamInputPreprocessor.maskedInputPixel(
+                        sourceValue: value,
+                        knownMaskValue: known,
+                        model: configuration.model
+                    )
                 }
             }
+        }
+        let globalPlane = modelSize * modelSize * 3
+        for batch in 1..<batchSize {
+            memcpy(originalPtr.advanced(by: batch * globalPlane), originalPtr, globalPlane * MemoryLayout<Float>.size)
+            memcpy(maskPtr.advanced(by: batch * globalPlane), maskPtr, globalPlane * MemoryLayout<Float>.size)
+            memcpy(maskedPtr.advanced(by: batch * globalPlane), maskedPtr, globalPlane * MemoryLayout<Float>.size)
         }
         let features = try MLDictionaryFeatureProvider(dictionary: [
             "Placeholder": MLFeatureValue(multiArray: maskedInput),

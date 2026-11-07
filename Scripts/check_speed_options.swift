@@ -12,14 +12,6 @@ require(RIFEBandPlan.bands(width: 3840, height: 2160, availableMB: 2945, underPr
 require(RIFEBandPlan.bands(width: 3840, height: 2160, availableMB: 1800, underPressure: false) == 6, "lower headroom shrinks bands")
 require(RIFEBandPlan.bands(width: 3840, height: 2160, availableMB: 4000, underPressure: true) == 8, "memory warning shrinks bands")
 require(RIFEBandPlan.bands(width: 3840, height: 2160, availableMB: 4000, underPressure: false) == 2, "healthy headroom")
-for restoration in [false, true] {
-    for outline in [false, true] {
-        let stages = UpscaleFirstPlan.stages(restoration: restoration, outline: outline)
-        for mask in 0..<(1 << stages.count) {
-            let result = await UpscaleFirstPlan.furthestValid(stages: stages) { index, _ in mask & (1 << index) != 0 }
-            let expected = stages.indices.last { mask & (1 << $0) != 0 }
-            require(result == expected, "furthest checkpoint selection with deleted/invalid earlier stages")
-        }
-    }
-}
-print("SPEED_OPTIONS_PASS: policies, adaptive band selection, every checkpoint combination")
+// Persistent pause/resume checkpoints are intentionally disabled.
+// The processing pipeline always starts from the selected source.
+print("SPEED_OPTIONS_PASS: policies and adaptive band selection; persistent checkpoint reuse disabled")

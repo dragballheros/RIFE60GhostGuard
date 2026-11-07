@@ -239,6 +239,7 @@ struct VACEComponentTestView: View {
             LIMITATION: component-only test. Not full VACE, not numerical reference parity, not a 720p/1080p video test.
             """
         } catch {
+            CrashCapture.step("VACE component test failed: \(error.localizedDescription)")
             return """
             FAIL — local Core ML smoke test failed
             Package: \(packageURL.lastPathComponent)

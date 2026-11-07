@@ -53,111 +53,57 @@ private enum VACEVideoEditInputError: LocalizedError {
     }
 }
 
-private enum LocalVideoBackend: String, CaseIterable, Hashable {
-    case wanVACE = "Wan VACE"
-    case minimaxH3 = "MiniMax H3"
-}
-
-/// Local video workflows. Wan VACE performs mask-guided edits; MiniMax H3 performs
-/// reference-conditioned regeneration and does not claim pixel-mask preservation.
+/// Mask-guided local editing with Wan VACE. MiniMax H3 stays in H3VideoEditView.
 struct VACEVideoEditView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var videoItem: PhotosPickerItem?
     @State private var maskItem: PhotosPickerItem?
     @State private var sourceURL: URL?
     @State private var maskURL: URL?
+    @State private var maskMode: VACEMaskMode = .autoSubject
+    @State private var maskPreview: UIImage?
+    @State private var maskCoverageText: String?
+    @State private var maskPreviewNote: String?
     @State private var prompt = "Describe the desired change while keeping the overall scene coherent."
     @State private var negativePrompt = "flicker, inconsistent subject, warped geometry, duplicate objects, text, watermark"
     @State private var isRunning = false
     @State private var progress = 0.0
-    @State private var status = "Choose a video and a matching white-on-black edit mask."
+    @State private var status = "Choose a video. Auto (subject) builds the mask on this iPhone."
     @State private var errorText: String?
     @State private var outputURL: URL?
-    @State private var selectedBackend: LocalVideoBackend = .wanVACE
-    @State private var h3ModelDirectoryURL: URL?
-    @State private var isChoosingH3Model = false
-    @State private var h3CancellationToken: H3CancellationToken?
-    @StateObject private var h3ModelDownloader = H3ModelDownloader()
-    @State private var acceptedH3License = false
-    @State private var isConfirmingH3ModelDelete = false
+    @State private var previewTime: Double = 0
+    @State private var previewDuration: Double = 1
+    @State private var brushErase = false
+    @State private var brushPercent = 0.8
+    @State private var brushDraft: WatermarkBrushStroke?
+    @State private var draftFrameIndex = 0
+    @State private var keyframeStrokes: [Int: WatermarkBrushMask] = [:]
+    @State private var keyframeMasks: [Int: VACEMaskKeyframe] = [:]
+    @State private var previewFrameIndex = 0
+    @State private var previewFPS = 24.0
+    @State private var previewUIImage: UIImage?
+    @State private var trackLabel: String?
+    @State private var paintingThisFrame = true
+    @State private var previewFrame: CGImage?
 
+    private var canvasMask: WatermarkBrushMask {
+        var mask = keyframeStrokes[previewFrameIndex] ?? WatermarkBrushMask()
+        if let brushDraft, draftFrameIndex == previewFrameIndex {
+            mask.strokes.append(brushDraft)
+        }
+        return mask
+    }
+
+    private var generateDisableReasons: [String] {
+        var reasons: [String] = []
+        if sourceURL == nil { reasons.append("source video") }
+        if maskMode.needsHandDrawnMask && maskURL == nil && keyframeMasks.isEmpty { reasons.append("a tap or brush stroke") }
+        if prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { reasons.append("prompt text") }
+        return reasons
+    }
     var body: some View {
         NavigationStack {
             Form {
-                Section("Local model") {
-                    ForEach(LocalVideoBackend.allCases, id: \.self) { backend in
-                        Button {
-                            selectedBackend = backend
-                            outputURL = nil
-                            errorText = nil
-                            status = backend == .wanVACE
-                                ? "Wan VACE uses the selected white-on-black mask."
-                                : "MiniMax H3 regenerates from the reference video. It does not preserve black-mask pixels."
-                        } label: {
-                            HStack(spacing: 12) {
-                                Image(systemName: selectedBackend == backend ? "checkmark.circle.fill" : "circle")
-                                    .foregroundStyle(selectedBackend == backend ? Color.accentColor : Color.secondary)
-                                VStack(alignment: .leading, spacing: 3) {
-                                    Text(backend.rawValue).foregroundStyle(.primary)
-                                    Text(backend == .wanVACE
-                                         ? "Mask-guided local editing"
-                                         : "Local reference-conditioned video regeneration")
-                                        .font(.caption).foregroundStyle(.secondary)
-                                }
-                                Spacer()
-                            }
-                            .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-                        .disabled(isRunning)
-                    }
-                    if selectedBackend == .minimaxH3 {
-                        Button {
-                            isChoosingH3Model = true
-                        } label: {
-                            Label(h3ModelDirectoryURL == nil ? "Choose local H3 model folder" : "Change local H3 model folder", systemImage: "folder")
-                        }
-                        .disabled(isRunning)
-                        if let h3ModelDirectoryURL {
-                            Text(h3ModelDirectoryURL.lastPathComponent).font(.caption).foregroundStyle(.secondary)
-                        }
-                        Link("Review the official MiniMax H3 model license", destination: H3ModelDownloader.licenseURL)
-                        Text("Territory restriction: the published Community License excludes the United States, European Union, United Kingdom, and South Korea from its standard applicable territory. If you are in an excluded territory, do not download or use these weights unless MiniMax has separately authorized you. Check the current license before proceeding.")
-                            .font(.caption).foregroundStyle(.red)
-                        Toggle("I have verified that my use is authorized by the license, including separate authorization if my territory is excluded", isOn: $acceptedH3License)
-                        Button("Check official H3 model files") {
-                            h3ModelDownloader.prepare()
-                        }
-                        .disabled(h3ModelDownloader.state == .listing || h3ModelDownloader.state == .downloading)
-                        if h3ModelDownloader.totalBytes > 0 {
-                            Text("\(h3ModelDownloader.totalFiles) files · about \(String(format: "%.1f", h3ModelDownloader.totalGiB)) GiB")
-                                .font(.caption).foregroundStyle(.secondary)
-                        }
-                        Button("Download / resume local H3 model") {
-                            h3ModelDownloader.startDownload()
-                        }
-                        .disabled(!acceptedH3License || !h3ModelDownloader.canStart || isRunning)
-                        if h3ModelDownloader.state == .downloading {
-                            ProgressView(value: h3ModelDownloader.progress)
-                            Text("\(Int(h3ModelDownloader.progress * 100))% · \(String(format: "%.2f", Double(h3ModelDownloader.downloadedBytes) / 1_073_741_824)) / \(String(format: "%.2f", h3ModelDownloader.totalGiB)) GiB")
-                                .font(.caption).foregroundStyle(.secondary)
-                            Button("Pause download") { h3ModelDownloader.cancel() }
-                        }
-                        if case .failed(let message) = h3ModelDownloader.state {
-                            Text(message).font(.caption).foregroundStyle(.red)
-                        }
-                        if h3ModelDownloader.state == .completed {
-                            Text("All required FL2VA base and Ref2VA transformer files passed size and checksum verification.")
-                                .font(.caption).foregroundStyle(.secondary)
-                            Button("Delete downloaded H3 model and free storage", role: .destructive) {
-                                isConfirmingH3ModelDelete = true
-                            }
-                        }
-                        Text("The native runtime requires the FL2VA base plus the Ref2VA transformer checkpoint. The required total is calculated from the pinned repository manifest above and can still exceed 100 GB; confirm available iPhone storage before starting. Files download directly to this iPhone with resumable transfers and checksum verification; weights are excluded from device backups and are not bundled in the IPA. Disk streaming reduces the need to keep all DiT weights resident, but does not guarantee inference fits. H3 requires iOS 18 or newer.")
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
-                }
-
                 Section("Source video") {
                     PhotosPicker(selection: $videoItem, matching: .videos) {
                         Label(sourceURL == nil ? "Choose video from Photos" : "Change source video",
@@ -167,90 +113,162 @@ struct VACEVideoEditView: View {
                     if let sourceURL {
                         Text(sourceURL.lastPathComponent).font(.caption).foregroundStyle(.secondary)
                     }
-                    if selectedBackend == .wanVACE {
+                    Picker("Mask", selection: $maskMode) {
+                        ForEach(VACEMaskMode.allCases) { mode in
+                            Text(mode.rawValue).tag(mode)
+                        }
+                    }
+                    .disabled(isRunning)
+                    Text(maskMode.caption)
+                        .font(.caption).foregroundStyle(.secondary)
+                    if maskMode == .drawManually {
+                        Text("Paint the character on one frame. Every other frame is tracked on device.")
+                            .font(.caption).foregroundStyle(.secondary)
+                        VStack(alignment: .leading, spacing: 0) {
+                            Text("Tool").font(.subheadline).foregroundStyle(.secondary)
+                            ForEach([false, true], id: \.self) { isEraser in
+                                Button {
+                                    brushErase = isEraser
+                                } label: {
+                                    HStack {
+                                        Text(isEraser ? "Eraser" : "Brush").foregroundStyle(.primary)
+                                        Spacer()
+                                        Image(systemName: brushErase == isEraser ? "checkmark.circle.fill" : "circle")
+                                            .foregroundStyle(brushErase == isEraser ? Color.accentColor : Color.secondary)
+                                    }
+                                    .padding(.vertical, 6)
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                        HStack {
+                            Text("Brush size")
+                            Slider(value: $brushPercent, in: 0.2...4)
+                            Text(String(format: "%.1f%%", brushPercent)).monospacedDigit()
+                        }
                         PhotosPicker(selection: $maskItem, matching: .images) {
-                            Label(maskURL == nil ? "Choose edit mask image" : "Change edit mask",
-                                  systemImage: "paintbrush.pointed")
+                            Label(maskURL == nil ? "Import a mask image" : "Change imported mask", systemImage: "photo")
                         }
                         .disabled(isRunning)
-                        if let maskURL {
-                            Text(maskURL.lastPathComponent).font(.caption).foregroundStyle(.secondary)
+                        HStack {
+                            Button("Undo") {
+                                var strokes = keyframeStrokes[previewFrameIndex] ?? WatermarkBrushMask()
+                                if !strokes.strokes.isEmpty { strokes.strokes.removeLast() }
+                                keyframeStrokes[previewFrameIndex] = strokes
+                                commitBrush(on: previewFrameIndex)
+                            }
+                            .disabled((keyframeStrokes[previewFrameIndex]?.strokes ?? []).isEmpty)
+                            Button("Clear frame") {
+                                keyframeStrokes[previewFrameIndex] = WatermarkBrushMask()
+                                keyframeMasks[previewFrameIndex] = nil
+                                brushDraft = nil
+                            }
                         }
-                        Text("Use a black-and-white mask with white over the area to change and black everywhere to preserve. The mask is tracked locally with optical flow; hard scene cuts stop propagation.")
+                    }
+                    if sourceURL != nil {
+                        Slider(value: $previewTime, in: 0...max(previewDuration, 0.1)) { editing in
+                            if !editing { Task { await refreshMaskPreview() } }
+                        }
+                        .disabled(isRunning)
+                        Text(String(format: "Preview %.1f s", previewTime))
                             .font(.caption).foregroundStyle(.secondary)
-                    } else {
-                        Text("The selected video is supplied as an H3 video reference. H3 may regenerate content outside any intended region; this mode does not use the VACE mask.")
-                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                    if maskMode == .drawManually, let previewUIImage, paintingThisFrame || keyframeStrokes[previewFrameIndex] != nil {
+                        WatermarkBrushCanvas(image: previewUIImage, mask: canvasMask, showMask: true) { point, ended in
+                            let frameIndex = previewFrameIndex
+                            if brushDraft == nil, (keyframeStrokes[frameIndex]?.strokes.count ?? 0) < 256 {
+                                draftFrameIndex = frameIndex
+                                let radius = brushPercent / 200
+                                brushDraft = WatermarkBrushStroke(
+                                    points: [],
+                                    radiusX: radius,
+                                    radiusY: radius * Double(previewUIImage.size.width / max(previewUIImage.size.height, 1)),
+                                    erase: brushErase
+                                )
+                            }
+                            if let point, var stroke = brushDraft, draftFrameIndex == frameIndex, stroke.points.count < 4096 {
+                                if stroke.points.last != point { stroke.points.append(point) }
+                                brushDraft = stroke
+                            }
+                            if ended {
+                                if let brushDraft, brushDraft.isValid, draftFrameIndex == frameIndex {
+                                    var stored = keyframeStrokes[frameIndex] ?? WatermarkBrushMask()
+                                    stored.strokes.append(brushDraft)
+                                    keyframeStrokes[frameIndex] = stored
+                                }
+                                self.brushDraft = nil
+                                commitBrush(on: frameIndex)
+                            }
+                        }
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 280)
+                    } else if maskMode == .drawManually, maskPreview != nil, !paintingThisFrame {
+                        Button("Touch up this frame") { paintingThisFrame = true }
+                            .font(.caption)
+                    }
+                    if maskMode != .drawManually || (!paintingThisFrame && keyframeStrokes[previewFrameIndex] == nil), let maskPreview {
+                        Image(uiImage: maskPreview)
+                            .resizable()
+                            .scaledToFit()
+                            .frame(maxHeight: 220)
+                    }
+                    if let maskCoverageText {
+                        Text(maskCoverageText)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    if let trackLabel {
+                        Text(trackLabel)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    if let maskPreviewNote {
+                        Text(maskPreviewNote).font(.caption).foregroundStyle(.orange)
                     }
                 }
 
                 Section("Generation prompt") {
                     TextField("Positive prompt", text: $prompt, axis: .vertical)
                         .lineLimit(2...5)
-                    if selectedBackend == .wanVACE {
-                        TextField("Negative prompt", text: $negativePrompt, axis: .vertical)
-                            .lineLimit(2...4)
-                    } else {
-                        Text("The current native H3 API does not expose a separate negative-prompt input. Put exclusions directly into the main prompt; this field is only used by Wan VACE.")
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
+                        .copyPasteBar(text: prompt) { prompt = $0 }
+                    TextField("Negative prompt", text: $negativePrompt, axis: .vertical)
+                        .lineLimit(2...4)
+                        .copyPasteBar(text: negativePrompt) { negativePrompt = $0 }
                 }
 
                 Section("Explicit model / resolution") {
-                    if selectedBackend == .wanVACE {
-                        LabeledContent("Local model", value: "Wan 2.1 VACE 1.3B Q8")
-                        LabeledContent("Inference crop", value: "512 × 512")
-                        LabeledContent("Denoising steps", value: "20")
-                        Text("This is an experimental 1.3B profile using Draw Things' native Metal runtime. It is not the requested 14B / 720p model and does not claim equivalent quality.")
-                            .font(.caption).foregroundStyle(.secondary)
-                    } else {
-                        LabeledContent("Local model", value: "MiniMax H3 native Metal runtime")
-                        LabeledContent("Output canvas", value: "448 × 256")
-                        LabeledContent("Frames / steps", value: "56 / 20")
-                        Text("The H3 workflow uses the source video as a reference and exports a newly generated MOV. It is not exact masked inpainting. The native engine and checkpoint must be compatible; memory and thermal feasibility still require testing on this iPhone.")
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
+                    LabeledContent("Local model", value: "Wan 2.1 VACE 1.3B Q8")
+                    LabeledContent("Inference crop", value: "512 × 512")
+                    LabeledContent("Denoising steps", value: "20")
+                    Text("This is an experimental 1.3B profile using Draw Things' native Metal runtime. It is not the requested 14B / 720p model and does not claim equivalent quality.")
+                        .font(.caption).foregroundStyle(.secondary)
                     Text("Generation runs locally. There is no remote inference or fallback to another backend.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
 
                 Section("Run") {
                     Button {
-                        Task {
-                            if selectedBackend == .wanVACE {
-                                await runEdit()
-                            } else {
-                                await runH3ReferenceEdit()
-                            }
-                        }
+                        Task { await runEdit() }
                     } label: {
                         if isRunning {
-                            HStack { ProgressView(); Text(selectedBackend == .wanVACE ? "Running local Wan VACE…" : "Running local MiniMax H3…") }
+                            HStack { ProgressView(); Text("Running local Wan VACE…") }
                         } else {
-                            Label(selectedBackend == .wanVACE ? "Generate masked video edit" : "Generate H3 reference video", systemImage: "wand.and.stars")
+                            Label("Generate masked video edit", systemImage: "wand.and.stars")
                         }
                     }
-                    .disabled(isRunning || sourceURL == nil ||
-                              (selectedBackend == .wanVACE && maskURL == nil) ||
-                              (selectedBackend == .minimaxH3 && h3ModelDirectoryURL == nil) ||
-                              prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .disabled(isRunning || !generateDisableReasons.isEmpty)
+                    if !generateDisableReasons.isEmpty && !isRunning {
+                        Text("Needs: \(generateDisableReasons.joined(separator: ", "))")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                     if isRunning {
                         ProgressView(value: progress)
-                        Text(status).font(.caption).foregroundStyle(.secondary)
-                        if selectedBackend == .minimaxH3 {
-                            Button {
-                                h3CancellationToken?.cancel()
-                                status = "Cancellation requested. Waiting for the native H3 engine to reach its next progress checkpoint…"
-                            } label: {
-                                Label("Cancel H3 generation", systemImage: "xmark.circle")
-                            }
-                            .disabled(h3CancellationToken == nil)
-                        }
-                    } else {
-                        Text(status).font(.caption).foregroundStyle(.secondary)
                     }
+                    Text(status).font(.caption).foregroundStyle(.secondary)
                     if let errorText {
                         Text(errorText).font(.caption).foregroundStyle(.red)
+                            .copyPasteBar(text: errorText) { _ in }
                     }
                     if let outputURL {
                         LabeledContent("Export", value: outputURL.lastPathComponent)
@@ -260,56 +278,36 @@ struct VACEVideoEditView: View {
                     }
                 }
             }
-            .navigationTitle(selectedBackend == .wanVACE ? "Local Wan VACE Edit" : "Local MiniMax H3")
+            .navigationTitle("Local Wan VACE Edit")
             .navigationBarTitleDisplayMode(.inline)
-            .confirmationDialog("Delete the downloaded MiniMax H3 model?", isPresented: $isConfirmingH3ModelDelete, titleVisibility: .visible) {
-                Button("Delete model and free storage", role: .destructive) {
-                    let downloadedURL = h3ModelDownloader.destinationURL
-                    do {
-                        try h3ModelDownloader.deleteDownloadedModel()
-                        if h3ModelDirectoryURL == downloadedURL { h3ModelDirectoryURL = nil }
-                    } catch {
-                        errorText = "Could not delete the downloaded H3 model: \(error.localizedDescription)"
-                    }
-                }
-                Button("Cancel", role: .cancel) {}
-            } message: {
-                Text("This permanently deletes the downloaded H3 FL2VA base and Ref2VA transformer files from this iPhone. It does not delete a separately selected model folder.")
-            }
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Done") { dismiss() }.disabled(isRunning)
                 }
             }
-            .fileImporter(isPresented: $isChoosingH3Model, allowedContentTypes: [.folder], allowsMultipleSelection: false) { result in
-                switch result {
-                case .success(let urls):
-                    h3ModelDirectoryURL = urls.first
-                    outputURL = nil
-                    errorText = nil
-                    status = urls.first == nil ? "No H3 model folder selected." : "Selected local H3 model folder. Native loading will validate its contents."
-                case .failure(let error):
-                    errorText = error.localizedDescription
-                }
-            }
-            .onChange(of: h3ModelDownloader.state) { newState in
-                if newState == .completed {
-                    h3ModelDirectoryURL = h3ModelDownloader.destinationURL
-                    outputURL = nil
-                    status = "Native H3 FL2VA base and Ref2VA transformer checkpoint downloaded and checksum-verified. Device inference is still unverified."
-                }
+            .onChange(of: maskMode) { _ in
+                maskPreview = nil
+                maskCoverageText = nil
+                maskPreviewNote = nil
+                Task { await refreshMaskPreview() }
             }
             .onChange(of: videoItem) { item in
                 guard let item else { return }
                 Task {
                     do {
                         let picked = try await item.loadTransferable(type: VACEPickedVideo.self)
+                        let url = picked?.url
                         await MainActor.run {
-                            sourceURL = picked?.url
+                            sourceURL = url
                             outputURL = nil
                             errorText = nil
+                            maskPreview = nil
+                            maskCoverageText = nil
+                            maskPreviewNote = nil
                         }
+                        await refreshMaskPreview()
                     } catch {
+                        CrashCapture.step("VACE source import failed: \(error.localizedDescription)")
                         await MainActor.run { errorText = error.localizedDescription }
                     }
                 }
@@ -319,12 +317,15 @@ struct VACEVideoEditView: View {
                 Task {
                     do {
                         let picked = try await item.loadTransferable(type: VACEPickedMaskImage.self)
+                        let url = picked?.url
                         await MainActor.run {
-                            maskURL = picked?.url
+                            maskURL = url
                             outputURL = nil
                             errorText = nil
                         }
+                        await refreshMaskPreview()
                     } catch {
+                        CrashCapture.step("VACE mask import failed: \(error.localizedDescription)")
                         await MainActor.run { errorText = error.localizedDescription }
                     }
                 }
@@ -335,14 +336,18 @@ struct VACEVideoEditView: View {
     @MainActor
     private func runEdit() async {
         guard let sourceURL else { errorText = VACEVideoEditInputError.missingVideo.localizedDescription; return }
-        guard let maskURL else { errorText = VACEVideoEditInputError.missingMask.localizedDescription; return }
+        if maskMode.needsHandDrawnMask {
+            guard maskURL != nil || !keyframeMasks.isEmpty else { errorText = VACEVideoEditInputError.missingMask.localizedDescription; return }
+        }
         isRunning = true
         progress = 0
         outputURL = nil
         errorText = nil
+        CrashCapture.step("VACE mask mode: \(maskMode.rawValue)")
         status = "Preparing the local Wan VACE model…"
         defer { isRunning = false }
 
+        let autoProvider = VACEAutoMaskProvider(mode: maskMode)
         do {
             let asset = AVURLAsset(url: sourceURL)
             let tracks = try await asset.loadTracks(withMediaType: .video)
@@ -351,8 +356,18 @@ struct VACEVideoEditView: View {
             let width = Int(abs(naturalSize.width).rounded())
             let height = Int(abs(naturalSize.height).rounded())
             guard width > 0, height > 0 else { throw VACEVideoEditInputError.invalidVideoDimensions }
-            let seedMask = try Self.loadMask(url: maskURL, width: width, height: height)
-            guard seedMask.activePixelCount > 0 else { throw VACEVideoEditInputError.noEditableMaskPixels }
+            let provider: VACEFrameMaskProvider
+            if maskMode == .drawManually {
+                var frames = Array(keyframeMasks.values)
+                if frames.isEmpty, let maskURL {
+                    let seedMask = try Self.loadMask(url: maskURL, width: width, height: height)
+                    frames = [VACEMaskKeyframe(frameIndex: 0, mask: seedMask, appearance: [])]
+                }
+                guard frames.contains(where: { $0.mask.activePixelCount > 0 }) else { throw VACEVideoEditInputError.noEditableMaskPixels }
+                provider = VACEManualTrackMaskProvider(keyframes: frames)
+            } else {
+                provider = autoProvider
+            }
 
             let engine = DrawThingsLocalVACEReconstructionEngine()
             try await engine.prepare { file, written, expected in
@@ -367,7 +382,6 @@ struct VACEVideoEditView: View {
             options.maximumCropHeight = 480
             options.tileOverlapPixels = 64
 
-            let provider = VACEOpticalFlowMaskProvider(firstFrameMask: seedMask)
             let processor = VACESelectiveVideoPipeline(
                 maskProvider: provider, reconstructionEngine: engine, options: options
             )
@@ -389,106 +403,126 @@ struct VACEVideoEditView: View {
             }
             outputURL = destination
             progress = 1
-            status = "Generated MOV saved. Output uses the source video's dimensions; model crops were inferred at 512 × 512."
+            if autoProvider.fellBackToWholeFrame {
+                status = "No subject found, so the whole frame was edited. Generated MOV saved at the source dimensions; model crops were inferred at 512 × 512."
+                maskPreviewNote = "No subject found. Using the whole frame."
+            } else {
+                status = "Generated MOV saved. Output uses the source video's dimensions; model crops were inferred at 512 × 512."
+            }
         } catch {
+            CrashCapture.step("VACE edit failed: \(error.localizedDescription)")
             errorText = error.localizedDescription
             status = "Stopped without exporting a substitute video."
         }
     }
 
     @MainActor
-    private func runH3ReferenceEdit() async {
-        guard let sourceURL else { errorText = VACEVideoEditInputError.missingVideo.localizedDescription; return }
-        guard let modelURL = h3ModelDirectoryURL else {
-            errorText = "Choose a local MiniMax H3 model folder first."
+    private func refreshMaskPreview() async {
+        guard let sourceURL else {
+            maskPreview = nil
+            maskCoverageText = nil
+            maskPreviewNote = nil
+            previewFrame = nil
             return
         }
-        guard #available(iOS 18.0, *) else {
-            errorText = "MiniMax H3 requires iOS 18.0 or newer. Wan VACE remains available."
-            return
-        }
-
-        isRunning = true
-        progress = 0
-        outputURL = nil
-        errorText = nil
-        status = "Checking local H3 model and reference video…"
-        let token = H3CancellationToken()
-        h3CancellationToken = token
-        var h3OutputCandidate: URL?
-        defer {
-            isRunning = false
-            h3CancellationToken = nil
-        }
-
-        let hasSecurityScope = modelURL.startAccessingSecurityScopedResource()
-        defer { if hasSecurityScope { modelURL.stopAccessingSecurityScopedResource() } }
-
+        let mode = maskMode
+        let manualURL = maskURL
+        let seconds = previewTime
+        let masks = keyframeMasks
         do {
-            // Official Ref2VA accepts reference clips of 2–15 seconds. Validate
-            // before native model loading so invalid input cannot trigger a huge allocation.
-            let referenceAsset = AVURLAsset(url: sourceURL)
-            let referenceDuration = try await referenceAsset.load(.duration)
-            let referenceTracks = try await referenceAsset.loadTracks(withMediaType: .video)
-            guard !referenceTracks.isEmpty,
-                  referenceDuration.seconds.isFinite,
-                  (2.0...15.0).contains(referenceDuration.seconds) else {
-                throw H3NativeRuntime.RuntimeError.invalidRequest(
-                    "H3 Ref2VA requires a playable reference video between 2 and 15 seconds. Trim the clip and retry; Wan VACE remains available for longer videos."
-                )
+            let asset = AVURLAsset(url: sourceURL)
+            let duration = try await asset.load(.duration).seconds
+            if duration.isFinite, duration > 0 {
+                previewDuration = duration
             }
-            let directory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-                .appendingPathComponent("MiniMaxH3Exports", isDirectory: true)
-            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-            let destination = directory.appendingPathComponent("MiniMaxH3-\(UUID().uuidString).mov")
-            h3OutputCandidate = destination
-            status = "Loading the native H3 runtime locally. Large allocations may fail on this device."
-            let requestPrompt = prompt
-            let modelDirectory = modelURL
-            let referenceVideo = sourceURL
-            let result = try await Task.detached(priority: .userInitiated) {
-                let runtime = try H3NativeRuntime.load(modelDirectory: modelDirectory)
-                return try runtime.generateReferenceConditionedVideo(
-                    prompt: requestPrompt,
-                    referenceVideoURL: referenceVideo,
-                    outputURL: destination,
-                    width: 448,
-                    height: 256,
-                    frames: 56,
-                    steps: 20,
-                    seed: 42,
-                    cancellationToken: token,
-                    onProgress: { phase, fraction in
-                        Task { @MainActor in
-                            progress = max(0, min(1, fraction))
-                            status = "H3 \(phase): \(Int(fraction * 100))%"
-                        }
-                    }
-                )
-            }.value
-            let outputAttributes = try? FileManager.default.attributesOfItem(atPath: result.outputURL.path)
-            let outputSize = (outputAttributes?[.size] as? NSNumber)?.intValue ?? 0
-            guard FileManager.default.fileExists(atPath: result.outputURL.path), outputSize > 0 else {
-                throw H3NativeRuntime.RuntimeError.generationFailed("H3 returned without creating a non-empty output video.")
+            if let track = try await asset.loadTracks(withMediaType: .video).first {
+                let rate = try await track.load(.nominalFrameRate)
+                if rate > 1 { previewFPS = Double(rate) }
             }
-            let exportedAsset = AVURLAsset(url: result.outputURL)
-            let exportedVideoTracks = try await exportedAsset.loadTracks(withMediaType: .video)
-            let exportedDuration = try await exportedAsset.load(.duration)
-            guard !exportedVideoTracks.isEmpty, exportedDuration.seconds.isFinite, exportedDuration.seconds > 0 else {
-                throw H3NativeRuntime.RuntimeError.generationFailed("H3 output exists but does not contain a playable video track with a valid duration.")
+            let frameIndex = max(0, Int((seconds * previewFPS).rounded()))
+            previewFrameIndex = frameIndex
+            if keyframeStrokes[frameIndex] == nil {
+                paintingThisFrame = false
             }
-            outputURL = result.outputURL
-            progress = 1
-            status = "H3 reference-conditioned MOV created (\(result.width) × \(result.height), \(result.frames) frames, seed \(result.seed)). Verify playback and quality on-device."
+            let frame = try await VACESubjectSegmenter.frameImage(url: sourceURL, at: seconds)
+            previewFrame = frame
+            previewUIImage = UIImage(cgImage: frame)
+            let built: VACESegmentationDecision
+            if mode == .drawManually, !masks.isEmpty {
+                let tracked = try await Self.propagatedMask(url: sourceURL, fps: previewFPS, target: frameIndex, keyframes: masks, targetImage: frame)
+                let fraction = VACESubjectSegmenter.coverage(of: tracked.mask.pixels)
+                built = VACESegmentationDecision(mask: tracked.mask, foundSubject: fraction > 0, method: "manual-tracked", coverage: fraction)
+                trackLabel = frameIndex == tracked.anchorFrame
+                    ? "Drawn on this frame"
+                    : "Tracked from frame \(tracked.anchorFrame + 1)"
+            } else if mode == .drawManually, let manualURL {
+                let plane = try Self.loadMask(url: manualURL, width: frame.width, height: frame.height)
+                let fraction = VACESubjectSegmenter.coverage(of: plane.pixels)
+                built = VACESegmentationDecision(mask: plane, foundSubject: fraction > 0, method: "manual-tracked", coverage: fraction)
+            } else if mode == .wholeFrame {
+                let plane = try VACEMaskPlane(width: frame.width, height: frame.height, pixels: [UInt8](repeating: 255, count: frame.width * frame.height))
+                built = VACESegmentationDecision(mask: plane, foundSubject: true, method: "whole-frame", coverage: 1)
+            } else {
+                built = try VACESubjectSegmenter.editMask(cgImage: frame, mode: mode)
+            }
+            var note: String?
+            var mask = built.mask
+            var method = built.method
+            var fraction = built.coverage
+            if mode != .wholeFrame && mode != .drawManually && !built.foundSubject {
+                CrashCapture.step("VACE segmentation found nothing; using whole frame")
+                mask = try VACEMaskPlane(width: frame.width, height: frame.height, pixels: [UInt8](repeating: 255, count: frame.width * frame.height))
+                method = "whole-frame"
+                fraction = 1
+                note = "No subject found. Using the whole frame."
+            }
+            if mode != .drawManually { trackLabel = nil }
+            maskPreview = VACESubjectSegmenter.previewImage(base: frame, mask: mask)
+            maskCoverageText = String(format: "Coverage %.0f%% · %@", fraction * 100, VACEMaskPreviewLabel.displayName(for: method))
+            maskPreviewNote = note
         } catch {
-            if let h3OutputCandidate {
-                try? FileManager.default.removeItem(at: h3OutputCandidate)
-            }
-            errorText = error.localizedDescription
-            status = token.isCancelled
-                ? "H3 generation cancelled. Partial output was discarded; Wan VACE remains available."
-                : "H3 stopped without exporting a substitute video. Wan VACE remains available."
+            CrashCapture.step("VACE segmentation failed: \(error.localizedDescription)")
+            maskPreview = nil
+            maskCoverageText = nil
+            maskPreviewNote = "Mask preview failed: \(error.localizedDescription)"
         }
+    }
+
+    private func commitBrush(on frameIndex: Int) {
+        guard let frame = previewFrame, let strokes = keyframeStrokes[frameIndex], strokes.strokes.contains(where: { !$0.erase }) else {
+            keyframeMasks[frameIndex] = nil
+            return
+        }
+        let raster = strokes.raster(width: frame.width, height: frame.height, padding: 0)
+        guard let plane = try? VACEMaskPlane(width: frame.width, height: frame.height, pixels: raster), plane.activePixelCount > 0 else {
+            keyframeMasks[frameIndex] = nil
+            return
+        }
+        let appearance = VACESubjectSegmenter.appearanceHistogram(cgImage: frame, mask: raster)
+        keyframeMasks[frameIndex] = VACEMaskKeyframe(frameIndex: frameIndex, mask: plane, appearance: appearance)
+        paintingThisFrame = true
+        Task { await refreshMaskPreview() }
+    }
+
+    /// Walks from the nearest earlier keyframe to the scrubbed frame and caches each step.
+    private static func propagatedMask(url: URL, fps: Double, target: Int, keyframes: [Int: VACEMaskKeyframe], targetImage: CGImage) async throws -> VACETrackedFrame {
+        let start = keyframes.keys.filter { $0 <= target }.max() ?? target
+        let tracker = VACEManualTrackMaskProvider(keyframes: Array(keyframes.values))
+        var last: VACETrackedFrame?
+        for index in start...target {
+            let image: CGImage
+            if index == target {
+                image = targetImage
+            } else {
+                image = try await VACESubjectSegmenter.frameImage(url: url, at: Double(index) / max(fps, 1))
+            }
+            let rgba = try VACESubjectSegmenter.rgbaFrame(from: image)
+            let time = CMTime(seconds: Double(index) / max(fps, 1), preferredTimescale: 600)
+            last = try tracker.track(frameIndex: index, presentationTime: time, image: image, rgba: rgba)
+        }
+        if let last { return last }
+        let empty = try VACEMaskPlane(width: targetImage.width, height: targetImage.height, pixels: [UInt8](repeating: 0, count: targetImage.width * targetImage.height))
+        return VACETrackedFrame(mask: empty, confidence: 0, anchorFrame: start, usedFallback: true)
     }
 
     private static func loadMask(url: URL, width: Int, height: Int) throws -> VACEMaskPlane {

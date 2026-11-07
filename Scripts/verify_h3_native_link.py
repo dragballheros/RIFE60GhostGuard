@@ -48,6 +48,18 @@ if missing_definitions:
 if missing_references:
     raise SystemExit("FAIL: Swift H3 runtime does not reference expected native API symbols: " + ", ".join(missing_references))
 
+metallib = app / "default.metallib"
+if not metallib.is_file():
+    raise SystemExit(f"FAIL: app is missing default.metallib: {metallib}")
+listed = subprocess.run(["xcrun", "strings", str(metallib)], check=False, capture_output=True, text=True)
+if listed.returncode != 0:
+    raise SystemExit("FAIL: unable to read H3 kernel names from default.metallib: " + listed.stderr[-2000:])
+required_kernels = ["h3_linear_f32", "h3_silu_f32", "h3_rms_norm_f32", "h3_qkv_rope_f32", "h3_adaln_f32"]
+missing_kernels = [name for name in required_kernels if name not in listed.stdout]
+if missing_kernels:
+    raise SystemExit("FAIL: default.metallib is missing H3 kernels: " + ", ".join(missing_kernels))
+
 print("PASS: H3 Swift runtime and native C/Objective-C engine objects were compiled into the iOS app target.")
+print("PASS: default.metallib contains the H3 compute kernels.")
 print("PASS: H3 implementation definitions match the Swift runtime's native API references.")
 print("PASS: xcodebuild linked the app successfully; object-level symbol checks are used because release executable symbols may be stripped.")

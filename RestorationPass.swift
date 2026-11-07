@@ -41,7 +41,7 @@ final class RestorationPass {
         let output = AVAssetReaderTrackOutput(track: track, outputSettings: [
             kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA
         ])
-        output.alwaysCopiesSampleData = false
+        output.alwaysCopiesSampleData = true
         guard reader.canAdd(output) else {
             throw ProcessorError.reader("cannot attach restoration video output")
         }
@@ -70,11 +70,7 @@ final class RestorationPass {
             transform: transform,
             segmentDuration: 5.0
         )
-        if checkpoint.resumeTime > .zero {
-            let start = checkpoint.resumeTime
-            reader.timeRange = CMTimeRange(start: start, duration: CMTimeMaximum(.zero, CMTimeSubtract(duration, start)))
-            DiagnosticsLogger.shared.log("Restoration incremental resume • from \(String(format: "%.3f", CMTimeGetSeconds(start)))s")
-        }
+
 
         // Keep these resources scoped strictly to pass 1. They are destroyed when
         // this function returns, before the RIFE Metal graphs are created.
@@ -144,11 +140,11 @@ final class RestorationPass {
             try await checkpoint.append(frame, at: pts)
         }
 
-        while let sample = output.copyNextSampleBuffer() {
+        let ahead = FrameAheadReader(output: output, depth: 2)
+        while let item = ahead.next() {
             try await checkpoint.checkCancellation()
-            guard let decoded = CMSampleBufferGetImageBuffer(sample) else { continue }
-            let pts = CMSampleBufferGetPresentationTimeStamp(sample)
-            if CMTimeCompare(pts, checkpoint.resumeTime) <= 0 { continue }
+            let decoded = item.buffer
+            let pts = item.time
             let frame = try autoreleasepool { try processFrame(decoded) }
             sourceFrames += 1
 
@@ -264,6 +260,10 @@ final class RestorationPass {
         finalTelemetry.outlineMsPerFrame = outlined > 0 ? outlineSeconds * 1000 / Double(outlined) : 0
         finalTelemetry.thermalState = currentThermalStateName()
         telemetry(finalTelemetry)
+        PipelineStageTimer.current?.record("restorationDecodeMs", milliseconds: ahead.averageDecodeMilliseconds)
+        PipelineStageTimer.current?.record("watermarkMs", milliseconds: sourceFrames > 0 ? watermarkSeconds * 1000 / Double(sourceFrames) : 0)
+        PipelineStageTimer.current?.record("compressionMs", milliseconds: finalTelemetry.compressionMsPerFrame)
+        PipelineStageTimer.current?.record("restorationOutlineMs", milliseconds: finalTelemetry.outlineMsPerFrame)
 
         return RestorationPassResult(
             url: completedURL,

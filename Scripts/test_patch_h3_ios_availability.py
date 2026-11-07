@@ -38,6 +38,8 @@ def main() -> None:
         assert patched.count(GUARD) == 1, "guard was not inserted exactly once"
         assert "MiniMax H3 requires iOS 18.0 or newer" in patched
         assert 'pathForResource:@"h3_shaders" ofType:@"metal"' in patched
+        assert "newDefaultLibrary" in patched
+        assert 'newFunctionWithName:@"h3_linear_f32"' in patched
         assert patched.index(GUARD) < patched.index("// body"), "guard must precede engine body"
 
         # Re-running is idempotent and must not duplicate the guard.
@@ -45,6 +47,7 @@ def main() -> None:
         rerun = source.read_text(encoding="utf-8")
         assert rerun.count(GUARD) == 1
         assert rerun.count('pathForResource:@"h3_shaders" ofType:@"metal"') == 1
+        assert rerun.count("newDefaultLibrary") == 1
 
         # Ambiguous or changed source must fail closed without mutation.
         ambiguous = root / "ambiguous.m"
