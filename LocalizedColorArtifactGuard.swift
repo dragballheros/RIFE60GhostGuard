@@ -180,7 +180,7 @@ final class LocalizedColorArtifactGuard {
             // Regions are used only for detection. Never leave a hard rectangular
             // repair boundary in the image. Feather the repair into neighboring
             // pixels so a localized chroma fix cannot itself become a visible block.
-            let feather = max(8, min(32, min(x1 - x0, y1 - y0) / 6))
+            let feather = max(48, min(128, min(x1 - x0, y1 - y0) / 2))
 
             for y in y0..<y1 {
                 let p = pBase.advanced(by: y * pRowBytes).assumingMemoryBound(to: UInt8.self)
