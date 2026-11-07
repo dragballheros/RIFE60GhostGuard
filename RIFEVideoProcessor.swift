@@ -150,7 +150,6 @@ final class RIFEVideoProcessor {
             ? FastMotionGhostGuard(sensitivity: config.ghostSensitivity)
             : nil
         let compressionGuard = config.compressionProtection ? CompressionGuard() : nil
-        let colorArtifactGuard = LocalizedColorArtifactGuard()
 
         let outlineEnhancer: OutlineEnhancer?
         if config.outlineProtection {
@@ -388,36 +387,18 @@ final class RIFEVideoProcessor {
                 var fastCheck: FastMotionGhostGuard.Result?
 
                 if config.ghostProtection {
+                    // Do not use the localized chroma guard here. Its 12x9 spatial
+                    // regions can turn a transient interpolation error into visible
+                    // rectangular repair boundaries, and an unresolved color anomaly
+                    // can trigger recursive RIFE recovery for the same timestamp.
+                    // The motion/ghost guards below operate on the actual frame and
+                    // already provide the temporal rejection/recovery path.
                     let started = CFAbsoluteTimeGetCurrent()
-                    let colorInspection = autoreleasepool {
-                        colorArtifactGuard.inspect(previous: prevPB, candidate: chosen, next: currentPB, progress: t)
-                    }
-                    if colorInspection.isAnomaly {
-                        if let repaired = colorArtifactGuard.repair(
-                            previous: prevPB,
-                            candidate: chosen,
-                            next: currentPB,
-                            progress: t,
-                            inspection: colorInspection
-                        ) {
-                            chosen = repaired
-                            let verification = colorArtifactGuard.inspect(
-                                previous: prevPB, candidate: chosen, next: currentPB, progress: t
-                            )
-                            unresolvedColorAnomaly = verification.isAnomaly
-                            DiagnosticsLogger.shared.log(
-                                "Localized chroma repair • regions=\(colorInspection.regions.count) • score=\(String(format: "%.3f", colorInspection.score)) • t=\(String(format: "%.3f", t))"
-                            )
-                        } else {
-                            unresolvedColorAnomaly = true
-                        }
-                    }
-
                     let check = autoreleasepool {
                         guarder.inspect(previous: prevPB, generated: chosen, current: currentPB, previousContext: previousPreviousPB)
                     }
                     ghostSeconds += CFAbsoluteTimeGetCurrent() - started
-                    existingGuardRejected = check.reject || unresolvedColorAnomaly
+                    existingGuardRejected = check.reject
 
                     if let fastMotionGuard {
                         let fastStarted = CFAbsoluteTimeGetCurrent()
@@ -442,34 +423,17 @@ final class RIFEVideoProcessor {
                        fastCheck.fastMotion,
                        (existingGuardRejected || fastCheck.reject || fastCheck.recoveryRecommended),
                        let retry = try motionAwareRetry(t: t) {
-                        var retryChosen = retry
-                        let retryColorInspection = colorArtifactGuard.inspect(
-                            previous: prevPB, candidate: retryChosen, next: currentPB, progress: t
-                        )
-                        if retryColorInspection.isAnomaly,
-                           let repairedRetry = colorArtifactGuard.repair(
-                                previous: prevPB,
-                                candidate: retryChosen,
-                                next: currentPB,
-                                progress: t,
-                                inspection: retryColorInspection
-                           ) {
-                            retryChosen = repairedRetry
-                        }
-                        let retryColorStillInvalid = colorArtifactGuard.inspect(
-                            previous: prevPB, candidate: retryChosen, next: currentPB, progress: t
-                        ).isAnomaly
                         let retryGuard = autoreleasepool {
-                            guarder.inspect(previous: prevPB, generated: retryChosen, current: currentPB, previousContext: previousPreviousPB)
+                            guarder.inspect(previous: prevPB, generated: retry, current: currentPB, previousContext: previousPreviousPB)
                         }
                         let retryFastGuard = fastMotionGuard.inspect(
                             previous: prevPB,
-                            generated: retryChosen,
+                            generated: retry,
                             current: currentPB
                         )
 
-                        if !retryGuard.reject && !retryFastGuard.reject && !retryColorStillInvalid {
-                            chosen = retryChosen
+                        if !retryGuard.reject && !retryFastGuard.reject {
+                            chosen = retry
                             DiagnosticsLogger.shared.log(
                                 "Fast-motion Ghost Guard recovered • motion=\(String(format: "%.3f", fastCheck.motionScore)) • originalArtifact=\(String(format: "%.3f", fastCheck.artifactScore)) • t=\(String(format: "%.3f", t))"
                             )
