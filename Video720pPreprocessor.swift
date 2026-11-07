@@ -22,44 +22,36 @@ final class Video720pPreprocessor {
             throw ProcessorError.conversionFailed("720p preprocessor received an invalid video size")
         }
 
-        // AVAssetExportPreset1280x720 is the spatial normalization target.
-        // If the source is already 1280x720, avoid an unnecessary generation loss.
-        let orientedWidth = Int(abs(try await track.load(.naturalSize).width).rounded())
-        let orientedHeight = Int(abs(try await track.load(.naturalSize).height).rounded())
-        if orientedWidth == 1280 && orientedHeight == 720 {
-            DiagnosticsLogger.shared.log("720p input normalization • source already 1280x720 • no resize required")
+        let longSide = max(width, height)
+        let shortSide = min(width, height)
+        if longSide == 1280 && shortSide == 720 {
+            DiagnosticsLogger.shared.log("720p input normalization • source already 720p • no resize required")
             return sourceURL
         }
-
-        guard AVAssetExportSession.compatibility(ofExportPreset: AVAssetExportPreset1280x720,
-                                                 with: asset,
-                                                 outputFileType: .mov) else {
-            throw ProcessorError.conversionFailed("720p preprocessor is not compatible with this source video")
-        }
-
-        let outputURL = fm.temporaryDirectory
-            .appendingPathComponent("RIFE60-720p-working-(UUID().uuidString)")
-            .appendingPathExtension("mov")
-        try? fm.removeItem(at: outputURL)
 
         guard let exporter = AVAssetExportSession(asset: asset,
                                                   presetName: AVAssetExportPreset1280x720) else {
             throw ProcessorError.conversionFailed("could not create 720p export session")
         }
 
+        let outputURL = fm.temporaryDirectory
+            .appendingPathComponent("RIFE60-720p-working-" + UUID().uuidString)
+            .appendingPathExtension("mov")
+        try? fm.removeItem(at: outputURL)
+
         exporter.shouldOptimizeForNetworkUse = false
         exporter.allowsParallelizedExport = false
 
         DiagnosticsLogger.shared.log(
-            "720p input normalization • (width)x(height) → 1280x720 working target • bitrate not used as a processing quality control"
+            "720p input normalization • \(width)x\(height) → 720p working target • no final bitrate target applied"
         )
 
-        let outputType: AVFileType = exporter.supportedFileTypes.contains(.mov) ? .mov : exporter.supportedFileTypes.first ?? .mov
+        let outputType: AVFileType = exporter.supportedFileTypes.contains(.mov) ? .mov : (exporter.supportedFileTypes.first ?? .mov)
         do {
             try await exporter.export(to: outputURL, as: outputType)
         } catch {
             try? fm.removeItem(at: outputURL)
-            throw ProcessorError.writer("720p input normalization failed: (error.localizedDescription)")
+            throw ProcessorError.writer("720p input normalization failed: \(error.localizedDescription)")
         }
 
         let normalized = AVURLAsset(url: outputURL)
@@ -71,16 +63,18 @@ final class Video720pPreprocessor {
         let normalizedSize = try await normalizedTrack.load(.naturalSize)
         let normalizedWidth = Int(abs(normalizedSize.width).rounded())
         let normalizedHeight = Int(abs(normalizedSize.height).rounded())
+        let normalizedLong = max(normalizedWidth, normalizedHeight)
+        let normalizedShort = min(normalizedWidth, normalizedHeight)
 
-        guard normalizedWidth == 1280 && normalizedHeight == 720 else {
+        guard normalizedLong == 1280 && normalizedShort == 720 else {
             try? fm.removeItem(at: outputURL)
             throw ProcessorError.conversionFailed(
-                "720p normalization produced (normalizedWidth)x(normalizedHeight) instead of 1280x720"
+                "720p normalization produced \(normalizedWidth)x\(normalizedHeight) instead of a 720p raster"
             )
         }
 
         DiagnosticsLogger.shared.log(
-            "720p input normalization complete • working source=1280x720 • original remains untouched"
+            "720p input normalization complete • working source=\(normalizedWidth)x\(normalizedHeight) • original remains untouched"
         )
         return outputURL
     }
