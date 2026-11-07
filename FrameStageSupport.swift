@@ -34,6 +34,87 @@ enum FrameStageResources {
     }
 }
 
+/// Creates an app-owned snapshot of a pixel buffer so temporal stages never depend
+/// on AVFoundation/CoreVideo buffer reuse or a stateful model's output pool.
+enum PixelBufferOwnership {
+    static func copy(_ source: CVPixelBuffer) throws -> CVPixelBuffer {
+        let width = CVPixelBufferGetWidth(source)
+        let height = CVPixelBufferGetHeight(source)
+        let format = CVPixelBufferGetPixelFormatType(source)
+        let attributes: [String: Any] = [
+            kCVPixelBufferPixelFormatTypeKey as String: format,
+            kCVPixelBufferWidthKey as String: width,
+            kCVPixelBufferHeightKey as String: height,
+            kCVPixelBufferMetalCompatibilityKey as String: true,
+            kCVPixelBufferIOSurfacePropertiesKey as String: [:]
+        ]
+
+        var destination: CVPixelBuffer?
+        let status = CVPixelBufferCreate(
+            kCFAllocatorDefault,
+            width,
+            height,
+            format,
+            attributes as CFDictionary,
+            &destination
+        )
+        guard status == kCVReturnSuccess, let destination else {
+            throw ProcessorError.conversionFailed("could not allocate owned pixel-buffer snapshot")
+        }
+
+        let sourcePlaneCount = CVPixelBufferGetPlaneCount(source)
+        let destinationPlaneCount = CVPixelBufferGetPlaneCount(destination)
+        guard sourcePlaneCount == destinationPlaneCount else {
+            throw ProcessorError.conversionFailed("pixel-buffer plane layout changed during ownership copy")
+        }
+
+        CVPixelBufferLockBaseAddress(source, .readOnly)
+        CVPixelBufferLockBaseAddress(destination, [])
+        defer {
+            CVPixelBufferUnlockBaseAddress(destination, [])
+            CVPixelBufferUnlockBaseAddress(source, .readOnly)
+        }
+
+        if sourcePlaneCount == 0 {
+            guard let sourceBase = CVPixelBufferGetBaseAddress(source),
+                  let destinationBase = CVPixelBufferGetBaseAddress(destination) else {
+                throw ProcessorError.conversionFailed("pixel-buffer base address unavailable")
+            }
+            let sourceRow = CVPixelBufferGetBytesPerRow(source)
+            let destinationRow = CVPixelBufferGetBytesPerRow(destination)
+            let rowBytes = min(sourceRow, destinationRow)
+            for y in 0..<height {
+                memcpy(
+                    destinationBase.advanced(by: y * destinationRow),
+                    sourceBase.advanced(by: y * sourceRow),
+                    rowBytes
+                )
+            }
+        } else {
+            for plane in 0..<sourcePlaneCount {
+                guard let sourceBase = CVPixelBufferGetBaseAddressOfPlane(source, plane),
+                      let destinationBase = CVPixelBufferGetBaseAddressOfPlane(destination, plane) else {
+                    throw ProcessorError.conversionFailed("planar pixel-buffer base address unavailable")
+                }
+                let planeHeight = CVPixelBufferGetHeightOfPlane(source, plane)
+                let sourceRow = CVPixelBufferGetBytesPerRowOfPlane(source, plane)
+                let destinationRow = CVPixelBufferGetBytesPerRowOfPlane(destination, plane)
+                let rowBytes = min(sourceRow, destinationRow)
+                for y in 0..<planeHeight {
+                    memcpy(
+                        destinationBase.advanced(by: y * destinationRow),
+                        sourceBase.advanced(by: y * sourceRow),
+                        rowBytes
+                    )
+                }
+            }
+        }
+
+        CVBufferPropagateAttachments(source, destination)
+        return destination
+    }
+}
+
 /// Decodes the next source frame while the caller infers the current one.
 /// Sample order and presentation timestamps stay the same.
 final class FrameAheadReader: @unchecked Sendable {
@@ -116,7 +197,15 @@ final class FrameAheadReader: @unchecked Sendable {
             decodeSeconds += elapsed
             decodeCount += 1
             if let sample, let buffer = CMSampleBufferGetImageBuffer(sample) {
-                pending.append(Item(buffer: buffer, time: CMSampleBufferGetPresentationTimeStamp(sample)))
+                let ownedBuffer = try? PixelBufferOwnership.copy(buffer)
+                if let ownedBuffer {
+                    pending.append(Item(buffer: ownedBuffer, time: CMSampleBufferGetPresentationTimeStamp(sample)))
+                } else {
+                    finished = true
+                    lock.broadcast()
+                    lock.unlock()
+                    return
+                }
                 lock.signal()
                 lock.unlock()
             } else {
