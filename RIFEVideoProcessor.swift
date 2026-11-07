@@ -254,6 +254,10 @@ final class RIFEVideoProcessor {
                 outlined += 1
             }
 
+            // Enhancement stages can return pooled/reusable buffers. Make the frame
+            // entering the temporal RIFE state permanently owned by this pipeline.
+            currentPB = try PixelBufferOwnership.copy(currentPB)
+
             if previousPB == nil {
                 let started = CFAbsoluteTimeGetCurrent()
                 let firstOutputFrame = try colorPopGrade?.apply(currentPB) ?? currentPB
@@ -290,9 +294,12 @@ final class RIFEVideoProcessor {
                 nextOutputTime = CMTimeAdd(nextOutputTime, frameStep)
             }
 
+            // RIFE streams may recycle output surfaces on a later push. Own every
+            // generated frame before any recovery inference can run and reuse that stream.
             let rifeStarted = CFAbsoluteTimeGetCurrent()
             let synthesized = try autoreleasepool {
-                try tiledHQ.interpolate(current: currentPB, timesteps: requestedTimesteps)
+                let raw = try tiledHQ.interpolate(current: currentPB, timesteps: requestedTimesteps)
+                return try raw.map { try PixelBufferOwnership.copy($0) }
             }
             rifeSeconds += CFAbsoluteTimeGetCurrent() - rifeStarted
 
@@ -315,8 +322,11 @@ final class RIFEVideoProcessor {
                 }
                 rifeSeconds += CFAbsoluteTimeGetCurrent() - started
                 guard let midpoint = frames.first else { return nil }
-                recoveryMidpoints[path] = midpoint
-                return midpoint
+                // Recovery interpolation can immediately trigger another model push.
+                // Keep the cached midpoint independent of any reusable RIFE output surface.
+                let ownedMidpoint = try PixelBufferOwnership.copy(midpoint)
+                recoveryMidpoints[path] = ownedMidpoint
+                return ownedMidpoint
             }
 
             func motionAwareRetry(t: Double) throws -> CVPixelBuffer? {
