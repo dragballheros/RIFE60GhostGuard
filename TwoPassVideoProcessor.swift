@@ -26,16 +26,36 @@ final class TwoPassVideoProcessor {
         if colorPopStrength > 0 {
             DiagnosticsLogger.shared.log("Color Pop active • strength=\(String(format: "%.2f", colorPopStrength)) • applied once in the final active visual stage")
         }
-        if upscaleFirst {
-            return try await processUpscaleFirst(sourceURL: sourceURL, recoveryDirectory: recoveryDirectory, progress: progress, telemetry: telemetry)
-        }
-        var restorationTelemetry = PerformanceTelemetry()
-        var rifeTelemetry = PerformanceTelemetry()
-        var cuganTelemetry = PerformanceTelemetry()
+
+        // Normalize the working raster before any model sees the input. The original
+        // URL is retained separately so final audio muxing can still use the source.
         var transientURLs: [URL] = []
         defer {
             for url in transientURLs { try? FileManager.default.removeItem(at: url) }
         }
+
+        let originalSourceURL = sourceURL
+        var workingSourceURL = sourceURL
+        let preprocessor = Video720pPreprocessor()
+        let normalizedSourceURL = try await preprocessor.prepare(sourceURL: sourceURL)
+        if normalizedSourceURL != sourceURL {
+            transientURLs.append(normalizedSourceURL)
+            workingSourceURL = normalizedSourceURL
+        }
+
+        if upscaleFirst {
+            return try await processUpscaleFirst(
+                sourceURL: workingSourceURL,
+                originalSourceURL: originalSourceURL,
+                recoveryDirectory: recoveryDirectory,
+                progress: progress,
+                telemetry: telemetry
+            )
+        }
+
+        var restorationTelemetry = PerformanceTelemetry()
+        var rifeTelemetry = PerformanceTelemetry()
+        var cuganTelemetry = PerformanceTelemetry()
 
         let fm = FileManager.default
         if let recoveryDirectory {
@@ -49,7 +69,7 @@ final class TwoPassVideoProcessor {
             if config.compressionProtection { return "Compression Guard / Source Frame Guard" }
             return "Source Frame Guard"
         }()
-        let sourceAsset = AVURLAsset(url: sourceURL)
+        let sourceAsset = AVURLAsset(url: workingSourceURL)
         let sourceDuration = try await sourceAsset.load(.duration)
         guard let sourceVideoTrack = try await sourceAsset.loadTracks(withMediaType: .video).first else {
             throw ProcessorError.missingVideoTrack
@@ -166,7 +186,7 @@ final class TwoPassVideoProcessor {
                         watermark: watermark
                     )
                     let result = try await restoration.run(
-                        sourceURL: sourceURL,
+                        sourceURL: workingSourceURL,
                         progress: { p, message in
                             let local = min(max(p / 0.28, 0), 1)
                             let renamed = message
@@ -443,7 +463,7 @@ final class TwoPassVideoProcessor {
 
         if config.preserveAudio {
             progress(0.98, "Finalizing • Restoring original audio…")
-            let final = try await FinalAudioMuxer().addOriginalAudio(videoURL: finalVideoInput, sourceURL: sourceURL)
+            let final = try await FinalAudioMuxer().addOriginalAudio(videoURL: finalVideoInput, sourceURL: originalSourceURL)
             let description = upscaleTo4K
                 ? (config.outlineProtection ? "Finished • Automatic 2×/4× 60fps • Real-CUGAN → Final Sharpie" : "Finished • Automatic 2×/4× 60fps • Real-CUGAN")
                 : (config.outlineProtection ? "Finished • 60fps • Final Sharpie" : "Finished • 60fps")
@@ -461,7 +481,7 @@ final class TwoPassVideoProcessor {
 
     /// Separate checkpoint names prevent the two stage orders from sharing outputs.
     /// Reverse validation always resumes AFTER the furthest completed stage.
-    private func processUpscaleFirst(sourceURL: URL, recoveryDirectory: URL?, progress: @escaping @Sendable (Double, String) -> Void, telemetry: @escaping @Sendable (PerformanceTelemetry) -> Void) async throws -> URL {
+    private func processUpscaleFirst(sourceURL: URL, originalSourceURL: URL, recoveryDirectory: URL?, progress: @escaping @Sendable (Double, String) -> Void, telemetry: @escaping @Sendable (PerformanceTelemetry) -> Void) async throws -> URL {
         let fm = FileManager.default
         if let recoveryDirectory { try fm.createDirectory(at: recoveryDirectory, withIntermediateDirectories: true) }
         let asset = AVURLAsset(url: sourceURL)
@@ -537,7 +557,7 @@ final class TwoPassVideoProcessor {
         try fm.copyItem(at: inputURL, to: finalCopy)
         transient.append(finalCopy)
         if config.preserveAudio {
-            let final = try await FinalAudioMuxer().addOriginalAudio(videoURL: finalCopy, sourceURL: sourceURL)
+            let final = try await FinalAudioMuxer().addOriginalAudio(videoURL: finalCopy, sourceURL: originalSourceURL)
             progress(1, "Finished • Upscale-first native 2× 60fps")
             return final
         }
