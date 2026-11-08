@@ -75,6 +75,68 @@ final class ProductionSequenceParityTests: XCTestCase {
         }
     }
 
+
+    /// Production-sized 720p path. HQ pads 1280x720 to 1280x768, so this
+    /// specifically exercises the reusable paddedInputBuffer and output crop.
+    func testProduction720p_paddedStreamReuseMatchesStateless() throws {
+        let width = 1280
+        let height = 720
+        let frames = try [
+            SyntheticFrames.barFrame(width: width, height: height, barXs: [31, 287, 799, 1183], barWidthPx: 23),
+            SyntheticFrames.barFrame(width: width, height: height, barXs: [47, 303, 815, 1199], barWidthPx: 23),
+            SyntheticFrames.barFrame(width: width, height: height, barXs: [63, 319, 831, 1215], barWidthPx: 23),
+            SyntheticFrames.barFrame(width: width, height: height, barXs: [79, 335, 847, 1231], barWidthPx: 23),
+            SyntheticFrames.barFrame(width: width, height: height, barXs: [95, 351, 863, 1247], barWidthPx: 23)
+        ]
+
+        let interpolator = try makeInterpolator()
+        let stream = try interpolator.makeStream(width: width, height: height)
+        XCTAssertEqual(stream.paddedW, 1280)
+        XCTAssertEqual(stream.paddedH, 768)
+        XCTAssertTrue(try stream.push(frames[0], timesteps: []).isEmpty)
+
+        let cases: [(pair: Int, timesteps: [Float])] = [
+            (0, [0.20, 0.40, 0.60, 0.80]),
+            (1, [0.25, 0.50, 0.75]),
+            (2, []),
+            (3, [0.15, 0.35, 0.65, 0.85])
+        ]
+
+        for testCase in cases {
+            let previous = frames[testCase.pair]
+            let current = frames[testCase.pair + 1]
+            let actual = try stream.push(current, timesteps: testCase.timesteps)
+            if testCase.timesteps.isEmpty {
+                XCTAssertTrue(actual.isEmpty, "720p empty-timestep rebase emitted output")
+                continue
+            }
+
+            let expected = try interpolator.interpolate(
+                previous: previous,
+                current: current,
+                timesteps: testCase.timesteps
+            )
+            XCTAssertEqual(actual.count, expected.count)
+            for index in actual.indices {
+                let psnr = PSNRHelper.compareInMemory(actual[index], expected[index])
+                XCTAssertGreaterThan(
+                    psnr, 50.0,
+                    "720p padded pair=\\(testCase.pair) timestep=\\(testCase.timesteps[index]) parity PSNR=\\(psnr) dB"
+                )
+                let defect = try localizedDifference(actual[index], expected[index], threshold: 8)
+                XCTAssertLessThanOrEqual(
+                    defect.largestComponent, 64,
+                    "720p padded pair=\\(testCase.pair) timestep=\\(testCase.timesteps[index]) " +
+                    "localized divergence=\\(defect.largestComponent) bounds=\\(defect.bounds)"
+                )
+                print(
+                    "RIFE_720P_PADDED_PARITY pair=\\(testCase.pair) timestep=\\(testCase.timesteps[index]) " +
+                    "psnr=\\(psnr) largest_local_component=\\(defect.largestComponent) bounds=\\(defect.bounds)"
+                )
+            }
+        }
+    }
+
     private func localizedDifference(
         _ lhs: CVPixelBuffer,
         _ rhs: CVPixelBuffer,
