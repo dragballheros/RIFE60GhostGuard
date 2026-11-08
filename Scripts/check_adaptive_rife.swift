@@ -4,6 +4,13 @@ import RifeMetal
 
 enum ProcessorError: Error { case conversionFailed(String) }
 final class DiagnosticsLogger { static let shared = DiagnosticsLogger(); func log(_ text: String) { print(text) } }
+// Compile-time stub for the app-only diagnostics service. This adaptive-band
+// test keeps diagnostics disabled and validates resource lifecycle only.
+final class BrokenTileDiagnostics {
+    static let shared = BrokenTileDiagnostics()
+    var isEnabled = false
+    func compareRifeStreamParity(_ stream: CVPixelBuffer, _ stateless: CVPixelBuffer, frame: Int, timestep: Float) {}
+}
 enum Tier { case performance, safe }
 struct Snapshot { var availableMemoryMB: Double; var tier: Tier }
 var headroom = 2945.0

@@ -11,6 +11,12 @@ public final class RifeInterpolator {
         precondition(Self.liveStreams == 0, "release must happen after all streams are destroyed")
         Self.releases += 1
     }
+    // Mirrors the stateless API required by the production parity diagnostic.
+    public func interpolate(previous: CVPixelBuffer, current: CVPixelBuffer, timesteps: [Float]) throws -> [CVPixelBuffer] {
+        let stream = try makeStream(width: CVPixelBufferGetWidth(previous), height: CVPixelBufferGetHeight(previous))
+        _ = try stream.push(previous, timesteps: [])
+        return try stream.push(current, timesteps: timesteps)
+    }
 }
 public final class RifeStream {
     let width: Int, height: Int
