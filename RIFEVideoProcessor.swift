@@ -22,6 +22,7 @@ struct ProcessorConfiguration {
     var animeRestoreSuppressAuto: Bool = false
     var animeRestoreStrength: Double = 0.8
     var animeRestoreQuality: String = AnimeRestoreQuality.auto.rawValue
+    var brokenTileDiagnosticsEnabled: Bool = true
 }
 
 enum ProcessorError: LocalizedError {
@@ -233,6 +234,7 @@ final class RIFEVideoProcessor {
             try await checkpoint.checkCancellation()
             let decodedPB = item.buffer
             sourceFrames += 1
+            BrokenTileDiagnostics.shared.inspect(decodedPB, stage: "01-source-decode", frame: sourceFrames, seconds: CMTimeGetSeconds(item.time))
             decodeSeconds = ahead.averageDecodeMilliseconds * Double(sourceFrames) / 1000
 
             let currentTime = item.time
@@ -247,12 +249,15 @@ final class RIFEVideoProcessor {
                 }
             }
 
+            BrokenTileDiagnostics.shared.inspect(currentPB, stage: "02-compression-guard", frame: sourceFrames, seconds: CMTimeGetSeconds(currentTime))
+
             if let outlineEnhancer {
                 let started = CFAbsoluteTimeGetCurrent()
                 currentPB = try outlineEnhancer.enhance(currentPB)
                 outlineSeconds += CFAbsoluteTimeGetCurrent() - started
                 outlined += 1
             }
+            BrokenTileDiagnostics.shared.inspect(currentPB, stage: "03-pre-rife-outline", frame: sourceFrames, seconds: CMTimeGetSeconds(currentTime))
 
             // Enhancement stages can return pooled/reusable buffers. Make the frame
             // entering the temporal RIFE state permanently owned by this pipeline.
@@ -390,6 +395,9 @@ final class RIFEVideoProcessor {
                 try await checkpoint.checkCancellation()
                 let synth = synthesized[index]
                 let t = Double(requestedTimesteps[index])
+                let diagnosticFrame = generated + index
+                let diagnosticTime = CMTimeGetSeconds(requestedTimes[index])
+                BrokenTileDiagnostics.shared.inspect(synth, stage: "04-rife-raw-generated", frame: diagnosticFrame, seconds: diagnosticTime)
                 var chosen: CVPixelBuffer = synth
                 var existingGuardRejected = false
                 var unresolvedColorAnomaly = false
@@ -516,8 +524,10 @@ final class RIFEVideoProcessor {
                     }
                 }
 
+                BrokenTileDiagnostics.shared.inspect(chosen, stage: "05-ghostguard-output", frame: diagnosticFrame, seconds: diagnosticTime)
                 let encodeStarted = CFAbsoluteTimeGetCurrent()
                 let finalOutputFrame = try colorPopGrade?.apply(chosen) ?? chosen
+                BrokenTileDiagnostics.shared.inspect(finalOutputFrame, stage: "06-colorpop-output", frame: diagnosticFrame, seconds: diagnosticTime)
                 try await checkpoint.append10Bit(finalOutputFrame, at: requestedTimes[index])
                 encodeSeconds += CFAbsoluteTimeGetCurrent() - encodeStarted
                 outputFrames += 1
