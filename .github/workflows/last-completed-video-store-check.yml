@@ -1,0 +1,33 @@
+name: Last Completed Video Selection Regression Tests
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - feature/wan-vace-iphone-memory-first
+    paths:
+      - "LastCompletedVideoStore.swift"
+      - "VideoProcessorViewModel.swift"
+      - "ContentView.swift"
+      - "Scripts/test_last_completed_video_store.swift"
+      - ".github/workflows/last-completed-video-store-check.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: last-completed-video-store-check-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  last-completed-video:
+    runs-on: macos-26
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Parse changed output-selection sources
+        run: swiftc -frontend -parse LastCompletedVideoStore.swift VideoProcessorViewModel.swift ContentView.swift Scripts/test_last_completed_video_store.swift
+      - name: Compile and run export-selection regression test
+        run: |
+          swiftc -swift-version 5 LastCompletedVideoStore.swift Scripts/test_last_completed_video_store.swift -o /tmp/last-completed-video-tests
+          /tmp/last-completed-video-tests

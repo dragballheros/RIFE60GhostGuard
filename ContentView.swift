@@ -7,15 +7,19 @@ import QuickLook
 
 struct ContentView: View {
     @Environment(\.scenePhase) private var scenePhase
-    @AppStorage("automaticWarmthCorrectionEnabled") private var automaticWarmthCorrectionEnabled = true
+    @AppStorage("automaticWarmthCorrectionMode") private var automaticWarmthCorrectionModeRawValue = "full"
+    @AppStorage("colorPopSkinToneCorrectionMode") private var colorPopSkinToneCorrectionModeRawValue = "processedOnly"
     @StateObject private var vm = VideoProcessorViewModel()
     @StateObject private var pipController = ProcessingPiPController()
     @State private var showingImporter = false
     @State private var showingAIImageStudio = false
+    @State private var showingVACEComponentTest = false
+    @State private var showingVACEVideoEditor = false
+    @State private var showingH3VideoEditor = false
     @State private var showingWatermarkEditor = false
     @State private var showingPhotosPicker = false
+    @State private var showingPreview = false
     @State private var showingExportFolderPicker = false
-    @State private var showingClearRecoveryConfirmation = false
     @State private var photoItems: [PhotosPickerItem] = []
     @State private var showingMaskCopyConfirmation = false
     @State private var lastCompletedVideoURL: URL?
@@ -25,6 +29,7 @@ struct ContentView: View {
     @State private var postRenderScreenDimmed = false
     @State private var postRenderSavedBrightness: CGFloat?
     @State private var postRenderSavedIdleTimerDisabled: Bool?
+    @State private var liveDefectPanelExpanded = true
 
     var body: some View {
         ZStack {
@@ -35,7 +40,7 @@ struct ContentView: View {
 
             NavigationStack {
                 Form {
-                    Section {
+                    Section("Input") {
                         VStack(alignment: .leading, spacing: 14) {
                             HStack(spacing: 12) {
                                 Image(systemName: "wand.and.stars")
@@ -44,7 +49,7 @@ struct ContentView: View {
                                     .frame(width: 48, height: 48)
                                     .background(.cyan.opacity(0.13), in: RoundedRectangle(cornerRadius: 14))
                                 VStack(alignment: .leading, spacing: 3) {
-                                    Text("Recipe").font(.title3.weight(.bold))
+                                    Text("Processing Recipe").font(.title3.weight(.bold))
                                     Text(vm.inputURL?.lastPathComponent ?? "Choose a video, GIF, or image")
                                         .font(.caption).foregroundStyle(.secondary).lineLimit(1)
                                 }
@@ -57,37 +62,9 @@ struct ContentView: View {
                             }
                             Toggle("Real-CUGAN 2× upscale", isOn: $vm.upscaleTo4K)
                                 .disabled(vm.queueLocked || vm.isImporting || vm.isBusy || vm.isBenchmarking)
-                            HStack(spacing: 10) {
-                                Button { showingPhotosPicker = true } label: {
-                                    Label("Photos", systemImage: "photo.on.rectangle").frame(maxWidth: .infinity)
-                                }
-                                .buttonStyle(.bordered)
-                                .disabled(vm.isBusy || vm.isImporting || vm.isBenchmarking)
-                                Button { showingImporter = true } label: {
-                                    Label("Files", systemImage: "folder").frame(maxWidth: .infinity)
-                                }
-                                .buttonStyle(.bordered)
-                                .disabled(vm.isBusy || vm.isImporting || vm.isBenchmarking)
-                            }
                         }
                         .padding(.vertical, 6)
-                    } header: {
-                        Text("Processing Recipe")
-                    } footer: {
-                        Text("Tune the full processing pipeline below. Your selected media runs through the existing on-device engines.")
-                    }
-
-                    Section("AI Image Studio") {
-                        Button { showingAIImageStudio = true } label: {
-                            Label("Open AI Image Studio", systemImage: "sparkles")
-                        }
-                        .disabled(vm.isBusy || vm.isImporting || vm.isBenchmarking)
-                        Text("Generate anime images locally on the iPhone. To protect memory, AI Image Studio cannot open while video processing, importing, or model benchmarking is active. Generated stills can then go through this app's Real-CUGAN upscale and final Sharpie pipeline.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-
-                    Section("Input") {
+                        Divider().padding(.vertical, 4)
                         Button { showingPhotosPicker = true } label: { Label("Select media from Photos", systemImage: "photo.on.rectangle") }.disabled(vm.isBusy || vm.isImporting || vm.isBenchmarking)
                         Button { showingImporter = true } label: { Label("Select media from Files", systemImage: "folder") }.disabled(vm.isBusy || vm.isImporting || vm.isBenchmarking)
                         if vm.isImporting {
@@ -106,21 +83,80 @@ struct ContentView: View {
                                     .foregroundStyle(.secondary)
                             }
                         }
-                    }
-
-                    mediaQueueSection
-
-                    if vm.recoveryAvailable {
-                        Section("Crash Recovery") {
-                            Label("Recovery data found", systemImage: "arrow.clockwise.circle.fill").foregroundStyle(.orange)
-                            Text(vm.recoveryStatusText).font(.caption)
-                            if !vm.isBusy {
-                                Button { Task { await vm.start() } } label: { Label(vm.upscaleTo4K ? "Resume 2× 60 FPS Render" : "Resume 60 FPS Render", systemImage: "play.fill") }
-                                Button(role: .destructive) { showingClearRecoveryConfirmation = true } label: { Label("Clear Recovery Data", systemImage: "trash") }
+                        if vm.recoveryAvailable {
+                            Text(vm.recoveryStatusText)
+                                .font(.caption)
+                                .foregroundStyle(.orange)
+                            Text("Tap Process to resume from the furthest valid saved checkpoint.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        if vm.inputURL != nil && (vm.inputKind == .video || vm.inputKind == .gif) {
+                            HStack {
+                                Button {
+                                    showingPreview = true
+                                    vm.generatePreview()
+                                } label: {
+                                    Label(vm.isPreviewing ? "Cancel Preview" : "Preview Opening Frames", systemImage: vm.isPreviewing ? "xmark.circle" : "play.rectangle")
+                                }
+                                // Intentionally remains enabled during preview.
+                                .disabled(vm.inputURL == nil || vm.isBusy || vm.isImporting || vm.isBenchmarking)
+                                Spacer()
+                                if vm.isPreviewing {
+                                    ProgressView()
+                                }
                             }
-                            Text("The batch and its masks are saved. Completed AI passes are kept in persistent storage. If iOS terminates the app, reopening it reuses every completed checkpoint instead of starting the whole render over.").font(.caption).foregroundStyle(.secondary)
+                            if !vm.previewStatus.isEmpty {
+                                Text(vm.previewStatus).font(.caption).foregroundStyle(.secondary)
+                            }
+                            Text("Previews up to three opening frames with current still-frame enhancement settings. RIFE motion interpolation is not represented; Process remains available.")
+                                .font(.caption).foregroundStyle(.secondary)
                         }
                     }
+
+
+                    Section("Wan VACE — Local Video Editing") {
+                        Button { showingVACEVideoEditor = true } label: {
+                            Label("Open Local Wan VACE Video Editor", systemImage: "wand.and.stars")
+                        }
+                        .disabled(vm.isBusy || vm.isImporting || vm.isBenchmarking)
+                        Text("Imports a source video, builds the edit mask on this iPhone (or uses a whole-frame restyle), runs native local Wan VACE on 5-frame temporal windows, then exports a reconstructed MOV with the original audio. The explicitly selected experimental profile is 1.3B Q8 at 512×512 inference, not the unavailable 14B/720p path.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    Section("Wan VACE — On-device Component Test") {
+                        Button { showingVACEComponentTest = true } label: {
+                            Label("Open VACE Component Test Lab", systemImage: "cpu")
+                        }
+                        .disabled(vm.isBusy || vm.isImporting || vm.isBenchmarking)
+                        Text("Experimental local Core ML smoke test for exported Wan VAE components. This does not perform VACE video editing and does not contain the 14B transformer.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    Section("MiniMax H3") {
+                        Button { showingH3VideoEditor = true } label: {
+                            Label("Open Local MiniMax H3", systemImage: "wand.and.stars")
+                        }
+                        .disabled(vm.isBusy || vm.isImporting || vm.isBenchmarking)
+                        Text("Reference-conditioned video on this iPhone. Tier 1 keeps about 44 GB of published compressed weights and does not use a paid cloud.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    Section("AI Image Studio") {
+                        Button { showingAIImageStudio = true } label: {
+                            Label("Open AI Image Studio", systemImage: "sparkles")
+                        }
+                        .disabled(vm.isBusy || vm.isImporting || vm.isBenchmarking)
+                        Text("Generate anime images locally on the iPhone. To protect memory, AI Image Studio cannot open while video processing, importing, or model benchmarking is active. Generated stills can then go through this app's Real-CUGAN upscale and final Sharpie pipeline.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+
+
+                    mediaQueueSection
 
                     Section("RIFE 4.26") {
                         if vm.inputKind == .image {
@@ -145,12 +181,30 @@ struct ContentView: View {
                     Section("Anime Watermark Removal") {
                         Toggle("Remove marked watermarks", isOn: $vm.watermarkRemovalEnabled).disabled(vm.queueLocked || vm.isImporting)
                         if vm.watermarkRemovalEnabled {
-                            Picker("Inpainting model", selection: $vm.watermarkModel) {
+                            VStack(alignment: .leading, spacing: 0) {
+                                Text("Inpainting model")
+                                    .font(.subheadline)
+                                    .foregroundStyle(.secondary)
+                                    .padding(.bottom, 6)
                                 ForEach(WatermarkModel.allCases) { model in
-                                    Text(model.title).tag(model)
+                                    Button {
+                                        guard !vm.queueLocked && !vm.isImporting else { return }
+                                        vm.watermarkModel = model
+                                    } label: {
+                                        HStack(spacing: 12) {
+                                            Text(model.title).foregroundStyle(.primary)
+                                            Spacer(minLength: 8)
+                                            Image(systemName: vm.watermarkModel == model ? "checkmark.circle.fill" : "circle")
+                                                .foregroundStyle(vm.watermarkModel == model ? Color.accentColor : Color.secondary)
+                                        }
+                                        .contentShape(Rectangle())
+                                        .padding(.vertical, 8)
+                                    }
+                                    .buttonStyle(.plain)
+                                    .disabled(vm.queueLocked || vm.isImporting)
+                                    .accessibilityAddTraits(vm.watermarkModel == model ? .isSelected : [])
                                 }
                             }
-                            .disabled(vm.queueLocked || vm.isImporting)
                             if let item = vm.selectedQueueItem, (vm.mediaQueue?.items.count ?? 0) > 1 {
                                 Text("Mask for: \(item.displayName)").font(.caption)
                                 Toggle("Remove watermark on this item", isOn: Binding(get: { vm.selectedQueueItem?.removeWatermark ?? true }, set: { vm.setSelectedWatermarkRemoval($0) })).disabled(vm.queueLocked || vm.isImporting)
@@ -169,11 +223,59 @@ struct ContentView: View {
                     }
 
                     Section("Anime Processing") {
+                        Toggle("Anime Restore", isOn: Binding(get: { vm.animeRestoreShown }, set: { vm.setAnimeRestoreShown($0) })).disabled(vm.queueLocked || vm.isImporting)
+                        if !vm.animeRestoreAutoNote.isEmpty {
+                            Text(vm.animeRestoreAutoNote).font(.caption).foregroundStyle(.secondary)
+                        }
+                        Picker("Anime Restore quality", selection: $vm.animeRestoreQuality) {
+                            ForEach(AnimeRestoreQuality.allCases) { quality in
+                                Text(quality.title).tag(quality.rawValue)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+                        .disabled(vm.queueLocked || vm.isImporting)
+                        HStack { Text("Anime Restore strength"); Spacer(); Text(String(format: "%.2f", vm.animeRestoreStrength)) }
+                        Slider(value: $vm.animeRestoreStrength, in: 0.1...1.0).disabled(vm.queueLocked || vm.isImporting)
+                        Text("Runs first, before Compression Guard. Auto downloads APISR or SPAN, restores at 2× in 256 tiles, then scales back to the source size. Auto quality keeps APISR when a frame stays within about a second after held-frame reuse, otherwise SPAN. Strength defaults to 0.80. Turning the toggle off leaves frames unchanged.").font(.caption).foregroundStyle(.secondary)
                         Toggle("Compression Guard", isOn: $vm.compressionProtection).disabled(vm.queueLocked || vm.isImporting)
+                        Toggle("Color Rebuild", isOn: $vm.colorRebuildEnabled).disabled(vm.queueLocked || vm.isImporting)
+                        if vm.colorRebuildEnabled {
+                            HStack { Text("Color Rebuild strength"); Spacer(); Text(String(format: "%.2f", vm.colorRebuildStrength)) }
+                            Slider(value: $vm.colorRebuildStrength, in: 0.1...1.0).disabled(vm.queueLocked || vm.isImporting)
+                            Text("Luma-guided chroma rebuild after Real-CUGAN and before Sharpie. Flat cel colors are consolidated and speckle is removed. Line art, skin, and saturation stay.").font(.caption).foregroundStyle(.secondary)
+                        }
+                        Toggle("Outline Rebuild", isOn: $vm.outlineRebuildEnabled).disabled(vm.queueLocked || vm.isImporting)
+                        if vm.outlineRebuildEnabled {
+                            HStack { Text("Outline Rebuild strength"); Spacer(); Text(String(format: "%.2f", vm.outlineRebuildStrength)) }
+                            Slider(value: $vm.outlineRebuildStrength, in: 0.1...1.0).disabled(vm.queueLocked || vm.isImporting)
+                            Text("Closes short gaps, restores faded line darkness, and lifts stray specks before Sharpie. Sharpie itself is unchanged.").font(.caption).foregroundStyle(.secondary)
+                        }
                         Toggle("Final Sharpie Outline", isOn: $vm.outlineProtection).disabled(vm.queueLocked || vm.isImporting)
                         Toggle("Color Pop", isOn: $vm.colorPopEnabled).disabled(vm.queueLocked || vm.isImporting)
-                        Toggle("Automatic warmth correction", isOn: $automaticWarmthCorrectionEnabled).disabled(vm.queueLocked || vm.isImporting)
-                        Text("When enabled, gently reduces excess warmth after Color Pop. Turn it off for GIFs or images where cooling makes colors look unnatural.").font(.caption).foregroundStyle(.secondary)
+                        Picker("Automatic warmth", selection: $automaticWarmthCorrectionModeRawValue) {
+                            ForEach(AutoWarmthCorrectionMode.allCases) { mode in
+                                Text(mode.title).tag(mode.rawValue)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+                        .disabled(vm.queueLocked || vm.isImporting)
+                        if let mode = AutoWarmthCorrectionMode(rawValue: automaticWarmthCorrectionModeRawValue) {
+                            Text(mode.explanation)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        Picker("Color Pop skin tone", selection: $colorPopSkinToneCorrectionModeRawValue) {
+                            ForEach(ColorPopSkinToneMode.allCases) { mode in
+                                Text(mode.title).tag(mode.rawValue)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+                        .disabled(vm.queueLocked || vm.isImporting)
+                        if let mode = ColorPopSkinToneMode(rawValue: colorPopSkinToneCorrectionModeRawValue) {
+                            Text(mode.explanation)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
                         if vm.colorPopEnabled {
                             HStack { Text("Color Pop strength"); Spacer(); Text(String(format: "%.2f", vm.colorPopStrength)) }
                             Slider(value: $vm.colorPopStrength, in: 0.1...1.0).disabled(vm.queueLocked || vm.isImporting)
@@ -184,9 +286,30 @@ struct ContentView: View {
 
                     Section("2× Anime Upscale") {
                         Toggle("Real-CUGAN Native 2×", isOn: $vm.upscaleTo4K).disabled(vm.queueLocked || vm.isImporting)
-                        Picker("Model compute units", selection: $vm.computePreference) {
-                            ForEach(ModelComputePreference.allCases) { option in Text(option.title).tag(option) }
-                        }.disabled(vm.queueLocked || vm.isBusy || vm.isBenchmarking)
+                        VStack(alignment: .leading, spacing: 0) {
+                            Text("Model compute units")
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                                .padding(.bottom, 6)
+                            ForEach(ModelComputePreference.allCases) { option in
+                                Button {
+                                    guard !vm.queueLocked && !vm.isBusy && !vm.isBenchmarking else { return }
+                                    vm.computePreference = option
+                                } label: {
+                                    HStack(spacing: 12) {
+                                        Text(option.title).foregroundStyle(.primary)
+                                        Spacer(minLength: 8)
+                                        Image(systemName: vm.computePreference == option ? "checkmark.circle.fill" : "circle")
+                                            .foregroundStyle(vm.computePreference == option ? Color.accentColor : Color.secondary)
+                                    }
+                                    .contentShape(Rectangle())
+                                    .padding(.vertical, 8)
+                                }
+                                .buttonStyle(.plain)
+                                .disabled(vm.queueLocked || vm.isBusy || vm.isBenchmarking)
+                                .accessibilityAddTraits(vm.computePreference == option ? .isSelected : [])
+                            }
+                        }
                         Text("Auto preserves the current Core ML policy. GPU may use more memory. GPU and Neural Engine modes both allow CPU fallback; benchmark first.").font(.caption).foregroundStyle(.secondary)
                         if vm.inputKind == .video {
                             Toggle("Upscale before interpolation (faster)", isOn: $vm.upscaleFirst)
@@ -211,7 +334,7 @@ struct ContentView: View {
 
                     Section("Render Power") {
                         Toggle("Render power mode", isOn: $vm.renderPowerMode)
-                        Text("The processing screen turns completely black immediately. Tap once to wake it; after 20 seconds without a touch it returns to black. While processing, Picture in Picture is armed in the foreground so swiping Home can transition directly into a live progress card without suspending recovery/render work. Returning to the app closes PiP. When a render finishes, the screen gets a 1-minute grace period; if you do not touch the app, it goes black and iOS auto-lock is re-enabled.").font(.caption).foregroundStyle(.secondary)
+                        Text("The processing screen turns completely black immediately. Tap once to wake it; after 20 seconds without a touch it returns to black. While processing, Picture in Picture is armed in the foreground so swiping Home can transition directly into a live progress card without suspending processing. Returning to the app closes PiP. When a render finishes, the screen gets a 1-minute grace period; if you do not touch the app, it goes black and iOS auto-lock is re-enabled.").font(.caption).foregroundStyle(.secondary)
                     }
 
                     Section("Export to Files") {
@@ -262,7 +385,7 @@ struct ContentView: View {
                         Text("For videos to appear directly in On My iPhone instead of the app's private-looking folder, tap Set On My iPhone Save Location, select the On My iPhone folder, and tap Open once. iOS requires this one-time folder permission. The app remembers it and future completed videos are written there directly. Export Last Completed Video remains available after relaunch so a finished render is not lost if the app is closed.").font(.caption).foregroundStyle(.secondary)
                     }
 
-                    if vm.isBusy || vm.isPaused {
+                    if vm.isBusy {
                         Section((vm.mediaQueue?.items.count ?? 0) > 1 ? "Current Item Clock" : "Overall Clock") {
                             ProgressView(value: vm.progress)
                             LabeledContent("Complete", value: String(format: "%.1f%%", vm.progress * 100))
@@ -282,33 +405,31 @@ struct ContentView: View {
                                 .foregroundStyle(.secondary)
                             ProgressView(value: vm.progress)
                             Text(vm.statusText).font(.caption)
-                            HStack(spacing: 12) {
-                                Button("Cancel", role: .destructive) { vm.cancel() }
-                                Spacer()
-                                Button {
-                                    if vm.isPaused {
-                                        Task { await vm.start() }
-                                    } else {
-                                        vm.pause()
-                                    }
-                                } label: {
-                                    Label(vm.isPaused ? "Resume" : "Pause", systemImage: vm.isPaused ? "play.fill" : "pause.fill")
-                                }
-                                .buttonStyle(.bordered)
-                                .disabled((!vm.isBusy && !vm.isPaused) || vm.inputKind == .image)
+                            Button("Cancel", role: .destructive) { vm.cancel() }
+
+                            if vm.brokenTileDiagnosticsEnabled {
+                                LiveDefectCarousel(
+                                    defects: vm.liveDiagnosticDefects,
+                                    isExpanded: $liveDefectPanelExpanded
+                                )
                             }
                         }
                         if vm.inputKind == .video {
                         Section("Live Performance") {
                             LabeledContent("Thermal / mode", value: vm.telemetry.thermalState)
-                            LabeledContent("Memory headroom", value: String(format: "%.0f MB available", vm.telemetry.availableMemoryMB))
+                            LabeledContent("Memory headroom", value: String(format: "%.0f MB effective (%.0f MB raw)", vm.telemetry.effectiveMemoryMB, vm.telemetry.availableMemoryMB))
                             LabeledContent("Compression", value: String(format: "%.1f ms/source", vm.telemetry.compressionMsPerFrame))
                             LabeledContent("Final outline", value: String(format: "%.1f ms/frame", vm.telemetry.outlineMsPerFrame))
                             LabeledContent("RIFE HQ", value: String(format: "%.1f ms/generated", vm.telemetry.rifeMsPerGeneratedFrame))
                             LabeledContent("RIFE speed", value: String(format: "%.2f gen fps", vm.telemetry.generatedFPS))
                             if vm.upscaleTo4K {
                                 LabeledContent("Real-CUGAN", value: String(format: "%.1f ms/frame", vm.telemetry.cuganMsPerFrame))
-                                LabeledContent("Upscale speed", value: String(format: "%.2f fps", vm.telemetry.upscaleFPS))
+                                LabeledContent("Upscale speed (wall-clock)", value: String(format: "%.2f fps", vm.telemetry.upscaleFPS))
+                                LabeledContent("CUGAN wait for input", value: String(format: "%.1f ms", vm.telemetry.cuganWaitInMs))
+                                LabeledContent("CUGAN wait for compute", value: String(format: "%.1f ms", vm.telemetry.cuganWaitComputeMs))
+                                LabeledContent("CUGAN predict", value: String(format: "%.1f ms (%d tiles, %d concurrent)", vm.telemetry.cuganPredictMs, vm.telemetry.cuganTiles, vm.telemetry.cuganConcurrency))
+                                LabeledContent("CUGAN stitch and copy", value: String(format: "%.1f ms", vm.telemetry.cuganStitchMs))
+                                LabeledContent("CUGAN wall", value: String(format: "%.1f ms", vm.telemetry.cuganWallMs))
                                 LabeledContent("Upscaled", value: "\(vm.telemetry.upscaledFrames)")
                             }
                             LabeledContent("GhostGuard", value: String(format: "%.1f ms/generated", vm.telemetry.ghostMsPerGeneratedFrame))
@@ -319,17 +440,41 @@ struct ContentView: View {
                         }
                     }
 
+                    Section("About") {
+                        Text("Anime Restore uses APISR 2× RRDB (Kiteretsu77, CVPR 2024, GPL-3.0, academic use) and 2×HFA2k LUDVAE SPAN (Phhofm, CC-BY-4.0). Weights download on first use and are not in the app bundle.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+
                     Section("Diagnostics") {
+                        Toggle("Broken-Tile Stage Diagnostics", isOn: $vm.brokenTileDiagnosticsEnabled)
+                            .disabled(vm.isBusy || vm.isImporting)
+                        Text("Samples every 15 frames (4 Hz on 60 FPS stages), scores localized 16/32/64/128/256-pixel grid seams, and retains the strongest frame examples per stage in the diagnostics ZIP. Does not alter rendered pixels.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                         Button { vm.benchmarkModels() } label: { Label("Benchmark Models", systemImage: "speedometer") }
                             .disabled(vm.isBusy || vm.isBenchmarking || vm.isImporting)
+                        Button { vm.shareDiagnostics() } label: { Label("Share Diagnostics", systemImage: "square.and.arrow.up") }
+                            .disabled(vm.diagnosticsShareItems.isEmpty && !DiagnosticsExport.hasShareableContent)
+                        Button { vm.copyDiagnosticsJSON() } label: { Label("Copy Diagnostics", systemImage: "doc.on.doc") }
                         if vm.isBenchmarking {
                             ProgressView(value: vm.benchmarkProgress)
                             Button("Cancel Benchmark", role: .destructive) { vm.cancelBenchmark() }
                         }
                         if !vm.benchmarkStatus.isEmpty { Text(vm.benchmarkStatus).font(.caption) }
-                        if !vm.benchmarkReport.isEmpty { Text(vm.benchmarkReport).font(.system(.caption, design: .monospaced)).textSelection(.enabled) }
-                        Text("Keep the app open and cool. Tests 2 warm-ups and 5 timed predictions per model/policy. Results are device measurements; no preference is changed automatically.").font(.caption).foregroundStyle(.secondary)
+                        if !vm.benchmarkReport.isEmpty {
+                            Text(vm.benchmarkReport)
+                                .font(.system(.caption, design: .monospaced))
+                                .textSelection(.disabled)
+                            Button {
+                                UIPasteboard.general.string = vm.benchmarkReport
+                            } label: {
+                                Label("Copy Benchmark Report", systemImage: "doc.on.doc")
+                            }
+                        }
+                        Text("Keep the app open and cool. Tests compute policies, then every available Real-CUGAN tile strategy on this phone. The fastest strategy that stays inside memory headroom is saved for this model, tile size, device, iOS version, and app build. The next render uses it. Before a benchmark, Real-CUGAN stays on sequential backed predictions.").font(.caption).foregroundStyle(.secondary)
                         Button { vm.copyErrorLogs() } label: { Label("Copy Error Logs", systemImage: "doc.on.doc") }
+                        Button(role: .destructive) { vm.clearErrorLogs() } label: { Label("Clear Error Log", systemImage: "trash") }
                         if !vm.diagnosticsCopyStatus.isEmpty { Text(vm.diagnosticsCopyStatus).font(.caption).foregroundStyle(.secondary) }
                         Text("Copies the persistent render log, last stage/progress, thermal state, frame counters, RIFE speed, Real-CUGAN speed, export folder, and the last error directly to the clipboard.").font(.caption).foregroundStyle(.secondary)
                     }
@@ -364,10 +509,10 @@ struct ContentView: View {
                     if let err = vm.errorText { Section("Error") { Text(err).foregroundStyle(.red) } }
                 }
                 .safeAreaInset(edge: .bottom, spacing: 0) {
-                    if !vm.isBusy && !vm.isPaused && !vm.recoveryAvailable {
+                    if !vm.isBusy {
                         VStack(spacing: 8) {
                             HStack {
-                                Label(vm.inputURL == nil ? "No media selected" : vm.inputURL!.lastPathComponent,
+                                Label(vm.inputURL?.lastPathComponent ?? "No media selected",
                                       systemImage: vm.inputKind == .image ? "photo" : vm.inputKind == .gif ? "livephoto" : "film")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
@@ -423,6 +568,16 @@ struct ContentView: View {
                     lastCompletedVideoURL = LastCompletedVideoStore.latestCompletedVideo() ?? lastCompletedVideoURL
                 }
                 .onAppear {
+                    // Migrate the old boolean setting once so the segmented picker
+                    // and the renderer agree on the same persisted mode.
+                    let warmthDefaults = UserDefaults.standard
+                    let warmthMigrationKey = "automaticWarmthCorrectionModeMigrationComplete"
+                    if !warmthDefaults.bool(forKey: warmthMigrationKey) {
+                        if let legacyValue = warmthDefaults.object(forKey: "automaticWarmthCorrectionEnabled") as? Bool {
+                            automaticWarmthCorrectionModeRawValue = legacyValue ? AutoWarmthCorrectionMode.full.rawValue : AutoWarmthCorrectionMode.off.rawValue
+                        }
+                        warmthDefaults.set(true, forKey: warmthMigrationKey)
+                    }
                     if lastCompletedVideoURL == nil { lastCompletedVideoURL = LastCompletedVideoStore.latestCompletedVideo() }
                     if vm.isBusy { pipController.arm() }
                     refreshPiPStatus(force: true)
@@ -457,9 +612,10 @@ struct ContentView: View {
                 .onChange(of: vm.statusText) { _ in refreshPiPStatus() }
                 .onChange(of: vm.etaSeconds) { _ in refreshPiPStatus() }
                 .onChange(of: vm.outputURL) { newURL in
-                    if let newURL {
+                    if let newURL,
+                       ["mov", "mp4", "m4v"].contains(newURL.pathExtension.lowercased()) {
                         lastCompletedVideoURL = newURL
-                        previewPlayer = newURL.pathExtension.lowercased() == "gif" ? nil : AVPlayer(url: newURL)
+                        previewPlayer = AVPlayer(url: newURL)
                     } else {
                         previewPlayer = nil
                     }
@@ -476,10 +632,7 @@ struct ContentView: View {
                         WatermarkMaskEditor(sourceURL: source, isImage: vm.inputKind == .image, regions: $vm.watermarkRegions)
                     }
                 }
-                .alert("Clear Recovery Data?", isPresented: $showingClearRecoveryConfirmation) {
-                    Button("Clear Recovery Data", role: .destructive) { showingClearRecoveryConfirmation = false; vm.clearRecoveryData() }
-                    Button("Cancel", role: .cancel) { }
-                } message: { Text("This permanently deletes the saved source copy and completed render checkpoints for this interrupted job. It does not delete your last completed exported video.") }
+
             }
 
             if vm.isBusy && !vm.processingScreenAwake {
@@ -490,6 +643,21 @@ struct ContentView: View {
             }
         }
         .simultaneousGesture(DragGesture(minimumDistance: 0).onChanged { _ in registerPostRenderInteraction() })
+        .sheet(isPresented: $vm.showingDiagnosticsShare) {
+            DiagnosticsActivityView(items: vm.diagnosticsShareItems)
+        }
+        .sheet(isPresented: $showingVACEComponentTest) {
+            VACEComponentTestView()
+        }
+        .sheet(isPresented: $showingVACEVideoEditor) {
+            VACEVideoEditView()
+        }
+        .sheet(isPresented: $showingH3VideoEditor) {
+            H3VideoEditView()
+        }
+        .sheet(isPresented: $showingPreview) {
+            VideoSettingsPreviewSheet(viewModel: vm)
+        }
         .onDisappear {
             pipController.disarmAndStop()
             cancelPostRenderSleep(restoreDisplay: true)
@@ -548,7 +716,7 @@ struct ContentView: View {
 
     private var createButtonTitle: String {
         if let queue = vm.mediaQueue, queue.items.count > 1 {
-            return queue.settingsKey == nil ? "Process \(queue.items.count) Media in Order" : "Resume Media Queue"
+            return queue.settingsKey == nil ? "Process \(queue.items.count) Media in Order" : "Continue Media Queue"
         }
         if vm.inputKind == .gif {
             return vm.redditMode ? "Prepare Reddit GIF" : "Process GIF • Full Pipeline"
@@ -613,5 +781,142 @@ struct ContentView: View {
     private func finishTime(after seconds: Double) -> String {
         let formatter = DateFormatter(); formatter.timeStyle = .short
         return formatter.string(from: Date().addingTimeInterval(seconds))
+    }
+}
+
+
+
+private struct LiveDefectCarousel: View {
+    let defects: [LiveDiagnosticDefect]
+    @Binding var isExpanded: Bool
+
+    var body: some View {
+        DisclosureGroup(isExpanded: $isExpanded) {
+            if defects.isEmpty {
+                HStack(spacing: 8) {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text("Watching each processing stage for a localized defect…")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.vertical, 4)
+            } else {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    LazyHStack(spacing: 10) {
+                        ForEach(defects) { defect in
+                            LiveDefectCard(defect: defect)
+                        }
+                    }
+                    .padding(.vertical, 4)
+                }
+            }
+        } label: {
+            HStack(spacing: 7) {
+                Image(systemName: defects.isEmpty ? "viewfinder" : "exclamationmark.triangle.fill")
+                    .foregroundStyle(defects.isEmpty ? Color.secondary : Color.orange)
+                Text(defects.isEmpty ? "Live Defect Monitor" : "Live Defects (\(defects.count))")
+                    .font(.subheadline.weight(.semibold))
+                Spacer(minLength: 0)
+                if !defects.isEmpty {
+                    Text("New snapshots only")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .animation(.easeInOut(duration: 0.2), value: defects.count)
+    }
+}
+
+private struct LiveDefectCard: View {
+    let defect: LiveDiagnosticDefect
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if let image = UIImage(contentsOfFile: defect.imageURL.path) {
+                Image(uiImage: image)
+                    .resizable()
+                    .scaledToFill()
+                    .frame(width: 190, height: 108)
+                    .clipped()
+                    .clipShape(RoundedRectangle(cornerRadius: 10))
+            } else {
+                RoundedRectangle(cornerRadius: 10)
+                    .fill(.quaternary)
+                    .frame(width: 190, height: 108)
+                    .overlay(Image(systemName: "photo.badge.exclamationmark"))
+            }
+            VStack(alignment: .leading, spacing: 2) {
+                Text(defect.stage)
+                    .font(.caption.weight(.semibold))
+                    .lineLimit(1)
+                Text(String(format: "Frame %d • %.2fs • grid %dpx", defect.frame, defect.seconds, defect.grid))
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                Text(String(format: "Defect score %.2f • seam %.2f", defect.score, defect.seam))
+                    .font(.caption2.monospacedDigit())
+                    .foregroundStyle(.orange)
+            }
+        }
+        .frame(width: 190, alignment: .leading)
+        .padding(8)
+        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(.orange.opacity(0.35)))
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Defect detected at \(defect.stage), frame \(defect.frame), \(String(format: "%.2f", defect.seconds)) seconds")
+    }
+}
+
+private struct VideoSettingsPreviewSheet: View {
+    @ObservedObject var viewModel: VideoProcessorViewModel
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    Text(viewModel.previewStatus.isEmpty ? "Preview samples the opening frames using your current settings." : viewModel.previewStatus)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    if viewModel.isPreviewing {
+                        ProgressView("Rendering preview frames…")
+                        Button("Cancel Preview") { viewModel.cancelPreview() }
+                            .buttonStyle(.bordered)
+                    }
+                    if viewModel.previewURLs.isEmpty && !viewModel.isPreviewing {
+                        Text("No preview frames yet. Tap Preview Opening Frames after selecting a video or GIF.")
+                            .foregroundStyle(.secondary)
+                    }
+                    ForEach(Array(viewModel.previewURLs.enumerated()), id: \.offset) { index, url in
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Sample frame \(index + 1)").font(.headline)
+                            if let image = UIImage(contentsOfFile: url.path) {
+                                Image(uiImage: image)
+                                    .resizable()
+                                    .scaledToFit()
+                                    .frame(maxWidth: .infinity)
+                                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                            } else {
+                                Text("This preview frame could not be displayed.")
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                    Text("This is a visual settings check, not a 60 FPS motion preview. Change settings on the main screen and run Preview again.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .padding()
+            }
+            .navigationTitle("Video / GIF Preview")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
+        }
+        .presentationDetents([.medium, .large])
     }
 }

@@ -20,6 +20,14 @@ replacement = """  ) -> Bool {
     // but does not account for iOS process limits or shared Metal memory. Keep
     // SDXL weight tensors file-backed and load them on demand for the heavy
     // components; this trades throughput for a lower resident working set.
+    if version == .wan21_1_3b || version == .wan21_14b {
+      switch variant {
+      case .unet, .textEncoder, .diffusionMapping, .autoencoder, .control:
+        return DeviceCapability.externalOnDemand(
+          version: version, scale: scale, force: true, suffix: suffix,
+          is8BitModel: is8BitModel)
+      }
+    }
     if version == .sdxlBase || version == .sdxlRefiner {
       switch variant {
       case .unet, .textEncoder, .diffusionMapping, .autoencoder:

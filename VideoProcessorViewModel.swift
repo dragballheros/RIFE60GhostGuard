@@ -47,19 +47,34 @@ final class VideoProcessorViewModel: ObservableObject {
     @Published var errorText: String?
     @Published var saveStatusText = ""
     @Published var isProcessing = false
-    @Published private(set) var isPaused = false
     @Published var isImporting = false
+    @Published private(set) var isPreviewing = false
+    @Published private(set) var previewURLs: [URL] = []
+    @Published private(set) var previewStatus = ""
+    private var previewTask: Task<Void, Never>?
     @Published var importProgress: Double? = nil
     @Published var ghostProtection = true
     @Published var sceneCutProtection = true
-    @Published var compressionProtection = true
-    @Published var outlineProtection = true
+    @Published var compressionProtection = true { didSet { ProcessingSettings.save(compressionProtection, ProcessingSettings.compression) } }
+    @Published var outlineProtection = true { didSet { ProcessingSettings.save(outlineProtection, ProcessingSettings.outline) } }
+    @Published var colorRebuildEnabled = true { didSet { ProcessingSettings.save(colorRebuildEnabled, ProcessingSettings.colorRebuild) } }
+    @Published var colorRebuildStrength = 0.45 { didSet { ProcessingSettings.save(colorRebuildStrength, ProcessingSettings.colorRebuildStrength) } }
+    @Published var outlineRebuildEnabled = true { didSet { ProcessingSettings.save(outlineRebuildEnabled, ProcessingSettings.outlineRebuild) } }
+    @Published var outlineRebuildStrength = 0.5 { didSet { ProcessingSettings.save(outlineRebuildStrength, ProcessingSettings.outlineRebuildStrength) } }
     @Published var watermarkRemovalEnabled = false
     @Published var watermarkModel: WatermarkModel = .lama
     @Published var watermarkRegions: [WatermarkRegion] = [] { didSet { saveSelectedMask() } }
     @Published var watermarkPaddingPixels = 1.0
-    @Published var colorPopEnabled = true
-    @Published var colorPopStrength = 1.0
+    @Published var animeRestoreEnabled = false { didSet { ProcessingSettings.save(animeRestoreEnabled, ProcessingSettings.animeRestore) } }
+    @Published var animeRestoreStrength = 0.8 { didSet { ProcessingSettings.save(animeRestoreStrength, ProcessingSettings.animeRestoreStrength) } }
+    @Published var animeRestoreQuality = AnimeRestoreQuality.auto.rawValue { didSet { ProcessingSettings.save(animeRestoreQuality, ProcessingSettings.animeRestoreQuality) } }
+    @Published private(set) var animeRestoreAutoNote = ""
+    private var animeRestoreShortSide = false
+    private var animeRestoreSuppressedURL: URL?
+    private var animeRestoreSuppressFromSavedBatch = false
+    private var animeRestoreDetectGeneration = 0
+    @Published var colorPopEnabled = true { didSet { ProcessingSettings.save(colorPopEnabled, ProcessingSettings.colorPop) } }
+    @Published var colorPopStrength = 1.0 { didSet { ProcessingSettings.save(colorPopStrength, ProcessingSettings.colorPopStrength) } }
     @Published var upscaleTo4K = true
     @Published var upscaleFirst = false
     @Published var computePreference = ModelComputePreference.current { didSet { computePreference.persist() } }
@@ -72,6 +87,8 @@ final class VideoProcessorViewModel: ObservableObject {
     @Published var preserveAudio = true
     @Published var redditMode = false
     @Published var videoToGIFEnabled = false
+    @Published var frameRateMode = "60"
+    var selectedTargetFPS: Double { frameRateMode == "off" ? 0 : (Double(frameRateMode) ?? 60) }
     @Published var renderPowerMode = true
     @Published var telemetry = PerformanceTelemetry()
     @Published var processingScreenAwake = false
@@ -79,7 +96,13 @@ final class VideoProcessorViewModel: ObservableObject {
     @Published var etaSeconds: Double? = nil
     @Published var recoveryAvailable = false
     @Published var recoveryStatusText = ""
+    @Published var brokenTileDiagnosticsEnabled = UserDefaults.standard.object(forKey: "RIFE60.brokenTileDiagnostics") as? Bool ?? true {
+        didSet { UserDefaults.standard.set(brokenTileDiagnosticsEnabled, forKey: "RIFE60.brokenTileDiagnostics") }
+    }
     @Published var diagnosticsCopyStatus = ""
+    @Published var showingDiagnosticsShare = false
+    @Published var diagnosticsShareItems: [URL] = []
+    @Published private(set) var liveDiagnosticDefects: [LiveDiagnosticDefect] = []
     @Published var exportFolderName = "On My iPhone > RIFE 60 Ghost Guard > Exports"
 
     @Published var mediaQueue: BatchMediaManifest?
@@ -110,24 +133,30 @@ final class VideoProcessorViewModel: ObservableObject {
     private var savedBrightness: CGFloat?
     private var savedIdleTimerDisabled: Bool?
     private var renderStartedAt: Date?
-    private var resumeBaseProgress: Double?
     private let exportFolderBookmarkKey = "RIFE60.ExportFolderBookmark.v1"
 
     init() {
+        BrokenTileDiagnostics.shared.setLiveDefectHandler { [weak self] defect in
+            guard let self else { return }
+            if self.liveDiagnosticDefects.contains(where: { $0.stage == defect.stage && $0.frame == defect.frame }) { return }
+            self.liveDiagnosticDefects.append(defect)
+            if self.liveDiagnosticDefects.count > 12 {
+                self.liveDiagnosticDefects.removeFirst(self.liveDiagnosticDefects.count - 12)
+            }
+        }
+        AnimeRestoreRegistry.installDefault()
+        restoreProcessingSettings()
         refreshExportFolderName()
         if let job = RecoveryStore.existingJob() {
-            // The toggles are greyed out while recovery data exists, so they MUST show the
-            // settings the interrupted job was started with. Previously they reset to defaults
-            // on relaunch, the configuration key no longer matched, and RecoveryStore wiped
-            // every checkpoint while the UI still claimed a resume was available.
-            applyRecoveredSettings(from: job.manifest.configurationKey)
+            applySavedBatchSettings(from: job.manifest.configurationKey)
             inputKind = .video
             inputURL = job.sourceURL
+            if animeRestoreSuppressFromSavedBatch { animeRestoreSuppressedURL = job.sourceURL }
             progress = job.manifest.progress
             recoveryAvailable = true
             recoveryStatusText = "Interrupted render recovered at \(String(format: "%.1f", job.manifest.progress * 100))% • \(job.manifest.lastMessage)"
             statusText = "Recovery ready"
-            DiagnosticsLogger.shared.log("App relaunched with unfinished recovery job at \(Int(job.manifest.progress * 100))%. Previous process may have been terminated or crashed.")
+            DiagnosticsLogger.shared.log("App relaunched with unfinished recovery job at \(Int(job.manifest.progress * 100))%.")
         } else {
             DiagnosticsLogger.shared.log("App launched.")
         }
@@ -235,41 +264,103 @@ final class VideoProcessorViewModel: ObservableObject {
 
     func cancelBenchmark() { benchmarkTask?.cancel() }
 
-    /// Pause is the only action that requests an incremental checkpoint.
-    /// The worker is cancelled immediately, but the active stage writer intercepts
-    /// that cancellation and finalizes its current encoded progress before returning.
-    func pause() {
-        guard isBusy else { return }
-        batchCancelRequested = true
-        isPaused = true
-        PauseCheckpointCoordinator.shared.request()
-        DiagnosticsLogger.shared.log("User paused render • requesting pause-only incremental stage checkpoint.")
-        currentTask?.cancel()
+    /// Generate a disposable settings preview from the opening frames without setting
+    /// isProcessing/isBatchProcessing, touching persistent render state, or locking render controls.
+    func generatePreview() {
+        if isPreviewing { cancelPreview(); return }
+        guard let source = inputURL, !isBusy, !isImporting, !isBenchmarking else { return }
+        clearPreviewFiles()
+        isPreviewing = true
+        previewStatus = "Preparing opening-frame preview…"
+        let isGIF = inputKind == .gif
+        let compression = compressionProtection
+        let outline = outlineProtection
+        let colorRebuild = colorRebuildEnabled
+        let colorStrength = colorRebuildStrength
+        let lineRebuild = outlineRebuildEnabled
+        let lineStrength = outlineRebuildStrength
+        let upscale = upscaleTo4K
+        let colorPop = colorPopEnabled
+        let gradeStrength = colorPopStrength
+        let watermark = WatermarkConfiguration(
+            enabled: effectiveWatermarkEnabled,
+            regions: watermarkRegions,
+            paddingPixels: Int(watermarkPaddingPixels),
+            model: watermarkModel
+        )
+        previewTask = Task { [weak self] in
+            let secured = source.startAccessingSecurityScopedResource()
+            defer { if secured { source.stopAccessingSecurityScopedResource() } }
+            do {
+                let urls = try await VideoPreviewProcessor.generate(
+                    sourceURL: source,
+                    isGIF: isGIF,
+                    compressionProtection: compression,
+                    outlineProtection: outline,
+                    upscale2x: upscale,
+                    colorPopEnabled: colorPop,
+                    colorPopStrength: gradeStrength,
+                    colorRebuild: colorRebuild,
+                    colorRebuildStrength: colorStrength,
+                    outlineRebuild: lineRebuild,
+                    outlineRebuildStrength: lineStrength,
+                    watermark: watermark
+                )
+                guard !Task.isCancelled, let self else {
+                    urls.forEach { try? FileManager.default.removeItem(at: $0) }
+                    return
+                }
+                self.previewURLs = urls
+                self.previewStatus = "Preview ready • \(urls.count) enhanced sample frames. Adjust settings and preview again; the full render has not started."
+                DiagnosticsLogger.shared.log("Settings preview complete • frames=\(urls.count) • source=\(source.lastPathComponent) • no render state changed")
+            } catch {
+                guard let self else { return }
+                self.previewStatus = Task.isCancelled ? "Preview cancelled" : "Preview failed • \(error.localizedDescription)"
+                if !Task.isCancelled { DiagnosticsLogger.shared.log("Settings preview failed • \(error.localizedDescription)") }
+            }
+            self?.isPreviewing = false
+            self?.previewTask = nil
+        }
+    }
+
+    func cancelPreview() {
+        previewTask?.cancel()
+        isPreviewing = false
+        previewStatus = "Cancelling preview…"
+    }
+
+    private func clearPreviewFiles() {
+        previewTask?.cancel()
+        let old = previewURLs
+        previewURLs = []
+        previewStatus = ""
+        old.forEach { try? FileManager.default.removeItem(at: $0) }
+        if let first = old.first {
+            try? FileManager.default.removeItem(at: first.deletingLastPathComponent())
+        }
     }
 
     func cancel() {
         batchCancelRequested = true
-        isPaused = false
-        PauseCheckpointCoordinator.shared.clear()
-        DiagnosticsLogger.shared.log("User cancelled render • no incremental checkpoint requested.")
+        DiagnosticsLogger.shared.log("User cancelled render.")
         currentTask?.cancel()
     }
-    func clearRecoveryData() {
+    func clearMediaQueue() {
         guard !isBusy else { return }
-        do { try batchStore.discard(); mediaQueue = nil; selectedMediaID = nil; batchStatusText = "" }
+        do { try batchStore.discard() }
         catch { errorText = error.localizedDescription; return }
-        DiagnosticsLogger.shared.log("User chose Clear Recovery Data. Discarding recovery source and all checkpoints.")
-        RecoveryStore.discardCurrent()
-        recoveryAvailable = false
-        recoveryStatusText = ""
+        mediaQueue = nil
+        selectedMediaID = nil
+        batchStatusText = ""
         inputURL = nil
+        scheduleAnimeRestoreDetection()
         outputURL = nil
         progress = 0
         restorationProgress = 0
         upscaleProgress = 0
         elapsedSeconds = 0
         etaSeconds = nil
-        statusText = "Recovery data cleared • select a new video"
+        statusText = "Media queue cleared • select a new video"
         errorText = nil
         saveStatusText = ""
         telemetry = PerformanceTelemetry()
@@ -284,21 +375,44 @@ final class VideoProcessorViewModel: ObservableObject {
         Progress: \(String(format: "%.2f", progress * 100))%
         Status: \(statusText)
         Last error: \(errorText ?? "none")
-        Recovery available: \(recoveryAvailable)
-        Recovery status: \(recoveryStatusText)
         Export folder: \(exportFolderName)
         Thermal: \(telemetry.thermalState)
         Performance tier: \(telemetry.performanceMode)
-        Memory headroom: \(String(format: "%.0f", telemetry.availableMemoryMB)) MB
+        Memory headroom: \(String(format: "%.0f", telemetry.effectiveMemoryMB)) MB effective (\(String(format: "%.0f", telemetry.availableMemoryMB)) MB raw)
         Physical memory: \(String(format: "%.0f", telemetry.physicalMemoryMB)) MB
         Source frames: \(telemetry.sourceFrames)
         Generated frames: \(telemetry.generatedFrames)
         Upscaled frames: \(telemetry.upscaledFrames)
         RIFE gen fps: \(String(format: "%.3f", telemetry.generatedFPS))
-        Real-CUGAN fps: \(String(format: "%.3f", telemetry.upscaleFPS))
+        Real-CUGAN fps (wall-clock): \(String(format: "%.3f", telemetry.upscaleFPS))
+        CUGAN breakdown: wait_in \(String(format: "%.1f", telemetry.cuganWaitInMs)) ms, wait_compute \(String(format: "%.1f", telemetry.cuganWaitComputeMs)) ms, predict \(String(format: "%.1f", telemetry.cuganPredictMs)) ms (\(telemetry.cuganTiles) tiles, \(telemetry.cuganConcurrency) concurrent), stitch \(String(format: "%.1f", telemetry.cuganStitchMs)) ms, wall \(String(format: "%.1f", telemetry.cuganWallMs)) ms
         """
         UIPasteboard.general.string = report
         diagnosticsCopyStatus = "Error logs copied to clipboard"
+    }
+
+    func clearErrorLogs() {
+        DiagnosticsLogger.shared.clear()
+        diagnosticsCopyStatus = "Error log cleared"
+    }
+
+    func shareDiagnostics() {
+        let items = DiagnosticsExport.shareItems()
+        guard !items.isEmpty else {
+            diagnosticsCopyStatus = "No Documents/Diagnostics/run-*.json yet"
+            return
+        }
+        diagnosticsShareItems = items
+        showingDiagnosticsShare = true
+    }
+
+    func copyDiagnosticsJSON() {
+        guard let text = DiagnosticsExport.newestJSONText() else {
+            diagnosticsCopyStatus = "No Documents/Diagnostics/run-*.json yet"
+            return
+        }
+        UIPasteboard.general.string = text
+        diagnosticsCopyStatus = "Newest diagnostics JSON copied"
     }
 
     func wakeProcessingScreen() {
@@ -348,12 +462,9 @@ final class VideoProcessorViewModel: ObservableObject {
 
         let resumingExistingJob = recoveryAvailable
         let generation = UUID(); renderGeneration = generation
-        PauseCheckpointCoordinator.shared.clear()
-        resumeBaseProgress = nil
         isProcessing = true
-        isPaused = false
         processingScreenAwake = false
-        if !recoveryAvailable {
+        if !resumingExistingJob {
             progress = 0
             restorationProgress = 0
             upscaleProgress = 0
@@ -363,24 +474,37 @@ final class VideoProcessorViewModel: ObservableObject {
         errorText = nil
         saveStatusText = ""
         diagnosticsCopyStatus = ""
+        liveDiagnosticDefects.removeAll()
         elapsedSeconds = 0
         etaSeconds = nil
         renderStartedAt = Date()
-        statusText = recoveryAvailable ? "Validating crash-recovery checkpoints…" : "Creating crash-safe source checkpoint…"
+        statusText = resumingExistingJob ? "Validating crash-recovery checkpoints…" : "Creating crash-safe source checkpoint…"
         if renderPowerMode { applyRenderPowerMode() }
 
         let guardEnabled = ghostProtection
         let cuts = sceneCutProtection
         let compressionEnabled = compressionProtection
         let outlineEnabled = outlineProtection
+        let colorRebuild = colorRebuildEnabled
+        let colorStrength = colorRebuildStrength
+        let lineRebuild = outlineRebuildEnabled
+        let lineStrength = outlineRebuildStrength
+        let animeRestoreUser = animeRestoreEnabled
+        let animeRestoreUserStrength = animeRestoreStrength
+        let animeRestoreSuppress = animeRestoreSuppressedURL == selectedSource
+        let animeRestoreQualityChoice = animeRestoreQuality
         let sensitivity = ghostSensitivity
         let colorPop = colorPopEnabled
         let gradeStrength = colorPopStrength
+        let warmthMode = AutoWarmthCorrectionMode.current.rawValue
+        let skinToneMode = ColorPopSkinToneMode.current.rawValue
         let audio = preserveAudio
         let upscale = upscaleTo4K
         let upscaleBeforeRIFE = upscaleFirst && upscale
         let modelCompute = computePreference.rawValue
-        let configKey = ["pipeline-v6-deepcream-model", "hq", "ghost=\(guardEnabled)", "cuts=\(cuts)", "compression=\(compressionEnabled)", "outline=\(outlineEnabled)", "colorpop=\(colorPop)", "colorpopStrength=\(gradeStrength)", "watermark=\(watermark.enabled)", "watermarkMasks=\(watermark.serializedRegions)", "watermarkPadding=\(watermark.paddingPixels)", "watermarkModel=\(watermark.model.rawValue)", String(format: "sensitivity=%.2f", sensitivity), "audio=\(audio)", "reddit=\(redditMode)", "videoToGIF=\(videoToGIFEnabled)", "upscale=\(upscale)", "upscaleFirst=\(upscaleBeforeRIFE)", "computeUnits=\(modelCompute)", "fps=60"].joined(separator: "|")
+        let tileDiagnostics = brokenTileDiagnosticsEnabled
+        let selectedTargetFPS = self.selectedTargetFPS
+        let configKey = ["pipeline-v7-rebuild", "hq", "ghost=\(guardEnabled)", "cuts=\(cuts)", "compression=\(compressionEnabled)", "outline=\(outlineEnabled)", "colorRebuild=\(colorRebuild)", String(format: "colorRebuildStrength=%.2f", colorStrength), "outlineRebuild=\(lineRebuild)", String(format: "outlineRebuildStrength=%.2f", lineStrength), "animeRestore=\(animeRestoreUser)", String(format: "animeRestoreStrength=%.2f", animeRestoreUserStrength), "animeRestoreSuppressAuto=\(animeRestoreSuppress)", "animeRestoreQuality=\(animeRestoreQualityChoice)", "colorpop=\(colorPop)", "colorpopStrength=\(gradeStrength)", "warmthMode=\(warmthMode)", "skinToneMode=\(skinToneMode)", "watermark=\(watermark.enabled)", "watermarkMasks=\(watermark.serializedRegions)", "watermarkPadding=\(watermark.paddingPixels)", "watermarkModel=\(watermark.model.rawValue)", String(format: "sensitivity=%.2f", sensitivity), "audio=\(audio)", "reddit=\(redditMode)", "videoToGIF=\(videoToGIFEnabled)", "upscale=\(upscale)", "upscaleFirst=\(upscaleBeforeRIFE)", "computeUnits=\(modelCompute)", "tileDiagnostics=\(tileDiagnostics)", "fps=60"].joined(separator: "|")
         DiagnosticsLogger.shared.log("Render requested • \(configKey)")
 
         currentTask = Task.detached(priority: .userInitiated) { [weak self] in
@@ -418,49 +542,43 @@ final class VideoProcessorViewModel: ObservableObject {
                 RecoveryStore.update(progress: job.manifest.progress, message: "Recovery source secured", force: true)
                 guard let self else { return }
                 if resumingExistingJob && !job.resumed {
-                    // Be honest: the saved checkpoints could not be matched to this run, so nothing is reused.
-                    DiagnosticsLogger.shared.log("Recovery data did not match this pipeline/configuration; starting from the beginning.")
+                    DiagnosticsLogger.shared.log("Recovery data did not match the selected source or processing settings; starting a fresh render.")
                     await MainActor.run {
                         self.progress = 0
                         self.restorationProgress = 0
                         self.upscaleProgress = 0
-                        self.statusText = "Saved checkpoints came from a different configuration • starting fresh"
+                        self.statusText = "Saved checkpoints did not match this render • starting fresh"
                     }
                 }
-
-                let result: URL
-                if let deliveryReady = self.existingDeliveryCheckpoint(in: job.directory) {
-                    DiagnosticsLogger.shared.log("Recovery: reused delivery-ready checkpoint; skipping all render and mux stages.")
-                    RecoveryStore.update(progress: 0.995, message: "Recovered delivery-ready checkpoint • retrying Files export only", force: true)
-                    await MainActor.run {
-                        self.progress = 0.995
-                        self.statusText = "Recovered finished video • retrying Files export only…"
-                        self.etaSeconds = nil
-                    }
-                    result = deliveryReady
-                } else {
-                    let config = ProcessorConfiguration(quality: .hq, ghostProtection: guardEnabled, sceneCutProtection: cuts, compressionProtection: compressionEnabled, outlineProtection: outlineEnabled, ghostSensitivity: sensitivity, preserveAudio: audio, targetFPS: 60)
-                    let processor = TwoPassVideoProcessor(configuration: config, upscaleTo4K: upscale, colorPopEnabled: colorPop, colorPopStrength: gradeStrength, watermark: watermark, upscaleFirst: upscaleBeforeRIFE)
-                    let generated = try await processor.process(sourceURL: job.sourceURL, recoveryDirectory: job.directory, progress: { p, message in
-                        RecoveryStore.update(progress: p, message: message)
-                        Task { @MainActor [weak self] in
-                            guard let self, self.renderGeneration == generation, self.isProcessing else { return }
-                            self.progress = p
-                            self.recoveryAvailable = true
-                            self.recoveryStatusText = "Crash-safe checkpoints active • \(String(format: "%.1f", p * 100))%"
-                            if message.contains("Pass 1/3") { self.restorationProgress = min(max(p / 0.18, 0), 1) } else if p >= 0.19 { self.restorationProgress = 1 }
-                            if p >= 0.56 { self.upscaleProgress = min(max((p - 0.56) / 0.41, 0), 1) }
-                            self.statusText = message
-                            self.updateClock(progress: p)
-                        }
-                    }, telemetry: { sample in Task { @MainActor [weak self] in
+                var config = ProcessorConfiguration(quality: .hq, ghostProtection: guardEnabled, sceneCutProtection: cuts, compressionProtection: compressionEnabled, outlineProtection: outlineEnabled, ghostSensitivity: sensitivity, preserveAudio: audio, targetFPS: 60)
+                config.colorRebuild = colorRebuild
+                config.colorRebuildStrength = colorStrength
+                config.outlineRebuild = lineRebuild
+                config.outlineRebuildStrength = lineStrength
+                config.animeRestoreUserEnabled = animeRestoreUser
+                config.animeRestoreSuppressAuto = animeRestoreSuppress
+                config.animeRestoreStrength = animeRestoreUserStrength
+                config.animeRestoreQuality = animeRestoreQualityChoice
+                config.brokenTileDiagnosticsEnabled = tileDiagnostics
+                let processor = TwoPassVideoProcessor(configuration: config, upscaleTo4K: upscale, colorPopEnabled: colorPop, colorPopStrength: gradeStrength, watermark: watermark, upscaleFirst: upscaleBeforeRIFE)
+                let result = try await processor.process(sourceURL: job.sourceURL, recoveryDirectory: job.directory, progress: { p, message in
+                    RecoveryStore.update(progress: p, message: message)
+                    Task { @MainActor [weak self] in
                         guard let self, self.renderGeneration == generation, self.isProcessing else { return }
-                        self.telemetry = sample
-                    } })
-                    try Task.checkCancellation()
-                    result = try self.persistDeliveryCheckpoint(from: generated, in: job.directory)
-                    RecoveryStore.update(progress: 0.97, message: "High-quality master checkpointed • ready for final size/export", force: true)
-                }
+                        self.progress = p
+                        if message.contains("Pass 1/3") { self.restorationProgress = min(max(p / 0.18, 0), 1) } else if p >= 0.19 { self.restorationProgress = 1 }
+                        if p >= 0.56 { self.upscaleProgress = min(max((p - 0.56) / 0.41, 0), 1) }
+                        self.statusText = message
+                        self.recoveryAvailable = true
+                        self.recoveryStatusText = "Crash-safe checkpoints active • \(String(format: "%.1f", p * 100))%"
+                        self.updateClock(progress: p)
+                    }
+                }, telemetry: { sample in Task { @MainActor [weak self] in
+                    guard let self, self.renderGeneration == generation, self.isProcessing else { return }
+                    self.telemetry = sample
+                } })
+                BrokenTileDiagnostics.shared.finishRun()
+                try Task.checkCancellation()
 
                 await MainActor.run {
                     self.statusText = "Checking final file size…"
@@ -468,25 +586,29 @@ final class VideoProcessorViewModel: ObservableObject {
                     self.etaSeconds = nil
                 }
                 let saved = try await self.saveFinishedVideo(result)
+                RecoveryStore.finishAndClean()
                 if inputWasGIF {
                     // The bridge is only an internal processing source. The final user-facing
                     // asset is the GIF produced from the fully processed video master.
                     try? FileManager.default.removeItem(at: processingSource)
                 }
-                RecoveryStore.finishAndClean()
                 await MainActor.run { [weak self] in
                     guard let self else { return }
                     self.outputURL = saved.url
                     self.saveStatusText = saved.message
                     self.progress = 1; self.restorationProgress = 1; self.upscaleProgress = upscale ? 1 : 0
                     self.updateClock(progress: 1); self.etaSeconds = 0; self.statusText = "Finished"
-                    self.recoveryAvailable = false; self.recoveryStatusText = ""; self.isProcessing = false; self.currentTask = nil; self.currentJobForcesGIF = false
+                    self.recoveryAvailable = false
+                    self.recoveryStatusText = ""
+                    self.isProcessing = false; self.currentTask = nil; self.currentJobForcesGIF = false
                     self.blackScreenTask?.cancel(); self.processingScreenAwake = true; self.restoreDisplayState()
                 }
             } catch is CancellationError {
+                BrokenTileDiagnostics.shared.finishRun()
                 RecoveryStore.markCancelled()
-                await MainActor.run { [weak self] in guard let self else { return }; self.statusText = self.isPaused ? "Paused • stage progress checkpoint saved" : "Cancelled • checkpoints kept"; self.recoveryAvailable = true; self.recoveryStatusText = self.isPaused ? "Resume available from the saved point in the interrupted stage" : "Resume available from the last completed checkpoint"; self.isProcessing = false; self.currentTask = nil; self.blackScreenTask?.cancel(); self.processingScreenAwake = true; self.restoreDisplayState() }
+                await MainActor.run { [weak self] in guard let self else { return }; self.statusText = "Cancelled • checkpoints kept"; self.recoveryAvailable = true; self.recoveryStatusText = "Resume available from the last completed checkpoint"; self.isProcessing = false; self.currentTask = nil; self.blackScreenTask?.cancel(); self.processingScreenAwake = true; self.restoreDisplayState() }
             } catch {
+                BrokenTileDiagnostics.shared.finishRun()
                 RecoveryStore.markFailed(error)
                 await MainActor.run { [weak self] in guard let self else { return }; self.errorText = error.localizedDescription; self.statusText = "Failed • recovery data kept"; self.recoveryAvailable = RecoveryStore.existingJob() != nil; self.recoveryStatusText = self.recoveryAvailable ? "Resume available from the last completed checkpoint" : ""; self.isProcessing = false; self.currentTask = nil; self.blackScreenTask?.cancel(); self.processingScreenAwake = true; self.restoreDisplayState() }
             }
@@ -494,12 +616,16 @@ final class VideoProcessorViewModel: ObservableObject {
         return currentTask
     }
 
-    private func applyRecoveredSettings(from key: String) {
+    private func applySavedBatchSettings(from key: String) {
         // Build 162 manifests predate Color Pop; missing fields mean the original look.
         upscaleFirst = false
         computePreference = .auto
         colorPopEnabled = false
         colorPopStrength = 0.5
+        colorRebuildEnabled = false
+        colorRebuildStrength = 0.45
+        outlineRebuildEnabled = false
+        outlineRebuildStrength = 0.5
         watermarkRemovalEnabled = false
         watermarkRegions = []
         watermarkPaddingPixels = 3
@@ -512,8 +638,23 @@ final class VideoProcessorViewModel: ObservableObject {
             case "cuts": sceneCutProtection = enabled
             case "compression": compressionProtection = enabled
             case "outline": outlineProtection = enabled
+            case "colorRebuild": colorRebuildEnabled = enabled
+            case "colorRebuildStrength":
+                if let value = Double(pair[1]), value.isFinite { colorRebuildStrength = min(max(value, 0.1), 1) }
+            case "outlineRebuild": outlineRebuildEnabled = enabled
+            case "outlineRebuildStrength":
+                if let value = Double(pair[1]), value.isFinite { outlineRebuildStrength = min(max(value, 0.1), 1) }
+            case "animeRestore": animeRestoreEnabled = enabled
+            case "animeRestoreStrength":
+                if let value = Double(pair[1]), value.isFinite { animeRestoreStrength = min(max(value, 0.1), 1) }
+            case "animeRestoreSuppressAuto":
+                animeRestoreSuppressFromSavedBatch = enabled
+            case "warmthMode": UserDefaults.standard.set(pair[1], forKey: "automaticWarmthCorrectionMode")
+            case "skinToneMode": UserDefaults.standard.set(pair[1], forKey: "colorPopSkinToneCorrectionMode")
+            case "animeRestoreQuality": animeRestoreQuality = pair[1]
             case "watermark": watermarkRemovalEnabled = enabled
             case "watermarkMasks": watermarkRegions = WatermarkConfiguration.decodeRegions(pair[1])
+            case "watermarkModel": watermarkModel = WatermarkModel(rawValue: pair[1]) ?? .lama
             case "watermarkPadding":
                 if let value = Double(pair[1]), value.isFinite { watermarkPaddingPixels = min(max(value.rounded(), 0), 16) }
             case "colorpop": colorPopEnabled = enabled
@@ -525,6 +666,7 @@ final class VideoProcessorViewModel: ObservableObject {
             case "upscaleFirst": upscaleFirst = enabled
             case "computeUnits": computePreference = ModelComputePreference(rawValue: pair[1]) ?? .auto
             case "upscale": upscaleTo4K = enabled
+            case "fps": frameRateMode = pair[1]
             case "sensitivity": if let value = Double(pair[1]), value.isFinite { ghostSensitivity = min(max(value, 0.65), 1.35) }
             default: break
             }
@@ -538,7 +680,6 @@ final class VideoProcessorViewModel: ObservableObject {
     private func startImage(source: URL) async -> Task<Void, Never>? {
         let generation = UUID(); renderGeneration = generation
         isProcessing = true
-        isPaused = false
         processingScreenAwake = false
         progress = 0
         restorationProgress = 0
@@ -550,13 +691,16 @@ final class VideoProcessorViewModel: ObservableObject {
         diagnosticsCopyStatus = ""
         elapsedSeconds = 0
         etaSeconds = nil
-        resumeBaseProgress = nil
         renderStartedAt = Date()
         statusText = "Preparing image…"
         if renderPowerMode { applyRenderPowerMode() }
 
         let compressionEnabled = compressionProtection
         let outlineEnabled = outlineProtection
+        let colorRebuild = colorRebuildEnabled
+        let colorStrength = colorRebuildStrength
+        let lineRebuild = outlineRebuildEnabled
+        let lineStrength = outlineRebuildStrength
         let upscale = upscaleTo4K
         let colorPop = colorPopEnabled
         let gradeStrength = colorPopStrength
@@ -567,7 +711,7 @@ final class VideoProcessorViewModel: ObservableObject {
             do {
                 let secured = source.startAccessingSecurityScopedResource()
                 defer { if secured { source.stopAccessingSecurityScopedResource() } }
-                let processor = ImageStillProcessor(compressionProtection: compressionEnabled, outlineProtection: outlineEnabled, upscale2x: upscale, colorPopEnabled: colorPop, colorPopStrength: gradeStrength, watermark: watermark)
+                let processor = ImageStillProcessor(compressionProtection: compressionEnabled, outlineProtection: outlineEnabled, upscale2x: upscale, colorPopEnabled: colorPop, colorPopStrength: gradeStrength, colorRebuild: colorRebuild, colorRebuildStrength: colorStrength, outlineRebuild: lineRebuild, outlineRebuildStrength: lineStrength, watermark: watermark)
                 let generated = try await processor.process(sourceURL: source, progress: { p, message in
                     Task { @MainActor [weak self] in
                         guard let self, self.isProcessing, self.renderGeneration == generation else { return }
@@ -676,10 +820,7 @@ final class VideoProcessorViewModel: ObservableObject {
         guard let renderStartedAt else { return }
         let elapsed = Date().timeIntervalSince(renderStartedAt)
         elapsedSeconds = elapsed
-        // After a resume the first reported progress is the recovered stage, not zero, so the
-        // ETA must be based on progress made during THIS run or it would read near zero.
-        if resumeBaseProgress == nil { resumeBaseProgress = progress }
-        let done = progress - (resumeBaseProgress ?? 0)
+        let done = progress
         if done > 0.025 && progress < 0.97 {
             let raw = elapsed * (1.0 - progress) / done
             etaSeconds = etaSeconds.map { $0 > 0 ? $0 * 0.72 + raw * 0.28 : raw } ?? raw
@@ -739,7 +880,6 @@ final class VideoProcessorViewModel: ObservableObject {
 
         statusText = optimized.optimized ? "Final compression complete • saving to Files…" : "Master already under 1 GB • saving to Files…"
         progress = 0.995
-        RecoveryStore.update(progress: 0.995, message: "Saving finished result to Files", force: true)
 
         let saved = try await saveToFiles(optimized.url)
         let bytes = saved.bytes
@@ -877,6 +1017,7 @@ final class VideoProcessorViewModel: ObservableObject {
                     try await validateFinishedVideo(persisted)
                     let attrs = try FileManager.default.attributesOfItem(atPath: persisted.path)
                     let bytes = (attrs[.size] as? NSNumber)?.int64Value ?? 0
+                    LastCompletedVideoStore.recordCompletedVideo(persisted)
                     return (persisted, "Files > \(folder.lastPathComponent) > \(persisted.lastPathComponent)", bytes)
                 } catch {
                     DiagnosticsLogger.shared.log("Selected Files folder write/validation failed while security scope was active: \(error.localizedDescription). Falling back to app Exports folder.")
@@ -895,6 +1036,7 @@ final class VideoProcessorViewModel: ObservableObject {
         try await validateFinishedVideo(destination)
         let attrs = try FileManager.default.attributesOfItem(atPath: destination.path)
         let bytes = (attrs[.size] as? NSNumber)?.int64Value ?? 0
+        LastCompletedVideoStore.recordCompletedVideo(destination)
         return (destination, "On My iPhone > RIFE 60 Ghost Guard > Exports > \(destination.lastPathComponent)", bytes)
     }
 
@@ -941,38 +1083,6 @@ final class VideoProcessorViewModel: ObservableObject {
         return candidate
     }
 
-    nonisolated private func persistDeliveryCheckpoint(from source: URL, in recoveryDirectory: URL) throws -> URL {
-        let fm = FileManager.default
-        for candidate in deliveryCheckpointCandidates(in: recoveryDirectory) { try? fm.removeItem(at: candidate) }
-        let ext = source.pathExtension.isEmpty ? "mp4" : source.pathExtension.lowercased()
-        let destination = recoveryDirectory.appendingPathComponent("checkpoint-delivery-ready.\(ext)")
-        do {
-            try fm.moveItem(at: source, to: destination)
-            DiagnosticsLogger.shared.log("Delivery-ready checkpoint persisted by move • future export retries skip render and mux")
-        } catch {
-            DiagnosticsLogger.shared.log("Delivery checkpoint move unavailable • falling back to copy: \(error.localizedDescription)")
-            try fm.copyItem(at: source, to: destination)
-        }
-        return destination
-    }
-
-    nonisolated private func existingDeliveryCheckpoint(in recoveryDirectory: URL) -> URL? {
-        let fm = FileManager.default
-        for candidate in deliveryCheckpointCandidates(in: recoveryDirectory) {
-            if fm.fileExists(atPath: candidate.path),
-               let attrs = try? fm.attributesOfItem(atPath: candidate.path),
-               let size = attrs[.size] as? NSNumber,
-               size.int64Value > 1_000_000 {
-                return candidate
-            }
-        }
-        return nil
-    }
-
-    nonisolated private func deliveryCheckpointCandidates(in recoveryDirectory: URL) -> [URL] {
-        ["mp4", "mov", "m4v"].map { recoveryDirectory.appendingPathComponent("checkpoint-delivery-ready.\($0)") }
-    }
-
     private func resolveSelectedExportFolder() -> URL? {
         guard let data = UserDefaults.standard.data(forKey: exportFolderBookmarkKey) else { return nil }
         var stale = false
@@ -1001,7 +1111,7 @@ final class VideoProcessorViewModel: ObservableObject {
         do {
             guard let queue = try batchStore.load() else { return }
             mediaQueue = queue
-            if let settings = queue.settingsKey { applyRecoveredSettings(from: settings) }
+            if let settings = queue.settingsKey { applySavedBatchSettings(from: settings) }
             if let id = queue.nextItemID ?? queue.items.last?.id {
                 activateQueueItem(id)
                 if queue.nextItemID != nil {
@@ -1024,8 +1134,6 @@ final class VideoProcessorViewModel: ObservableObject {
         do { try store.save(staged) }
         catch { store.removeInputs(staged); throw error }
         if let old = mediaQueue { store.removeInputs(old) }
-        RecoveryStore.discardCurrent()
-        recoveryAvailable = false; recoveryStatusText = ""
         mediaQueue = staged
         errorText = nil; saveStatusText = ""; outputURL = nil
         if let first = staged.items.first { activateQueueItem(first.id) }
@@ -1040,16 +1148,13 @@ final class VideoProcessorViewModel: ObservableObject {
         selectedMediaID = id
         inputKind = item.kind
         inputURL = batchStore.sourceURL(for: item, in: queue)
+        scheduleAnimeRestoreDetection()
         watermarkRegions = item.masks
         loadingQueueSelection = false
-        if recoveryAvailable, id == queue.nextItemID, let job = RecoveryStore.existingJob() {
-            inputURL = job.sourceURL
-            progress = job.manifest.progress
-            if item.kind == .gif {
-                inputKind = .video
-                videoToGIFEnabled = true
-            }
-        } else { progress = item.state == .completed ? 1 : 0 }
+        if item.kind == .gif {
+            videoToGIFEnabled = true
+        }
+        progress = item.state == .completed ? 1 : 0
         outputURL = item.outputURL
     }
 
@@ -1091,10 +1196,10 @@ final class VideoProcessorViewModel: ObservableObject {
         catch { errorText = error.localizedDescription }
     }
 
-    func clearMediaQueue() { clearRecoveryData() }
 
     func start() async {
         guard !isBusy, !isBenchmarking, !isImporting else { return }
+        if isPreviewing { cancelPreview() }
         guard var queue = mediaQueue else { _ = await startSingle(); return }
         guard queue.nextItemID != nil else { return }
         if watermarkRemovalEnabled {
@@ -1133,15 +1238,15 @@ final class VideoProcessorViewModel: ObservableObject {
                     updated.items[index].state = self.batchCancelRequested ? .pending : .failed
                     try self.batchStore.save(updated); self.mediaQueue = updated
                     if self.batchCancelRequested { throw CancellationError() }
-                    throw ProcessorError.conversionFailed(self.errorText ?? "The media item did not finish; the queue has been paused")
+                    throw ProcessorError.conversionFailed(self.errorText ?? "The media item did not finish; the the media item did not finish; the queue stopped")
                 }
             }
             batchStatusText = "Batch complete • \(queue.items.count) saved"
             statusText = "Finished"
         } catch is CancellationError {
-            batchStatusText = "Queue paused • completed outputs saved; remaining items retained"
+            batchStatusText = "Queue stopped • completed outputs saved; remaining items retained"
         } catch {
-            batchStatusText = "Queue paused at this item • remaining items retained"
+            batchStatusText = "Queue stopped at this item • remaining items retained"
             errorText = error.localizedDescription
         }
     }
@@ -1150,11 +1255,112 @@ final class VideoProcessorViewModel: ObservableObject {
         let guardEnabled = ghostProtection, cuts = sceneCutProtection
         let compressionEnabled = compressionProtection, outlineEnabled = outlineProtection
         let colorPop = colorPopEnabled, gradeStrength = colorPopStrength
+        let warmthMode = AutoWarmthCorrectionMode.current.rawValue
+        let skinToneMode = ColorPopSkinToneMode.current.rawValue
         let sensitivity = ghostSensitivity, audio = preserveAudio, upscale = upscaleTo4K
         let upscaleBeforeRIFE = upscaleFirst && upscale, modelCompute = computePreference.rawValue
         let watermark = WatermarkConfiguration(enabled: watermarkRemovalEnabled, regions: watermarkRegions, paddingPixels: Int(watermarkPaddingPixels), model: watermarkModel)
-        return ["pipeline-v5-colorpop", "hq", "ghost=\(guardEnabled)", "cuts=\(cuts)", "compression=\(compressionEnabled)", "outline=\(outlineEnabled)", "colorpop=\(colorPop)", "colorpopStrength=\(gradeStrength)", "watermark=\(watermark.enabled)", "watermarkMasks=\(watermark.serializedRegions)", "watermarkPadding=\(watermark.paddingPixels)", "watermarkModel=\(WatermarkConfiguration.modelID)", String(format: "sensitivity=%.2f", sensitivity), "audio=\(audio)", "reddit=\(redditMode)", "videoToGIF=\(videoToGIFEnabled)", "upscale=\(upscale)", "upscaleFirst=\(upscaleBeforeRIFE)", "computeUnits=\(modelCompute)", "fps=60"].joined(separator: "|")
+        return ["pipeline-v5-colorpop", "hq", "ghost=\(guardEnabled)", "cuts=\(cuts)", "compression=\(compressionEnabled)", "outline=\(outlineEnabled)", "animeRestore=\(animeRestoreEnabled)", String(format: "animeRestoreStrength=%.2f", animeRestoreStrength), "animeRestoreQuality=\(animeRestoreQuality)", "colorpop=\(colorPop)", "colorpopStrength=\(gradeStrength)", "warmthMode=\(warmthMode)", "skinToneMode=\(skinToneMode)", "watermark=\(watermark.enabled)", "watermarkMasks=\(watermark.serializedRegions)", "watermarkPadding=\(watermark.paddingPixels)", "watermarkModel=\(WatermarkConfiguration.modelID)", String(format: "sensitivity=%.2f", sensitivity), "audio=\(audio)", "reddit=\(redditMode)", "videoToGIF=\(videoToGIFEnabled)", "upscale=\(upscale)", "upscaleFirst=\(upscaleBeforeRIFE)", "computeUnits=\(modelCompute)", "fps=60"].joined(separator: "|")
     }
 
+    private func restoreProcessingSettings() {
+        compressionProtection = ProcessingSettings.loadBool(ProcessingSettings.compression, default: true)
+        outlineProtection = ProcessingSettings.loadBool(ProcessingSettings.outline, default: true)
+        colorRebuildEnabled = ProcessingSettings.loadBool(ProcessingSettings.colorRebuild, default: true)
+        colorRebuildStrength = ProcessingSettings.loadDouble(ProcessingSettings.colorRebuildStrength, default: 0.45, range: 0.1...1)
+        outlineRebuildEnabled = ProcessingSettings.loadBool(ProcessingSettings.outlineRebuild, default: true)
+        outlineRebuildStrength = ProcessingSettings.loadDouble(ProcessingSettings.outlineRebuildStrength, default: 0.5, range: 0.1...1)
+        colorPopEnabled = ProcessingSettings.loadBool(ProcessingSettings.colorPop, default: true)
+        colorPopStrength = ProcessingSettings.loadDouble(ProcessingSettings.colorPopStrength, default: 1, range: 0.1...1)
+        animeRestoreEnabled = ProcessingSettings.loadBool(ProcessingSettings.animeRestore, default: false)
+        animeRestoreStrength = ProcessingSettings.loadDouble(ProcessingSettings.animeRestoreStrength, default: 0.8, range: 0.1...1)
+        animeRestoreQuality = ProcessingSettings.loadString(ProcessingSettings.animeRestoreQuality, default: AnimeRestoreQuality.auto.rawValue)
+    }
+
+    var animeRestoreShown: Bool {
+        if animeRestoreEnabled { return true }
+        return animeRestoreShortSide && animeRestoreSuppressedURL != inputURL
+    }
+
+    func setAnimeRestoreShown(_ enabled: Bool) {
+        if enabled {
+            animeRestoreEnabled = true
+            animeRestoreSuppressedURL = nil
+        } else {
+            animeRestoreEnabled = false
+            if animeRestoreShortSide { animeRestoreSuppressedURL = inputURL }
+        }
+        publishAnimeRestoreNote()
+    }
+
+    private func scheduleAnimeRestoreDetection() {
+        animeRestoreDetectGeneration += 1
+        let generation = animeRestoreDetectGeneration
+        if let suppressed = animeRestoreSuppressedURL, suppressed != inputURL {
+            animeRestoreSuppressedURL = nil
+        }
+        animeRestoreShortSide = false
+        publishAnimeRestoreNote()
+        guard let url = inputURL else { return }
+        Task.detached(priority: .utility) { [weak self] in
+            let asset = AVURLAsset(url: url)
+            let size = try? await asset.loadTracks(withMediaType: .video).first?.load(.naturalSize)
+            let width = Int(abs(size?.width ?? 0).rounded())
+            let height = Int(abs(size?.height ?? 0).rounded())
+            await MainActor.run { [weak self] in
+                guard let self, generation == self.animeRestoreDetectGeneration, self.inputURL == url else { return }
+                self.animeRestoreShortSide = AnimeRestorePolicy.shortSideQualifies(width: width, height: height)
+                let decision = AnimeRestorePolicy.decide(
+                    width: width,
+                    height: height,
+                    persistedEnabled: self.animeRestoreEnabled,
+                    suppressAutoForThisSource: self.animeRestoreSuppressedURL == url,
+                    modelRegistered: AnimeRestoreRegistry.isRegistered
+                )
+                let line = "Anime Restore detection • \(width)x\(height) • shortSide=\(min(width, height)) • \(decision.reason)"
+                DiagnosticsLogger.shared.log(line)
+                CrashCapture.step(line)
+                self.publishAnimeRestoreNote()
+            }
+        }
+    }
+
+    private func publishAnimeRestoreNote() {
+        let automatic = !animeRestoreEnabled && animeRestoreShortSide && animeRestoreSuppressedURL != inputURL
+        animeRestoreAutoNote = automatic ? "Auto-enabled for 720p source" : ""
+    }
+
+}
+
+private enum ProcessingSettings {
+    static let compression = "RIFE60.processing.compressionProtection"
+    static let outline = "RIFE60.processing.outlineProtection"
+    static let colorRebuild = "RIFE60.processing.colorRebuildEnabled"
+    static let colorRebuildStrength = "RIFE60.processing.colorRebuildStrength"
+    static let outlineRebuild = "RIFE60.processing.outlineRebuildEnabled"
+    static let outlineRebuildStrength = "RIFE60.processing.outlineRebuildStrength"
+    static let colorPop = "RIFE60.processing.colorPopEnabled"
+    static let colorPopStrength = "RIFE60.processing.colorPopStrength"
+    static let animeRestore = "RIFE60.processing.animeRestoreEnabled"
+    static let animeRestoreStrength = "RIFE60.processing.animeRestoreStrength"
+    static let animeRestoreQuality = "RIFE60.processing.animeRestoreQuality"
+
+    static func loadBool(_ key: String, default fallback: Bool) -> Bool {
+        guard UserDefaults.standard.object(forKey: key) != nil else { return fallback }
+        return UserDefaults.standard.bool(forKey: key)
+    }
+
+    static func loadDouble(_ key: String, default fallback: Double, range: ClosedRange<Double>) -> Double {
+        guard UserDefaults.standard.object(forKey: key) != nil else { return fallback }
+        return min(max(UserDefaults.standard.double(forKey: key), range.lowerBound), range.upperBound)
+    }
+
+    static func loadString(_ key: String, default fallback: String) -> String {
+        UserDefaults.standard.string(forKey: key) ?? fallback
+    }
+
+    static func save(_ value: Bool, _ key: String) { UserDefaults.standard.set(value, forKey: key) }
+    static func save(_ value: Double, _ key: String) { UserDefaults.standard.set(value, forKey: key) }
+    static func save(_ value: String, _ key: String) { UserDefaults.standard.set(value, forKey: key) }
 }
 

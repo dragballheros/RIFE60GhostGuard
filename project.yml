@@ -18,14 +18,36 @@ targets:
   RIFE60GhostGuard:
     type: application
     platform: iOS
+    info:
+      path: Info.plist
+      properties:
+        UIFileSharingEnabled: true
+        LSSupportsOpeningDocumentsInPlace: true
     sources:
       - path: .
         includes:
           - "*.swift"
           - "*.mm"
+      - path: Vendor/minimax-h3
+        includes:
+          - "*.c"
+          - "*.m"
+          - "*.metal"
+      - path: Vendor/h3-gguf
+        includes:
+          - "*.c"
       - path: Assets.xcassets
       - path: Models/DeepCreamBar.mlpackage
       - path: Models/DeepCreamMosaic.mlpackage
+      - path: Models/VACEAnimeSeg.mlpackage
+        type: folder
+        buildPhase: resources
+      - path: Models/h3-tier1-manifest.json
+        type: file
+        buildPhase: resources
+      - path: Models/h3-tokenizer.json
+        type: file
+        buildPhase: resources
     dependencies:
       - package: RifeMetal
         product: RifeMetal
@@ -42,6 +64,8 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.za.rife60ghostguard
         SWIFT_OBJC_BRIDGING_HEADER: "$(SRCROOT)/RIFE60GhostGuard-Bridging-Header.h"
         HEADER_SEARCH_PATHS:
+          - "$(SRCROOT)/Vendor/minimax-h3"
+          - "$(SRCROOT)/Vendor/h3-gguf"
         LIBRARY_SEARCH_PATHS:
         OTHER_LDFLAGS:
           - "-framework"
@@ -55,11 +79,12 @@ targets:
           - "-lc++"
         PRODUCT_NAME: RIFE60GhostGuard
         MARKETING_VERSION: 1.0
-        CURRENT_PROJECT_VERSION: 192
+        CURRENT_PROJECT_VERSION: 193
         INFOPLIST_KEY_CFBundleShortVersionString: "$(MARKETING_VERSION)"
         INFOPLIST_KEY_CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
         SWIFT_VERSION: 5.10
         IPHONEOS_DEPLOYMENT_TARGET: 16.0
+        CODE_SIGN_ENTITLEMENTS: RIFE60GhostGuard.entitlements
         TARGETED_DEVICE_FAMILY: "1,2"
         SUPPORTS_MACCATALYST: NO
         CODE_SIGN_STYLE: Automatic
@@ -74,6 +99,7 @@ targets:
         INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents: YES
         INFOPLIST_KEY_UIBackgroundModes:
           - audio
+          - fetch
     scheme:
       testTargets: []
 

@@ -45,10 +45,29 @@ struct WatermarkMaskEditor: View {
                         }
                     }
                     .frame(maxWidth: .infinity).frame(minHeight: 180, maxHeight: .infinity).layoutPriority(1)
-                    Picker("Tool", selection: $erase) {
-                        Text("Brush").tag(false)
-                        Text("Eraser").tag(true)
-                    }.pickerStyle(.segmented).padding(.horizontal)
+                    VStack(alignment: .leading, spacing: 0) {
+                        Text("Tool")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                        ForEach([false, true], id: \.self) { isEraser in
+                            Button {
+                                erase = isEraser
+                            } label: {
+                                HStack(spacing: 12) {
+                                    Text(isEraser ? "Eraser" : "Brush")
+                                        .foregroundStyle(.primary)
+                                    Spacer(minLength: 8)
+                                    Image(systemName: erase == isEraser ? "checkmark.circle.fill" : "circle")
+                                        .foregroundStyle(erase == isEraser ? Color.accentColor : Color.secondary)
+                                }
+                                .contentShape(Rectangle())
+                                .padding(.vertical, 8)
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityAddTraits(erase == isEraser ? .isSelected : [])
+                        }
+                    }
+                    .padding(.horizontal)
                     HStack {
                         Text("Brush size")
                         Slider(value: $brushPercent, in: 0.2...4)
@@ -124,7 +143,7 @@ struct WatermarkMaskEditor: View {
     }
 }
 
-private struct WatermarkBrushCanvas: UIViewRepresentable {
+struct WatermarkBrushCanvas: UIViewRepresentable {
     let image: UIImage
     let mask: WatermarkBrushMask
     let showMask: Bool
@@ -155,7 +174,7 @@ private struct WatermarkBrushCanvas: UIViewRepresentable {
     }
 }
 
-private final class BrushScrollView: UIScrollView {
+final class BrushScrollView: UIScrollView {
     let canvas = BrushDrawingView()
     private var fittedSize = CGSize.zero
     override func layoutSubviews() {
@@ -172,7 +191,7 @@ private final class BrushScrollView: UIScrollView {
     }
 }
 
-private final class BrushDrawingView: UIView {
+final class BrushDrawingView: UIView {
     var image: UIImage?
     var brushMask = WatermarkBrushMask()
     var showMask = true

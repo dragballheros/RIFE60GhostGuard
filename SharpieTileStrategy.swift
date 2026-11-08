@@ -1,0 +1,133 @@
+import Foundation
+
+/// Saved Sharpie tile size and whether tiles are predicted together.
+/// The first render times the same-tile candidates itself and saves the winner.
+/// Benchmark Models is optional and is not required for that choice.
+enum SharpieTileStrategy: String, Codable, CaseIterable, Identifiable {
+    case sequential256
+    case batched256
+    case tile768
+    case tile1024
+
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .sequential256: return "Sharpie 256 sequential"
+        case .batched256: return "Sharpie 256 batched"
+        case .tile768: return "Sharpie 768"
+        case .tile1024: return "Sharpie 1024"
+        }
+    }
+    var resourceName: String {
+        switch self {
+        case .sequential256, .batched256: return "AnimeSharpieOutlineSubtle"
+        case .tile768: return "AnimeSharpieOutlineSubtle_Tile768"
+        case .tile1024: return "AnimeSharpieOutlineSubtle_Tile1024"
+        }
+    }
+    var tile: Int {
+        switch self {
+        case .sequential256, .batched256: return 256
+        case .tile768: return 768
+        case .tile1024: return 1024
+        }
+    }
+    var usesUnbackedBatch: Bool { self == .batched256 }
+
+    static func isBundled(_ strategy: SharpieTileStrategy) -> Bool {
+        Bundle.main.url(forResource: strategy.resourceName, withExtension: "mlpackage") != nil
+    }
+
+    static func candidates() -> [SharpieTileStrategy] {
+        allCases.filter(isBundled)
+    }
+}
+
+struct SharpieTileRecord: Codable {
+    var strategy: String
+    var medianMilliseconds: Double
+    var deviceModel: String
+    var systemVersion: String
+    var buildNumber: String
+    var needsRebenchmark: Bool
+}
+
+enum SharpieTileStore {
+    static var fileURL: URL = {
+        let base = (try? FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true))
+            ?? FileManager.default.temporaryDirectory
+        return base
+            .appendingPathComponent("RIFE60GhostGuard", isDirectory: true)
+            .appendingPathComponent("sharpie-tile.json")
+    }()
+
+    /// Same 256 tile and the same compiled model as the batched path.
+    /// Until a measurement is saved, stay sequential. A saved winner replaces this.
+    static func unbenchmarkedDefault() -> SharpieTileStrategy { .sequential256 }
+
+    static func needsAutomaticBenchmark() -> Bool {
+        guard SharpieTileStrategy.isBundled(.batched256) else { return false }
+        guard let record = load(),
+              RealCUGANStrategyStore.installIsCurrent(
+                device: record.deviceModel,
+                system: record.systemVersion,
+                build: record.buildNumber,
+                needsRebenchmark: record.needsRebenchmark
+              ),
+              SharpieTileStrategy(rawValue: record.strategy) != nil else {
+            return true
+        }
+        return false
+    }
+
+    static func plan() -> SharpieTileStrategy {
+        guard let record = load(),
+              RealCUGANStrategyStore.installIsCurrent(
+                device: record.deviceModel,
+                system: record.systemVersion,
+                build: record.buildNumber,
+                needsRebenchmark: record.needsRebenchmark
+              ),
+              let strategy = SharpieTileStrategy(rawValue: record.strategy),
+              SharpieTileStrategy.isBundled(strategy) else {
+            let fallback = unbenchmarkedDefault()
+            return SharpieTileStrategy.isBundled(fallback) ? fallback : .sequential256
+        }
+        return strategy
+    }
+
+    static func save(_ strategy: SharpieTileStrategy, medianMilliseconds: Double) {
+        let record = SharpieTileRecord(
+            strategy: strategy.rawValue,
+            medianMilliseconds: medianMilliseconds,
+            deviceModel: RealCUGANStrategyStore.deviceModel(),
+            systemVersion: RealCUGANStrategyStore.systemVersion(),
+            buildNumber: RealCUGANStrategyStore.buildNumber(),
+            needsRebenchmark: false
+        )
+        if let data = try? JSONEncoder().encode(record) {
+            try? FileManager.default.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try? data.write(to: fileURL, options: .atomic)
+        }
+    }
+
+    static func markNeedsRebenchmark() {
+        var record = load() ?? SharpieTileRecord(
+            strategy: SharpieTileStrategy.sequential256.rawValue,
+            medianMilliseconds: 0,
+            deviceModel: RealCUGANStrategyStore.deviceModel(),
+            systemVersion: RealCUGANStrategyStore.systemVersion(),
+            buildNumber: RealCUGANStrategyStore.buildNumber(),
+            needsRebenchmark: true
+        )
+        record.needsRebenchmark = true
+        if let data = try? JSONEncoder().encode(record) {
+            try? data.write(to: fileURL, options: .atomic)
+        }
+    }
+
+    private static func load() -> SharpieTileRecord? {
+        guard let data = try? Data(contentsOf: fileURL) else { return nil }
+        return try? JSONDecoder().decode(SharpieTileRecord.self, from: data)
+    }
+}

@@ -1,3 +1,4 @@
+import CoreML
 import Foundation
 import AVFoundation
 import CoreImage
@@ -9,16 +10,61 @@ import VideoToolbox
 /// cleaned master, then only the light final compression polish is allowed after it.
 final class FinalOutlinePass {
     private var transferSession: VTPixelTransferSession?
-    private let ciContext = CIContext(options: [.cacheIntermediates: false])
+    private let ciContext = FinalOutlinePass.sharedContext
+    static let sharedContext = FrameStageResources.makeCIContext()
     private let colorSpace = CGColorSpaceCreateDeviceRGB()
     private var blendPool: CVPixelBufferPool?
     private var workingPool: CVPixelBufferPool?
     private var fullOutlinePool: CVPixelBufferPool?
 
     private let colorPopGrade: ColorPopGrade?
+    private let colorRebuildEnabled: Bool
+    private let colorRebuildStrength: Double
+    private let outlineRebuildEnabled: Bool
+    private let outlineRebuildStrength: Double
+    private let sharpen: Bool
+    private let sharpieUnits: MLComputeUnits?
+    private var streamEnhancer: OutlineEnhancer?
+    private var streamCompression = CompressionGuard()
+    private var streamColorRebuild = ColorRebuild()
+    private var streamOutlineRebuild = OutlineRebuild()
+    private var streamWidth = 0
+    private var streamHeight = 0
+    private var streamWorkingWidth = 0
+    private var streamWorkingHeight = 0
+    private var streamScale = 1.0
 
-    init(colorPopStrength: Double = 0) {
-        self.colorPopGrade = colorPopStrength > 0 ? ColorPopGrade(strength: colorPopStrength) : nil
+    struct PolishSplit {
+        var shadowSeconds = 0.0
+        var colorRebuildSeconds = 0.0
+        var outlineRebuildSeconds = 0.0
+        var outlineSeconds = 0.0
+        var downscaleSeconds = 0.0
+        var blendSeconds = 0.0
+        var compressionSeconds = 0.0
+        var shadowCleaned = false
+        var finalCleaned = false
+        var packSeconds = 0.0
+        var predictSeconds = 0.0
+        var unpackSeconds = 0.0
+        var refineSeconds = 0.0
+        var queueWaitSeconds = 0.0
+        var assemblySeconds = 0.0
+        var handoffSeconds = 0.0
+        var predictWallSeconds = 0.0
+        var buffer: CVPixelBuffer?
+    }
+
+    init(colorPopStrength: Double = 0, applyWarmthCorrection: Bool = true, colorRebuild: Bool = false, colorRebuildStrength: Double = 0.45, outlineRebuild: Bool = false, outlineRebuildStrength: Double = 0.5, sharpen: Bool = true, sharpieComputeUnits: MLComputeUnits? = nil) {
+        self.sharpieUnits = sharpieComputeUnits
+        self.colorPopGrade = (colorPopStrength > 0 || applyWarmthCorrection)
+            ? ColorPopGrade(strength: colorPopStrength, warmthMode: applyWarmthCorrection ? nil : .off)
+            : nil
+        self.colorRebuildEnabled = colorRebuild
+        self.colorRebuildStrength = colorRebuildStrength
+        self.outlineRebuildEnabled = outlineRebuild
+        self.outlineRebuildStrength = outlineRebuildStrength
+        self.sharpen = sharpen
     }
 
     // Use a slightly higher-resolution style map so the Sharpie line expands less
@@ -48,13 +94,11 @@ final class FinalOutlinePass {
         DiagnosticsLogger.shared.log("Final visual pass entered • 4K master=\(width)x\(height) • Shadow Chroma → Sharpie → Final Compression • Sharpie style map=\(workingWidth)x\(workingHeight) • thermal=\(currentThermalStateName())")
         progress(0.001, "Final polish • Shadow cleanup → Sharpie → Compression Guard…")
 
-        let enhancer = try autoreleasepool { try OutlineEnhancer() }
-        let compressionGuard = CompressionGuard()
-        try preparePools(fullWidth: width, fullHeight: height, workingWidth: workingWidth, workingHeight: workingHeight)
+        try prepareStream(width: width, height: height)
 
         let reader = try AVAssetReader(asset: asset)
         let output = AVAssetReaderTrackOutput(track: track, outputSettings: [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA])
-        output.alwaysCopiesSampleData = false
+        output.alwaysCopiesSampleData = true
         guard reader.canAdd(output) else { throw ProcessorError.reader("cannot attach final polish reader") }
         reader.add(output)
 
@@ -103,54 +147,42 @@ final class FinalOutlinePass {
             transform: transform,
             segmentDuration: 5.0
         )
-        if checkpoint.resumeTime > .zero {
-            let start = checkpoint.resumeTime
-            reader.timeRange = CMTimeRange(start: start, duration: CMTimeMaximum(.zero, CMTimeSubtract(duration, start)))
-            DiagnosticsLogger.shared.log("Final Sharpie incremental resume • from \(String(format: "%.3f", CMTimeGetSeconds(start)))s")
-        }
         guard reader.startReading() else { throw ProcessorError.reader(reader.error?.localizedDescription ?? "final polish reader failed") }
 
         var frames = 0, shadowCleanedFrames = 0, finalCleanedFrames = 0
         var outlineSeconds = 0.0, shadowSeconds = 0.0, finalCompressionSeconds = 0.0, encodeSeconds = 0.0
+        var downscaleTotal = 0.0, packTotal = 0.0, predictTotal = 0.0, unpackTotal = 0.0, refineTotal = 0.0, dissolveTotal = 0.0
+        var queueWaitTotal = 0.0, assemblyTotal = 0.0, handoffTotal = 0.0, predictWallTotal = 0.0
+        var colorRebuildSeconds = 0.0, outlineRebuildSeconds = 0.0
         let passStart = CFAbsoluteTimeGetCurrent()
 
-        while let sample = output.copyNextSampleBuffer() {
+        let ahead = FrameAheadReader(output: output, depth: 2)
+        while let item = ahead.next() {
             try await checkpoint.checkCancellation()
-            guard let decoded = CMSampleBufferGetImageBuffer(sample) else { continue }
-            let pts = CMSampleBufferGetPresentationTimeStamp(sample)
-            if CMTimeCompare(pts, checkpoint.resumeTime) <= 0 { continue }
+            let decoded = item.buffer
+            let pts = item.time
 
-            // IMPORTANT: dark chroma cleanup happens before Sharpie. It preserves
-            // source luminance/edges, and the cleaned frame is also used as the blend
-            // master so the old noisy CUGAN pixels cannot be mixed back in afterward.
-            let shadowStart = CFAbsoluteTimeGetCurrent()
-            let preSharpie: CVPixelBuffer
-            if let cleaned = try? compressionGuard.cleanShadowChroma(decoded) {
-                preSharpie = cleaned
-                shadowCleanedFrames += 1
-            } else {
-                preSharpie = decoded
+            let split = try polishPrepared(decoded)
+            if split.shadowCleaned { shadowCleanedFrames += 1 }
+            if split.finalCleaned { finalCleanedFrames += 1 }
+            shadowSeconds += split.shadowSeconds
+            colorRebuildSeconds += split.colorRebuildSeconds
+            outlineRebuildSeconds += split.outlineRebuildSeconds
+            outlineSeconds += split.outlineSeconds
+            downscaleTotal += split.downscaleSeconds
+            dissolveTotal += split.blendSeconds
+            finalCompressionSeconds += split.compressionSeconds
+            packTotal += split.packSeconds
+            predictTotal += split.predictSeconds
+            unpackTotal += split.unpackSeconds
+            refineTotal += split.refineSeconds
+            queueWaitTotal += split.queueWaitSeconds
+            assemblyTotal += split.assemblySeconds
+            handoffTotal += split.handoffSeconds
+            predictWallTotal += split.predictWallSeconds
+            guard let polished = split.buffer else {
+                throw ProcessorError.conversionFailed("Final polish produced no frame")
             }
-            shadowSeconds += CFAbsoluteTimeGetCurrent() - shadowStart
-
-            let outlineStart = CFAbsoluteTimeGetCurrent()
-            let working = scale < 0.999 ? try resize(preSharpie, width: workingWidth, height: workingHeight, pool: workingPool) : preSharpie
-            let enhancedWorking = try autoreleasepool { try enhancer.enhance(working) }
-            let enhancedFull = scale < 0.999 ? try resize(enhancedWorking, width: width, height: height, pool: fullOutlinePool) : enhancedWorking
-            let narrowed = try narrowTowardOriginal(enhanced: enhancedFull, original: preSharpie)
-            outlineSeconds += CFAbsoluteTimeGetCurrent() - outlineStart
-
-            // Only the light general compression polish remains after Sharpie.
-            // The spatial shadow/chroma blur is never applied to finished Sharpie lines.
-            let compressionStart = CFAbsoluteTimeGetCurrent()
-            let polished: CVPixelBuffer
-            if let cleaned = try? compressionGuard.cleanFinalCompression(narrowed) {
-                polished = cleaned
-                finalCleanedFrames += 1
-            } else {
-                polished = narrowed
-            }
-            finalCompressionSeconds += CFAbsoluteTimeGetCurrent() - compressionStart
 
             let encodeStart = CFAbsoluteTimeGetCurrent()
             try await checkpoint.append10Bit(polished, at: pts)
@@ -158,11 +190,13 @@ final class FinalOutlinePass {
             frames += 1
 
             if frames == 1 || frames % 10 == 0 {
-                DiagnosticsLogger.shared.log("Final polish frame \(frames) • shadowPreSharpie=\(String(format: "%.1f", shadowSeconds*1000/Double(frames)))ms • Sharpie=\(String(format: "%.1f", outlineSeconds*1000/Double(frames)))ms • finalCompression=\(String(format: "%.1f", finalCompressionSeconds*1000/Double(frames)))ms • shadowCleaned=\(shadowCleanedFrames) • finalCleaned=\(finalCleanedFrames) • thermal=\(currentThermalStateName())")
+                let frameWall = (split.shadowSeconds + split.outlineSeconds + split.compressionSeconds + split.colorRebuildSeconds + split.outlineRebuildSeconds) * 1000
+                DiagnosticsLogger.shared.log("Final polish frame \(frames) • wall=\(String(format: "%.1f", frameWall))ms • shadowPreSharpie=\(String(format: "%.1f", split.shadowSeconds*1000))ms • Sharpie=\(String(format: "%.1f", split.outlineSeconds*1000))ms • finalCompression=\(String(format: "%.1f", split.compressionSeconds*1000))ms • shadowCleaned=\(shadowCleanedFrames) • finalCleaned=\(finalCleanedFrames) • thermal=\(currentThermalStateName())")
+                DiagnosticsLogger.shared.log(String(format: "Sharpie split • downscale=%.1fms • pack=%.1fms • predictWall=%.1fms • predictCpuSum=%.1fms • unpack=%.1fms • visionRefine=%.1fms • upscaleDissolve=%.1fms", split.downscaleSeconds * 1000, split.packSeconds * 1000, split.predictWallSeconds * 1000, split.predictSeconds * 1000, split.unpackSeconds * 1000, split.refineSeconds * 1000, split.blendSeconds * 1000))
             }
             if frames % 3 == 0 {
                 var t = PerformanceTelemetry()
-                t.outlineMsPerFrame = outlineSeconds * 1000 / Double(frames)
+                t.outlineMsPerFrame = split.outlineSeconds * 1000
                 t.compressionMsPerFrame = (shadowSeconds + finalCompressionSeconds) * 1000 / Double(frames)
                 t.encodeMsPerOutputFrame = encodeSeconds * 1000 / Double(frames)
                 t.thermalState = currentThermalStateName()
@@ -175,12 +209,108 @@ final class FinalOutlinePass {
             }
         }
 
+        if frames > 0 {
+            let count = Double(frames)
+            let split = String(format: "Sharpie split averages • downscale=%.1fms • pack=%.1fms • predict=%.1fms • unpack=%.1fms • visionRefine=%.1fms • upscaleDissolve=%.1fms", downscaleTotal * 1000 / count, packTotal * 1000 / count, predictTotal * 1000 / count, unpackTotal * 1000 / count, refineTotal * 1000 / count, dissolveTotal * 1000 / count)
+            DiagnosticsLogger.shared.log(split)
+            PipelineStageTimer.current?.note(split)
+            PipelineStageTimer.current?.record("outlineDecodeMs", milliseconds: ahead.averageDecodeMilliseconds)
+            PipelineStageTimer.current?.record("sharpieDownscaleMs", milliseconds: downscaleTotal * 1000 / count)
+            PipelineStageTimer.current?.record("sharpiePackMs", milliseconds: packTotal * 1000 / count)
+            PipelineStageTimer.current?.record("sharpiePredictMs", milliseconds: predictWallTotal * 1000 / count)
+            PipelineStageTimer.current?.record("sharpiePredictCpuSumMs", milliseconds: predictTotal * 1000 / count)
+            PipelineStageTimer.current?.record("sharpieUnpackMs", milliseconds: unpackTotal * 1000 / count)
+            PipelineStageTimer.current?.record("sharpieVisionRefineMs", milliseconds: refineTotal * 1000 / count)
+            PipelineStageTimer.current?.record("sharpieUpscaleDissolveMs", milliseconds: dissolveTotal * 1000 / count)
+            PipelineStageTimer.current?.record("sharpieQueueWaitMs", milliseconds: queueWaitTotal * 1000 / count)
+            PipelineStageTimer.current?.record("sharpieBatchAssemblyMs", milliseconds: assemblyTotal * 1000 / count)
+            PipelineStageTimer.current?.record("sharpieHandoffMs", milliseconds: handoffTotal * 1000 / count)
+            PipelineStageTimer.current?.record("sharpiePredictWallMs", milliseconds: predictWallTotal * 1000 / count)
+            PipelineStageTimer.current?.recordText("sharpieStrategy", SharpieTileStore.plan().rawValue)
+            PipelineStageTimer.current?.record("colorRebuildMs", milliseconds: colorRebuildSeconds * 1000 / count)
+            PipelineStageTimer.current?.record("outlineRebuildMs", milliseconds: outlineRebuildSeconds * 1000 / count)
+        }
         if reader.status == .failed { throw ProcessorError.reader(reader.error?.localizedDescription ?? "final polish decode failed") }
         guard frames > 0 else { throw ProcessorError.conversionFailed("Final polish pass received zero frames") }
         let completedURL = try await checkpoint.finish()
         let completedBytes = (try? FileManager.default.attributesOfItem(atPath: completedURL.path)[.size] as? NSNumber)?.int64Value ?? 0
         DiagnosticsLogger.shared.log("Final visual pass complete • frames=\(frames) • order=ShadowChroma→Sharpie→FinalCompression • Sharpie style map=\(workingWidth)x\(workingHeight) • Sharpie=\(String(format: "%.1f", outlineSeconds*1000/Double(frames)))ms/frame • HEVC Main10 • file=\(formatStorageMB(completedBytes)) MB")
         return completedURL
+    }
+
+    /// Loads Sharpie once. Video `run` and the fused CUGAN stream both call this.
+    func prepareStream(width: Int, height: Int) throws {
+        let scale = min(1.0, Double(maxSharpieLongEdge) / Double(max(width, height)))
+        let workingWidth = max(2, Int((Double(width) * scale / 2.0).rounded() * 2.0))
+        let workingHeight = max(2, Int((Double(height) * scale / 2.0).rounded() * 2.0))
+        streamScale = scale
+        streamWidth = width
+        streamHeight = height
+        streamWorkingWidth = workingWidth
+        streamWorkingHeight = workingHeight
+        streamEnhancer = sharpen ? try autoreleasepool { try OutlineEnhancer(computeUnits: sharpieUnits) } : nil
+        try preparePools(fullWidth: width, fullHeight: height, workingWidth: workingWidth, workingHeight: workingHeight)
+    }
+
+    /// Shadow chroma, optional rebuild, Sharpie, then light compression. Same order as the file pass.
+    func polishPrepared(_ decoded: CVPixelBuffer) throws -> PolishSplit {
+        var split = PolishSplit()
+        let shadowStart = CFAbsoluteTimeGetCurrent()
+        let preSharpie: CVPixelBuffer
+        if let cleaned = try? streamCompression.cleanShadowChroma(decoded) {
+            preSharpie = cleaned
+            split.shadowCleaned = true
+        } else {
+            preSharpie = decoded
+        }
+        split.shadowSeconds = CFAbsoluteTimeGetCurrent() - shadowStart
+
+        var rebuilt = preSharpie
+        if colorRebuildEnabled {
+            let started = CFAbsoluteTimeGetCurrent()
+            rebuilt = streamColorRebuild.apply(rebuilt, strength: colorRebuildStrength)
+            split.colorRebuildSeconds = CFAbsoluteTimeGetCurrent() - started
+        }
+        if outlineRebuildEnabled {
+            let started = CFAbsoluteTimeGetCurrent()
+            rebuilt = streamOutlineRebuild.apply(rebuilt, strength: outlineRebuildStrength)
+            split.outlineRebuildSeconds = CFAbsoluteTimeGetCurrent() - started
+        }
+
+        let outlineStart = CFAbsoluteTimeGetCurrent()
+        let resizeStart = CFAbsoluteTimeGetCurrent()
+        let narrowed: CVPixelBuffer
+        if let enhancer = streamEnhancer {
+            let working = streamScale < 0.999 ? try resize(rebuilt, width: streamWorkingWidth, height: streamWorkingHeight, pool: workingPool) : rebuilt
+            split.downscaleSeconds = CFAbsoluteTimeGetCurrent() - resizeStart
+            let enhancedWorking = try autoreleasepool { try enhancer.enhance(working) }
+            let blendStart = CFAbsoluteTimeGetCurrent()
+            narrowed = streamScale < 0.999
+                ? try chainUpscaleAndDissolve(enhanced: enhancedWorking, original: rebuilt, width: streamWidth, height: streamHeight)
+                : try narrowTowardOriginal(enhanced: enhancedWorking, original: rebuilt)
+            split.blendSeconds = CFAbsoluteTimeGetCurrent() - blendStart
+            split.packSeconds = enhancer.lastPackSeconds
+            split.predictSeconds = enhancer.lastPredictSeconds
+            split.unpackSeconds = enhancer.lastUnpackSeconds
+            split.refineSeconds = enhancer.lastRefineSeconds
+            split.queueWaitSeconds = enhancer.lastQueueWaitSeconds
+            split.assemblySeconds = enhancer.lastBatchAssemblySeconds
+            split.handoffSeconds = enhancer.lastHandoffSeconds
+            split.predictWallSeconds = enhancer.lastPredictWallSeconds
+        } else {
+            narrowed = rebuilt
+        }
+        split.outlineSeconds = CFAbsoluteTimeGetCurrent() - outlineStart
+
+        let compressionStart = CFAbsoluteTimeGetCurrent()
+        if let cleaned = try? streamCompression.cleanFinalCompression(narrowed) {
+            split.buffer = cleaned
+            split.finalCleaned = true
+        } else {
+            split.buffer = narrowed
+        }
+        split.compressionSeconds = CFAbsoluteTimeGetCurrent() - compressionStart
+        return split
     }
 
     /// Single-image version of the per-frame final polish in run():
@@ -193,22 +323,38 @@ final class FinalOutlinePass {
         let workingHeight = max(2, Int((Double(height) * scale / 2.0).rounded() * 2.0))
         let needsResize = scale < 0.999
 
-        let enhancer = try autoreleasepool { try OutlineEnhancer() }
+        let enhancer: OutlineEnhancer? = sharpen ? try autoreleasepool { try OutlineEnhancer(computeUnits: sharpieUnits) } : nil
         let compressionGuard = CompressionGuard()
         try preparePools(fullWidth: width, fullHeight: height, workingWidth: workingWidth, workingHeight: workingHeight)
 
         var preSharpie = decoded
         if let cleaned = try? compressionGuard.cleanShadowChroma(decoded) { preSharpie = cleaned }
+        if colorRebuildEnabled {
+            let started = CFAbsoluteTimeGetCurrent()
+            preSharpie = ColorRebuild().apply(preSharpie, strength: colorRebuildStrength)
+            PipelineStageTimer.current?.record("colorRebuildMs", milliseconds: (CFAbsoluteTimeGetCurrent() - started) * 1000)
+        }
+        if outlineRebuildEnabled {
+            let started = CFAbsoluteTimeGetCurrent()
+            preSharpie = OutlineRebuild().apply(preSharpie, strength: outlineRebuildStrength)
+            PipelineStageTimer.current?.record("outlineRebuildMs", milliseconds: (CFAbsoluteTimeGetCurrent() - started) * 1000)
+        }
+        guard let enhancer else {
+            if let polished = try? compressionGuard.cleanFinalCompression(preSharpie) { return polished }
+            return preSharpie
+        }
 
         var working = preSharpie
         if needsResize { working = try resize(preSharpie, width: workingWidth, height: workingHeight, pool: workingPool) }
         let enhancedWorking = try autoreleasepool { try enhancer.enhance(working) }
-        var enhancedFull = enhancedWorking
-        if needsResize { enhancedFull = try resize(enhancedWorking, width: width, height: height, pool: fullOutlinePool) }
-        let narrowed = try narrowTowardOriginal(enhanced: enhancedFull, original: preSharpie)
-
-        if let polished = try? compressionGuard.cleanFinalCompression(narrowed) { return polished }
-        return narrowed
+        let enhancedFull: CVPixelBuffer
+        if needsResize {
+            enhancedFull = try chainUpscaleAndDissolve(enhanced: enhancedWorking, original: preSharpie, width: width, height: height)
+        } else {
+            enhancedFull = try narrowTowardOriginal(enhanced: enhancedWorking, original: preSharpie)
+        }
+        if let polished = try? compressionGuard.cleanFinalCompression(enhancedFull) { return polished }
+        return enhancedFull
     }
 
     private func makePool(width: Int, height: Int) throws -> CVPixelBufferPool {
@@ -217,10 +363,12 @@ final class FinalOutlinePass {
             kCVPixelBufferWidthKey as String: width,
             kCVPixelBufferHeightKey as String: height,
             kCVPixelBufferMetalCompatibilityKey as String: true,
-            kCVPixelBufferIOSurfacePropertiesKey as String: [:]
+            kCVPixelBufferIOSurfacePropertiesKey as String: [:],
+            kCVPixelBufferPoolMinimumBufferCountKey as String: 3
         ]
         var pool: CVPixelBufferPool?
         guard CVPixelBufferPoolCreate(kCFAllocatorDefault, nil, attrs as CFDictionary, &pool) == kCVReturnSuccess, let pool else { throw ProcessorError.conversionFailed("could not create final outline pool") }
+        ReclaimableMemoryRegistry.shared.trackPixelPool(pool, name: "outline-\(width)x\(height)", width: width, height: height)
         return pool
     }
 
@@ -228,6 +376,25 @@ final class FinalOutlinePass {
         blendPool = try makePool(width: fullWidth, height: fullHeight)
         fullOutlinePool = try makePool(width: fullWidth, height: fullHeight)
         workingPool = try makePool(width: workingWidth, height: workingHeight)
+    }
+
+    private func chainUpscaleAndDissolve(enhanced: CVPixelBuffer, original: CVPixelBuffer, width: Int, height: Int) throws -> CVPixelBuffer {
+        guard let blendPool else { throw ProcessorError.conversionFailed("final outline blend pool unavailable") }
+        var destination: CVPixelBuffer?
+        guard CVPixelBufferPoolCreatePixelBuffer(nil, blendPool, &destination) == kCVReturnSuccess, let destination else {
+            throw ProcessorError.conversionFailed("could not allocate final outline blend frame")
+        }
+        let sx = CGFloat(width) / CGFloat(CVPixelBufferGetWidth(enhanced))
+        let sy = CGFloat(height) / CGFloat(CVPixelBufferGetHeight(enhanced))
+        let scaled = CIImage(cvPixelBuffer: enhanced).transformed(by: CGAffineTransform(scaleX: sx, y: sy))
+        let extent = CGRect(x: 0, y: 0, width: width, height: height)
+        guard let filter = CIFilter(name: "CIDissolveTransition") else { throw ProcessorError.conversionFailed("final outline blend filter unavailable") }
+        filter.setValue(CIImage(cvPixelBuffer: original), forKey: kCIInputImageKey)
+        filter.setValue(scaled, forKey: kCIInputTargetImageKey)
+        filter.setValue(enhancedWeight, forKey: kCIInputTimeKey)
+        guard let blended = filter.outputImage?.cropped(to: extent) else { throw ProcessorError.conversionFailed("final outline blend failed") }
+        ciContext.render(blended, to: destination, bounds: extent, colorSpace: colorSpace)
+        return destination
     }
 
     private func resize(_ source: CVPixelBuffer, width: Int, height: Int, pool: CVPixelBufferPool?) throws -> CVPixelBuffer {

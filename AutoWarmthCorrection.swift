@@ -3,6 +3,50 @@ import CoreImage
 import CoreVideo
 import CoreGraphics
 
+enum AutoWarmthCorrectionMode: String, CaseIterable, Identifiable {
+    case off
+    case originalOnly
+    case processedOnly
+    case full
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .off: return "Off"
+        case .originalOnly: return "Original"
+        case .processedOnly: return "Processed"
+        case .full: return "Full"
+        }
+    }
+
+    var explanation: String {
+        switch self {
+        case .off:
+            return "No automatic warmth reduction. Preserves the input and processing colors."
+        case .originalOnly:
+            return "Reduces warmth already present in the pre-Color-Pop image; does not target warmth added by processing."
+        case .processedOnly:
+            return "Targets additional warmth introduced by processing while preserving the input's existing color temperature."
+        case .full:
+            return "Current behavior: reduces both original excess warmth and additional warmth introduced by processing."
+        }
+    }
+
+    static var current: AutoWarmthCorrectionMode {
+        let defaults = UserDefaults.standard
+        if let rawValue = defaults.string(forKey: "automaticWarmthCorrectionMode"),
+           let mode = AutoWarmthCorrectionMode(rawValue: rawValue) {
+            return mode
+        }
+        if defaults.object(forKey: "automaticWarmthCorrectionEnabled") != nil,
+           !defaults.bool(forKey: "automaticWarmthCorrectionEnabled") {
+            return .off
+        }
+        return .full
+    }
+}
+
 /// Adaptive warmth correction for Color Pop.
 /// Removes both warmth introduced by grading and a limited amount of excess warmth
 /// already present in the source. The source baseline is estimated only from neutral
@@ -81,7 +125,12 @@ final class AutoWarmthCorrection {
 
     /// Removes measured added warmth plus a conservative portion of source warmth.
     /// The source component is intentionally weaker than the added-shift component.
-    func apply(reference: CVPixelBuffer, graded: CVPixelBuffer) throws -> CVPixelBuffer {
+    func apply(
+        reference: CVPixelBuffer,
+        graded: CVPixelBuffer,
+        mode: AutoWarmthCorrectionMode = .full
+    ) throws -> CVPixelBuffer {
+        guard mode != .off else { return graded }
         guard CVPixelBufferGetWidth(reference) == CVPixelBufferGetWidth(graded),
               CVPixelBufferGetHeight(reference) == CVPixelBufferGetHeight(graded) else { return graded }
 
@@ -95,7 +144,18 @@ final class AutoWarmthCorrection {
         // incremental warmth attributable to Color Pop. Increase the source gain
         // and widen the ceiling while retaining a neutral deadband.
         let sourceComponent = max(estimate.sourceBias - 0.006, 0) * 0.78
-        let target = min(max(addedComponent + sourceComponent, 0), 0.095)
+        let selectedComponent: CGFloat
+        switch mode {
+        case .off:
+            return graded
+        case .originalOnly:
+            selectedComponent = sourceComponent
+        case .processedOnly:
+            selectedComponent = addedComponent
+        case .full:
+            selectedComponent = addedComponent + sourceComponent
+        }
+        let target = min(max(selectedComponent, 0), 0.095)
         let confidence = CGFloat(min(max(Double(estimate.samples - 8) / 40.0, 0.0), 1.0))
         let confidenceScaledTarget = target * confidence
 

@@ -321,13 +321,23 @@ struct RedditMediaOptimizer: Sendable {
 
                 let candidateURL = temporaryGIFURL()
                 do {
+                    // Rotate the existing frame sequence to a low-motion boundary.
+                    // Every source frame is retained exactly once and no pixels are
+                    // blended; the final-to-first transition is an original adjacent
+                    // pair rather than an artificial dissolve.
+                    let loopStartIndex = chooseLoopStartIndex(
+                        imageGenerator: imageGenerator,
+                        frameCount: frameCount,
+                        fps: fps
+                    )
                     let candidate = try encodeGIF(
                         outputURL: candidateURL,
                         frameCount: frameCount,
                         frameProvider: { index in
+                            let sourceIndex = (index + loopStartIndex) % frameCount
                             let time = min(
                                 max(0, duration - 0.001),
-                                Double(index) / fps
+                                Double(sourceIndex) / fps
                             )
                             let requested = CMTimeMakeWithSeconds(time, preferredTimescale: 600)
                             let image = try imageGenerator.copyCGImage(at: requested, actualTime: nil)
@@ -387,6 +397,68 @@ struct RedditMediaOptimizer: Sendable {
             result.append(value)
         }
         return result
+    }
+
+    /// Pick an existing internal boundary with the smallest visual change.
+    /// Rotating at this boundary makes the loop seam an original adjacent frame
+    /// pair. Sampling at most about 48 boundaries bounds the extra decode cost.
+    private static func chooseLoopStartIndex(
+        imageGenerator: AVAssetImageGenerator,
+        frameCount: Int,
+        fps: Double
+    ) -> Int {
+        guard frameCount > 2, fps.isFinite, fps > 0 else { return 0 }
+        let sampleStride = max(1, frameCount / 48)
+        var bestIndex = 0
+        var bestDifference = Double.greatestFiniteMagnitude
+        for index in stride(from: sampleStride, to: frameCount, by: sampleStride) {
+            do {
+                let beforeTime = CMTimeMakeWithSeconds(Double(index - 1) / fps, preferredTimescale: 600)
+                let afterTime = CMTimeMakeWithSeconds(Double(index) / fps, preferredTimescale: 600)
+                let before = try imageGenerator.copyCGImage(at: beforeTime, actualTime: nil)
+                let after = try imageGenerator.copyCGImage(at: afterTime, actualTime: nil)
+                guard let difference = thumbnailDifference(before, after) else { continue }
+                if difference < bestDifference {
+                    bestDifference = difference
+                    bestIndex = index
+                }
+            } catch {
+                continue
+            }
+        }
+        return bestIndex
+    }
+
+    private static func thumbnailDifference(_ lhs: CGImage, _ rhs: CGImage) -> Double? {
+        let width = 32
+        let height = 32
+        func pixels(_ image: CGImage) -> [UInt8]? {
+            var bytes = [UInt8](repeating: 0, count: width * height * 4)
+            let created = bytes.withUnsafeMutableBytes { buffer -> Bool in
+                guard let base = buffer.baseAddress,
+                      let context = CGContext(
+                        data: base,
+                        width: width,
+                        height: height,
+                        bitsPerComponent: 8,
+                        bytesPerRow: width * 4,
+                        space: CGColorSpaceCreateDeviceRGB(),
+                        bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+                      ) else { return false }
+                context.interpolationQuality = .low
+                context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+                return true
+            }
+            return created ? bytes : nil
+        }
+        guard let a = pixels(lhs), let b = pixels(rhs), a.count == b.count else { return nil }
+        var total = 0
+        for index in stride(from: 0, to: a.count, by: 4) {
+            total += abs(Int(a[index]) - Int(b[index]))
+            total += abs(Int(a[index + 1]) - Int(b[index + 1]))
+            total += abs(Int(a[index + 2]) - Int(b[index + 2]))
+        }
+        return Double(total) / Double(width * height * 3 * 255)
     }
 
     private static func qualityLabel(forLongEdge dimension: Int) -> String {

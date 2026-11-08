@@ -1,0 +1,54 @@
+name: MiniMax H3 iOS Portability Audit
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - feature/minimax-h3-ios-runtime
+    paths:
+      - "Scripts/audit_h3_ios_portability.sh"
+      - "Scripts/patch_h3_ios_availability.py"
+      - "Scripts/test_patch_h3_ios_availability.py"
+      - "H3RuntimePreflight.swift"
+      - "H3NativeRuntime.swift"
+      - "RIFE60GhostGuard-Bridging-Header.h"
+      - "project.yml"
+      - "Scripts/vendor_h3_runtime.py"
+      - ".github/workflows/minimax-h3-ios-port-audit.yml"
+  pull_request:
+    branches:
+      - feature/wan-vace-iphone-memory-first
+    paths:
+      - "Scripts/audit_h3_ios_portability.sh"
+      - "Scripts/patch_h3_ios_availability.py"
+      - "Scripts/test_patch_h3_ios_availability.py"
+      - "H3RuntimePreflight.swift"
+      - "H3NativeRuntime.swift"
+      - "RIFE60GhostGuard-Bridging-Header.h"
+      - "project.yml"
+      - "Scripts/vendor_h3_runtime.py"
+      - ".github/workflows/minimax-h3-ios-port-audit.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: minimax-h3-ios-port-audit-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ios-compile-audit:
+    runs-on: macos-26
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test H3 iOS availability patcher
+        run: python3 Scripts/test_patch_h3_ios_availability.py
+      - name: Stage pinned H3 runtime source and validate patcher
+        run: python3 Scripts/vendor_h3_runtime.py
+      - name: Type-check app-side H3 preflight for iOS 16 deployment
+        run: xcrun --sdk iphoneos swiftc -target arm64-apple-ios16.0 -sdk "$(xcrun --sdk iphoneos --show-sdk-path)" -typecheck H3RuntimePreflight.swift
+      - name: Confirm native API and shader are staged
+        run: test -s Vendor/minimax-h3/h3.h && test -s Vendor/minimax-h3/h3.c && test -s Vendor/minimax-h3/h3_gpu.m && test -s Vendor/minimax-h3/h3_shaders.metal
+      - name: Audit native H3 C/Metal source against iOS SDK
+        run: bash Scripts/audit_h3_ios_portability.sh

@@ -9,9 +9,20 @@ struct ProcessorConfiguration {
     let sceneCutProtection: Bool
     let compressionProtection: Bool
     let outlineProtection: Bool
+    var colorRebuild: Bool = false
+    var colorRebuildStrength: Double = 0.45
+    var outlineRebuild: Bool = false
+    var outlineRebuildStrength: Double = 0.5
     let ghostSensitivity: Double
     let preserveAudio: Bool
     let targetFPS: Double
+    /// Persisted user toggle. Auto for a short side of 720 px is decided in the pipeline and is not stored here as ON.
+    var animeRestoreUserEnabled: Bool = false
+    /// User turned the toggle off while this source would have auto-enabled.
+    var animeRestoreSuppressAuto: Bool = false
+    var animeRestoreStrength: Double = 0.8
+    var animeRestoreQuality: String = AnimeRestoreQuality.auto.rawValue
+    var brokenTileDiagnosticsEnabled: Bool = true
 }
 
 enum ProcessorError: LocalizedError {
@@ -39,9 +50,12 @@ final class RIFEVideoProcessor {
     private let colorPopGrade: ColorPopGrade?
     private let guardUpscaleFirstMemory: Bool
 
-    init(configuration: ProcessorConfiguration, colorPopStrength: Double = 0, guardUpscaleFirstMemory: Bool = false) {
+    init(configuration: ProcessorConfiguration, colorPopStrength: Double = 0, guardUpscaleFirstMemory: Bool = false, applyWarmthCorrection: Bool? = nil) {
         self.guardUpscaleFirstMemory = guardUpscaleFirstMemory
-        self.colorPopGrade = colorPopStrength > 0 ? ColorPopGrade(strength: colorPopStrength) : nil
+        let shouldApplyWarmth = applyWarmthCorrection ?? (colorPopStrength > 0)
+        self.colorPopGrade = (colorPopStrength > 0 || shouldApplyWarmth)
+            ? ColorPopGrade(strength: colorPopStrength, warmthMode: applyWarmthCorrection == false ? .off : nil)
+            : nil
         self.config = configuration
     }
 
@@ -54,6 +68,15 @@ final class RIFEVideoProcessor {
         let asset = AVURLAsset(url: sourceURL)
         guard let track = try await asset.loadTracks(withMediaType: .video).first else {
             throw ProcessorError.missingVideoTrack
+        }
+
+        // Off is a true model bypass: preserve source cadence and audio; downstream enhancement can continue.
+        if config.targetFPS <= 0 {
+            progress(0.01, "RIFE Off • preserving source frame cadence…")
+            let output = try await exportWithoutRIFE(sourceURL: sourceURL)
+            progress(1, "RIFE Off • source cadence preserved")
+            telemetry(PerformanceTelemetry())
+            return output
         }
 
         let duration = try await asset.load(.duration)
@@ -70,17 +93,7 @@ final class RIFEVideoProcessor {
             "RIFE cadence • source=\(sourceFPSLabel) • target=\(String(format: "%.2f", config.targetFPS)) FPS • timestamp-driven interpolation"
         )
 
-        let sourceFrameStep = CMTime(seconds: 1.0 / max(detectedSourceFPS, 1.0), preferredTimescale: 600)
-        let resumeTimeHint: CMTime = {
-            if let recoveryDirectory,
-               let data = try? Data(contentsOf: recoveryDirectory.appendingPathComponent("incremental-rife/manifest.json")),
-               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-               let seconds = object["lastPTSSeconds"] as? Double,
-               seconds >= 0 {
-                return CMTime(seconds: seconds, preferredTimescale: 600)
-            }
-            return .zero
-        }()
+
 
         let silentURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("rife60-\(UUID().uuidString).mov")
@@ -90,7 +103,7 @@ final class RIFEVideoProcessor {
         let output = AVAssetReaderTrackOutput(track: track, outputSettings: [
             kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA
         ])
-        output.alwaysCopiesSampleData = false
+        output.alwaysCopiesSampleData = true
         guard reader.canAdd(output) else {
             throw ProcessorError.reader("cannot attach video output")
         }
@@ -130,12 +143,6 @@ final class RIFEVideoProcessor {
             transform: transform,
             segmentDuration: 5.0
         )
-        let resumeTime = checkpoint.resumeTime > .zero ? checkpoint.resumeTime : resumeTimeHint
-        if resumeTime > .zero {
-            let start = CMTimeMaximum(.zero, CMTimeSubtract(resumeTime, sourceFrameStep))
-            reader.timeRange = CMTimeRange(start: start, duration: CMTimeMaximum(.zero, CMTimeSubtract(duration, start)))
-            DiagnosticsLogger.shared.log("RIFE incremental resume • from output \(String(format: "%.3f", CMTimeGetSeconds(resumeTime)))s • reader overlap \(String(format: "%.3f", CMTimeGetSeconds(start)))s")
-        }
         let guarder = GhostGuard(
             sensitivity: config.ghostSensitivity,
             enableSceneCuts: config.sceneCutProtection
@@ -172,7 +179,7 @@ final class RIFEVideoProcessor {
         }
 
         let frameStep = CMTime(value: 1, timescale: CMTimeScale(config.targetFPS.rounded()))
-        var nextOutputTime = resumeTime > .zero ? CMTimeAdd(resumeTime, frameStep) : CMTime.zero
+        var nextOutputTime = CMTime.zero
         var previousPB: CVPixelBuffer?
         var previousPreviousPB: CVPixelBuffer?
         var previousTime = CMTime.zero
@@ -188,6 +195,7 @@ final class RIFEVideoProcessor {
         var rifeSeconds = 0.0
         var ghostSeconds = 0.0
         var encodeSeconds = 0.0
+        var decodeSeconds = 0.0
         let benchmarkStart = CFAbsoluteTimeGetCurrent()
 
         func emitTelemetry() {
@@ -199,19 +207,37 @@ final class RIFEVideoProcessor {
             t.compressionMsPerFrame = cleaned > 0 ? compressionSeconds * 1000.0 / Double(cleaned) : 0
             t.outlineMsPerFrame = outlined > 0 ? outlineSeconds * 1000.0 / Double(outlined) : 0
             t.rifeMsPerGeneratedFrame = generated > 0 ? rifeSeconds * 1000.0 / Double(generated) : 0
+            let generatedCount = Double(max(generated, 1))
+            PipelineStageTimer.current?.record("rifeDecodeMs", milliseconds: sourceFrames > 0 ? decodeSeconds * 1000 / Double(sourceFrames) : 0)
+            PipelineStageTimer.current?.record("rifePushMs", milliseconds: tiledHQ.pushSeconds * 1000 / generatedCount)
+            PipelineStageTimer.current?.record("rifeExtractMs", milliseconds: tiledHQ.extractSeconds * 1000 / generatedCount)
+            PipelineStageTimer.current?.record("rifeStitchMs", milliseconds: tiledHQ.stitchSeconds * 1000 / generatedCount)
+            PipelineStageTimer.current?.record("rifeBands", milliseconds: Double(tiledHQ.activeBandCount))
             t.ghostMsPerGeneratedFrame = generated > 0 ? ghostSeconds * 1000.0 / Double(generated) : 0
             t.encodeMsPerOutputFrame = outputFrames > 0 ? encodeSeconds * 1000.0 / Double(outputFrames) : 0
             t.generatedFPS = Double(generated) / elapsed
             t.thermalState = currentThermalStateName()
+            DiagnosticsLogger.shared.log(runtimePassDiagnosticLine(
+                pass: "RIFE",
+                computeUnits: "Metal",
+                decodeMs: sourceFrames > 0 ? decodeSeconds * 1000.0 / Double(sourceFrames) : 0,
+                predictMs: generated > 0 ? rifeSeconds * 1000.0 / Double(generated) : 0,
+                postMs: generated > 0 ? ghostSeconds * 1000.0 / Double(generated) : 0,
+                encodeMs: outputFrames > 0 ? encodeSeconds * 1000.0 / Double(outputFrames) : 0,
+                ioMs: 0
+            ))
             telemetry(t)
         }
 
-        while let sample = output.copyNextSampleBuffer() {
+        let ahead = FrameAheadReader(output: output, depth: 2)
+        while let item = ahead.next() {
             try await checkpoint.checkCancellation()
-            guard let decodedPB = CMSampleBufferGetImageBuffer(sample) else { continue }
+            let decodedPB = item.buffer
             sourceFrames += 1
+            BrokenTileDiagnostics.shared.inspect(decodedPB, stage: "03-rife-input-decoded", frame: sourceFrames, seconds: CMTimeGetSeconds(item.time))
+            decodeSeconds = ahead.averageDecodeMilliseconds * Double(sourceFrames) / 1000
 
-            let currentTime = CMSampleBufferGetPresentationTimeStamp(sample)
+            let currentTime = item.time
             var currentPB = decodedPB
 
             if let compressionGuard {
@@ -223,27 +249,28 @@ final class RIFEVideoProcessor {
                 }
             }
 
+            if compressionGuard != nil {
+                BrokenTileDiagnostics.shared.inspect(currentPB, stage: "04-rife-local-compression", frame: sourceFrames, seconds: CMTimeGetSeconds(currentTime))
+            }
+
             if let outlineEnhancer {
                 let started = CFAbsoluteTimeGetCurrent()
                 currentPB = try outlineEnhancer.enhance(currentPB)
                 outlineSeconds += CFAbsoluteTimeGetCurrent() - started
                 outlined += 1
             }
+            if outlineEnhancer != nil {
+                BrokenTileDiagnostics.shared.inspect(currentPB, stage: "05-rife-local-outline", frame: sourceFrames, seconds: CMTimeGetSeconds(currentTime))
+            }
+
+            // Enhancement stages can return pooled/reusable buffers. Make the frame
+            // entering the temporal RIFE state permanently owned by this pipeline.
+            currentPB = try PixelBufferOwnership.copy(currentPB)
 
             if previousPB == nil {
-                if resumeTime > .zero {
-                    // Decode one overlap source frame so the first post-checkpoint
-                    // interpolation still has a temporal predecessor. Its output
-                    // was already saved in the previous segment, so it is not
-                    // emitted again.
-                    previousPB = currentPB
-                    previousTime = currentTime
-                    try autoreleasepool { try tiledHQ.seed(currentPB) }
-                    continue
-                }
-
                 let started = CFAbsoluteTimeGetCurrent()
-                try await checkpoint.append10Bit(currentPB, at: .zero)
+                let firstOutputFrame = try colorPopGrade?.apply(currentPB) ?? currentPB
+                try await checkpoint.append10Bit(firstOutputFrame, at: .zero)
                 encodeSeconds += CFAbsoluteTimeGetCurrent() - started
                 outputFrames += 1
                 try autoreleasepool { try tiledHQ.seed(currentPB) }
@@ -265,7 +292,8 @@ final class RIFEVideoProcessor {
                 let rel = CMTimeGetSeconds(CMTimeSubtract(nextOutputTime, previousTime)) / spanSeconds
                 if rel <= 0.001 {
                     let started = CFAbsoluteTimeGetCurrent()
-                    try await checkpoint.append10Bit(prevPB, at: nextOutputTime)
+                    let repeatedOutputFrame = try colorPopGrade?.apply(prevPB) ?? prevPB
+                    try await checkpoint.append10Bit(repeatedOutputFrame, at: nextOutputTime)
                     encodeSeconds += CFAbsoluteTimeGetCurrent() - started
                     outputFrames += 1
                 } else {
@@ -275,9 +303,12 @@ final class RIFEVideoProcessor {
                 nextOutputTime = CMTimeAdd(nextOutputTime, frameStep)
             }
 
+            // RIFE streams may recycle output surfaces on a later push. Own every
+            // generated frame before any recovery inference can run and reuse that stream.
             let rifeStarted = CFAbsoluteTimeGetCurrent()
             let synthesized = try autoreleasepool {
-                try tiledHQ.interpolate(current: currentPB, timesteps: requestedTimesteps)
+                let raw = try tiledHQ.interpolate(current: currentPB, timesteps: requestedTimesteps)
+                return try raw.map { try PixelBufferOwnership.copy($0) }
             }
             rifeSeconds += CFAbsoluteTimeGetCurrent() - rifeStarted
 
@@ -368,9 +399,13 @@ final class RIFEVideoProcessor {
                 try await checkpoint.checkCancellation()
                 let synth = synthesized[index]
                 let t = Double(requestedTimesteps[index])
+                let diagnosticFrame = generated
+                let diagnosticTime = CMTimeGetSeconds(requestedTimes[index])
+                BrokenTileDiagnostics.shared.inspect(synth, stage: "04-rife-raw-generated", frame: diagnosticFrame, seconds: diagnosticTime)
                 var chosen: CVPixelBuffer = synth
                 var existingGuardRejected = false
                 var unresolvedColorAnomaly = false
+                var diagnosticFlagged = false
                 var fastCheck: FastMotionGhostGuard.Result?
 
                 if config.ghostProtection {
@@ -379,6 +414,7 @@ final class RIFEVideoProcessor {
                         colorArtifactGuard.inspect(previous: prevPB, candidate: chosen, next: currentPB, progress: t)
                     }
                     if colorInspection.isAnomaly {
+                        diagnosticFlagged = true
                         if let repaired = colorArtifactGuard.repair(
                             previous: prevPB,
                             candidate: chosen,
@@ -404,6 +440,7 @@ final class RIFEVideoProcessor {
                     }
                     ghostSeconds += CFAbsoluteTimeGetCurrent() - started
                     existingGuardRejected = check.reject || unresolvedColorAnomaly
+                    diagnosticFlagged = diagnosticFlagged || check.reject || unresolvedColorAnomaly
 
                     if let fastMotionGuard {
                         let fastStarted = CFAbsoluteTimeGetCurrent()
@@ -412,6 +449,7 @@ final class RIFEVideoProcessor {
                         }
                         ghostSeconds += CFAbsoluteTimeGetCurrent() - fastStarted
                         fastCheck = result
+                        diagnosticFlagged = diagnosticFlagged || result.reject || result.recoveryRecommended
                     }
 
                     // Never recursively interpolate across a detected cut or an
@@ -465,12 +503,18 @@ final class RIFEVideoProcessor {
                             DiagnosticsLogger.shared.log(
                                 "Fast-motion Ghost Guard final fallback • motion=\(String(format: "%.3f", fastCheck.motionScore)) • artifact=\(String(format: "%.3f", fastCheck.artifactScore)) • t=\(String(format: "%.3f", t))"
                             )
+                            PipelineStageTimer.recordRejection(
+                                seconds: CMTimeGetSeconds(requestedTimes[index]),
+                                reason: "Fast-motion Ghost Guard final fallback • motion=\(String(format: "%.3f", fastCheck.motionScore)) • artifact=\(String(format: "%.3f", fastCheck.artifactScore))",
+                                disposition: "replaced"
+                            )
                         }
                     } else if existingGuardRejected || (fastCheck?.reject ?? false) {
                         // Hard failures preserve the timestamp without blending.
                         // If the previous source frame is an isolated endpoint, use
                         // the current frame, which matched the prior scene context.
                         rejected += 1
+                        let rejectionReason = check.reason == "ok" ? (fastCheck?.reject == true ? "fast-motion artifact" : "guard rejected") : check.reason
                         if check.reason == "isolated scene-end frame" {
                             chosen = currentPB
                             DiagnosticsLogger.shared.log("Ghost Guard fallback • isolated scene-end source frame replaced • t=\(String(format: "%.3f", t))")
@@ -480,11 +524,22 @@ final class RIFEVideoProcessor {
                                 DiagnosticsLogger.shared.log("Ghost Guard fallback • scene boundary protected, recursive retry skipped • t=\(String(format: "%.3f", t))")
                             }
                         }
+                        PipelineStageTimer.recordRejection(
+                            seconds: CMTimeGetSeconds(requestedTimes[index]),
+                            reason: rejectionReason,
+                            disposition: "replaced"
+                        )
                     }
                 }
 
+                if diagnosticFlagged {
+                    BrokenTileDiagnostics.shared.inspect(synth, stage: "04-rife-raw-generated", frame: diagnosticFrame, seconds: diagnosticTime, force: true)
+                }
+                BrokenTileDiagnostics.shared.inspect(chosen, stage: "05-ghostguard-output", frame: diagnosticFrame, seconds: diagnosticTime, force: diagnosticFlagged)
                 let encodeStarted = CFAbsoluteTimeGetCurrent()
-                try await checkpoint.append10Bit(chosen, at: requestedTimes[index])
+                let finalOutputFrame = try colorPopGrade?.apply(chosen) ?? chosen
+                BrokenTileDiagnostics.shared.inspect(finalOutputFrame, stage: "06-colorpop-output", frame: diagnosticFrame, seconds: diagnosticTime, force: diagnosticFlagged)
+                try await checkpoint.append10Bit(finalOutputFrame, at: requestedTimes[index])
                 encodeSeconds += CFAbsoluteTimeGetCurrent() - encodeStarted
                 outputFrames += 1
                 generated += 1
@@ -563,6 +618,29 @@ final class RIFEVideoProcessor {
         guard adaptor.append(destination, withPresentationTime: time) else {
             throw ProcessorError.writer("failed appending 10-bit frame at \\(CMTimeGetSeconds(time)) s")
         }
+    }
+
+    private func exportWithoutRIFE(sourceURL: URL) async throws -> URL {
+        let asset = AVURLAsset(url: sourceURL)
+        let outputURL = FileManager.default.temporaryDirectory.appendingPathComponent("rife-off-\(UUID().uuidString).mov")
+        try? FileManager.default.removeItem(at: outputURL)
+        guard let session = AVAssetExportSession(asset: asset, presetName: AVAssetExportPresetPassthrough) else {
+            throw ProcessorError.writer("Could not create a passthrough export session for RIFE Off.")
+        }
+        session.outputURL = outputURL
+        session.outputFileType = .mov
+        session.shouldOptimizeForNetworkUse = true
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            session.exportAsynchronously {
+                switch session.status {
+                case .completed: continuation.resume(returning: ())
+                case .cancelled: continuation.resume(throwing: CancellationError())
+                case .failed: continuation.resume(throwing: ProcessorError.writer(session.error?.localizedDescription ?? "RIFE-off passthrough export failed."))
+                default: continuation.resume(throwing: ProcessorError.writer("RIFE-off passthrough export ended unexpectedly (\(session.status.rawValue))."))
+                }
+            }
+        }
+        return outputURL
     }
 
     private func addOriginalAudio(videoURL: URL, sourceAsset: AVAsset) async throws -> URL {
