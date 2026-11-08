@@ -29,6 +29,7 @@ struct ContentView: View {
     @State private var postRenderScreenDimmed = false
     @State private var postRenderSavedBrightness: CGFloat?
     @State private var postRenderSavedIdleTimerDisabled: Bool?
+    @State private var liveDefectPanelExpanded = true
 
     var body: some View {
         ZStack {
@@ -405,6 +406,13 @@ struct ContentView: View {
                             ProgressView(value: vm.progress)
                             Text(vm.statusText).font(.caption)
                             Button("Cancel", role: .destructive) { vm.cancel() }
+
+                            if vm.brokenTileDiagnosticsEnabled {
+                                LiveDefectCarousel(
+                                    defects: vm.liveDiagnosticDefects,
+                                    isExpanded: $liveDefectPanelExpanded
+                                )
+                            }
                         }
                         if vm.inputKind == .video {
                         Section("Live Performance") {
@@ -776,6 +784,89 @@ struct ContentView: View {
     }
 }
 
+
+
+private struct LiveDefectCarousel: View {
+    let defects: [LiveDiagnosticDefect]
+    @Binding var isExpanded: Bool
+
+    var body: some View {
+        DisclosureGroup(isExpanded: $isExpanded) {
+            if defects.isEmpty {
+                HStack(spacing: 8) {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text("Watching each processing stage for a localized defect…")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.vertical, 4)
+            } else {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    LazyHStack(spacing: 10) {
+                        ForEach(defects) { defect in
+                            LiveDefectCard(defect: defect)
+                        }
+                    }
+                    .padding(.vertical, 4)
+                }
+            }
+        } label: {
+            HStack(spacing: 7) {
+                Image(systemName: defects.isEmpty ? "viewfinder" : "exclamationmark.triangle.fill")
+                    .foregroundStyle(defects.isEmpty ? .secondary : .orange)
+                Text(defects.isEmpty ? "Live Defect Monitor" : "Live Defects (\(defects.count))")
+                    .font(.subheadline.weight(.semibold))
+                Spacer(minLength: 0)
+                if !defects.isEmpty {
+                    Text("New snapshots only")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .animation(.easeInOut(duration: 0.2), value: defects.count)
+    }
+}
+
+private struct LiveDefectCard: View {
+    let defect: LiveDiagnosticDefect
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if let image = UIImage(contentsOfFile: defect.imageURL.path) {
+                Image(uiImage: image)
+                    .resizable()
+                    .scaledToFill()
+                    .frame(width: 190, height: 108)
+                    .clipped()
+                    .clipShape(RoundedRectangle(cornerRadius: 10))
+            } else {
+                RoundedRectangle(cornerRadius: 10)
+                    .fill(.quaternary)
+                    .frame(width: 190, height: 108)
+                    .overlay(Image(systemName: "photo.badge.exclamationmark"))
+            }
+            VStack(alignment: .leading, spacing: 2) {
+                Text(defect.stage)
+                    .font(.caption.weight(.semibold))
+                    .lineLimit(1)
+                Text(String(format: "Frame %d • %.2fs • grid %dpx", defect.frame, defect.seconds, defect.grid))
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                Text(String(format: "Defect score %.2f • seam %.2f", defect.score, defect.seam))
+                    .font(.caption2.monospacedDigit())
+                    .foregroundStyle(.orange)
+            }
+        }
+        .frame(width: 190, alignment: .leading)
+        .padding(8)
+        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(.orange.opacity(0.35)))
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Defect detected at \(defect.stage), frame \(defect.frame), \(String(format: "%.2f", defect.seconds)) seconds")
+    }
+}
 
 private struct VideoSettingsPreviewSheet: View {
     @ObservedObject var viewModel: VideoProcessorViewModel
