@@ -53,7 +53,8 @@ enum DiagnosticsExport {
         let runs = Array(runFiles().prefix(5))
         guard let newest = runs.first else { return [] }
         var items = [newest]
-        if let zip = zip(runs) { items.append(zip) }
+        let tileFrames = BrokenTileDiagnostics.shared.exportFiles()
+        if let zip = zip(runs + tileFrames) { items.append(zip) }
         return items
     }
 
