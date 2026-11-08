@@ -149,10 +149,22 @@ final class TwoPassVideoProcessor {
         // RIFE output is only needed if nothing downstream of it is already finished.
         let rifeNeeded = !outlineCheckpointValid && !cugan4xCheckpointValid && !cuganCheckpointValid
         if rifeNeeded, let rifeCheckpoint {
-            rifeCheckpointValid = await validVideo(rifeCheckpoint, expectedDuration: sourceDuration)
+            // 720p normalization changes the working dimensions, so an older
+            // 1080p/4K checkpoint must never be reused for the new pipeline.
+            rifeCheckpointValid = await validVideo(
+                rifeCheckpoint,
+                expectedDuration: sourceDuration,
+                expectedWidth: sourceWidth,
+                expectedHeight: sourceHeight
+            )
         }
         if rifeNeeded, !rifeCheckpointValid, needsRestoration, let restoredCheckpoint {
-            restoredCheckpointValid = await validVideo(restoredCheckpoint, expectedDuration: sourceDuration)
+            restoredCheckpointValid = await validVideo(
+                restoredCheckpoint,
+                expectedDuration: sourceDuration,
+                expectedWidth: sourceWidth,
+                expectedHeight: sourceHeight
+            )
         }
 
         if outlineCheckpointValid || cugan4xCheckpointValid || cuganCheckpointValid || rifeCheckpointValid || restoredCheckpointValid {
