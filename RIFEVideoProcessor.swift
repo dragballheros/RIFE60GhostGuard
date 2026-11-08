@@ -234,7 +234,7 @@ final class RIFEVideoProcessor {
             try await checkpoint.checkCancellation()
             let decodedPB = item.buffer
             sourceFrames += 1
-            BrokenTileDiagnostics.shared.inspect(decodedPB, stage: "01-source-decode", frame: sourceFrames, seconds: CMTimeGetSeconds(item.time))
+            BrokenTileDiagnostics.shared.inspect(decodedPB, stage: "03-rife-input-decoded", frame: sourceFrames, seconds: CMTimeGetSeconds(item.time))
             decodeSeconds = ahead.averageDecodeMilliseconds * Double(sourceFrames) / 1000
 
             let currentTime = item.time
@@ -249,7 +249,9 @@ final class RIFEVideoProcessor {
                 }
             }
 
-            BrokenTileDiagnostics.shared.inspect(currentPB, stage: "02-compression-guard", frame: sourceFrames, seconds: CMTimeGetSeconds(currentTime))
+            if compressionGuard != nil {
+                BrokenTileDiagnostics.shared.inspect(currentPB, stage: "04-rife-local-compression", frame: sourceFrames, seconds: CMTimeGetSeconds(currentTime))
+            }
 
             if let outlineEnhancer {
                 let started = CFAbsoluteTimeGetCurrent()
@@ -257,7 +259,9 @@ final class RIFEVideoProcessor {
                 outlineSeconds += CFAbsoluteTimeGetCurrent() - started
                 outlined += 1
             }
-            BrokenTileDiagnostics.shared.inspect(currentPB, stage: "03-pre-rife-outline", frame: sourceFrames, seconds: CMTimeGetSeconds(currentTime))
+            if outlineEnhancer != nil {
+                BrokenTileDiagnostics.shared.inspect(currentPB, stage: "05-rife-local-outline", frame: sourceFrames, seconds: CMTimeGetSeconds(currentTime))
+            }
 
             // Enhancement stages can return pooled/reusable buffers. Make the frame
             // entering the temporal RIFE state permanently owned by this pipeline.
