@@ -54,6 +54,8 @@ final class TwoPassVideoProcessor {
             transientURLs.append(normalizedSourceURL)
         }
         let sourceURL = normalizedSourceURL
+        BrokenTileDiagnostics.shared.beginRun(enabled: config.brokenTileDiagnosticsEnabled)
+        await BrokenTileDiagnostics.shared.scanVideo(url: sourceURL, stage: "00-working-source")
 
         if colorPopStrength > 0 {
             DiagnosticsLogger.shared.log("Color Pop active • strength=\(String(format: "%.2f", colorPopStrength)) • applied once in the final active visual stage")
@@ -429,6 +431,7 @@ final class TwoPassVideoProcessor {
                             recoveryDirectory: recoveryDirectory,
                             fusedPolish: fusedOutline
                         )
+                        await BrokenTileDiagnostics.shared.scanVideo(url: generated, stage: "07-real-cugan-2x")
                         stageTimer.end("cugan")
                         stageTimer.freeze(["realCuganMs", "cuganDecodeMs", "cuganPackMs", "cuganPredictMs", "cuganStitchMs", "cuganSlots", "cuganStrategyLoaded"])
                         if fusePolish {
@@ -499,6 +502,7 @@ final class TwoPassVideoProcessor {
                             },
                             recoveryDirectory: recoveryDirectory
                         )
+                        await BrokenTileDiagnostics.shared.scanVideo(url: generated4x, stage: "08-real-cugan-4x")
                         if let cugan4xCheckpoint {
                             try persistCheckpoint(from: generated4x, to: cugan4xCheckpoint)
                             try? fm.removeItem(at: generated4x)
@@ -566,6 +570,7 @@ final class TwoPassVideoProcessor {
                     },
                     recoveryDirectory: recoveryDirectory
                 )
+                await BrokenTileDiagnostics.shared.scanVideo(url: generated, stage: "09-final-sharpie-output")
                 stageTimer.end("sharpie")
                 stageTimer.freeze(["finalOutlineMs", "sharpiePredictMs", "sharpiePredictWallMs", "sharpiePackMs", "sharpieUnpackMs"])
 
