@@ -121,17 +121,17 @@ final class ProductionSequenceParityTests: XCTestCase {
                 let psnr = PSNRHelper.compareInMemory(actual[index], expected[index])
                 XCTAssertGreaterThan(
                     psnr, 50.0,
-                    "720p padded pair=\\(testCase.pair) timestep=\\(testCase.timesteps[index]) parity PSNR=\\(psnr) dB"
+                    "720p padded pair=\(testCase.pair) timestep=\(testCase.timesteps[index]) parity PSNR=\(psnr) dB"
                 )
                 let defect = try localizedDifference(actual[index], expected[index], threshold: 8)
                 XCTAssertLessThanOrEqual(
                     defect.largestComponent, 64,
-                    "720p padded pair=\\(testCase.pair) timestep=\\(testCase.timesteps[index]) " +
-                    "localized divergence=\\(defect.largestComponent) bounds=\\(defect.bounds)"
+                    "720p padded pair=\(testCase.pair) timestep=\(testCase.timesteps[index]) " +
+                    "localized divergence=\(defect.largestComponent) bounds=\(defect.bounds)"
                 )
                 print(
-                    "RIFE_720P_PADDED_PARITY pair=\\(testCase.pair) timestep=\\(testCase.timesteps[index]) " +
-                    "psnr=\\(psnr) largest_local_component=\\(defect.largestComponent) bounds=\\(defect.bounds)"
+                    "RIFE_720P_PADDED_PARITY pair=\(testCase.pair) timestep=\(testCase.timesteps[index]) " +
+                    "psnr=\(psnr) largest_local_component=\(defect.largestComponent) bounds=\(defect.bounds)"
                 )
             }
         }
