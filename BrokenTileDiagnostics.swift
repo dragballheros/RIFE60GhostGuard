@@ -168,6 +168,92 @@ final class BrokenTileDiagnostics: @unchecked Sendable {
         )
     }
 
+    /// Compares a cached-stream output with stateless inference for the exact
+    /// same source pair. Reports localized block error as well as frame averages,
+    /// so a small rectangular corruption cannot disappear inside global PSNR.
+    func compareRifeStreamParity(_ stream: CVPixelBuffer,
+                                 _ stateless: CVPixelBuffer,
+                                 frame: Int,
+                                 timestep: Float) {
+        lock.lock()
+        let active = enabled
+        lock.unlock()
+        guard active else { return }
+
+        let width = CVPixelBufferGetWidth(stream)
+        let height = CVPixelBufferGetHeight(stream)
+        guard width == CVPixelBufferGetWidth(stateless),
+              height == CVPixelBufferGetHeight(stateless),
+              CVPixelBufferGetPixelFormatType(stream) == kCVPixelFormatType_32BGRA,
+              CVPixelBufferGetPixelFormatType(stateless) == kCVPixelFormatType_32BGRA else {
+            DiagnosticsLogger.shared.logSync(
+                "RIFE_STREAM_PARITY frame=\\(frame) t=\\(String(format: "%.3f", timestep)) comparable=false"
+            )
+            return
+        }
+
+        CVPixelBufferLockBaseAddress(stream, .readOnly)
+        CVPixelBufferLockBaseAddress(stateless, .readOnly)
+        guard let aBase = CVPixelBufferGetBaseAddress(stream),
+              let bBase = CVPixelBufferGetBaseAddress(stateless) else {
+            CVPixelBufferUnlockBaseAddress(stateless, .readOnly)
+            CVPixelBufferUnlockBaseAddress(stream, .readOnly)
+            DiagnosticsLogger.shared.logSync("RIFE_STREAM_PARITY frame=\\(frame) baseAddress=unavailable")
+            return
+        }
+
+        let aStride = CVPixelBufferGetBytesPerRow(stream)
+        let bStride = CVPixelBufferGetBytesPerRow(stateless)
+        let a = aBase.assumingMemoryBound(to: UInt8.self)
+        let b = bBase.assumingMemoryBound(to: UInt8.self)
+        var mismatchedPixels = 0
+        var maxChannelDelta = 0
+        var totalDelta: UInt64 = 0
+        var max32BlockMAE = 0.0
+        let block = 32
+
+        for blockY in stride(from: 0, to: height, by: block) {
+            for blockX in stride(from: 0, to: width, by: block) {
+                let endY = min(blockY + block, height)
+                let endX = min(blockX + block, width)
+                var blockDelta: UInt64 = 0
+                var blockChannels = 0
+                for y in blockY..<endY {
+                    let ar = a.advanced(by: y * aStride)
+                    let br = b.advanced(by: y * bStride)
+                    for x in blockX..<endX {
+                        let offset = x * 4
+                        var pixelDiffers = false
+                        for channel in 0..<4 {
+                            let delta = abs(Int(ar[offset + channel]) - Int(br[offset + channel]))
+                            if delta != 0 { pixelDiffers = true }
+                            maxChannelDelta = max(maxChannelDelta, delta)
+                            totalDelta += UInt64(delta)
+                            blockDelta += UInt64(delta)
+                            blockChannels += 1
+                        }
+                        if pixelDiffers { mismatchedPixels += 1 }
+                    }
+                }
+                if blockChannels > 0 {
+                    max32BlockMAE = max(max32BlockMAE, Double(blockDelta) / Double(blockChannels))
+                }
+            }
+        }
+
+        CVPixelBufferUnlockBaseAddress(stateless, .readOnly)
+        CVPixelBufferUnlockBaseAddress(stream, .readOnly)
+        let totalChannels = UInt64(width) * UInt64(height) * 4
+        let meanAbsDelta = totalChannels > 0 ? Double(totalDelta) / Double(totalChannels) : 0
+        DiagnosticsLogger.shared.logSync(
+            String(
+                format: "RIFE_STREAM_PARITY frame=%d t=%.3f mismatchPixels=%d/%d maxChannelDelta=%d meanAbsChannelDelta=%.5f max32BlockMAE=%.5f",
+                frame, timestep, mismatchedPixels, width * height,
+                maxChannelDelta, meanAbsDelta, max32BlockMAE
+            )
+        )
+    }
+
     func scanVideo(url: URL, stage: String) async {
         guard isEnabled else { return }
         do {

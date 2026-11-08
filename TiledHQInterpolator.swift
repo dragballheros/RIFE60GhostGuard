@@ -19,6 +19,10 @@ final class TiledHQInterpolator {
     private var seeded = false
     private let memoryAdaptive: Bool
     private let sharedInterpolator: RifeInterpolator?
+    /// Retained only for opt-in diagnostics so each cached result can be checked
+    /// against stateless inference using the exact same source-frame pair.
+    private let parityInterpolator: RifeInterpolator
+    private var streamOutputFrameIndex = 0
     private var sharedStream: RifeStream?
     private var previousFrame: CVPixelBuffer?
     private(set) var extractSeconds = 0.0
@@ -33,6 +37,7 @@ final class TiledHQInterpolator {
          memoryAdaptive: Bool = false) throws {
         self.memoryAdaptive = memoryAdaptive
         self.sharedInterpolator = memoryAdaptive ? interpolator : nil
+        self.parityInterpolator = interpolator
         self.width = width
         self.height = height
 
@@ -83,6 +88,7 @@ final class TiledHQInterpolator {
             guard outputs.isEmpty else {
                 throw ProcessorError.conversionFailed("HQ stream seed unexpectedly returned output")
             }
+            previousFrame = BrokenTileDiagnostics.shared.isEnabled ? frame : nil
             seeded = true
             return
         }
@@ -114,10 +120,38 @@ final class TiledHQInterpolator {
         // change the overlap pixels. rifePushMs is this single push.
         if bandCount == 1 {
             let started = CFAbsoluteTimeGetCurrent()
+            let previous = previousFrame
             let outputs = try autoreleasepool {
                 try streams[0].push(current, timesteps: timesteps)
             }
             pushSeconds += CFAbsoluteTimeGetCurrent() - started
+
+            // RIFE cache v2 verification: while opt-in diagnostics are active,
+            // compare sampled stream outputs with stateless inference on the
+            // identical source pair and timestep. This does not replace or
+            // modify the production output.
+            if BrokenTileDiagnostics.shared.isEnabled, let previous {
+                for index in outputs.indices {
+                    let diagnosticFrame = streamOutputFrameIndex + index
+                    guard diagnosticFrame % 15 == 0,
+                          index < timesteps.count else { continue }
+                    let reference = try parityInterpolator.interpolate(
+                        previous: previous,
+                        current: current,
+                        timesteps: [timesteps[index]]
+                    )
+                    if let stateless = reference.first {
+                        BrokenTileDiagnostics.shared.compareRifeStreamParity(
+                            outputs[index],
+                            stateless,
+                            frame: diagnosticFrame,
+                            timestep: timesteps[index]
+                        )
+                    }
+                }
+            }
+            streamOutputFrameIndex += outputs.count
+            previousFrame = BrokenTileDiagnostics.shared.isEnabled ? current : nil
             return outputs
         }
 
