@@ -83,14 +83,6 @@ struct ContentView: View {
                                     .foregroundStyle(.secondary)
                             }
                         }
-                        if vm.recoveryAvailable {
-                            Text(vm.recoveryStatusText)
-                                .font(.caption)
-                                .foregroundStyle(.orange)
-                            Text("Tap Process to resume from the furthest valid saved checkpoint.")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
                         if vm.inputURL != nil && (vm.inputKind == .video || vm.inputKind == .gif) {
                             HStack {
                                 Button {

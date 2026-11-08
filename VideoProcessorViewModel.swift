@@ -114,7 +114,10 @@ final class VideoProcessorViewModel: ObservableObject {
     private let batchStore = BatchMediaQueueStore()
     var isBusy: Bool { isProcessing || isBatchProcessing }
     var queueLocked: Bool {
-        isBusy || recoveryAvailable || (mediaQueue?.settingsKey != nil && mediaQueue?.nextItemID != nil)
+        // A saved crash-recovery checkpoint is informational, not a reason to lock
+        // the recipe controls. RecoveryStore.prepare() validates the configuration
+        // key and starts fresh if the user changes processing settings.
+        isBusy || (mediaQueue?.settingsKey != nil && mediaQueue?.nextItemID != nil)
     }
     var selectedQueueItem: BatchMediaItem? { mediaQueue?.items.first { $0.id == selectedMediaID } }
     var queueHasRemaining: Bool { mediaQueue?.nextItemID != nil }
