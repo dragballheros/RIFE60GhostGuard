@@ -308,7 +308,38 @@ final class RIFEVideoProcessor {
             let rifeStarted = CFAbsoluteTimeGetCurrent()
             let synthesized = try autoreleasepool {
                 let raw = try tiledHQ.interpolate(current: currentPB, timesteps: requestedTimesteps)
-                return try raw.map { try PixelBufferOwnership.copy($0) }
+                let owned = try raw.map { try PixelBufferOwnership.copy($0) }
+
+                // Capture matching inputs, native TiledHQ output, and app-owned
+                // copy. The prior "raw generated" diagnostic was actually post-copy.
+                if BrokenTileDiagnostics.shared.isEnabled {
+                    for index in raw.indices {
+                        let diagnosticFrame = generated + index
+                        guard diagnosticFrame % 15 == 0 else { continue }
+                        let diagnosticTime = CMTimeGetSeconds(requestedTimes[index])
+                        BrokenTileDiagnostics.shared.inspect(
+                            prevPB, stage: "03-rife-pair-previous",
+                            frame: diagnosticFrame, seconds: diagnosticTime, force: true
+                        )
+                        BrokenTileDiagnostics.shared.inspect(
+                            currentPB, stage: "03-rife-pair-current",
+                            frame: diagnosticFrame, seconds: diagnosticTime, force: true
+                        )
+                        BrokenTileDiagnostics.shared.inspect(
+                            raw[index], stage: "04-rife-native-output",
+                            frame: diagnosticFrame, seconds: diagnosticTime
+                        )
+                        BrokenTileDiagnostics.shared.inspect(
+                            owned[index], stage: "04-rife-owned-copy",
+                            frame: diagnosticFrame, seconds: diagnosticTime
+                        )
+                        BrokenTileDiagnostics.shared.comparePixelBuffers(
+                            raw[index], owned[index],
+                            frame: diagnosticFrame, seconds: diagnosticTime
+                        )
+                    }
+                }
+                return owned
             }
             rifeSeconds += CFAbsoluteTimeGetCurrent() - rifeStarted
 
@@ -401,7 +432,6 @@ final class RIFEVideoProcessor {
                 let t = Double(requestedTimesteps[index])
                 let diagnosticFrame = generated
                 let diagnosticTime = CMTimeGetSeconds(requestedTimes[index])
-                BrokenTileDiagnostics.shared.inspect(synth, stage: "04-rife-raw-generated", frame: diagnosticFrame, seconds: diagnosticTime)
                 var chosen: CVPixelBuffer = synth
                 var existingGuardRejected = false
                 var unresolvedColorAnomaly = false
