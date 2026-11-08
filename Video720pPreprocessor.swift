@@ -42,7 +42,6 @@ final class Video720pPreprocessor {
         try? fm.removeItem(at: outputURL)
 
         exporter.shouldOptimizeForNetworkUse = false
-        exporter.allowsParallelizedExport = false
 
         DiagnosticsLogger.shared.log(
             "720p input normalization • \(width)x\(height) → 720p working target • no final bitrate target applied"
