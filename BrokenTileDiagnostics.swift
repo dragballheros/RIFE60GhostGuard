@@ -125,7 +125,7 @@ final class BrokenTileDiagnostics: @unchecked Sendable {
               CVPixelBufferGetPixelFormatType(lhs) == kCVPixelFormatType_32BGRA,
               CVPixelBufferGetPixelFormatType(rhs) == kCVPixelFormatType_32BGRA else {
             DiagnosticsLogger.shared.logSync(
-                "RIFE_COPY_PARITY frame=\\(frame) t=\\(String(format: "%.3f", seconds)) comparable=false"
+                "RIFE_COPY_PARITY frame=\(frame) t=\(String(format: "%.3f", seconds)) comparable=false"
             )
             return
         }
@@ -136,7 +136,7 @@ final class BrokenTileDiagnostics: @unchecked Sendable {
               let rhsBase = CVPixelBufferGetBaseAddress(rhs) else {
             CVPixelBufferUnlockBaseAddress(rhs, .readOnly)
             CVPixelBufferUnlockBaseAddress(lhs, .readOnly)
-            DiagnosticsLogger.shared.logSync("RIFE_COPY_PARITY frame=\\(frame) baseAddress=unavailable")
+            DiagnosticsLogger.shared.logSync("RIFE_COPY_PARITY frame=\(frame) baseAddress=unavailable")
             return
         }
 
@@ -162,9 +162,9 @@ final class BrokenTileDiagnostics: @unchecked Sendable {
         CVPixelBufferUnlockBaseAddress(lhs, .readOnly)
 
         DiagnosticsLogger.shared.logSync(
-            "RIFE_COPY_PARITY frame=\\(frame) t=\\(String(format: "%.3f", seconds)) " +
-            "mismatchedPixels=\\(mismatchedPixels)/\\(width * height) maxChannelDelta=\\(maxDelta) " +
-            "sourceStride=\\(lhsStride) destinationStride=\\(rhsStride)"
+            "RIFE_COPY_PARITY frame=\(frame) t=\(String(format: "%.3f", seconds)) " +
+            "mismatchedPixels=\(mismatchedPixels)/\(width * height) maxChannelDelta=\(maxDelta) " +
+            "sourceStride=\(lhsStride) destinationStride=\(rhsStride)"
         )
     }
 
