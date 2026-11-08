@@ -20,7 +20,7 @@ enum DiagnosticsExport {
             let name = url.lastPathComponent
             let isRun = name.hasPrefix("run-") && url.pathExtension == "json"
             let isZip = name.hasPrefix("diagnostics-last-") && url.pathExtension == "zip"
-            let isTileFolder = name.hasPrefix("TileFrames-") && url.hasDirectoryPath
+            let isTileFolder = name.hasPrefix("TileFrames-") && ((try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true)
             guard isRun || isZip || isTileFolder else { continue }
             if removingAllRuns || modificationDate(url) < cutoff {
                 try? FileManager.default.removeItem(at: url)
