@@ -195,37 +195,51 @@ final class BrokenTileDiagnostics: @unchecked Sendable {
             if tenBit { return Double(words[offset / 2] >> 6) / 4.0 }
             return Double(bytes[offset])
         }
+
         var best: (score: Double, ratio: Double, meanSeam: Double, grid: Int)?
-        for grid in [32, 64, 128, 256] where grid < min(width, height) / 2 {
-            var seamTotal = 0.0
-            var baseTotal = 0.0
-            var seamCount = 0
-            var baseCount = 0
-            for x in stride(from: grid, to: width - 1, by: grid) {
-                for y in stride(from: 4, to: height - 4, by: 8) {
-                    seamTotal += abs(value(x, y) - value(x - 1, y))
-                    baseTotal += (abs(value(x - 3, y) - value(x - 4, y)) + abs(value(x + 3, y) - value(x + 2, y))) * 0.5
-                    seamCount += 1
-                    baseCount += 1
-                }
-            }
-            for y in stride(from: grid, to: height - 1, by: grid) {
-                for x in stride(from: 4, to: width - 4, by: 8) {
-                    seamTotal += abs(value(x, y) - value(x, y - 1))
-                    baseTotal += (abs(value(x, y - 3) - value(x, y - 4)) + abs(value(x, y + 3) - value(x, y + 2))) * 0.5
-                    seamCount += 1
-                    baseCount += 1
-                }
-            }
-            guard seamCount > 0, baseCount > 0 else { continue }
-            let seam = seamTotal / Double(seamCount)
-            let baseline = baseTotal / Double(baseCount)
+        func updateBest(seamTotal: Double, baselineTotal: Double, count: Int, grid: Int) {
+            guard count > 0 else { return }
+            let seam = seamTotal / Double(count)
+            let baseline = baselineTotal / Double(count)
             let ratio = seam / max(baseline, 1.0)
             let score = ratio * log1p(seam)
             if best == nil || score > best!.score {
                 best = (score, ratio, seam, grid)
             }
         }
+
+        // Score short local segments, not a whole-frame average. A single damaged
+        // tile should remain visible in the metric instead of being diluted by the
+        // many unaffected grid boundaries elsewhere in the frame.
+        for grid in [16, 32, 64, 128, 256] where grid < min(width, height) / 2 {
+            for x in stride(from: grid, to: width - 4, by: grid) {
+                for segmentY in stride(from: 4, to: height - 4, by: 64) {
+                    let endY = min(segmentY + 64, height - 4)
+                    var seam = 0.0
+                    var baseline = 0.0
+                    var count = 0
+                    for y in stride(from: segmentY, to: endY, by: 2) {
+                        seam += abs(value(x, y) - value(x - 1, y))
+                        baseline += (abs(value(x - 3, y) - value(x - 4, y)) + abs(value(x + 3, y) - value(x + 2, y))) * 0.5
+                        count += 1
+                    }
+                    updateBest(seamTotal: seam, baselineTotal: baseline, count: count, grid: grid)
+                }
+            }
+            for y in stride(from: grid, to: height - 4, by: grid) {
+                for segmentX in stride(from: 4, to: width - 4, by: 64) {
+                    let endX = min(segmentX + 64, width - 4)
+                    var seam = 0.0
+                    var baseline = 0.0
+                    var count = 0
+                    for x in stride(from: segmentX, to: endX, by: 2) {
+                        seam += abs(value(x, y) - value(x, y - 1))
+                        baseline += (abs(value(x, y - 3) - value(x, y - 4)) + abs(value(x, y + 3) - value(x, y + 2))) * 0.5
+                        count += 1
+                    }
+                    updateBest(seamTotal: seam, baselineTotal: baseline, count: count, grid: grid)
+                }
+            }
+        }
         return best
-    }
-}
+    }}
