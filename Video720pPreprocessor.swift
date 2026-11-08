@@ -29,8 +29,10 @@ final class Video720pPreprocessor {
             return sourceURL
         }
 
-        guard let exporter = AVAssetExportSession(asset: asset,
-                                                  presetName: AVAssetExportPreset1280x720) else {
+        guard let exporter = AVAssetExportSession(
+            asset: asset,
+            presetName: AVAssetExportPreset1280x720
+        ) else {
             throw ProcessorError.conversionFailed("could not create 720p export session")
         }
 
@@ -46,11 +48,48 @@ final class Video720pPreprocessor {
             "720p input normalization • \(width)x\(height) → 720p working target • no final bitrate target applied"
         )
 
-        let outputType: AVFileType = exporter.supportedFileTypes.contains(.mov) ? .mov : (exporter.supportedFileTypes.first ?? .mov)
+        let outputType: AVFileType = exporter.supportedFileTypes.contains(.mov)
+            ? .mov
+            : (exporter.supportedFileTypes.first ?? .mov)
+
+        exporter.outputURL = outputURL
+        exporter.outputFileType = outputType
+
         do {
-            try await exporter.export(to: outputURL, as: outputType)
+            // Use the iOS 16-compatible export API. The async
+            // export(to:as:) API is only back-deployed from iOS 26 and
+            // therefore must not be referenced directly by this iOS 16+
+            // target's deployment path.
+            try await withCheckedThrowingContinuation { continuation in
+                exporter.exportAsynchronously {
+                    switch exporter.status {
+                    case .completed:
+                        continuation.resume(returning: ())
+                    case .cancelled:
+                        continuation.resume(throwing: CancellationError())
+                    case .failed, .unknown, .waiting, .exporting:
+                        continuation.resume(
+                            throwing: ProcessorError.writer(
+                                "720p input normalization failed: \(exporter.error?.localizedDescription ?? "export did not complete")"
+                            )
+                        )
+                    @unknown default:
+                        continuation.resume(
+                            throwing: ProcessorError.writer(
+                                "720p input normalization failed with an unknown export status"
+                            )
+                        )
+                    }
+                }
+            }
         } catch {
             try? fm.removeItem(at: outputURL)
+            if error is CancellationError {
+                throw error
+            }
+            if let processorError = error as? ProcessorError {
+                throw processorError
+            }
             throw ProcessorError.writer("720p input normalization failed: \(error.localizedDescription)")
         }
 
