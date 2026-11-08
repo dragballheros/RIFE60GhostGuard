@@ -314,7 +314,7 @@ final class TwoPassVideoProcessor {
                 guard let rifeInput = rifeSourceURL else { throw ProcessorError.noOutput }
                 if let rifeCheckpoint { try? fm.removeItem(at: rifeCheckpoint) }
                 progress(0.11, "Pass 2/4 • Loading full-frame RIFE HQ…")
-                let pass2Config = ProcessorConfiguration(
+                var pass2Config = ProcessorConfiguration(
                     quality: config.quality,
                     ghostProtection: config.ghostProtection,
                     sceneCutProtection: config.sceneCutProtection,
@@ -322,9 +322,9 @@ final class TwoPassVideoProcessor {
                     outlineProtection: false,
                     ghostSensitivity: config.ghostSensitivity,
                     preserveAudio: false,
-                    targetFPS: config.targetFPS,
-                    brokenTileDiagnosticsEnabled: config.brokenTileDiagnosticsEnabled
+                    targetFPS: config.targetFPS
                 )
+                pass2Config.brokenTileDiagnosticsEnabled = config.brokenTileDiagnosticsEnabled
                 let visualPolish = config.outlineProtection || config.colorRebuild || config.outlineRebuild
                 let rifeIsFinalVisualStage = (!upscaleTo4K || automaticCuganPasses == 0) && !visualPolish
                 let rife = RIFEVideoProcessor(
