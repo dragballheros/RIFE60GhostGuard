@@ -115,6 +115,25 @@ final class BrokenTileDiagnostics: @unchecked Sendable {
         }
     }
 
+    func finishRun() {
+        lock.lock()
+        guard enabled else { lock.unlock(); return }
+        let report = sampleCounts.keys.sorted().map { stage -> String in
+            let values = candidates[stage] ?? []
+            let strongest = values.max(by: { $0.score < $1.score })
+            if let strongest {
+                return String(format: "%@ samples=%d retained=%d strongestFrame=%d t=%.3fs grid=%d ratio=%.3f seam=%.2f",
+                              stage, sampleCounts[stage] ?? 0, values.count, strongest.frame,
+                              strongest.seconds, strongest.grid, strongest.ratio, strongest.meanSeam)
+            }
+            return "\(stage) samples=\(sampleCounts[stage] ?? 0) retained=0"
+        }.joined(separator: " | ")
+        enabled = false
+        lock.unlock()
+        let detail = report.isEmpty ? "no pixel-buffer samples" : report
+        DiagnosticsLogger.shared.logSync("BROKEN-TILE DIAGNOSTICS COMPLETE • run=\(runID) • \(detail)")
+    }
+
     func exportFiles() -> [URL] {
         lock.lock()
         defer { lock.unlock() }
