@@ -53,11 +53,11 @@ final class BrokenTileDiagnostics: @unchecked Sendable {
     }
 
     /// Called on decoded/intermediate pixel buffers. Samples at 4 Hz for 60 FPS video.
-    func inspect(_ pixelBuffer: CVPixelBuffer, stage: String, frame: Int, seconds: Double) {
+    func inspect(_ pixelBuffer: CVPixelBuffer, stage: String, frame: Int, seconds: Double, force: Bool = false) {
         lock.lock()
         let active = enabled
         lock.unlock()
-        guard active, frame % 15 == 0 else { return }
+        guard active, force || frame % 15 == 0 else { return }
         CVPixelBufferLockBaseAddress(pixelBuffer, .readOnly)
         let format = CVPixelBufferGetPixelFormatType(pixelBuffer)
         let planar = CVPixelBufferGetPlaneCount(pixelBuffer) > 0
@@ -149,8 +149,9 @@ final class BrokenTileDiagnostics: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         guard enabled, let outputDirectory else { return }
-        sampleCounts[stage, default: 0] += 1
         let existing = candidates[stage] ?? []
+        if existing.contains(where: { $0.frame == frame }) { return }
+        sampleCounts[stage, default: 0] += 1
         if existing.count >= maximumSnapshotsPerStage,
            let weakest = existing.min(by: { $0.score < $1.score }),
            score <= weakest.score { return }
