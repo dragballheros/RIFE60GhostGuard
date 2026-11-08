@@ -567,6 +567,7 @@ final class VideoProcessorViewModel: ObservableObject {
                     guard let self, self.renderGeneration == generation, self.isProcessing else { return }
                     self.telemetry = sample
                 } })
+                BrokenTileDiagnostics.shared.finishRun()
                 try Task.checkCancellation()
 
                 await MainActor.run {
@@ -593,9 +594,11 @@ final class VideoProcessorViewModel: ObservableObject {
                     self.blackScreenTask?.cancel(); self.processingScreenAwake = true; self.restoreDisplayState()
                 }
             } catch is CancellationError {
+                BrokenTileDiagnostics.shared.finishRun()
                 RecoveryStore.markCancelled()
                 await MainActor.run { [weak self] in guard let self else { return }; self.statusText = "Cancelled • checkpoints kept"; self.recoveryAvailable = true; self.recoveryStatusText = "Resume available from the last completed checkpoint"; self.isProcessing = false; self.currentTask = nil; self.blackScreenTask?.cancel(); self.processingScreenAwake = true; self.restoreDisplayState() }
             } catch {
+                BrokenTileDiagnostics.shared.finishRun()
                 RecoveryStore.markFailed(error)
                 await MainActor.run { [weak self] in guard let self else { return }; self.errorText = error.localizedDescription; self.statusText = "Failed • recovery data kept"; self.recoveryAvailable = RecoveryStore.existingJob() != nil; self.recoveryStatusText = self.recoveryAvailable ? "Resume available from the last completed checkpoint" : ""; self.isProcessing = false; self.currentTask = nil; self.blackScreenTask?.cancel(); self.processingScreenAwake = true; self.restoreDisplayState() }
             }
