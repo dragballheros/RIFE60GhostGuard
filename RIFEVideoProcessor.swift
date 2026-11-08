@@ -395,7 +395,7 @@ final class RIFEVideoProcessor {
                 try await checkpoint.checkCancellation()
                 let synth = synthesized[index]
                 let t = Double(requestedTimesteps[index])
-                let diagnosticFrame = generated + index
+                let diagnosticFrame = generated
                 let diagnosticTime = CMTimeGetSeconds(requestedTimes[index])
                 BrokenTileDiagnostics.shared.inspect(synth, stage: "04-rife-raw-generated", frame: diagnosticFrame, seconds: diagnosticTime)
                 var chosen: CVPixelBuffer = synth
