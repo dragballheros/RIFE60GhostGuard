@@ -250,6 +250,8 @@ final class TwoPassVideoProcessor {
             PipelineStageTimer.current?.record("animeRestoreMs", milliseconds: 0)
         }
 
+        await BrokenTileDiagnostics.shared.scanVideo(url: pipelineSource, stage: "01-post-anime-restore")
+
         if rifeNeeded && !rifeCheckpointValid {
             if needsRestoration {
                 if restoredCheckpointValid, let restoredCheckpoint {
@@ -298,6 +300,10 @@ final class TwoPassVideoProcessor {
             }
         }
 
+        if let rifeSourceURL {
+            await BrokenTileDiagnostics.shared.scanVideo(url: rifeSourceURL, stage: "02-post-restoration-pre-rife")
+        }
+
         var rifeResult: URL?
         if rifeNeeded {
             if rifeCheckpointValid, let rifeCheckpoint {
@@ -316,7 +322,8 @@ final class TwoPassVideoProcessor {
                     outlineProtection: false,
                     ghostSensitivity: config.ghostSensitivity,
                     preserveAudio: false,
-                    targetFPS: config.targetFPS
+                    targetFPS: config.targetFPS,
+                    brokenTileDiagnosticsEnabled: config.brokenTileDiagnosticsEnabled
                 )
                 let visualPolish = config.outlineProtection || config.colorRebuild || config.outlineRebuild
                 let rifeIsFinalVisualStage = (!upscaleTo4K || automaticCuganPasses == 0) && !visualPolish
