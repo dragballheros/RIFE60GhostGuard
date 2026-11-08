@@ -107,6 +107,67 @@ final class BrokenTileDiagnostics: @unchecked Sendable {
     }
 
     /// Scans completed stage movies at 4 Hz and retains the five strongest tile-grid candidates.
+    /// Compares visible pixel bytes before and after the app-owned snapshot copy.
+    /// This isolates copy/stride corruption from inference output corruption.
+    func comparePixelBuffers(_ lhs: CVPixelBuffer,
+                             _ rhs: CVPixelBuffer,
+                             frame: Int,
+                             seconds: Double) {
+        lock.lock()
+        let active = enabled
+        lock.unlock()
+        guard active, frame % 15 == 0 else { return }
+
+        let width = CVPixelBufferGetWidth(lhs)
+        let height = CVPixelBufferGetHeight(lhs)
+        guard width == CVPixelBufferGetWidth(rhs),
+              height == CVPixelBufferGetHeight(rhs),
+              CVPixelBufferGetPixelFormatType(lhs) == kCVPixelFormatType_32BGRA,
+              CVPixelBufferGetPixelFormatType(rhs) == kCVPixelFormatType_32BGRA else {
+            DiagnosticsLogger.shared.logSync(
+                "RIFE_COPY_PARITY frame=\\(frame) t=\\(String(format: "%.3f", seconds)) comparable=false"
+            )
+            return
+        }
+
+        CVPixelBufferLockBaseAddress(lhs, .readOnly)
+        CVPixelBufferLockBaseAddress(rhs, .readOnly)
+        guard let lhsBase = CVPixelBufferGetBaseAddress(lhs),
+              let rhsBase = CVPixelBufferGetBaseAddress(rhs) else {
+            CVPixelBufferUnlockBaseAddress(rhs, .readOnly)
+            CVPixelBufferUnlockBaseAddress(lhs, .readOnly)
+            DiagnosticsLogger.shared.logSync("RIFE_COPY_PARITY frame=\\(frame) baseAddress=unavailable")
+            return
+        }
+
+        let lhsStride = CVPixelBufferGetBytesPerRow(lhs)
+        let rhsStride = CVPixelBufferGetBytesPerRow(rhs)
+        var mismatchedPixels = 0
+        var maxDelta = 0
+        for y in 0..<height {
+            let a = lhsBase.advanced(by: y * lhsStride).assumingMemoryBound(to: UInt8.self)
+            let b = rhsBase.advanced(by: y * rhsStride).assumingMemoryBound(to: UInt8.self)
+            for x in 0..<width {
+                let offset = x * 4
+                var pixelDiffers = false
+                for channel in 0..<4 {
+                    let delta = abs(Int(a[offset + channel]) - Int(b[offset + channel]))
+                    if delta != 0 { pixelDiffers = true }
+                    maxDelta = max(maxDelta, delta)
+                }
+                if pixelDiffers { mismatchedPixels += 1 }
+            }
+        }
+        CVPixelBufferUnlockBaseAddress(rhs, .readOnly)
+        CVPixelBufferUnlockBaseAddress(lhs, .readOnly)
+
+        DiagnosticsLogger.shared.logSync(
+            "RIFE_COPY_PARITY frame=\\(frame) t=\\(String(format: "%.3f", seconds)) " +
+            "mismatchedPixels=\\(mismatchedPixels)/\\(width * height) maxChannelDelta=\\(maxDelta) " +
+            "sourceStride=\\(lhsStride) destinationStride=\\(rhsStride)"
+        )
+    }
+
     func scanVideo(url: URL, stage: String) async {
         guard isEnabled else { return }
         do {
