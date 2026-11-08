@@ -59,14 +59,16 @@ final class BrokenTileDiagnostics: @unchecked Sendable {
         lock.unlock()
         guard active, frame % 15 == 0 else { return }
         CVPixelBufferLockBaseAddress(pixelBuffer, .readOnly)
-        let base = CVPixelBufferGetBaseAddressOfPlane(pixelBuffer, 0)
-        let width = CVPixelBufferGetWidthOfPlane(pixelBuffer, 0)
-        let height = CVPixelBufferGetHeightOfPlane(pixelBuffer, 0)
-        let rowBytes = CVPixelBufferGetBytesPerRowOfPlane(pixelBuffer, 0)
         let format = CVPixelBufferGetPixelFormatType(pixelBuffer)
+        let planar = CVPixelBufferGetPlaneCount(pixelBuffer) > 0
+        let base = planar ? CVPixelBufferGetBaseAddressOfPlane(pixelBuffer, 0) : CVPixelBufferGetBaseAddress(pixelBuffer)
+        let width = planar ? CVPixelBufferGetWidthOfPlane(pixelBuffer, 0) : CVPixelBufferGetWidth(pixelBuffer)
+        let height = planar ? CVPixelBufferGetHeightOfPlane(pixelBuffer, 0) : CVPixelBufferGetHeight(pixelBuffer)
+        let rowBytes = planar ? CVPixelBufferGetBytesPerRowOfPlane(pixelBuffer, 0) : CVPixelBufferGetBytesPerRow(pixelBuffer)
         let isTenBit = format == kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange
             || format == kCVPixelFormatType_420YpCbCr10BiPlanarFullRange
-        let score = base.flatMap { seamScore(base: $0, width: width, height: height, rowBytes: rowBytes, tenBit: isTenBit) }
+        let isBGRA = format == kCVPixelFormatType_32BGRA
+        let score = base.flatMap { seamScore(base: $0, width: width, height: height, rowBytes: rowBytes, tenBit: isTenBit, bgra: isBGRA) }
         CVPixelBufferUnlockBaseAddress(pixelBuffer, .readOnly)
         guard let score else { return }
         consider(
@@ -177,11 +179,18 @@ final class BrokenTileDiagnostics: @unchecked Sendable {
         ))
     }
 
-    private func seamScore(base: UnsafeMutableRawPointer, width: Int, height: Int, rowBytes: Int, tenBit: Bool) -> (score: Double, ratio: Double, meanSeam: Double, grid: Int)? {
+    private func seamScore(base: UnsafeMutableRawPointer, width: Int, height: Int, rowBytes: Int, tenBit: Bool, bgra: Bool) -> (score: Double, ratio: Double, meanSeam: Double, grid: Int)? {
         guard width > 256, height > 256 else { return nil }
         let bytes = base.assumingMemoryBound(to: UInt8.self)
         let words = base.assumingMemoryBound(to: UInt16.self)
         func value(_ x: Int, _ y: Int) -> Double {
+            if bgra {
+                let offset = y * rowBytes + x * 4
+                let blue = Double(bytes[offset])
+                let green = Double(bytes[offset + 1])
+                let red = Double(bytes[offset + 2])
+                return 0.114 * blue + 0.587 * green + 0.299 * red
+            }
             let offset = y * rowBytes + x * (tenBit ? 2 : 1)
             if tenBit { return Double(words[offset / 2] >> 6) / 4.0 }
             return Double(bytes[offset])
