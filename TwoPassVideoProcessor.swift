@@ -585,7 +585,6 @@ final class TwoPassVideoProcessor {
                     },
                     recoveryDirectory: recoveryDirectory
                 )
-                await BrokenTileDiagnostics.shared.scanVideo(url: generated, stage: "09-final-sharpie-output")
                 stageTimer.end("sharpie")
                 stageTimer.freeze(["finalOutlineMs", "sharpiePredictMs", "sharpiePredictWallMs", "sharpiePackMs", "sharpieUnpackMs"])
 
@@ -606,6 +605,8 @@ final class TwoPassVideoProcessor {
             guard let finalInput = postCUGANSource else { throw ProcessorError.noOutput }
             videoForMux = finalInput
         }
+
+        await BrokenTileDiagnostics.shared.scanVideo(url: videoForMux, stage: "09-final-sharpie-output")
 
         let finalVideoInput: URL
         if recoveryDirectory != nil {
