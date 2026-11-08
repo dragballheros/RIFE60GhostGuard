@@ -363,6 +363,10 @@ final class TwoPassVideoProcessor {
             }
         }
 
+        if let rifeResult {
+            await BrokenTileDiagnostics.shared.scanVideo(url: rifeResult, stage: "06-rife-encoded-output")
+        }
+
         // Real-CUGAN sees the clean RIFE output, never the Sharpie output.
         // For low-resolution sources below 1080p, automatically run two native
         // 2× passes when the 4× result fits the 40 MP working budget.
@@ -521,6 +525,10 @@ final class TwoPassVideoProcessor {
                 postCUGANSource = rifeResult
                 if !visualPolish { progress(0.97, "RIFE HQ complete") }
             }
+        }
+
+        if let postCUGANSource {
+            await BrokenTileDiagnostics.shared.scanVideo(url: postCUGANSource, stage: "07-pre-sharpie-input")
         }
 
         // FINAL VISUAL PASS: apply the slightly narrower Sharpie model only after
