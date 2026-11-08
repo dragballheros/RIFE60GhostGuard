@@ -96,6 +96,9 @@ final class VideoProcessorViewModel: ObservableObject {
     @Published var etaSeconds: Double? = nil
     @Published var recoveryAvailable = false
     @Published var recoveryStatusText = ""
+    @Published var brokenTileDiagnosticsEnabled = UserDefaults.standard.object(forKey: "RIFE60.brokenTileDiagnostics") as? Bool ?? true {
+        didSet { UserDefaults.standard.set(brokenTileDiagnosticsEnabled, forKey: "RIFE60.brokenTileDiagnostics") }
+    }
     @Published var diagnosticsCopyStatus = ""
     @Published var showingDiagnosticsShare = false
     @Published var diagnosticsShareItems: [URL] = []
@@ -489,6 +492,7 @@ final class VideoProcessorViewModel: ObservableObject {
         let upscale = upscaleTo4K
         let upscaleBeforeRIFE = upscaleFirst && upscale
         let modelCompute = computePreference.rawValue
+        let tileDiagnostics = brokenTileDiagnosticsEnabled
         let selectedTargetFPS = self.selectedTargetFPS
         let configKey = ["pipeline-v7-rebuild", "hq", "ghost=\(guardEnabled)", "cuts=\(cuts)", "compression=\(compressionEnabled)", "outline=\(outlineEnabled)", "colorRebuild=\(colorRebuild)", String(format: "colorRebuildStrength=%.2f", colorStrength), "outlineRebuild=\(lineRebuild)", String(format: "outlineRebuildStrength=%.2f", lineStrength), "animeRestore=\(animeRestoreUser)", String(format: "animeRestoreStrength=%.2f", animeRestoreUserStrength), "animeRestoreSuppressAuto=\(animeRestoreSuppress)", "animeRestoreQuality=\(animeRestoreQualityChoice)", "colorpop=\(colorPop)", "colorpopStrength=\(gradeStrength)", "warmthMode=\(warmthMode)", "skinToneMode=\(skinToneMode)", "watermark=\(watermark.enabled)", "watermarkMasks=\(watermark.serializedRegions)", "watermarkPadding=\(watermark.paddingPixels)", "watermarkModel=\(watermark.model.rawValue)", String(format: "sensitivity=%.2f", sensitivity), "audio=\(audio)", "reddit=\(redditMode)", "videoToGIF=\(videoToGIFEnabled)", "upscale=\(upscale)", "upscaleFirst=\(upscaleBeforeRIFE)", "computeUnits=\(modelCompute)", "fps=60"].joined(separator: "|")
         DiagnosticsLogger.shared.log("Render requested • \(configKey)")
@@ -545,6 +549,7 @@ final class VideoProcessorViewModel: ObservableObject {
                 config.animeRestoreSuppressAuto = animeRestoreSuppress
                 config.animeRestoreStrength = animeRestoreUserStrength
                 config.animeRestoreQuality = animeRestoreQualityChoice
+                config.brokenTileDiagnosticsEnabled = tileDiagnostics
                 let processor = TwoPassVideoProcessor(configuration: config, upscaleTo4K: upscale, colorPopEnabled: colorPop, colorPopStrength: gradeStrength, watermark: watermark, upscaleFirst: upscaleBeforeRIFE)
                 let result = try await processor.process(sourceURL: job.sourceURL, recoveryDirectory: job.directory, progress: { p, message in
                     RecoveryStore.update(progress: p, message: message)
