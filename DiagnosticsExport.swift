@@ -52,11 +52,12 @@ enum DiagnosticsExport {
     static func shareItems() -> [URL] {
         ensureFolder()
         let runs = Array(runFiles().prefix(5))
-        guard let newest = runs.first else { return [] }
-        var items = [newest]
         let tileFrames = BrokenTileDiagnostics.shared.exportFiles()
         let logURL = directoryURL()?.appendingPathComponent("latest.log")
         let logFiles = logURL.map { FileManager.default.fileExists(atPath: $0.path) ? [$0] : [] } ?? []
+        guard !runs.isEmpty || !tileFrames.isEmpty || !logFiles.isEmpty else { return [] }
+        var items: [URL] = []
+        if let newest = runs.first { items.append(newest) }
         if let zip = zip(runs + tileFrames + logFiles) { items.append(zip) }
         return items
     }
