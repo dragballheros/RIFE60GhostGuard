@@ -5,6 +5,19 @@ import CoreVideo
 import ImageIO
 import UIKit
 
+/// A retained defect snapshot produced only when the live detector sees a frame that is materially more suspicious than the stage baseline.
+struct LiveDiagnosticDefect: Identifiable, Sendable {
+    let id: UUID
+    let stage: String
+    let frame: Int
+    let seconds: Double
+    let grid: Int
+    let ratio: Double
+    let seam: Double
+    let score: Double
+    let imageURL: URL
+}
+
 /// Opt-in, read-only diagnostics that compare the same processing stages without changing pixels.
 final class BrokenTileDiagnostics: @unchecked Sendable {
     static let shared = BrokenTileDiagnostics()
@@ -27,8 +40,16 @@ final class BrokenTileDiagnostics: @unchecked Sendable {
     private var candidates: [String: [Candidate]] = [:]
     private var sampleCounts: [String: Int] = [:]
     private var outputDirectory: URL?
+    private var liveDefectHandler: ((LiveDiagnosticDefect) -> Void)?
+    private var recentScores: [String: [Double]] = [:]
 
     private init() {}
+
+    func setLiveDefectHandler(_ handler: ((LiveDiagnosticDefect) -> Void)?) {
+        lock.lock()
+        liveDefectHandler = handler
+        lock.unlock()
+    }
 
     func beginRun(enabled: Bool) {
         lock.lock()
@@ -38,6 +59,7 @@ final class BrokenTileDiagnostics: @unchecked Sendable {
         runID = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "")
         candidates.removeAll()
         sampleCounts.removeAll()
+        recentScores.removeAll()
         let root = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("Diagnostics", isDirectory: true)
         let folder = root.appendingPathComponent("TileFrames-\(runID)", isDirectory: true)
@@ -132,6 +154,7 @@ final class BrokenTileDiagnostics: @unchecked Sendable {
             return "\(stage) samples=\(sampleCounts[stage] ?? 0) retained=0"
         }.joined(separator: " | ")
         enabled = false
+        liveDefectHandler = nil
         lock.unlock()
         let detail = report.isEmpty ? "no pixel-buffer samples" : report
         DiagnosticsLogger.shared.logSync("BROKEN-TILE DIAGNOSTICS COMPLETE • run=\(runID) • \(detail)")
@@ -153,6 +176,18 @@ final class BrokenTileDiagnostics: @unchecked Sendable {
         let existing = candidates[stage] ?? []
         if existing.contains(where: { $0.frame == frame }) { return }
         sampleCounts[stage, default: 0] += 1
+
+        // Do not turn the carousel into a slideshow of normal frames. A live defect
+        // must either be explicitly forced by a guard, or be a strong outlier against
+        // the recent score history for this stage. The first few samples establish a
+        // baseline without writing screenshots.
+        let history = recentScores[stage] ?? []
+        let baseline = robustBaseline(history)
+        let adaptiveThreshold = baseline.map { max(2.25, $0 + 4.0 * robustMAD(history, around: $0)) } ?? 2.25
+        let isDefect = force || score >= adaptiveThreshold
+        recentScores[stage] = Array((history + [score]).suffix(24))
+        guard isDefect else { return }
+
         if !force,
            existing.count >= maximumSnapshotsPerStage,
            let weakest = existing.min(by: { $0.score < $1.score }),
@@ -176,10 +211,30 @@ final class BrokenTileDiagnostics: @unchecked Sendable {
         }
         updated.append(Candidate(score: score, ratio: ratio, meanSeam: meanSeam, frame: frame, seconds: seconds, grid: grid, url: destination))
         candidates[stage] = updated
+        let live = LiveDiagnosticDefect(
+            id: UUID(), stage: stage, frame: frame, seconds: seconds,
+            grid: grid, ratio: ratio, seam: meanSeam, score: score, imageURL: destination
+        )
+        let handler = liveDefectHandler
         DiagnosticsLogger.shared.logSync(String(
             format: "TILE SAMPLE • stage=%@ • frame=%d • t=%.3fs • grid=%dpx • seamRatio=%.3f • seamMean=%.2f • score=%.3f • retained=%d",
             stage, frame, seconds, grid, ratio, meanSeam, score, updated.count
         ))
+        if let handler {
+            Task { @MainActor in handler(live) }
+        }
+    }
+
+    private func robustBaseline(_ values: [Double]) -> Double? {
+        guard !values.isEmpty else { return nil }
+        let sorted = values.sorted()
+        return sorted[sorted.count / 2]
+    }
+
+    private func robustMAD(_ values: [Double], around center: Double) -> Double {
+        guard !values.isEmpty else { return 0.0 }
+        let deviations = values.map { abs($0 - center) }.sorted()
+        return deviations[deviations.count / 2]
     }
 
     private func seamScore(base: UnsafeMutableRawPointer, width: Int, height: Int, rowBytes: Int, tenBit: Bool, bgra: Bool) -> (score: Double, ratio: Double, meanSeam: Double, grid: Int)? {
