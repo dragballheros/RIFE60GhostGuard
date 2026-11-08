@@ -33,6 +33,12 @@ enum DiagnosticsExport {
         return docs.appendingPathComponent("Diagnostics", isDirectory: true)
     }
 
+    static var hasShareableContent: Bool {
+        if !runFiles().isEmpty || !BrokenTileDiagnostics.shared.exportFiles().isEmpty { return true }
+        guard let logURL = directoryURL()?.appendingPathComponent("latest.log") else { return false }
+        return FileManager.default.fileExists(atPath: logURL.path)
+    }
+
     static func runFiles() -> [URL] {
         guard let directory = directoryURL(),
               let urls = try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: [.contentModificationDateKey], options: [.skipsHiddenFiles]) else {
