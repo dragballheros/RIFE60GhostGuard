@@ -55,7 +55,9 @@ enum DiagnosticsExport {
         guard let newest = runs.first else { return [] }
         var items = [newest]
         let tileFrames = BrokenTileDiagnostics.shared.exportFiles()
-        if let zip = zip(runs + tileFrames) { items.append(zip) }
+        let logURL = directoryURL()?.appendingPathComponent("latest.log")
+        let logFiles = logURL.map { FileManager.default.fileExists(atPath: $0.path) ? [$0] : [] } ?? []
+        if let zip = zip(runs + tileFrames + logFiles) { items.append(zip) }
         return items
     }
 
