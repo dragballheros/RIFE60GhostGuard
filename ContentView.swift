@@ -439,6 +439,11 @@ struct ContentView: View {
                     }
 
                     Section("Diagnostics") {
+                        Toggle("Broken-Tile Stage Diagnostics", isOn: $vm.brokenTileDiagnosticsEnabled)
+                            .disabled(vm.isBusy || vm.isImporting)
+                        Text("Samples each pipeline boundary at 4 frames per second, scores 32/64/128/256-pixel grid seams, and retains the strongest frame examples per stage in the diagnostics ZIP. Does not alter rendered pixels.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                         Button { vm.benchmarkModels() } label: { Label("Benchmark Models", systemImage: "speedometer") }
                             .disabled(vm.isBusy || vm.isBenchmarking || vm.isImporting)
                         Button { vm.shareDiagnostics() } label: { Label("Share Diagnostics", systemImage: "square.and.arrow.up") }
