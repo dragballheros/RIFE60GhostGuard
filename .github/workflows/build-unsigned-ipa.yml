@@ -429,7 +429,17 @@ jobs:
         run: |
           rm -rf Vendor/rife-metal
           mkdir -p Vendor
-          git clone --depth 1 https://github.com/cinemore/rife-metal.git Vendor/rife-metal
+          RIFEMETAL_SHA="f18852ddb72f5706ddbeb3333b80643a63634222"
+          git clone --no-checkout https://github.com/cinemore/rife-metal.git Vendor/rife-metal
+          git -C Vendor/rife-metal fetch --depth 1 origin "$RIFEMETAL_SHA"
+          git -C Vendor/rife-metal checkout --detach "$RIFEMETAL_SHA"
+          test "$(git -C Vendor/rife-metal rev-parse HEAD)" = "$RIFEMETAL_SHA"
+
+          # Run a real-model Metal parity regression before applying the app-only
+          # Package.swift shader-plugin patch. This does not use MockRifeMetal.
+          cp Scripts/RifeStreamProductionSequenceTests.swift Vendor/rife-metal/Tests/RifeMetalTests/ProductionSequenceParityTests.swift
+          swift test --package-path Vendor/rife-metal --filter ProductionSequenceParityTests
+
           python3 - <<'PY'
           from pathlib import Path
           import re
