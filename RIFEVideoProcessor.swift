@@ -405,6 +405,7 @@ final class RIFEVideoProcessor {
                 var chosen: CVPixelBuffer = synth
                 var existingGuardRejected = false
                 var unresolvedColorAnomaly = false
+                var diagnosticFlagged = false
                 var fastCheck: FastMotionGhostGuard.Result?
 
                 if config.ghostProtection {
@@ -413,6 +414,7 @@ final class RIFEVideoProcessor {
                         colorArtifactGuard.inspect(previous: prevPB, candidate: chosen, next: currentPB, progress: t)
                     }
                     if colorInspection.isAnomaly {
+                        diagnosticFlagged = true
                         if let repaired = colorArtifactGuard.repair(
                             previous: prevPB,
                             candidate: chosen,
@@ -438,6 +440,7 @@ final class RIFEVideoProcessor {
                     }
                     ghostSeconds += CFAbsoluteTimeGetCurrent() - started
                     existingGuardRejected = check.reject || unresolvedColorAnomaly
+                    diagnosticFlagged = diagnosticFlagged || check.reject || unresolvedColorAnomaly
 
                     if let fastMotionGuard {
                         let fastStarted = CFAbsoluteTimeGetCurrent()
@@ -446,6 +449,7 @@ final class RIFEVideoProcessor {
                         }
                         ghostSeconds += CFAbsoluteTimeGetCurrent() - fastStarted
                         fastCheck = result
+                        diagnosticFlagged = diagnosticFlagged || result.reject || result.recoveryRecommended
                     }
 
                     // Never recursively interpolate across a detected cut or an
@@ -528,10 +532,13 @@ final class RIFEVideoProcessor {
                     }
                 }
 
-                BrokenTileDiagnostics.shared.inspect(chosen, stage: "05-ghostguard-output", frame: diagnosticFrame, seconds: diagnosticTime)
+                if diagnosticFlagged {
+                    BrokenTileDiagnostics.shared.inspect(synth, stage: "04-rife-raw-generated", frame: diagnosticFrame, seconds: diagnosticTime, force: true)
+                }
+                BrokenTileDiagnostics.shared.inspect(chosen, stage: "05-ghostguard-output", frame: diagnosticFrame, seconds: diagnosticTime, force: diagnosticFlagged)
                 let encodeStarted = CFAbsoluteTimeGetCurrent()
                 let finalOutputFrame = try colorPopGrade?.apply(chosen) ?? chosen
-                BrokenTileDiagnostics.shared.inspect(finalOutputFrame, stage: "06-colorpop-output", frame: diagnosticFrame, seconds: diagnosticTime)
+                BrokenTileDiagnostics.shared.inspect(finalOutputFrame, stage: "06-colorpop-output", frame: diagnosticFrame, seconds: diagnosticTime, force: diagnosticFlagged)
                 try await checkpoint.append10Bit(finalOutputFrame, at: requestedTimes[index])
                 encodeSeconds += CFAbsoluteTimeGetCurrent() - encodeStarted
                 outputFrames += 1
