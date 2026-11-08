@@ -154,8 +154,7 @@ final class BrokenTileDiagnostics: @unchecked Sendable {
             return "\(stage) samples=\(sampleCounts[stage] ?? 0) retained=0"
         }.joined(separator: " | ")
         enabled = false
-        liveDefectHandler = nil
-        lock.unlock()
+        // Keep the UI callback installed across runs. The view model owns the lifecycle\n        // of the callback, while diagnostics only owns whether detection is enabled.\n        lock.unlock()
         let detail = report.isEmpty ? "no pixel-buffer samples" : report
         DiagnosticsLogger.shared.logSync("BROKEN-TILE DIAGNOSTICS COMPLETE • run=\(runID) • \(detail)")
     }
