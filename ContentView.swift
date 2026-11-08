@@ -814,7 +814,7 @@ private struct LiveDefectCarousel: View {
         } label: {
             HStack(spacing: 7) {
                 Image(systemName: defects.isEmpty ? "viewfinder" : "exclamationmark.triangle.fill")
-                    .foregroundStyle(defects.isEmpty ? .secondary : .orange)
+                    .foregroundStyle(defects.isEmpty ? Color.secondary : Color.orange)
                 Text(defects.isEmpty ? "Live Defect Monitor" : "Live Defects (\(defects.count))")
                     .font(.subheadline.weight(.semibold))
                 Spacer(minLength: 0)
