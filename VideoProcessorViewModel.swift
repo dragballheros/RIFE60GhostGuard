@@ -139,6 +139,7 @@ final class VideoProcessorViewModel: ObservableObject {
             applySavedBatchSettings(from: job.manifest.configurationKey)
             inputKind = .video
             inputURL = job.sourceURL
+            if animeRestoreSuppressFromSavedBatch { animeRestoreSuppressedURL = job.sourceURL }
             progress = job.manifest.progress
             recoveryAvailable = true
             recoveryStatusText = "Interrupted render recovered at \(String(format: "%.1f", job.manifest.progress * 100))% • \(job.manifest.lastMessage)"
@@ -630,6 +631,8 @@ final class VideoProcessorViewModel: ObservableObject {
                 if let value = Double(pair[1]), value.isFinite { animeRestoreStrength = min(max(value, 0.1), 1) }
             case "animeRestoreSuppressAuto":
                 animeRestoreSuppressFromSavedBatch = enabled
+            case "warmthMode": UserDefaults.standard.set(pair[1], forKey: "automaticWarmthCorrectionMode")
+            case "skinToneMode": UserDefaults.standard.set(pair[1], forKey: "colorPopSkinToneCorrectionMode")
             case "animeRestoreQuality": animeRestoreQuality = pair[1]
             case "watermark": watermarkRemovalEnabled = enabled
             case "watermarkMasks": watermarkRegions = WatermarkConfiguration.decodeRegions(pair[1])
