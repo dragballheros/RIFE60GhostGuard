@@ -673,6 +673,7 @@ final class TwoPassVideoProcessor {
             return await self.validVideo(checkpoint, expectedDuration: duration, expectedWidth: isNative ? width : outputWidth, expectedHeight: isNative ? height : outputHeight)
         }
         if let index = completedIndex, let checkpoint = checkpoints[index] {
+            await BrokenTileDiagnostics.shared.scanVideo(url: checkpoint, stage: "upscale-first-recovered-\(stages[index])")
             inputURL = checkpoint; startIndex = index + 1
             DiagnosticsLogger.shared.log("Upscale-first recovery: furthest valid checkpoint is \(stages[index]); skipping all earlier stages")
             progress(0.97 * Double(startIndex) / Double(stages.count), "Recovered upscale-first \(stages[index]) checkpoint")
@@ -719,6 +720,7 @@ final class TwoPassVideoProcessor {
                 default:
                     generated = try await FinalOutlinePass(colorPopStrength: colorPopStrength, colorRebuild: config.colorRebuild, colorRebuildStrength: config.colorRebuildStrength, outlineRebuild: config.outlineRebuild, outlineRebuildStrength: config.outlineRebuildStrength, sharpen: config.outlineProtection).run(sourceURL: inputURL, finalAudioBitrate: audioBitrate, progress: publish, telemetry: { sample in combined.outlineMsPerFrame = sample.outlineMsPerFrame; telemetry(combined) }, recoveryDirectory: recoveryDirectory)
                 }
+                await BrokenTileDiagnostics.shared.scanVideo(url: generated, stage: "upscale-first-\(stage)")
                 if let checkpoint = checkpoints[index] {
                     try persistCheckpoint(from: generated, to: checkpoint)
                     inputURL = checkpoint
