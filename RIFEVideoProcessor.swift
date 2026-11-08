@@ -312,70 +312,78 @@ final class RIFEVideoProcessor {
             // one midpoint split, so flagged frames may descend up to four levels.
             var recoveryMidpoints: [String: CVPixelBuffer] = [:]
 
-            func cachedRecoveryMidpoint(previous: CVPixelBuffer,
-                                        current: CVPixelBuffer,
-                                        path: String) throws -> CVPixelBuffer? {
-                if let cached = recoveryMidpoints[path] { return cached }
-                let started = CFAbsoluteTimeGetCurrent()
-                let frames = try autoreleasepool {
-                    try interpolator.interpolate(previous: previous, current: current, timesteps: [0.5])
-                }
-                rifeSeconds += CFAbsoluteTimeGetCurrent() - started
-                guard let midpoint = frames.first else { return nil }
-                // Recovery interpolation can immediately trigger another model push.
-                // Keep the cached midpoint independent of any reusable RIFE output surface.
-                let ownedMidpoint = try PixelBufferOwnership.copy(midpoint)
-                recoveryMidpoints[path] = ownedMidpoint
-                return ownedMidpoint
-            }
-
+            // Fast-motion recovery is deliberately limited to one synthetic midpoint.
+            // The previous implementation recursively fed RIFE-generated frames back into
+            // RIFE up to four levels deep. When the model produced a spatially broken patch,
+            // that synthetic patch became an input to the next inference and could multiply
+            // into several square/block artifacts in the same output frame.
+            //
+            // We now allow at most one midpoint split, and the midpoint itself must pass both
+            // guards before it is allowed to become an input to another RIFE inference.
             func motionAwareRetry(t: Double) throws -> CVPixelBuffer? {
                 guard fastMotionGuard != nil else { return nil }
 
-                var lower = 0.0
-                var upper = 1.0
-                var leftFrame = prevPB
-                var rightFrame = currentPB
-                var path = ""
-
-                for _ in 0..<4 {
-                    let midpointTime = (lower + upper) * 0.5
-                    guard let midpoint = try cachedRecoveryMidpoint(
-                        previous: leftFrame,
-                        current: rightFrame,
-                        path: path
-                    ) else { return nil }
-
-                    if abs(t - midpointTime) <= 0.001 { return midpoint }
-                    if t < midpointTime {
-                        upper = midpointTime
-                        rightFrame = midpoint
-                        path += "L"
-                    } else {
-                        lower = midpointTime
-                        leftFrame = midpoint
-                        path += "R"
-                    }
-
-                    // After narrowing to 1/8 of the original span, a final RIFE
-                    // inference is sufficiently local for the requested timestamp.
-                    if upper - lower <= 0.125 { break }
-                }
-
-                let localT = (t - lower) / max(upper - lower, 0.001)
-                if localT <= 0.001 { return leftFrame }
-                if localT >= 0.999 { return rightFrame }
-
-                let started = CFAbsoluteTimeGetCurrent()
-                let frames = try autoreleasepool {
+                let midpointStarted = CFAbsoluteTimeGetCurrent()
+                let midpointFrames = try autoreleasepool {
                     try interpolator.interpolate(
-                        previous: leftFrame,
-                        current: rightFrame,
-                        timesteps: [Float(min(max(localT, 0.001), 0.999))]
+                        previous: prevPB,
+                        current: currentPB,
+                        timesteps: [0.5]
                     )
                 }
-                rifeSeconds += CFAbsoluteTimeGetCurrent() - started
-                return frames.first
+                rifeSeconds += CFAbsoluteTimeGetCurrent() - midpointStarted
+                guard let midpoint = midpointFrames.first else { return nil }
+
+                let midpointGuard = autoreleasepool {
+                    guarder.inspect(
+                        previous: prevPB,
+                        generated: midpoint,
+                        current: currentPB,
+                        previousContext: previousPreviousPB
+                    )
+                }
+                let midpointFastGuard = fastMotionGuard?.inspect(
+                    previous: prevPB,
+                    generated: midpoint,
+                    current: currentPB
+                )
+                guard !midpointGuard.reject,
+                      !(midpointFastGuard?.reject ?? false) else {
+                    DiagnosticsLogger.shared.log(
+                        "Fast-motion Ghost Guard • midpoint rejected before reuse • t=\(String(format: "%.3f", t))"
+                    )
+                    return nil
+                }
+
+                if abs(t - 0.5) <= 0.001 {
+                    return midpoint
+                }
+
+                let retryPrevious: CVPixelBuffer
+                let retryCurrent: CVPixelBuffer
+                let retryT: Float
+
+                if t < 0.5 {
+                    retryPrevious = prevPB
+                    retryCurrent = midpoint
+                    retryT = Float(min(max(t * 2.0, 0.001), 0.999))
+                } else {
+                    retryPrevious = midpoint
+                    retryCurrent = currentPB
+                    retryT = Float(min(max((t - 0.5) * 2.0, 0.001), 0.999))
+                }
+
+                let retryStarted = CFAbsoluteTimeGetCurrent()
+                let result = try autoreleasepool {
+                    let frames = try interpolator.interpolate(
+                        previous: retryPrevious,
+                        current: retryCurrent,
+                        timesteps: [retryT]
+                    )
+                    return frames.first
+                }
+                rifeSeconds += CFAbsoluteTimeGetCurrent() - retryStarted
+                return result
             }
 
             for index in synthesized.indices {
