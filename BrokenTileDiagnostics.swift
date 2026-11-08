@@ -79,7 +79,8 @@ final class BrokenTileDiagnostics: @unchecked Sendable {
             ratio: score.ratio,
             meanSeam: score.meanSeam,
             grid: score.grid,
-            pixelBuffer: pixelBuffer
+            pixelBuffer: pixelBuffer,
+            force: force
         )
     }
 
@@ -145,14 +146,15 @@ final class BrokenTileDiagnostics: @unchecked Sendable {
             .sorted { $0.lastPathComponent < $1.lastPathComponent }
     }
 
-    private func consider(stage: String, frame: Int, seconds: Double, score: Double, ratio: Double, meanSeam: Double, grid: Int, pixelBuffer: CVPixelBuffer) {
+    private func consider(stage: String, frame: Int, seconds: Double, score: Double, ratio: Double, meanSeam: Double, grid: Int, pixelBuffer: CVPixelBuffer, force: Bool) {
         lock.lock()
         defer { lock.unlock() }
         guard enabled, let outputDirectory else { return }
         let existing = candidates[stage] ?? []
         if existing.contains(where: { $0.frame == frame }) { return }
         sampleCounts[stage, default: 0] += 1
-        if existing.count >= maximumSnapshotsPerStage,
+        if !force,
+           existing.count >= maximumSnapshotsPerStage,
            let weakest = existing.min(by: { $0.score < $1.score }),
            score <= weakest.score { return }
 
