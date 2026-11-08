@@ -59,15 +59,15 @@ final class BrokenTileDiagnostics: @unchecked Sendable {
         lock.unlock()
         guard active, frame % 15 == 0 else { return }
         CVPixelBufferLockBaseAddress(pixelBuffer, .readOnly)
-        defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, .readOnly) }
-        guard let base = CVPixelBufferGetBaseAddressOfPlane(pixelBuffer, 0) else { return }
+        let base = CVPixelBufferGetBaseAddressOfPlane(pixelBuffer, 0)
         let width = CVPixelBufferGetWidthOfPlane(pixelBuffer, 0)
         let height = CVPixelBufferGetHeightOfPlane(pixelBuffer, 0)
         let rowBytes = CVPixelBufferGetBytesPerRowOfPlane(pixelBuffer, 0)
         let format = CVPixelBufferGetPixelFormatType(pixelBuffer)
         let isTenBit = format == kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange
             || format == kCVPixelFormatType_420YpCbCr10BiPlanarFullRange
-        let score = seamScore(base: base, width: width, height: height, rowBytes: rowBytes, tenBit: isTenBit)
+        let score = base.flatMap { seamScore(base: $0, width: width, height: height, rowBytes: rowBytes, tenBit: isTenBit) }
+        CVPixelBufferUnlockBaseAddress(pixelBuffer, .readOnly)
         guard let score else { return }
         consider(
             stage: stage,
