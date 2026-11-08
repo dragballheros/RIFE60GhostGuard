@@ -187,7 +187,7 @@ final class BrokenTileDiagnostics: @unchecked Sendable {
               CVPixelBufferGetPixelFormatType(stream) == kCVPixelFormatType_32BGRA,
               CVPixelBufferGetPixelFormatType(stateless) == kCVPixelFormatType_32BGRA else {
             DiagnosticsLogger.shared.logSync(
-                "RIFE_STREAM_PARITY frame=\\(frame) t=\\(String(format: "%.3f", timestep)) comparable=false"
+                "RIFE_STREAM_PARITY frame=\(frame) t=\(String(format: "%.3f", timestep)) comparable=false"
             )
             return
         }
@@ -198,7 +198,7 @@ final class BrokenTileDiagnostics: @unchecked Sendable {
               let bBase = CVPixelBufferGetBaseAddress(stateless) else {
             CVPixelBufferUnlockBaseAddress(stateless, .readOnly)
             CVPixelBufferUnlockBaseAddress(stream, .readOnly)
-            DiagnosticsLogger.shared.logSync("RIFE_STREAM_PARITY frame=\\(frame) baseAddress=unavailable")
+            DiagnosticsLogger.shared.logSync("RIFE_STREAM_PARITY frame=\(frame) baseAddress=unavailable")
             return
         }
 
