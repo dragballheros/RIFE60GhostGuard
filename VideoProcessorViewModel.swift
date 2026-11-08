@@ -102,6 +102,7 @@ final class VideoProcessorViewModel: ObservableObject {
     @Published var diagnosticsCopyStatus = ""
     @Published var showingDiagnosticsShare = false
     @Published var diagnosticsShareItems: [URL] = []
+    @Published private(set) var liveDiagnosticDefects: [LiveDiagnosticDefect] = []
     @Published var exportFolderName = "On My iPhone > RIFE 60 Ghost Guard > Exports"
 
     @Published var mediaQueue: BatchMediaManifest?
@@ -135,6 +136,14 @@ final class VideoProcessorViewModel: ObservableObject {
     private let exportFolderBookmarkKey = "RIFE60.ExportFolderBookmark.v1"
 
     init() {
+        BrokenTileDiagnostics.shared.setLiveDefectHandler { [weak self] defect in
+            guard let self else { return }
+            if self.liveDiagnosticDefects.contains(where: { $0.stage == defect.stage && $0.frame == defect.frame }) { return }
+            self.liveDiagnosticDefects.append(defect)
+            if self.liveDiagnosticDefects.count > 12 {
+                self.liveDiagnosticDefects.removeFirst(self.liveDiagnosticDefects.count - 12)
+            }
+        }
         AnimeRestoreRegistry.installDefault()
         restoreProcessingSettings()
         refreshExportFolderName()
@@ -465,6 +474,7 @@ final class VideoProcessorViewModel: ObservableObject {
         errorText = nil
         saveStatusText = ""
         diagnosticsCopyStatus = ""
+        liveDiagnosticDefects.removeAll()
         elapsedSeconds = 0
         etaSeconds = nil
         renderStartedAt = Date()
