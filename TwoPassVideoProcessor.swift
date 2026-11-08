@@ -38,19 +38,28 @@ final class TwoPassVideoProcessor {
     }
 
     func process(
-        sourceURL: URL,
-        recoveryDirectory _: URL? = nil,
+        sourceURL inputSourceURL: URL,
+        recoveryDirectory: URL? = nil,
         progress: @escaping @Sendable (Double, String) -> Void,
         telemetry: @escaping @Sendable (PerformanceTelemetry) -> Void = { _ in }
     ) async throws -> URL {
-        // Persistent stage recovery is intentionally disabled. Every render starts
-        // from the selected source, and all intermediate files are temporary.
-        let recoveryDirectory: URL? = nil
+        let originalSourceURL = inputSourceURL
+        var transientURLs: [URL] = []
+        defer {
+            for url in transientURLs { try? FileManager.default.removeItem(at: url) }
+        }
+
+        let normalizedSourceURL = try await Video720pPreprocessor().prepare(sourceURL: inputSourceURL)
+        if normalizedSourceURL != inputSourceURL {
+            transientURLs.append(normalizedSourceURL)
+        }
+        let sourceURL = normalizedSourceURL
+
         if colorPopStrength > 0 {
             DiagnosticsLogger.shared.log("Color Pop active • strength=\(String(format: "%.2f", colorPopStrength)) • applied once in the final active visual stage")
         }
         if upscaleFirst {
-            return try await processUpscaleFirst(sourceURL: sourceURL, recoveryDirectory: recoveryDirectory, progress: progress, telemetry: telemetry)
+            return try await processUpscaleFirst(sourceURL: sourceURL, originalSourceURL: originalSourceURL, recoveryDirectory: recoveryDirectory, progress: progress, telemetry: telemetry)
         }
         let stageTimer = PipelineStageTimer()
         PipelineStageTimer.current = stageTimer
@@ -59,11 +68,6 @@ final class TwoPassVideoProcessor {
             stageTimer.finish()
         }
         let stageTelemetry = StageTelemetryBox()
-        var transientURLs: [URL] = []
-        defer {
-            for url in transientURLs { try? FileManager.default.removeItem(at: url) }
-        }
-
         let fm = FileManager.default
         if let recoveryDirectory {
             try fm.createDirectory(at: recoveryDirectory, withIntermediateDirectories: true)
@@ -586,7 +590,7 @@ final class TwoPassVideoProcessor {
 
         if config.preserveAudio {
             progress(0.98, "Finalizing • Restoring original audio…")
-            let final = try await FinalAudioMuxer().addOriginalAudio(videoURL: finalVideoInput, sourceURL: sourceURL)
+            let final = try await FinalAudioMuxer().addOriginalAudio(videoURL: finalVideoInput, sourceURL: originalSourceURL)
             let description = upscaleTo4K
                 ? (config.outlineProtection ? "Finished • Automatic 2×/4× 60fps • Real-CUGAN → Final Sharpie" : "Finished • Automatic 2×/4× 60fps • Real-CUGAN")
                 : (config.outlineProtection ? "Finished • 60fps • Final Sharpie" : "Finished • 60fps")
@@ -604,7 +608,7 @@ final class TwoPassVideoProcessor {
 
     /// Separate checkpoint names prevent the two stage orders from sharing outputs.
     /// Reverse validation always resumes AFTER the furthest completed stage.
-    private func processUpscaleFirst(sourceURL: URL, recoveryDirectory: URL?, progress: @escaping @Sendable (Double, String) -> Void, telemetry: @escaping @Sendable (PerformanceTelemetry) -> Void) async throws -> URL {
+    private func processUpscaleFirst(sourceURL: URL, originalSourceURL: URL, recoveryDirectory: URL?, progress: @escaping @Sendable (Double, String) -> Void, telemetry: @escaping @Sendable (PerformanceTelemetry) -> Void) async throws -> URL {
         let fm = FileManager.default
         if let recoveryDirectory { try fm.createDirectory(at: recoveryDirectory, withIntermediateDirectories: true) }
         let asset = AVURLAsset(url: sourceURL)
@@ -696,7 +700,7 @@ final class TwoPassVideoProcessor {
         try fm.copyItem(at: inputURL, to: finalCopy)
         transient.append(finalCopy)
         if config.preserveAudio {
-            let final = try await FinalAudioMuxer().addOriginalAudio(videoURL: finalCopy, sourceURL: sourceURL)
+            let final = try await FinalAudioMuxer().addOriginalAudio(videoURL: finalCopy, sourceURL: originalSourceURL)
             progress(1, "Finished • Upscale-first native 2× 60fps")
             return final
         }
