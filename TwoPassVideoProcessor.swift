@@ -163,10 +163,22 @@ final class TwoPassVideoProcessor {
         // RIFE output is only needed if nothing downstream of it is already finished.
         let rifeNeeded = !outlineCheckpointValid && !cugan4xCheckpointValid && !cuganCheckpointValid
         if rifeNeeded, let rifeCheckpoint {
-            rifeCheckpointValid = await validVideo(rifeCheckpoint, expectedDuration: sourceDuration)
+            // The working raster is normalized to 720p. Never reuse an older
+            // RIFE checkpoint created from the original 1080p/4K source.
+            rifeCheckpointValid = await validVideo(
+                rifeCheckpoint,
+                expectedDuration: sourceDuration,
+                expectedWidth: sourceWidth,
+                expectedHeight: sourceHeight
+            )
         }
         if rifeNeeded, !rifeCheckpointValid, needsRestoration, let restoredCheckpoint {
-            restoredCheckpointValid = await validVideo(restoredCheckpoint, expectedDuration: sourceDuration)
+            restoredCheckpointValid = await validVideo(
+                restoredCheckpoint,
+                expectedDuration: sourceDuration,
+                expectedWidth: sourceWidth,
+                expectedHeight: sourceHeight
+            )
         }
         AnimeRestoreRegistry.installDefault()
         let animeDecision = AnimeRestorePolicy.decide(
