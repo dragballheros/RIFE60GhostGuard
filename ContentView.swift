@@ -447,7 +447,7 @@ struct ContentView: View {
                         Button { vm.benchmarkModels() } label: { Label("Benchmark Models", systemImage: "speedometer") }
                             .disabled(vm.isBusy || vm.isBenchmarking || vm.isImporting)
                         Button { vm.shareDiagnostics() } label: { Label("Share Diagnostics", systemImage: "square.and.arrow.up") }
-                            .disabled(vm.diagnosticsShareItems.isEmpty && DiagnosticsExport.runFiles().isEmpty)
+                            .disabled(vm.diagnosticsShareItems.isEmpty && !DiagnosticsExport.hasShareableContent)
                         Button { vm.copyDiagnosticsJSON() } label: { Label("Copy Diagnostics", systemImage: "doc.on.doc") }
                         if vm.isBenchmarking {
                             ProgressView(value: vm.benchmarkProgress)
