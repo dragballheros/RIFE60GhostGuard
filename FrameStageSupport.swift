@@ -138,7 +138,15 @@ final class AdaptiveFrameCachePolicy: @unchecked Sendable {
             lock.unlock()
         }
 
-        let available = os_proc_available_memory()
+        let available: UInt64
+        #if os(iOS) || os(tvOS) || os(watchOS)
+        available = UInt64(os_proc_available_memory())
+        #else
+        // This API is unavailable in the macOS SDK used by the standalone
+        // validation harness. The adaptive policy is active on iOS, while
+        // host validation treats available memory as unconstrained.
+        available = UInt64.max
+        #endif
         let thermal = ProcessInfo.processInfo.thermalState
         let now = CFAbsoluteTimeGetCurrent()
 
@@ -153,9 +161,9 @@ final class AdaptiveFrameCachePolicy: @unchecked Sendable {
         if memoryPressure || thermalPressure {
             let newDepth: Int
             if thermal == .critical || available < pressureReserve / 2 {
-                newDepth = minDepth
+                newDepth = Self.minDepth
             } else {
-                newDepth = max(minDepth, targetDepth - 2)
+                newDepth = max(Self.minDepth, targetDepth - 2)
             }
             if newDepth < targetDepth {
                 targetDepth = newDepth
@@ -173,7 +181,7 @@ final class AdaptiveFrameCachePolicy: @unchecked Sendable {
             UInt64(512 * 1024 * 1024),
             frameBytes * UInt64(targetDepth + 3)
         )
-        if targetDepth < maxDepth,
+        if targetDepth < Self.maxDepth,
            available >= comfortableMemory,
            now - lastPressureAt >= recoveryDelay,
            now - lastRecoveryAt >= recoveryDelay {
