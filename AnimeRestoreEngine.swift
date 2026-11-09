@@ -149,12 +149,12 @@ final class AnimeRestoreTiledModel: AnimeRestoreModel {
         if canvasScratch.count != canvasCount {
             canvasScratch = [Float](repeating: 0, count: canvasCount)
         } else {
-            canvasScratch.withUnsafeMutableBufferPointer { $0.update(repeating: 0, count: $0.count) }
+            canvasScratch.withUnsafeMutableBufferPointer { buffer in if let base = buffer.baseAddress { base.update(repeating: 0, count: buffer.count) } }
         }
         if weightsScratch.count != weightCount {
             weightsScratch = [Float](repeating: 0, count: weightCount)
         } else {
-            weightsScratch.withUnsafeMutableBufferPointer { $0.update(repeating: 0, count: $0.count) }
+            weightsScratch.withUnsafeMutableBufferPointer { buffer in if let base = buffer.baseAddress { base.update(repeating: 0, count: buffer.count) } }
         }
         for originY in ys {
             for originX in xs {
