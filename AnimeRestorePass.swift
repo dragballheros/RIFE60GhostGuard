@@ -93,7 +93,7 @@ final class AnimeRestorePass {
         var active = model
         var triedSPAN = variant == .span
         var passthrough = false
-        let ahead = FrameAheadReader(output: output, depth: 4)
+        let ahead = FrameAheadReader(output: output)
         let started = CFAbsoluteTimeGetCurrent()
         while let item = ahead.next() {
             try await checkpoint.checkCancellation()

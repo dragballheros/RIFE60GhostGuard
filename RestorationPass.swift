@@ -140,7 +140,7 @@ final class RestorationPass {
             try await checkpoint.append(frame, at: pts)
         }
 
-        let ahead = FrameAheadReader(output: output, depth: 4)
+        let ahead = FrameAheadReader(output: output)
         while let item = ahead.next() {
             try await checkpoint.checkCancellation()
             let decoded = item.buffer

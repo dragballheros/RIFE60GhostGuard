@@ -310,7 +310,7 @@ final class RIFEVideoProcessor {
             // safety net only when both direct and reduced-span RIFE inference fail.
             let fastMotionEstimate = fastMotionGuard?.estimateMotion(previous: prevPB, current: currentPB)
             var fastMotionAnchor: CVPixelBuffer?
-            if fastMotionEstimate?.fastMotion == true {
+            if !requestedTimesteps.isEmpty, fastMotionEstimate?.fastMotion == true {
                 let anchorStarted = CFAbsoluteTimeGetCurrent()
                 let midpoint = try autoreleasepool {
                     try interpolator.interpolate(previous: prevPB, current: currentPB, timesteps: [0.5]).first
@@ -335,7 +335,7 @@ final class RIFEVideoProcessor {
                         progress: 0.5
                     )
                     if !midpointGuard.reject && !(midpointFast?.reject ?? false) && !midpointColor.isAnomaly {
-                        fastMotionAnchor = midpoint
+                        fastMotionAnchor = try PixelBufferOwnership.copy(midpoint)
                         DiagnosticsLogger.shared.log(
                             "Fast-motion RIFE span enabled • motion=\(String(format: "%.3f", fastMotionEstimate?.motionScore ?? 0)) • midpoint validated"
                         )
@@ -351,15 +351,13 @@ final class RIFEVideoProcessor {
             // generated frame before any recovery inference can run and reuse that stream.
             let rifeStarted = CFAbsoluteTimeGetCurrent()
             let synthesized = try autoreleasepool {
-                let raw = try tiledHQ.interpolate(current: currentPB, timesteps: requestedTimesteps)
-                var owned = try raw.map { try PixelBufferOwnership.copy($0) }
-
-                // For fast motion, regenerate the requested samples from a validated
-                // midpoint anchor.  The two half-spans have substantially less motion
-                // than the original endpoint pair, while the final timestamps remain
-                // exactly the same 60 FPS timestamps. Batch the left and right samples
-                // so fast-motion recovery does not turn into one model call per frame.
+                let raw: [CVPixelBuffer]
                 if let fastMotionAnchor {
+                    // Advance the persistent RIFE stream's source-frame state,
+                    // but skip discarded full-span inference on this fast-motion path.
+                    try tiledHQ.advance(current: currentPB, skippedOutputFrames: requestedTimesteps.count)
+
+                    var recovered = [CVPixelBuffer?](repeating: nil, count: requestedTimesteps.count)
                     var leftIndices: [Int] = []
                     var leftTimesteps: [Float] = []
                     var rightIndices: [Int] = []
@@ -367,7 +365,7 @@ final class RIFEVideoProcessor {
                     for index in requestedTimesteps.indices {
                         let t = requestedTimesteps[index]
                         if abs(t - 0.5) <= 0.001 {
-                            owned[index] = try PixelBufferOwnership.copy(fastMotionAnchor)
+                            recovered[index] = fastMotionAnchor
                         } else if t < 0.5 {
                             leftIndices.append(index)
                             leftTimesteps.append(min(max(t * 2.0, 0.001), 0.999))
@@ -381,23 +379,26 @@ final class RIFEVideoProcessor {
                         guard left.count == leftIndices.count else {
                             throw ProcessorError.conversionFailed("Fast-motion left-half RIFE returned an unexpected frame count")
                         }
-                        for (offset, index) in leftIndices.enumerated() {
-                            owned[index] = try PixelBufferOwnership.copy(left[offset])
-                        }
+                        for (offset, index) in leftIndices.enumerated() { recovered[index] = left[offset] }
                     }
                     if !rightTimesteps.isEmpty {
                         let right = try interpolator.interpolate(previous: fastMotionAnchor, current: currentPB, timesteps: rightTimesteps)
                         guard right.count == rightIndices.count else {
                             throw ProcessorError.conversionFailed("Fast-motion right-half RIFE returned an unexpected frame count")
                         }
-                        for (offset, index) in rightIndices.enumerated() {
-                            owned[index] = try PixelBufferOwnership.copy(right[offset])
-                        }
+                        for (offset, index) in rightIndices.enumerated() { recovered[index] = right[offset] }
                     }
+                    raw = try recovered.enumerated().map { index, frame in
+                        guard let frame else {
+                            throw ProcessorError.conversionFailed("Fast-motion midpoint subdivision left output frame \(index) empty")
+                        }
+                        return frame
+                    }
+                } else {
+                    raw = try tiledHQ.interpolate(current: currentPB, timesteps: requestedTimesteps)
                 }
 
-                // Capture matching inputs, native TiledHQ output, and app-owned
-                // copy. The prior "raw generated" diagnostic was actually post-copy.
+                let owned = try raw.map { try PixelBufferOwnership.copy($0) }
                 if BrokenTileDiagnostics.shared.isEnabled {
                     for index in raw.indices {
                         let diagnosticFrame = generated + index
@@ -412,7 +413,8 @@ final class RIFEVideoProcessor {
                             frame: diagnosticFrame, seconds: diagnosticTime, force: true
                         )
                         BrokenTileDiagnostics.shared.inspect(
-                            raw[index], stage: "04-rife-native-output",
+                            raw[index],
+                            stage: fastMotionAnchor == nil ? "04-rife-native-output" : "04-rife-fast-motion-subdivision-output",
                             frame: diagnosticFrame, seconds: diagnosticTime
                         )
                         BrokenTileDiagnostics.shared.inspect(
@@ -433,12 +435,8 @@ final class RIFEVideoProcessor {
                 throw ProcessorError.conversionFailed("Streaming tiled HQ RIFE returned an unexpected frame count")
             }
 
-            // Cache recursive temporal midpoints across this source span. A difficult
-            // 24→60 FPS transition can require a much smaller temporal interval than
-            // one midpoint split, so flagged frames may descend up to four levels.
-            var recoveryMidpoints: [String: CVPixelBuffer] = [:]
-
-            // Fast-motion recovery is deliberately limited to one synthetic midpoint.
+            // Recovery is limited to one validated midpoint per source-frame span.
+            // The retry path reuses the anchor above instead of regenerating it.
             // The previous implementation recursively fed RIFE-generated frames back into
             // RIFE up to four levels deep. When the model produced a spatially broken patch,
             // that synthetic patch became an input to the next inference and could multiply
@@ -449,46 +447,36 @@ final class RIFEVideoProcessor {
             func motionAwareRetry(t: Double) throws -> CVPixelBuffer? {
                 guard fastMotionGuard != nil else { return nil }
 
-                let midpointStarted = CFAbsoluteTimeGetCurrent()
-                let midpointFrames = try autoreleasepool {
-                    try interpolator.interpolate(
-                        previous: prevPB,
-                        current: currentPB,
-                        timesteps: [0.5]
-                    )
+                let midpoint: CVPixelBuffer
+                if let fastMotionAnchor {
+                    midpoint = fastMotionAnchor
+                } else {
+                    let midpointStarted = CFAbsoluteTimeGetCurrent()
+                    let midpointFrames = try autoreleasepool {
+                        try interpolator.interpolate(previous: prevPB, current: currentPB, timesteps: [0.5])
+                    }
+                    rifeSeconds += CFAbsoluteTimeGetCurrent() - midpointStarted
+                    guard let generatedMidpoint = midpointFrames.first else { return nil }
+                    midpoint = try PixelBufferOwnership.copy(generatedMidpoint)
                 }
-                rifeSeconds += CFAbsoluteTimeGetCurrent() - midpointStarted
-                guard let midpoint = midpointFrames.first else { return nil }
 
                 let midpointGuard = autoreleasepool {
-                    guarder.inspect(
-                        previous: prevPB,
-                        generated: midpoint,
-                        current: currentPB,
-                        previousContext: previousPreviousPB
-                    )
+                    guarder.inspect(previous: prevPB, generated: midpoint, current: currentPB, previousContext: previousPreviousPB)
                 }
-                let midpointFastGuard = fastMotionGuard?.inspect(
-                    previous: prevPB,
-                    generated: midpoint,
-                    current: currentPB
-                )
+                let midpointFastGuard = fastMotionGuard?.inspect(previous: prevPB, generated: midpoint, current: currentPB)
+                let midpointColor = colorArtifactGuard.inspect(previous: prevPB, candidate: midpoint, next: currentPB, progress: 0.5)
                 guard !midpointGuard.reject,
-                      !(midpointFastGuard?.reject ?? false) else {
-                    DiagnosticsLogger.shared.log(
-                        "Fast-motion Ghost Guard • midpoint rejected before reuse • t=\(String(format: "%.3f", t))"
-                    )
+                      !(midpointFastGuard?.reject ?? false),
+                      !midpointColor.isAnomaly else {
+                    DiagnosticsLogger.shared.log("Fast-motion Ghost Guard • midpoint rejected before reuse • t=\(String(format: "%.3f", t))")
                     return nil
                 }
 
-                if abs(t - 0.5) <= 0.001 {
-                    return midpoint
-                }
+                if abs(t - 0.5) <= 0.001 { return try PixelBufferOwnership.copy(midpoint) }
 
                 let retryPrevious: CVPixelBuffer
                 let retryCurrent: CVPixelBuffer
                 let retryT: Float
-
                 if t < 0.5 {
                     retryPrevious = prevPB
                     retryCurrent = midpoint
@@ -498,18 +486,13 @@ final class RIFEVideoProcessor {
                     retryCurrent = currentPB
                     retryT = Float(min(max((t - 0.5) * 2.0, 0.001), 0.999))
                 }
-
                 let retryStarted = CFAbsoluteTimeGetCurrent()
                 let result = try autoreleasepool {
-                    let frames = try interpolator.interpolate(
-                        previous: retryPrevious,
-                        current: retryCurrent,
-                        timesteps: [retryT]
-                    )
-                    return frames.first
+                    try interpolator.interpolate(previous: retryPrevious, current: retryCurrent, timesteps: [retryT]).first
                 }
                 rifeSeconds += CFAbsoluteTimeGetCurrent() - retryStarted
-                return result
+                guard let result else { return nil }
+                return try PixelBufferOwnership.copy(result)
             }
 
             for index in synthesized.indices {

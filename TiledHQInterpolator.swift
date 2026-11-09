@@ -214,6 +214,15 @@ final class TiledHQInterpolator {
         return fullOutputs
     }
 
+    /// Advance the persistent source-frame state without generating throwaway outputs.
+    func advance(current: CVPixelBuffer, skippedOutputFrames: Int) throws {
+        let outputs = try interpolate(current: current, timesteps: [])
+        guard outputs.isEmpty else {
+            throw ProcessorError.conversionFailed("RIFE state advance unexpectedly produced output frames")
+        }
+        streamOutputFrameIndex += max(0, skippedOutputFrames)
+    }
+
     /// Every push waits for GPU completion. Rebase one stream to the previous
     /// band before each current band, so states from different bands never mix.
     private func interpolateShared(current: CVPixelBuffer, timesteps: [Float]) throws -> [CVPixelBuffer] {

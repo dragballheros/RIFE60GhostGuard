@@ -604,6 +604,9 @@ jobs:
           swiftc -swift-version 5 -parse-as-library WatermarkConfiguration.swift WatermarkBrushMask.swift BatchMediaQueue.swift Scripts/check_batch_media.swift -o /tmp/batch-media-check/check
           /tmp/batch-media-check/check
 
+      - name: Verify adaptive eight-frame cache is active in every video stage
+        run: python3 Scripts/check_frame_ahead_cache.py
+
       - name: Restore DeepCreamPy v2 checkpoint archive
         uses: actions/cache@v4
         with:

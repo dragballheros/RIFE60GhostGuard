@@ -156,7 +156,7 @@ final class FinalOutlinePass {
         var colorRebuildSeconds = 0.0, outlineRebuildSeconds = 0.0
         let passStart = CFAbsoluteTimeGetCurrent()
 
-        let ahead = FrameAheadReader(output: output, depth: 4)
+        let ahead = FrameAheadReader(output: output)
         while let item = ahead.next() {
             try await checkpoint.checkCancellation()
             let decoded = item.buffer

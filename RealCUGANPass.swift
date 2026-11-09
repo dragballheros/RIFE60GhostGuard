@@ -254,7 +254,7 @@ final class RealCUGANPass {
         var polishWaitSeconds = 0.0
         let passStart = CFAbsoluteTimeGetCurrent()
         var encodeTask: Task<Void, Error>?
-        let ahead = FrameAheadReader(output: output, depth: 4)
+        let ahead = FrameAheadReader(output: output)
         var iterationStart = CFAbsoluteTimeGetCurrent()
         var notedFrames = 0
         let polishQueue = DispatchQueue(label: "rife60.fused-polish", qos: .userInitiated)

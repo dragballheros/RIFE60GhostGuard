@@ -167,8 +167,8 @@ final class TwoPassVideoProcessor {
         // RIFE output is only needed if nothing downstream of it is already finished.
         let rifeNeeded = !outlineCheckpointValid && !cugan4xCheckpointValid && !cuganCheckpointValid
         if rifeNeeded, let rifeCheckpoint {
-            // The working raster is normalized to 720p. Never reuse an older
-            // RIFE checkpoint created from the original 1080p/4K source.
+            // The working raster is normalized to 1080p. Never reuse an older
+            // RIFE checkpoint created from a different working raster.
             rifeCheckpointValid = await validVideo(
                 rifeCheckpoint,
                 expectedDuration: sourceDuration,
