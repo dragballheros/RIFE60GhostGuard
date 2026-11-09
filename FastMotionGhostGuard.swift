@@ -22,6 +22,50 @@ final class FastMotionGhostGuard {
         self.sensitivity = min(max(sensitivity.isFinite ? sensitivity : 1.35, 0.65), 1.35)
     }
 
+    /// Estimates endpoint motion before any RIFE synthesis. This is intentionally
+    /// cheaper than full artifact inspection and is used to select a smaller
+    /// temporal interval for large-motion spans.
+    func estimateMotion(previous: CVPixelBuffer, current: CVPixelBuffer) -> (fastMotion: Bool, motionScore: Double) {
+        guard CVPixelBufferGetPixelFormatType(previous) == kCVPixelFormatType_32BGRA,
+              CVPixelBufferGetPixelFormatType(current) == kCVPixelFormatType_32BGRA else {
+            return (false, 0)
+        }
+        let width = min(CVPixelBufferGetWidth(previous), CVPixelBufferGetWidth(current))
+        let height = min(CVPixelBufferGetHeight(previous), CVPixelBufferGetHeight(current))
+        guard width >= 64, height >= 64 else { return (false, 0) }
+        CVPixelBufferLockBaseAddress(previous, .readOnly)
+        CVPixelBufferLockBaseAddress(current, .readOnly)
+        defer {
+            CVPixelBufferUnlockBaseAddress(current, .readOnly)
+            CVPixelBufferUnlockBaseAddress(previous, .readOnly)
+        }
+        guard let previousBase = CVPixelBufferGetBaseAddress(previous),
+              let currentBase = CVPixelBufferGetBaseAddress(current) else { return (false, 0) }
+        let previousRow = CVPixelBufferGetBytesPerRow(previous)
+        let currentRow = CVPixelBufferGetBytesPerRow(current)
+        let columns = 32, rows = 18
+        let xStep = max(1, width / columns), yStep = max(1, height / rows)
+        let xOffset = xStep / 2, yOffset = yStep / 2
+        let motionGate = max(0.055, 0.073 - sensitivity * 0.012)
+        var sum = 0.0, high = 0, samples = 0
+        for row in 0..<rows {
+            let y = min(height - 1, yOffset + row * yStep)
+            let pRow = previousBase.advanced(by: y * previousRow).assumingMemoryBound(to: UInt8.self)
+            let cRow = currentBase.advanced(by: y * currentRow).assumingMemoryBound(to: UInt8.self)
+            for column in 0..<columns {
+                let x = min(width - 1, xOffset + column * xStep)
+                let offset = x * 4
+                let d = abs(luminance(cRow, offset) - luminance(pRow, offset))
+                sum += d
+                if d > 0.12 { high += 1 }
+                samples += 1
+            }
+        }
+        guard samples > 0 else { return (false, 0) }
+        let motionScore = sum / Double(samples)
+        return (motionScore >= motionGate && Double(high) / Double(samples) >= 0.10, motionScore)
+    }
+
     func inspect(previous: CVPixelBuffer,
                  generated: CVPixelBuffer,
                  current: CVPixelBuffer) -> Result {

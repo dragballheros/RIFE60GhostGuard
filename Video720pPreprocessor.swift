@@ -1,6 +1,6 @@
 import AVFoundation
 
-/// Normalizes every processing input to a 720p working raster before any
+/// Normalizes every processing input to a 1080p working raster before any
 /// restoration, RIFE, CUGAN, or outline stage runs.
 ///
 /// This is a spatial working-resolution step, not a final delivery bitrate
@@ -19,32 +19,32 @@ final class Video720pPreprocessor {
         let width = Int(abs(naturalSize.width).rounded())
         let height = Int(abs(naturalSize.height).rounded())
         guard width > 0, height > 0 else {
-            throw ProcessorError.conversionFailed("720p preprocessor received an invalid video size")
+            throw ProcessorError.conversionFailed("1080p preprocessor received an invalid video size")
         }
 
         let longSide = max(width, height)
         let shortSide = min(width, height)
         if longSide == 1280 && shortSide == 720 {
-            DiagnosticsLogger.shared.log("720p input normalization • source already 720p • no resize required")
+            DiagnosticsLogger.shared.log("1080p input normalization • source already 1080p • no resize required")
             return sourceURL
         }
 
         guard let exporter = AVAssetExportSession(
             asset: asset,
-            presetName: AVAssetExportPreset1280x720
+            presetName: AVAssetExportPreset1920x1080
         ) else {
-            throw ProcessorError.conversionFailed("could not create 720p export session")
+            throw ProcessorError.conversionFailed("could not create 1080p export session")
         }
 
         let outputURL = fm.temporaryDirectory
-            .appendingPathComponent("RIFE60-720p-working-" + UUID().uuidString)
+            .appendingPathComponent("RIFE60-1080p-working-" + UUID().uuidString)
             .appendingPathExtension("mov")
         try? fm.removeItem(at: outputURL)
 
         exporter.shouldOptimizeForNetworkUse = false
 
         DiagnosticsLogger.shared.log(
-            "720p input normalization • \(width)x\(height) → 720p working target • no final bitrate target applied"
+            "1080p input normalization • \(width)x\(height) → 1080p working target • no final bitrate target applied"
         )
 
         let outputType: AVFileType = exporter.supportedFileTypes.contains(.mov)
@@ -69,13 +69,13 @@ final class Video720pPreprocessor {
                     case .failed, .unknown, .waiting, .exporting:
                         continuation.resume(
                             throwing: ProcessorError.writer(
-                                "720p input normalization failed: \(exporter.error?.localizedDescription ?? "export did not complete")"
+                                "1080p input normalization failed: \(exporter.error?.localizedDescription ?? "export did not complete")"
                             )
                         )
                     @unknown default:
                         continuation.resume(
                             throwing: ProcessorError.writer(
-                                "720p input normalization failed with an unknown export status"
+                                "1080p input normalization failed with an unknown export status"
                             )
                         )
                     }
@@ -89,13 +89,13 @@ final class Video720pPreprocessor {
             if let processorError = error as? ProcessorError {
                 throw processorError
             }
-            throw ProcessorError.writer("720p input normalization failed: \(error.localizedDescription)")
+            throw ProcessorError.writer("1080p input normalization failed: \(error.localizedDescription)")
         }
 
         let normalized = AVURLAsset(url: outputURL)
         guard let normalizedTrack = try await normalized.loadTracks(withMediaType: .video).first else {
             try? fm.removeItem(at: outputURL)
-            throw ProcessorError.conversionFailed("720p normalization produced no video track")
+            throw ProcessorError.conversionFailed("1080p normalization produced no video track")
         }
 
         let normalizedSize = try await normalizedTrack.load(.naturalSize)
@@ -107,12 +107,12 @@ final class Video720pPreprocessor {
         guard normalizedLong == 1280 && normalizedShort == 720 else {
             try? fm.removeItem(at: outputURL)
             throw ProcessorError.conversionFailed(
-                "720p normalization produced \(normalizedWidth)x\(normalizedHeight) instead of a 720p raster"
+                "1080p normalization produced \(normalizedWidth)x\(normalizedHeight) instead of a 1080p raster"
             )
         }
 
         DiagnosticsLogger.shared.log(
-            "720p input normalization complete • working source=\(normalizedWidth)x\(normalizedHeight) • original remains untouched"
+            "1080p input normalization complete • working source=\(normalizedWidth)x\(normalizedHeight) • original remains untouched"
         )
         return outputURL
     }

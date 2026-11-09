@@ -303,12 +303,98 @@ final class RIFEVideoProcessor {
                 nextOutputTime = CMTimeAdd(nextOutputTime, frameStep)
             }
 
+            // Large endpoint motion is handled before Ghost Guard can reject a
+            // normal RIFE result. A validated midpoint reduces the temporal distance
+            // for both requested 60 FPS samples without changing the source cadence.
+            // This is the primary fast-motion path. Endpoint fallback remains the final
+            // safety net only when both direct and reduced-span RIFE inference fail.
+            let fastMotionEstimate = fastMotionGuard?.estimateMotion(previous: prevPB, current: currentPB)
+            var fastMotionAnchor: CVPixelBuffer?
+            if fastMotionEstimate?.fastMotion == true {
+                let anchorStarted = CFAbsoluteTimeGetCurrent()
+                let midpoint = try autoreleasepool {
+                    try interpolator.interpolate(previous: prevPB, current: currentPB, timesteps: [0.5]).first
+                }
+                rifeSeconds += CFAbsoluteTimeGetCurrent() - anchorStarted
+                if let midpoint {
+                    let midpointGuard = guarder.inspect(
+                        previous: prevPB,
+                        generated: midpoint,
+                        current: currentPB,
+                        previousContext: previousPreviousPB
+                    )
+                    let midpointFast = fastMotionGuard?.inspect(
+                        previous: prevPB,
+                        generated: midpoint,
+                        current: currentPB
+                    )
+                    let midpointColor = colorArtifactGuard.inspect(
+                        previous: prevPB,
+                        candidate: midpoint,
+                        next: currentPB,
+                        progress: 0.5
+                    )
+                    if !midpointGuard.reject && !(midpointFast?.reject ?? false) && !midpointColor.isAnomaly {
+                        fastMotionAnchor = midpoint
+                        DiagnosticsLogger.shared.log(
+                            "Fast-motion RIFE span enabled • motion=\(String(format: "%.3f", fastMotionEstimate?.motionScore ?? 0)) • midpoint validated"
+                        )
+                    } else {
+                        DiagnosticsLogger.shared.log(
+                            "Fast-motion RIFE span rejected midpoint • motion=\(String(format: "%.3f", fastMotionEstimate?.motionScore ?? 0)) • direct RIFE retained"
+                        )
+                    }
+                }
+            }
+
             // RIFE streams may recycle output surfaces on a later push. Own every
             // generated frame before any recovery inference can run and reuse that stream.
             let rifeStarted = CFAbsoluteTimeGetCurrent()
             let synthesized = try autoreleasepool {
                 let raw = try tiledHQ.interpolate(current: currentPB, timesteps: requestedTimesteps)
-                let owned = try raw.map { try PixelBufferOwnership.copy($0) }
+                var owned = try raw.map { try PixelBufferOwnership.copy($0) }
+
+                // For fast motion, regenerate the requested samples from a validated
+                // midpoint anchor.  The two half-spans have substantially less motion
+                // than the original endpoint pair, while the final timestamps remain
+                // exactly the same 60 FPS timestamps. Batch the left and right samples
+                // so fast-motion recovery does not turn into one model call per frame.
+                if let fastMotionAnchor {
+                    var leftIndices: [Int] = []
+                    var leftTimesteps: [Float] = []
+                    var rightIndices: [Int] = []
+                    var rightTimesteps: [Float] = []
+                    for index in requestedTimesteps.indices {
+                        let t = requestedTimesteps[index]
+                        if abs(t - 0.5) <= 0.001 {
+                            owned[index] = try PixelBufferOwnership.copy(fastMotionAnchor)
+                        } else if t < 0.5 {
+                            leftIndices.append(index)
+                            leftTimesteps.append(min(max(t * 2.0, 0.001), 0.999))
+                        } else {
+                            rightIndices.append(index)
+                            rightTimesteps.append(min(max((t - 0.5) * 2.0, 0.001), 0.999))
+                        }
+                    }
+                    if !leftTimesteps.isEmpty {
+                        let left = try interpolator.interpolate(previous: prevPB, current: fastMotionAnchor, timesteps: leftTimesteps)
+                        guard left.count == leftIndices.count else {
+                            throw ProcessorError.conversionFailed("Fast-motion left-half RIFE returned an unexpected frame count")
+                        }
+                        for (offset, index) in leftIndices.enumerated() {
+                            owned[index] = try PixelBufferOwnership.copy(left[offset])
+                        }
+                    }
+                    if !rightTimesteps.isEmpty {
+                        let right = try interpolator.interpolate(previous: fastMotionAnchor, current: currentPB, timesteps: rightTimesteps)
+                        guard right.count == rightIndices.count else {
+                            throw ProcessorError.conversionFailed("Fast-motion right-half RIFE returned an unexpected frame count")
+                        }
+                        for (offset, index) in rightIndices.enumerated() {
+                            owned[index] = try PixelBufferOwnership.copy(right[offset])
+                        }
+                    }
+                }
 
                 // Capture matching inputs, native TiledHQ output, and app-owned
                 // copy. The prior "raw generated" diagnostic was actually post-copy.
@@ -469,7 +555,6 @@ final class RIFEVideoProcessor {
                         guarder.inspect(previous: prevPB, generated: chosen, current: currentPB, previousContext: previousPreviousPB)
                     }
                     ghostSeconds += CFAbsoluteTimeGetCurrent() - started
-                    existingGuardRejected = check.reject || unresolvedColorAnomaly
                     diagnosticFlagged = diagnosticFlagged || check.reject || unresolvedColorAnomaly
 
                     if let fastMotionGuard {
@@ -482,12 +567,20 @@ final class RIFEVideoProcessor {
                         diagnosticFlagged = diagnosticFlagged || result.reject || result.recoveryRecommended
                     }
 
+                    // During genuine fast motion, a normal RIFE frame can trigger the
+                    // generic temporal-outlier test simply because endpoint displacement
+                    // is large. Do not collapse such a frame to 24 FPS unless the
+                    // fast-motion guard also finds a localized defect. Scene boundaries
+                    // and unresolved color anomalies remain hard failures.
+                    let sceneBoundaryRejected = check.reason == "scene cut / transition discontinuity"
+                        || check.reason == "isolated scene-end frame"
+                    existingGuardRejected = unresolvedColorAnomaly || (
+                        check.reject && (!(fastCheck?.fastMotion ?? false) || sceneBoundaryRejected)
+                    )
+
                     // Never recursively interpolate across a detected cut or an
                     // isolated scene-end source frame. Midpoint recovery can recreate
                     // the exact A/B warp that the scene guard rejected.
-                    let sceneBoundaryRejected = check.reason == "scene cut / transition discontinuity"
-                        || check.reason == "isolated scene-end frame"
-
                     // A fast-motion failure gets a real interpolation retry only
                     // when the pair is not a scene boundary.
                     if !sceneBoundaryRejected,
