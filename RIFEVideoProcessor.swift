@@ -352,6 +352,7 @@ final class RIFEVideoProcessor {
             let rifeStarted = CFAbsoluteTimeGetCurrent()
             let synthesized = try autoreleasepool {
                 let raw: [CVPixelBuffer]
+                let owned: [CVPixelBuffer]
                 if let fastMotionAnchor {
                     // Advance the persistent RIFE stream's source-frame state,
                     // but skip discarded full-span inference on this fast-motion path.
@@ -379,14 +380,19 @@ final class RIFEVideoProcessor {
                         guard left.count == leftIndices.count else {
                             throw ProcessorError.conversionFailed("Fast-motion left-half RIFE returned an unexpected frame count")
                         }
-                        for (offset, index) in leftIndices.enumerated() { recovered[index] = left[offset] }
+                        for (offset, index) in leftIndices.enumerated() {
+                            // Snapshot this batch before the next prediction can recycle its buffers.
+                            recovered[index] = try PixelBufferOwnership.copy(left[offset])
+                        }
                     }
                     if !rightTimesteps.isEmpty {
                         let right = try interpolator.interpolate(previous: fastMotionAnchor, current: currentPB, timesteps: rightTimesteps)
                         guard right.count == rightIndices.count else {
                             throw ProcessorError.conversionFailed("Fast-motion right-half RIFE returned an unexpected frame count")
                         }
-                        for (offset, index) in rightIndices.enumerated() { recovered[index] = right[offset] }
+                        for (offset, index) in rightIndices.enumerated() {
+                            recovered[index] = try PixelBufferOwnership.copy(right[offset])
+                        }
                     }
                     raw = try recovered.enumerated().map { index, frame in
                         guard let frame else {
@@ -394,11 +400,12 @@ final class RIFEVideoProcessor {
                         }
                         return frame
                     }
+                    // These fast-motion results already contain app-owned snapshots.
+                    owned = raw
                 } else {
                     raw = try tiledHQ.interpolate(current: currentPB, timesteps: requestedTimesteps)
+                    owned = try raw.map { try PixelBufferOwnership.copy($0) }
                 }
-
-                let owned = try raw.map { try PixelBufferOwnership.copy($0) }
                 if BrokenTileDiagnostics.shared.isEnabled {
                     for index in raw.indices {
                         let diagnosticFrame = generated + index
