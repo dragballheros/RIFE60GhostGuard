@@ -4,8 +4,8 @@ name: Build Unsigned IPA
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  # Only supersede stale PR builds. Do not auto-cancel a main-branch release build.
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  # Supersede stale PR and diagnostics-branch builds without cancelling release builds elsewhere.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || github.ref == 'refs/heads/diagnostics/rife-real-stream-parity-gate' }}
 
 # Rebuild trigger after reverting mobile compression restoration
 # Color Pop skin-state preservation fix build trigger
