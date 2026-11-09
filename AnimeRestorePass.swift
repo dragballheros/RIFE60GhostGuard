@@ -89,10 +89,7 @@ final class AnimeRestorePass {
         let tiles = AnimeRestoreChoice.tileCount(length: width) * AnimeRestoreChoice.tileCount(length: height)
         DiagnosticsLogger.shared.log("Anime Restore tiles • \(width)x\(height) • \(tiles) source tiles • each tile is restored at 256 then stitched, with no full 2× frame")
         var frames = 0
-        var reused = 0
         var seconds = 0.0
-        var previousSource: CVPixelBuffer?
-        var previousRestored: CVPixelBuffer?
         var active = model
         var triedSPAN = variant == .span
         var passthrough = false
@@ -109,7 +106,7 @@ final class AnimeRestorePass {
             } else {
                 do {
                     frame = try autoreleasepool {
-                        try Self.restoreFrame(model: active, source: item.buffer, strength: strength, pool: blendPool, deadline: CFAbsoluteTimeGetCurrent() + 15, previousSource: &previousSource, previousRestored: &previousRestored, reused: &reused) { done, total in
+                        try Self.restoreFrame(model: active, source: item.buffer, strength: strength, pool: blendPool, deadline: CFAbsoluteTimeGetCurrent() + 15) { done, total in
                             progress(min(0.99, Double(frames) / 300), "Anime Restore • \(frames) source frames • tile \(done)/\(total)")
                         }
                     }
@@ -117,8 +114,6 @@ final class AnimeRestorePass {
                     let line = "\(stall) • in-flight tile stalled • source frames=\(frames)"
                     DiagnosticsLogger.shared.log(line)
                     CrashCapture.step(line)
-                    previousSource = nil
-                    previousRestored = nil
                     if !triedSPAN {
                         triedSPAN = true
                         DiagnosticsLogger.shared.log("Anime Restore falling back to SPAN")
@@ -126,7 +121,7 @@ final class AnimeRestorePass {
                         active = try AnimeRestoreTiledModel(variant: .span)
                         AnimeRestoreRegistry.displayName = AnimeRestoreVariant.span.title
                         do {
-                            frame = try Self.restoreFrame(model: active, source: item.buffer, strength: strength, pool: blendPool, deadline: CFAbsoluteTimeGetCurrent() + 15, previousSource: &previousSource, previousRestored: &previousRestored, reused: &reused, onTile: nil)
+                            frame = try Self.restoreFrame(model: active, source: item.buffer, strength: strength, pool: blendPool, deadline: CFAbsoluteTimeGetCurrent() + 15, onTile: nil)
                         } catch {
                             let skip = "Anime Restore skipped for this render • SPAN also stalled • \(error.localizedDescription)"
                             DiagnosticsLogger.shared.log(skip)
@@ -156,7 +151,7 @@ final class AnimeRestorePass {
         let url = try await checkpoint.finish()
         let ms = frames > 0 ? seconds * 1000 / Double(frames) : 0
         PipelineStageTimer.current?.record("animeRestoreMs", milliseconds: ms)
-        let wall = String(format: "Stage wall • animeRestore=%.0fms • frames=%d • reused=%d • pass=%.1fs • model=%@", ms, frames, reused, CFAbsoluteTimeGetCurrent() - started, AnimeRestoreRegistry.displayName)
+        let wall = String(format: "Stage wall • animeRestore=%.0fms • frames=%d • temporalReuse=off • pass=%.1fs • model=%@", ms, frames, CFAbsoluteTimeGetCurrent() - started, AnimeRestoreRegistry.displayName)
         DiagnosticsLogger.shared.log(wall)
         CrashCapture.step(wall)
         return AnimeRestorePassResult(url: url, frames: frames, millisecondsPerFrame: ms)
@@ -202,94 +197,25 @@ final class AnimeRestorePass {
         return copy
     }
 
-    /// Exact and near-duplicate anime frames reuse the restored picture.
-    /// Static blocks keep the previous restoration. A scene cut drops that hold.
-    private static func restoreFrame(model: AnimeRestoreTiledModel, source: CVPixelBuffer, strength: Double, pool: CVPixelBufferPool?, deadline: CFAbsoluteTime, previousSource: inout CVPixelBuffer?, previousRestored: inout CVPixelBuffer?, reused: inout Int, onTile: ((Int, Int) -> Void)?) throws -> CVPixelBuffer {
-        if let priorSource = previousSource, let priorRestored = previousRestored {
-            let difference = blockDifference(priorSource, source)
-            if difference.mean >= 0.20 {
-                previousSource = nil
-                previousRestored = nil
-            } else if difference.mean <= 0.012 {
-                reused += 1
-                return try apply(model: model, source: source, restored: priorRestored, strength: strength, pool: pool, hold: nil)
-            } else {
-                let restored = try model.restore(source, deadline: deadline, onTile: onTile)
-                let held = try apply(model: model, source: source, restored: restored, strength: strength, pool: pool, hold: (priorRestored, difference.quiet))
-                previousSource = source
-                previousRestored = held
-                return held
-            }
-        }
+    /// Every source frame is restored independently. Temporal pixel/block holding is
+    /// intentionally prohibited because missed motion creates stale rectangular regions.
+    private static func restoreFrame(model: AnimeRestoreTiledModel, source: CVPixelBuffer, strength: Double, pool: CVPixelBufferPool?, deadline: CFAbsoluteTime, onTile: ((Int, Int) -> Void)?) throws -> CVPixelBuffer {
         let restored = try model.restore(source, deadline: deadline, onTile: onTile)
-        let blended = try apply(model: model, source: source, restored: restored, strength: strength, pool: pool, hold: nil)
-        previousSource = source
-        previousRestored = blended
-        return blended
+        return try apply(model: model, source: source, restored: restored, strength: strength, pool: pool)
     }
 
-    private static func blockDifference(_ previous: CVPixelBuffer, _ current: CVPixelBuffer) -> (mean: Float, quiet: [Bool]) {
-        let blocksX = 16
-        let blocksY = 16
-        var quiet = [Bool](repeating: false, count: blocksX * blocksY)
-        var total: Float = 0
-        var count: Float = 0
-        CVPixelBufferLockBaseAddress(previous, .readOnly)
-        CVPixelBufferLockBaseAddress(current, .readOnly)
-        defer {
-            CVPixelBufferUnlockBaseAddress(previous, .readOnly)
-            CVPixelBufferUnlockBaseAddress(current, .readOnly)
-        }
-        let width = min(CVPixelBufferGetWidth(previous), CVPixelBufferGetWidth(current))
-        let height = min(CVPixelBufferGetHeight(previous), CVPixelBufferGetHeight(current))
-        guard let aBase = CVPixelBufferGetBaseAddress(previous), let bBase = CVPixelBufferGetBaseAddress(current), width > 0, height > 0 else {
-            return (1, quiet)
-        }
-        let aStride = CVPixelBufferGetBytesPerRow(previous)
-        let bStride = CVPixelBufferGetBytesPerRow(current)
-        for by in 0..<blocksY {
-            for bx in 0..<blocksX {
-                let x0 = bx * width / blocksX
-                let x1 = (bx + 1) * width / blocksX
-                let y0 = by * height / blocksY
-                let y1 = (by + 1) * height / blocksY
-                var sum: Float = 0
-                var samples: Float = 0
-                var y = y0
-                while y < y1 {
-                    let a = aBase.advanced(by: y * aStride).assumingMemoryBound(to: UInt8.self)
-                    let b = bBase.advanced(by: y * bStride).assumingMemoryBound(to: UInt8.self)
-                    var x = x0
-                    while x < x1 {
-                        let lumaA = 0.114 * Float(a[x * 4]) + 0.587 * Float(a[x * 4 + 1]) + 0.299 * Float(a[x * 4 + 2])
-                        let lumaB = 0.114 * Float(b[x * 4]) + 0.587 * Float(b[x * 4 + 1]) + 0.299 * Float(b[x * 4 + 2])
-                        sum += abs(lumaA - lumaB) / 255
-                        samples += 1
-                        x += 4
-                    }
-                    y += 4
-                }
-                let mean = samples > 0 ? sum / samples : 1
-                quiet[by * blocksX + bx] = mean <= 0.01
-                total += mean
-                count += 1
-            }
-        }
-        return (count > 0 ? total / count : 1, quiet)
-    }
-
-    private static func apply(model: any AnimeRestoreModel, source: CVPixelBuffer, restored: CVPixelBuffer, strength: Double, pool: CVPixelBufferPool?, hold: (CVPixelBuffer, [Bool])?) throws -> CVPixelBuffer {
+    private static func apply(model: any AnimeRestoreModel, source: CVPixelBuffer, restored: CVPixelBuffer, strength: Double, pool: CVPixelBufferPool?) throws -> CVPixelBuffer {
         _ = model
         guard let pool else { return restored }
         var buffer: CVPixelBuffer?
         guard CVPixelBufferPoolCreatePixelBuffer(nil, pool, &buffer) == kCVReturnSuccess, let blended = buffer else {
             throw ProcessorError.conversionFailed("Anime Restore blend pool is empty")
         }
-        try blend(source: source, restored: restored, into: blended, strength: Float(strength), hold: hold)
+        try blend(source: source, restored: restored, into: blended, strength: Float(strength))
         return blended
     }
 
-    private static func blend(source: CVPixelBuffer, restored: CVPixelBuffer, into destination: CVPixelBuffer, strength: Float, hold: (CVPixelBuffer, [Bool])?) throws {
+    private static func blend(source: CVPixelBuffer, restored: CVPixelBuffer, into destination: CVPixelBuffer, strength: Float) throws {
         CVPixelBufferLockBaseAddress(source, .readOnly)
         CVPixelBufferLockBaseAddress(restored, .readOnly)
         CVPixelBufferLockBaseAddress(destination, [])
@@ -310,34 +236,16 @@ final class AnimeRestorePass {
         let restoredStride = CVPixelBufferGetBytesPerRow(restored)
         let destStride = CVPixelBufferGetBytesPerRow(destination)
         let keep = 1 - strength
-        var holdBase: UnsafeMutableRawPointer?
-        var holdStride = 0
-        if let hold {
-            CVPixelBufferLockBaseAddress(hold.0, .readOnly)
-            holdBase = CVPixelBufferGetBaseAddress(hold.0)
-            holdStride = CVPixelBufferGetBytesPerRow(hold.0)
-        }
-        defer { if hold != nil { CVPixelBufferUnlockBaseAddress(hold!.0, .readOnly) } }
         for y in 0..<height {
-            let s = sourceBase.advanced(by: y * sourceStride).assumingMemoryBound(to: UInt8.self)
-            let r = restoredBase.advanced(by: y * restoredStride).assumingMemoryBound(to: UInt8.self)
-            let d = destBase.advanced(by: y * destStride).assumingMemoryBound(to: UInt8.self)
-            let held = holdBase?.advanced(by: y * holdStride).assumingMemoryBound(to: UInt8.self)
-            let blockY = min(15, y * 16 / height)
+            let sourceRow = sourceBase.advanced(by: y * sourceStride).assumingMemoryBound(to: UInt8.self)
+            let restoredRow = restoredBase.advanced(by: y * restoredStride).assumingMemoryBound(to: UInt8.self)
+            let destinationRow = destBase.advanced(by: y * destStride).assumingMemoryBound(to: UInt8.self)
             for x in 0..<width {
-                let blockX = min(15, x * 16 / width)
-                let quiet = hold?.1[blockY * 16 + blockX] == true
                 let pixel = x * 4
-                if quiet, let held {
-                    d[pixel] = held[pixel]
-                    d[pixel + 1] = held[pixel + 1]
-                    d[pixel + 2] = held[pixel + 2]
-                    d[pixel + 3] = held[pixel + 3]
-                } else {
-                    for channel in 0..<4 {
-                        d[pixel + channel] = UInt8(min(255, max(0, keep * Float(s[pixel + channel]) + strength * Float(r[pixel + channel]) + 0.5)))
-                    }
+                for channel in 0..<3 {
+                    destinationRow[pixel + channel] = UInt8(min(255, max(0, keep * Float(sourceRow[pixel + channel]) + strength * Float(restoredRow[pixel + channel]) + 0.5)))
                 }
+                destinationRow[pixel + 3] = 255
             }
         }
     }

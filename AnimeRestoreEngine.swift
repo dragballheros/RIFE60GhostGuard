@@ -104,6 +104,11 @@ final class AnimeRestoreTiledModel: AnimeRestoreModel {
     static let overlap = 16
     private let model: MLModel
     private let inputArray: MLMultiArray
+    private let inputProvider: MLDictionaryFeatureProvider
+    private var canvasScratch: [Float] = []
+    private var weightsScratch: [Float] = []
+    private var downscaleSourceScratch = [UInt8](repeating: 255, count: 512 * 512 * 4)
+    private var downscaleDestinationScratch = [UInt8](repeating: 0, count: 256 * 256 * 4)
     let variant: AnimeRestoreVariant
 
     init(variant: AnimeRestoreVariant, units: MLComputeUnits = ModelComputePreference.current.units) throws {
@@ -114,7 +119,9 @@ final class AnimeRestoreTiledModel: AnimeRestoreModel {
         configuration.computeUnits = units
         configuration.allowLowPrecisionAccumulationOnGPU = true
         model = try MLModel(contentsOf: compiled, configuration: configuration)
-        inputArray = try MLMultiArray(shape: [1, 3, NSNumber(value: Self.tile), NSNumber(value: Self.tile)], dataType: .float32)
+        let input = try MLMultiArray(shape: [1, 3, NSNumber(value: Self.tile), NSNumber(value: Self.tile)], dataType: .float32)
+        inputArray = input
+        inputProvider = try MLDictionaryFeatureProvider(dictionary: ["input": input])
     }
 
     private(set) var lastStep = "idle"
@@ -137,24 +144,34 @@ final class AnimeRestoreTiledModel: AnimeRestoreModel {
         tileCount = xs.count * ys.count
         tilesFinished = 0
         lastStep = "tile-plan \(tileCount)"
-        var canvas = [Float](repeating: 0, count: width * height * 3)
-        var weights = [Float](repeating: 0, count: width * height)
+        let canvasCount = width * height * 3
+        let weightCount = width * height
+        if canvasScratch.count != canvasCount {
+            canvasScratch = [Float](repeating: 0, count: canvasCount)
+        } else {
+            canvasScratch.withUnsafeMutableBufferPointer { $0.update(repeating: 0, count: $0.count) }
+        }
+        if weightsScratch.count != weightCount {
+            weightsScratch = [Float](repeating: 0, count: weightCount)
+        } else {
+            weightsScratch.withUnsafeMutableBufferPointer { $0.update(repeating: 0, count: $0.count) }
+        }
         for originY in ys {
             for originX in xs {
                 if CFAbsoluteTimeGetCurrent() >= deadline {
                     throw AnimeRestoreStall(variant: variant.title, tilesFinished: tilesFinished, tileCount: tileCount, lastStep: lastStep)
                 }
-                let pixels = try predictSourceTile(frame: frame, originX: originX, originY: originY, width: width, height: height, deadline: deadline)
+                try predictSourceTile(frame: frame, originX: originX, originY: originY, width: width, height: height, deadline: deadline)
                 let tileWidth = min(Self.tile, width - originX)
                 let tileHeight = min(Self.tile, height - originY)
-                Self.blend(pixels: pixels, pixelsWide: Self.tile, tileWidth: tileWidth, tileHeight: tileHeight, into: &canvas, weights: &weights, originX: originX, originY: originY, width: width, height: height)
+                Self.blend(pixels: downscaleDestinationScratch, pixelsWide: Self.tile, tileWidth: tileWidth, tileHeight: tileHeight, into: &canvasScratch, weights: &weightsScratch, originX: originX, originY: originY, width: width, height: height)
                 tilesFinished += 1
                 lastStep = "stitched \(tilesFinished)/\(tileCount)"
                 onTile?(tilesFinished, tileCount)
             }
         }
         lastStep = "pack"
-        return try Self.pack(canvas: canvas, weights: weights, width: width, height: height)
+        return try Self.pack(canvas: canvasScratch, weights: weightsScratch, width: width, height: height)
     }
 
     func milliseconds(forTileCount count: Int, frame: CVPixelBuffer) throws -> Double {
@@ -165,12 +182,12 @@ final class AnimeRestoreTiledModel: AnimeRestoreModel {
         let started = CFAbsoluteTimeGetCurrent()
         let deadline = CFAbsoluteTimeGetCurrent() + 15
         for _ in 0..<samples {
-            _ = try predictSourceTile(frame: frame, originX: originX, originY: originY, width: CVPixelBufferGetWidth(frame), height: CVPixelBufferGetHeight(frame), deadline: deadline)
+            try predictSourceTile(frame: frame, originX: originX, originY: originY, width: CVPixelBufferGetWidth(frame), height: CVPixelBufferGetHeight(frame), deadline: deadline)
         }
         return (CFAbsoluteTimeGetCurrent() - started) * 1000 / Double(samples)
     }
 
-    private func predictSourceTile(frame: CVPixelBuffer, originX: Int, originY: Int, width: Int, height: Int, deadline: CFAbsoluteTime) throws -> [UInt8] {
+    private func predictSourceTile(frame: CVPixelBuffer, originX: Int, originY: Int, width: Int, height: Int, deadline: CFAbsoluteTime) throws {
         if CFAbsoluteTimeGetCurrent() >= deadline {
             throw AnimeRestoreStall(variant: variant.title, tilesFinished: tilesFinished, tileCount: tileCount, lastStep: lastStep)
         }
@@ -197,13 +214,12 @@ final class AnimeRestoreTiledModel: AnimeRestoreModel {
         }
         CVPixelBufferUnlockBaseAddress(frame, .readOnly)
         lastStep = "predict"
-        let provider = try MLDictionaryFeatureProvider(dictionary: ["input": inputArray])
-        let result = try model.prediction(from: provider)
+        let result = try model.prediction(from: inputProvider)
         guard let output = result.featureValue(for: "output")?.multiArrayValue else {
             throw ProcessorError.conversionFailed("Anime Restore model returned no output")
         }
         lastStep = "downscale-tile"
-        return try Self.downscaleTile(output)
+        try Self.downscaleTile(output, big: &downscaleSourceScratch, small: &downscaleDestinationScratch)
     }
 
     private static func sample(_ raw: UnsafeMutableRawPointer, floats: Bool, strides: [Int], channel: Int, y: Int, x: Int) -> Float {
@@ -242,11 +258,11 @@ final class AnimeRestoreTiledModel: AnimeRestoreModel {
         return Float(edge + 1) / Float(overlap + 1)
     }
 
-    private static func downscaleTile(_ output: MLMultiArray) throws -> [UInt8] {
+    private static func downscaleTile(_ output: MLMultiArray, big: inout [UInt8], small: inout [UInt8]) throws {
         let strides = output.strides.map(\.intValue)
         let floats = output.dataType != .float16
         let raw = output.dataPointer
-        var big = [UInt8](repeating: 255, count: 512 * 512 * 4)
+        if big.count != 512 * 512 * 4 { big = [UInt8](repeating: 255, count: 512 * 512 * 4) }
         for y in 0..<512 {
             for x in 0..<512 {
                 let index = (y * 512 + x) * 4
@@ -255,7 +271,7 @@ final class AnimeRestoreTiledModel: AnimeRestoreModel {
                 big[index + 2] = byte(sample(raw, floats: floats, strides: strides, channel: 0, y: y, x: x))
             }
         }
-        var small = [UInt8](repeating: 0, count: 256 * 256 * 4)
+        if small.count != 256 * 256 * 4 { small = [UInt8](repeating: 0, count: 256 * 256 * 4) }
         let error: vImage_Error = big.withUnsafeMutableBytes { sourceRaw in
             small.withUnsafeMutableBytes { destinationRaw in
                 var source = vImage_Buffer(data: sourceRaw.baseAddress, height: 512, width: 512, rowBytes: 512 * 4)
@@ -264,7 +280,6 @@ final class AnimeRestoreTiledModel: AnimeRestoreModel {
             }
         }
         guard error == kvImageNoError else { throw ProcessorError.conversionFailed("Anime Restore tile downscale failed") }
-        return small
     }
 
     private static func blend(pixels: [UInt8], pixelsWide: Int, tileWidth: Int, tileHeight: Int, into canvas: inout [Float], weights: inout [Float], originX: Int, originY: Int, width: Int, height: Int) {
