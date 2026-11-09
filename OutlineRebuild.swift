@@ -121,6 +121,15 @@ final class OutlineRebuild {
                 if y == 0 || x == 0 || y == height - 1 || x == width - 1 { continue }
                 let stats = neighborStats(closed: closed, luma: luma, x: x, y: y, width: width)
                 let center = Int(luma[index])
+
+                // Fine source details must bypass both the line-repair and
+                // isolated-speck paths. Otherwise a connected thin line can be
+                // darkened even though it is correctly protected from removal.
+                if (closed[index] == 1 || line[index] == 1),
+                   isProtectedFineDetail(src: src, x: x, y: y, width: width, height: height, srcRow: srcRow) {
+                    continue
+                }
+
                 if closed[index] == 1 && stats.neighbors >= 2 {
                     let fade: Double = 1.0 - amount
                     let lift = Int(fade * 18.0)
@@ -135,8 +144,7 @@ final class OutlineRebuild {
                         let denominator = Double(max(center, 1))
                         scale(pixel: o, by: numerator / denominator)
                     }
-                } else if line[index] == 1 && stats.neighbors <= 1 &&
-                            !isProtectedFineDetail(src: src, x: x, y: y, width: width, height: height, srcRow: srcRow) {
+                } else if line[index] == 1 && stats.neighbors <= 1 {
                     // Only isolated, non-structural specks are lifted. Connected
                     // line endpoints and narrow colored strokes are source detail.
                     let paper = paperLuma(closed: closed, luma: luma, x: x, y: y, width: width)
