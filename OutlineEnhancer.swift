@@ -311,6 +311,36 @@ final class OutlineEnhancer {
             return Double(maskPtr[my * maskRow + mx]) / 255.0
         }
 
+
+        @inline(__always) func sourceColorDistance(_ ax: Int, _ ay: Int, _ bx: Int, _ by: Int) -> Double {
+            let a = ay * srcRow + ax * 4
+            let b = by * srcRow + bx * 4
+            return (
+                abs(Double(src[a + rOff]) - Double(src[b + rOff]))
+                + abs(Double(src[a + 1]) - Double(src[b + 1]))
+                + abs(Double(src[a + bOff]) - Double(src[b + bOff]))
+            ) / 765.0
+        }
+        @inline(__always) func narrowDetailStrength(_ x: Int, _ y: Int) -> Double {
+            let lx = max(0, x - 2)
+            let rx = min(width - 1, x + 2)
+            let ty = max(0, y - 2)
+            let by = min(height - 1, y + 2)
+            let horizontalContrast = min(
+                sourceColorDistance(x, y, lx, y),
+                sourceColorDistance(x, y, rx, y)
+            )
+            let horizontalFlankDifference = sourceColorDistance(lx, y, rx, y)
+            let verticalContrast = min(
+                sourceColorDistance(x, y, x, ty),
+                sourceColorDistance(x, y, x, by)
+            )
+            let verticalFlankDifference = sourceColorDistance(x, ty, x, by)
+            let horizontalResponse = horizontalContrast * (1.0 - smooth(0.025, 0.10, horizontalFlankDifference))
+            let verticalResponse = verticalContrast * (1.0 - smooth(0.025, 0.10, verticalFlankDifference))
+            return smooth(0.020, 0.085, max(horizontalResponse, verticalResponse))
+        }
+
         let rowCount = max(0, height - 2)
         DispatchQueue.concurrentPerform(iterations: rowCount) { offset in
             let y = offset + 1
@@ -330,6 +360,17 @@ final class OutlineEnhancer {
                 let sourceDelta = abs(er - sr) + abs(eg - sg) + abs(eb - sb)
                 let modelDelta = sourceDelta / 3.0
                 guard modelDelta > 0.012 else { continue }
+
+                // Do not let Sharpie redraw a one-to-few-pixel source stroke.
+                // Matching flanks indicate a narrow contour, including colored
+                // blush marks whose luma gradient may be weak.
+                let narrowDetail = narrowDetailStrength(x, y)
+                if narrowDetail >= 0.52 {
+                    dst[di + drOff] = src[i + rOff]
+                    dst[di + 1] = src[i + 1]
+                    dst[di + dbOff] = src[i + bOff]
+                    continue
+                }
 
                 let gx = abs(lumaAt(x + 1, y) - lumaAt(x - 1, y))
                 let gy = abs(lumaAt(x, y + 1) - lumaAt(x, y - 1))

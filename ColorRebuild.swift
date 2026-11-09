@@ -77,11 +77,32 @@ final class ColorRebuild {
             for x in 0..<width {
                 let index = base + x
                 let y8 = Int(luma[index])
+                let cb0 = Int(cb[index])
+                let cr0 = Int(cr[index])
+                let p = row.advanced(by: x * 4)
+                let o = out.advanced(by: x * 4)
+
+                // Preserve narrow source contours and colored micro-details before
+                // chroma reconstruction. This catches thin background ink and
+                // blush strokes whose luma contrast alone can be weak.
+                let fineDetail = Self.fineDetailProtection(
+                    luma: luma, cb: cb, cr: cr, x: x, y: y, width: width, height: height
+                )
+                if fineDetail >= 0.82 {
+                    o[0] = p[0]
+                    o[1] = p[1]
+                    o[2] = p[2]
+                    o[3] = p[3]
+                    previousLuma[index] = UInt8(y8)
+                    previousCb[index] = UInt8(cb0)
+                    previousCr[index] = UInt8(cr0)
+                    continue
+                }
+
                 let edge = Self.lumaEdge(luma, x: x, y: y, width: width, height: height)
                 let flatMix: Double = edge < 12 ? 0.82 : (edge < 28 ? 0.38 : 0.12)
                 var mix: Double = amount * flatMix
-                let cb0 = Int(cb[index])
-                let cr0 = Int(cr[index])
+                mix *= (1.0 - fineDetail)
                 if Self.isSkin(y: y8, cb: cb0, cr: cr0) { mix *= 0.42 }
                 let keep: Double = 1.0 - mix
                 let cbSource = Double(cb0)
@@ -95,7 +116,8 @@ final class ColorRebuild {
                 if hasPrevious {
                     let motion = abs(y8 - Int(previousLuma[index]))
                     if motion < 8 {
-                        let hold: Double = 0.34
+                        // Temporal chroma reuse is also suppressed on line detail.
+                        let hold: Double = 0.34 * (1.0 - fineDetail)
                         let kept: Double = 1.0 - hold
                         let heldCb: Double = Double(outCb) * kept + Double(previousCb[index]) * hold
                         let heldCr: Double = Double(outCr) * kept + Double(previousCr[index]) * hold
@@ -105,9 +127,7 @@ final class ColorRebuild {
                 }
                 outCb = min(255, max(0, outCb))
                 outCr = min(255, max(0, outCr))
-                let p = row.advanced(by: x * 4)
                 let rgb = Self.rgb(y: y8, cb: outCb, cr: outCr)
-                let o = out.advanced(by: x * 4)
                 o[0] = rgb.b
                 o[1] = rgb.g
                 o[2] = rgb.r
@@ -119,6 +139,55 @@ final class ColorRebuild {
         }
         hasHistory = true
         return destination
+    }
+
+
+    /// Returns high confidence only when the pixel is a narrow feature with
+    /// matching surroundings on both sides. Luma catches dark ink; Cb/Cr catches
+    /// colored facial marks such as blush that luma-only gating misses.
+    private static func fineDetailProtection(
+        luma: [UInt8], cb: [Int16], cr: [Int16],
+        x: Int, y: Int, width: Int, height: Int
+    ) -> Double {
+        guard width > 4, height > 4 else { return 0 }
+        let lx = max(0, x - 2)
+        let rx = min(width - 1, x + 2)
+        let ty = max(0, y - 2)
+        let by = min(height - 1, y + 2)
+        let center = y * width + x
+        let left = y * width + lx
+        let right = y * width + rx
+        let top = ty * width + x
+        let bottom = by * width + x
+
+        @inline(__always) func response(_ c: Int, _ a: Int, _ b: Int, flankLimit: Double) -> Double {
+            let contrast = min(abs(c - a), abs(c - b))
+            let coherence = max(0.0, 1.0 - Double(abs(a - b)) / flankLimit)
+            return Double(contrast) * coherence
+        }
+
+        let lumaResponse = max(
+            response(Int(luma[center]), Int(luma[left]), Int(luma[right]), flankLimit: 44),
+            response(Int(luma[center]), Int(luma[top]), Int(luma[bottom]), flankLimit: 44)
+        )
+        let chromaResponse = max(
+            max(
+                response(Int(cb[center]), Int(cb[left]), Int(cb[right]), flankLimit: 52),
+                response(Int(cr[center]), Int(cr[left]), Int(cr[right]), flankLimit: 52)
+            ),
+            max(
+                response(Int(cb[center]), Int(cb[top]), Int(cb[bottom]), flankLimit: 52),
+                response(Int(cr[center]), Int(cr[top]), Int(cr[bottom]), flankLimit: 52)
+            )
+        )
+        let lumaProtection = smoothstep(10, 34, lumaResponse)
+        let chromaProtection = smoothstep(12, 38, chromaResponse)
+        return max(lumaProtection, chromaProtection)
+    }
+
+    private static func smoothstep(_ low: Double, _ high: Double, _ value: Double) -> Double {
+        let t = min(max((value - low) / max(high - low, 0.000001), 0), 1)
+        return t * t * (3 - 2 * t)
     }
 
     private static func isSkin(y: Int, cb: Int, cr: Int) -> Bool {

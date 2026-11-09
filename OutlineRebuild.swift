@@ -135,7 +135,10 @@ final class OutlineRebuild {
                         let denominator = Double(max(center, 1))
                         scale(pixel: o, by: numerator / denominator)
                     }
-                } else if line[index] == 1 && stats.neighbors <= 1 {
+                } else if line[index] == 1 && stats.neighbors <= 1 &&
+                            !isProtectedFineDetail(src: src, x: x, y: y, width: width, height: height, srcRow: srcRow) {
+                    // Only isolated, non-structural specks are lifted. Connected
+                    // line endpoints and narrow colored strokes are source detail.
                     let paper = paperLuma(closed: closed, luma: luma, x: x, y: y, width: width)
                     if let paper {
                         let keep: Double = 1.0 - amount * 0.7
@@ -152,6 +155,41 @@ final class OutlineRebuild {
                 }
             }
         }
+    }
+
+
+    /// Avoid classifying thin ink or colored facial marks as isolated noise.
+    /// Samples two pixels to either side: a narrow stroke differs from both
+    /// flanks while the flanks themselves remain similar.
+    private static func isProtectedFineDetail(
+        src: UnsafeMutablePointer<UInt8>, x: Int, y: Int,
+        width: Int, height: Int, srcRow: Int
+    ) -> Bool {
+        let center = src.advanced(by: y * srcRow + x * 4)
+        let red = Int(center[2])
+        let green = Int(center[1])
+        let blue = Int(center[0])
+        let chroma = max(red, max(green, blue)) - min(red, min(green, blue))
+        if chroma >= 18 { return true }
+
+        @inline(__always) func distance(_ ax: Int, _ ay: Int, _ bx: Int, _ by: Int) -> Int {
+            let a = src.advanced(by: ay * srcRow + ax * 4)
+            let b = src.advanced(by: by * srcRow + bx * 4)
+            return abs(Int(a[2]) - Int(b[2]))
+                + abs(Int(a[1]) - Int(b[1]))
+                + abs(Int(a[0]) - Int(b[0]))
+        }
+
+        let lx = max(0, x - 2)
+        let rx = min(width - 1, x + 2)
+        let ty = max(0, y - 2)
+        let by = min(height - 1, y + 2)
+        let horizontal = min(distance(x, y, lx, y), distance(x, y, rx, y))
+        let horizontalFlanks = distance(lx, y, rx, y)
+        let vertical = min(distance(x, y, x, ty), distance(x, y, x, by))
+        let verticalFlanks = distance(x, ty, x, by)
+        return (horizontal >= 24 && horizontalFlanks <= 64)
+            || (vertical >= 24 && verticalFlanks <= 64)
     }
 
     private static func neighborStats(closed: [UInt8], luma: [UInt8], x: Int, y: Int, width: Int) -> (neighbors: Int, darkest: Int) {
