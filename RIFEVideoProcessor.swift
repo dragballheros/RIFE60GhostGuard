@@ -103,7 +103,7 @@ final class RIFEVideoProcessor {
         let output = AVAssetReaderTrackOutput(track: track, outputSettings: [
             kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA
         ])
-        output.alwaysCopiesSampleData = true
+        output.alwaysCopiesSampleData = false
         guard reader.canAdd(output) else {
             throw ProcessorError.reader("cannot attach video output")
         }
@@ -229,7 +229,7 @@ final class RIFEVideoProcessor {
             telemetry(t)
         }
 
-        let ahead = FrameAheadReader(output: output, depth: 2)
+        let ahead = FrameAheadReader(output: output, depth: 4)
         while let item = ahead.next() {
             try await checkpoint.checkCancellation()
             let decodedPB = item.buffer

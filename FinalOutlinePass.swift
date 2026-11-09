@@ -98,7 +98,7 @@ final class FinalOutlinePass {
 
         let reader = try AVAssetReader(asset: asset)
         let output = AVAssetReaderTrackOutput(track: track, outputSettings: [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA])
-        output.alwaysCopiesSampleData = true
+        output.alwaysCopiesSampleData = false
         guard reader.canAdd(output) else { throw ProcessorError.reader("cannot attach final polish reader") }
         reader.add(output)
 
@@ -156,7 +156,7 @@ final class FinalOutlinePass {
         var colorRebuildSeconds = 0.0, outlineRebuildSeconds = 0.0
         let passStart = CFAbsoluteTimeGetCurrent()
 
-        let ahead = FrameAheadReader(output: output, depth: 2)
+        let ahead = FrameAheadReader(output: output, depth: 4)
         while let item = ahead.next() {
             try await checkpoint.checkCancellation()
             let decoded = item.buffer

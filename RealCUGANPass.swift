@@ -177,7 +177,7 @@ final class RealCUGANPass {
             kCVPixelBufferMetalCompatibilityKey as String: true,
             kCVPixelBufferIOSurfacePropertiesKey as String: [:]
         ])
-        output.alwaysCopiesSampleData = true
+        output.alwaysCopiesSampleData = false
         guard reader.canAdd(output) else { throw ProcessorError.reader("cannot attach Real-CUGAN reader") }
         reader.add(output)
 
@@ -254,7 +254,7 @@ final class RealCUGANPass {
         var polishWaitSeconds = 0.0
         let passStart = CFAbsoluteTimeGetCurrent()
         var encodeTask: Task<Void, Error>?
-        let ahead = FrameAheadReader(output: output, depth: 2)
+        let ahead = FrameAheadReader(output: output, depth: 4)
         var iterationStart = CFAbsoluteTimeGetCurrent()
         var notedFrames = 0
         let polishQueue = DispatchQueue(label: "rife60.fused-polish", qos: .userInitiated)

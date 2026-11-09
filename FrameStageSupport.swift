@@ -5,7 +5,7 @@ import Foundation
 import Metal
 
 /// Shared pixel-buffer pools, a Metal texture cache for Core Image, and a
-/// two-frame decode lookahead. Pixel values are not modified here.
+/// Bounded multi-frame decode lookahead. Pixel values are not modified here.
 enum FrameStageResources {
     static func makeCIContext(colorSpace: CGColorSpace? = nil) -> CIContext {
         var options: [CIContextOption: Any] = [.cacheIntermediates: false]
@@ -128,6 +128,7 @@ final class FrameAheadReader: @unchecked Sendable {
     private let queue = DispatchQueue(label: "frame-ahead-reader")
     private let lock = NSCondition()
     private var pending: [Item] = []
+    private var headIndex = 0
     private var decodeSeconds = 0.0
     private var decodeCount = 0
     private var finished = false
@@ -135,9 +136,9 @@ final class FrameAheadReader: @unchecked Sendable {
     /// Time the last `next()` spent blocked until a decoded frame was available.
     private(set) var lastWaitSeconds = 0.0
 
-    init(output: AVAssetReaderOutput, depth: Int = 2) {
+    init(output: AVAssetReaderOutput, depth: Int = 4) {
         self.output = output
-        self.depth = max(1, depth)
+        self.depth = min(max(1, depth), 4)
     }
 
     var averageDecodeMilliseconds: Double {
@@ -159,7 +160,15 @@ final class FrameAheadReader: @unchecked Sendable {
             lastWaitSeconds = CFAbsoluteTimeGetCurrent() - waited
             return nil
         }
-        let item = pending.removeFirst()
+        let item = pending[headIndex]
+        headIndex += 1
+        if headIndex >= pending.count {
+            pending.removeAll(keepingCapacity: true)
+            headIndex = 0
+        } else if headIndex >= 16 && headIndex * 2 >= pending.count {
+            pending.removeFirst(headIndex)
+            headIndex = 0
+        }
         lock.signal()
         lock.unlock()
         lastWaitSeconds = CFAbsoluteTimeGetCurrent() - waited
@@ -180,7 +189,7 @@ final class FrameAheadReader: @unchecked Sendable {
     private func produce() {
         while true {
             lock.lock()
-            while pending.count >= depth && !finished {
+            while (pending.count - headIndex) >= depth && !finished {
                 lock.wait()
             }
             if finished {

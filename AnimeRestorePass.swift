@@ -49,7 +49,7 @@ final class AnimeRestorePass {
         let output = AVAssetReaderTrackOutput(track: track, outputSettings: [
             kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA
         ])
-        output.alwaysCopiesSampleData = true
+        output.alwaysCopiesSampleData = false
         guard reader.canAdd(output) else { throw ProcessorError.reader("cannot attach anime restore output") }
         reader.add(output)
 
@@ -93,7 +93,7 @@ final class AnimeRestorePass {
         var active = model
         var triedSPAN = variant == .span
         var passthrough = false
-        let ahead = FrameAheadReader(output: output, depth: 2)
+        let ahead = FrameAheadReader(output: output, depth: 4)
         let started = CFAbsoluteTimeGetCurrent()
         while let item = ahead.next() {
             try await checkpoint.checkCancellation()
