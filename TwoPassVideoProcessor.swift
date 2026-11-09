@@ -39,7 +39,7 @@ final class TwoPassVideoProcessor {
 
     func process(
         sourceURL inputSourceURL: URL,
-        recoveryDirectory: URL? = nil,
+        recoveryDirectory _: URL? = nil,
         progress: @escaping @Sendable (Double, String) -> Void,
         telemetry: @escaping @Sendable (PerformanceTelemetry) -> Void = { _ in }
     ) async throws -> URL {
@@ -49,6 +49,8 @@ final class TwoPassVideoProcessor {
             for url in transientURLs { try? FileManager.default.removeItem(at: url) }
         }
 
+        // Persistent stage recovery is disabled. Every render starts from the selected source.
+        let recoveryDirectory: URL? = nil
         let normalizedSourceURL = try await Video720pPreprocessor().prepare(sourceURL: inputSourceURL)
         if normalizedSourceURL != inputSourceURL {
             transientURLs.append(normalizedSourceURL)

@@ -94,8 +94,6 @@ final class VideoProcessorViewModel: ObservableObject {
     @Published var processingScreenAwake = false
     @Published var elapsedSeconds: Double = 0
     @Published var etaSeconds: Double? = nil
-    @Published var recoveryAvailable = false
-    @Published var recoveryStatusText = ""
     @Published var brokenTileDiagnosticsEnabled = UserDefaults.standard.object(forKey: "RIFE60.brokenTileDiagnostics") as? Bool ?? true {
         didSet { UserDefaults.standard.set(brokenTileDiagnosticsEnabled, forKey: "RIFE60.brokenTileDiagnostics") }
     }
@@ -113,12 +111,7 @@ final class VideoProcessorViewModel: ObservableObject {
     private var loadingQueueSelection = false
     private let batchStore = BatchMediaQueueStore()
     var isBusy: Bool { isProcessing || isBatchProcessing }
-    var queueLocked: Bool {
-        // A saved crash-recovery checkpoint is informational, not a reason to lock
-        // the recipe controls. RecoveryStore.prepare() validates the configuration
-        // key and starts fresh if the user changes processing settings.
-        isBusy || (mediaQueue?.settingsKey != nil && mediaQueue?.nextItemID != nil)
-    }
+    var queueLocked: Bool { isBusy || (mediaQueue?.settingsKey != nil && mediaQueue?.nextItemID != nil) }
     var selectedQueueItem: BatchMediaItem? { mediaQueue?.items.first { $0.id == selectedMediaID } }
     var queueHasRemaining: Bool { mediaQueue?.nextItemID != nil }
     var batchProgress: Double {
@@ -150,19 +143,13 @@ final class VideoProcessorViewModel: ObservableObject {
         AnimeRestoreRegistry.installDefault()
         restoreProcessingSettings()
         refreshExportFolderName()
-        if let job = RecoveryStore.existingJob() {
-            applySavedBatchSettings(from: job.manifest.configurationKey)
-            inputKind = .video
-            inputURL = job.sourceURL
-            if animeRestoreSuppressFromSavedBatch { animeRestoreSuppressedURL = job.sourceURL }
-            progress = job.manifest.progress
-            recoveryAvailable = true
-            recoveryStatusText = "Interrupted render recovered at \(String(format: "%.1f", job.manifest.progress * 100))% • \(job.manifest.lastMessage)"
-            statusText = "Recovery ready"
-            DiagnosticsLogger.shared.log("App relaunched with unfinished recovery job at \(Int(job.manifest.progress * 100))%.")
-        } else {
-            DiagnosticsLogger.shared.log("App launched.")
+        let legacyRecoveryDirectory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("Recovery", isDirectory: true)
+        try? FileManager.default.removeItem(at: legacyRecoveryDirectory)
+        let temporary = FileManager.default.temporaryDirectory
+        for legacyStage in ["incremental-rife", "incremental-cugan", "incremental-final-outline"] {
+            try? FileManager.default.removeItem(at: temporary.appendingPathComponent(legacyStage, isDirectory: true))
         }
+        DiagnosticsLogger.shared.log("App launched • render recovery disabled; every render starts from its source.")
         restoreMediaQueue()
     }
 
@@ -463,15 +450,12 @@ final class VideoProcessorViewModel: ObservableObject {
             videoToGIFEnabled = true
         }
 
-        let resumingExistingJob = recoveryAvailable
         let generation = UUID(); renderGeneration = generation
         isProcessing = true
         processingScreenAwake = false
-        if !resumingExistingJob {
-            progress = 0
-            restorationProgress = 0
-            upscaleProgress = 0
-        }
+        progress = 0
+        restorationProgress = 0
+        upscaleProgress = 0
         telemetry = PerformanceTelemetry()
         outputURL = nil
         errorText = nil
@@ -481,7 +465,7 @@ final class VideoProcessorViewModel: ObservableObject {
         elapsedSeconds = 0
         etaSeconds = nil
         renderStartedAt = Date()
-        statusText = resumingExistingJob ? "Validating crash-recovery checkpoints…" : "Creating crash-safe source checkpoint…"
+        statusText = "Preparing source for processing…"
         if renderPowerMode { applyRenderPowerMode() }
 
         let guardEnabled = ghostProtection
@@ -541,18 +525,7 @@ final class VideoProcessorViewModel: ObservableObject {
                     }
                 }
 
-                let job = try RecoveryStore.prepare(source: processingSource, configurationKey: configKey)
-                RecoveryStore.update(progress: job.manifest.progress, message: "Recovery source secured", force: true)
                 guard let self else { return }
-                if resumingExistingJob && !job.resumed {
-                    DiagnosticsLogger.shared.log("Recovery data did not match the selected source or processing settings; starting a fresh render.")
-                    await MainActor.run {
-                        self.progress = 0
-                        self.restorationProgress = 0
-                        self.upscaleProgress = 0
-                        self.statusText = "Saved checkpoints did not match this render • starting fresh"
-                    }
-                }
                 var config = ProcessorConfiguration(quality: .hq, ghostProtection: guardEnabled, sceneCutProtection: cuts, compressionProtection: compressionEnabled, outlineProtection: outlineEnabled, ghostSensitivity: sensitivity, preserveAudio: audio, targetFPS: 60)
                 config.colorRebuild = colorRebuild
                 config.colorRebuildStrength = colorStrength
@@ -564,16 +537,13 @@ final class VideoProcessorViewModel: ObservableObject {
                 config.animeRestoreQuality = animeRestoreQualityChoice
                 config.brokenTileDiagnosticsEnabled = tileDiagnostics
                 let processor = TwoPassVideoProcessor(configuration: config, upscaleTo4K: upscale, colorPopEnabled: colorPop, colorPopStrength: gradeStrength, watermark: watermark, upscaleFirst: upscaleBeforeRIFE)
-                let result = try await processor.process(sourceURL: job.sourceURL, recoveryDirectory: job.directory, progress: { p, message in
-                    RecoveryStore.update(progress: p, message: message)
+                let result = try await processor.process(sourceURL: processingSource, recoveryDirectory: nil, progress: { p, message in
                     Task { @MainActor [weak self] in
                         guard let self, self.renderGeneration == generation, self.isProcessing else { return }
                         self.progress = p
                         if message.contains("Pass 1/3") { self.restorationProgress = min(max(p / 0.18, 0), 1) } else if p >= 0.19 { self.restorationProgress = 1 }
                         if p >= 0.56 { self.upscaleProgress = min(max((p - 0.56) / 0.41, 0), 1) }
                         self.statusText = message
-                        self.recoveryAvailable = true
-                        self.recoveryStatusText = "Crash-safe checkpoints active • \(String(format: "%.1f", p * 100))%"
                         self.updateClock(progress: p)
                     }
                 }, telemetry: { sample in Task { @MainActor [weak self] in
@@ -589,7 +559,6 @@ final class VideoProcessorViewModel: ObservableObject {
                     self.etaSeconds = nil
                 }
                 let saved = try await self.saveFinishedVideo(result)
-                RecoveryStore.finishAndClean()
                 if inputWasGIF {
                     // The bridge is only an internal processing source. The final user-facing
                     // asset is the GIF produced from the fully processed video master.
@@ -601,19 +570,15 @@ final class VideoProcessorViewModel: ObservableObject {
                     self.saveStatusText = saved.message
                     self.progress = 1; self.restorationProgress = 1; self.upscaleProgress = upscale ? 1 : 0
                     self.updateClock(progress: 1); self.etaSeconds = 0; self.statusText = "Finished"
-                    self.recoveryAvailable = false
-                    self.recoveryStatusText = ""
                     self.isProcessing = false; self.currentTask = nil; self.currentJobForcesGIF = false
                     self.blackScreenTask?.cancel(); self.processingScreenAwake = true; self.restoreDisplayState()
                 }
             } catch is CancellationError {
                 BrokenTileDiagnostics.shared.finishRun()
-                RecoveryStore.markCancelled()
-                await MainActor.run { [weak self] in guard let self else { return }; self.statusText = "Cancelled • checkpoints kept"; self.recoveryAvailable = true; self.recoveryStatusText = "Resume available from the last completed checkpoint"; self.isProcessing = false; self.currentTask = nil; self.blackScreenTask?.cancel(); self.processingScreenAwake = true; self.restoreDisplayState() }
+                await MainActor.run { [weak self] in guard let self else { return }; self.statusText = "Cancelled"; self.isProcessing = false; self.currentTask = nil; self.blackScreenTask?.cancel(); self.processingScreenAwake = true; self.restoreDisplayState() }
             } catch {
                 BrokenTileDiagnostics.shared.finishRun()
-                RecoveryStore.markFailed(error)
-                await MainActor.run { [weak self] in guard let self else { return }; self.errorText = error.localizedDescription; self.statusText = "Failed • recovery data kept"; self.recoveryAvailable = RecoveryStore.existingJob() != nil; self.recoveryStatusText = self.recoveryAvailable ? "Resume available from the last completed checkpoint" : ""; self.isProcessing = false; self.currentTask = nil; self.blackScreenTask?.cancel(); self.processingScreenAwake = true; self.restoreDisplayState() }
+                await MainActor.run { [weak self] in guard let self else { return }; self.errorText = error.localizedDescription; self.statusText = "Failed"; self.isProcessing = false; self.currentTask = nil; self.blackScreenTask?.cancel(); self.processingScreenAwake = true; self.restoreDisplayState() }
             }
         }
         return currentTask
