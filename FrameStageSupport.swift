@@ -193,7 +193,7 @@ final class FrameAheadReader: @unchecked Sendable {
 
     private let output: AVAssetReaderOutput
     private let requestedDepth: Int
-    private let adaptivePolicy: AdaptiveFrameCachePolicy
+    private let adaptivePolicy: AdaptiveFrameCachePolicy?
     private let queue = DispatchQueue(label: "frame-ahead-reader")
     private let lock = NSCondition()
     private var pending: [Item] = []
@@ -207,7 +207,7 @@ final class FrameAheadReader: @unchecked Sendable {
     init(output: AVAssetReaderOutput, depth: Int = 8, adaptive: Bool = true) {
         self.output = output
         self.requestedDepth = min(max(1, depth), AdaptiveFrameCachePolicy.maxDepth)
-        self.adaptivePolicy = AdaptiveFrameCachePolicy()
+        self.adaptivePolicy = adaptive ? AdaptiveFrameCachePolicy() : nil
     }
 
     var averageDecodeMilliseconds: Double {
@@ -263,7 +263,7 @@ final class FrameAheadReader: @unchecked Sendable {
                 lock.wait()
                 adaptiveDepth = min(
                     requestedDepth,
-                    adaptivePolicy.observe(frameBytes: nil)
+                    (adaptivePolicy?.observe(frameBytes: nil) ?? requestedDepth)
                 )
             }
             if finished {
@@ -286,7 +286,7 @@ final class FrameAheadReader: @unchecked Sendable {
                     pending.append(Item(buffer: ownedBuffer, time: CMSampleBufferGetPresentationTimeStamp(sample)))
                     adaptiveDepth = min(
                         requestedDepth,
-                        adaptivePolicy.observe(frameBytes: bytes)
+                        (adaptivePolicy?.observe(frameBytes: bytes) ?? requestedDepth)
                     )
                 } else {
                     finished = true
