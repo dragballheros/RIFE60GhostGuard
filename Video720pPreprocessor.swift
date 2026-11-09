@@ -24,7 +24,7 @@ final class Video720pPreprocessor {
 
         let longSide = max(width, height)
         let shortSide = min(width, height)
-        if longSide == 1280 && shortSide == 720 {
+        if longSide == 1920 && shortSide == 1080 {
             DiagnosticsLogger.shared.log("1080p input normalization • source already 1080p • no resize required")
             return sourceURL
         }
@@ -104,7 +104,7 @@ final class Video720pPreprocessor {
         let normalizedLong = max(normalizedWidth, normalizedHeight)
         let normalizedShort = min(normalizedWidth, normalizedHeight)
 
-        guard normalizedLong == 1280 && normalizedShort == 720 else {
+        guard normalizedLong == 1920 && normalizedShort == 1080 else {
             try? fm.removeItem(at: outputURL)
             throw ProcessorError.conversionFailed(
                 "1080p normalization produced \(normalizedWidth)x\(normalizedHeight) instead of a 1080p raster"
