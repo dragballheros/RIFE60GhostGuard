@@ -97,12 +97,7 @@ final class TwoPassVideoProcessor {
         let automaticCuganPasses: Int = {
             let twoPixels = native2xWidth * native2xHeight
             let fourPixels = (sourceWidth * 4) * (sourceHeight * 4)
-            // The working source is normalized to 1920x1080. For that raster,
-            // two native 2× passes produce the intended 3840x2160 delivery frame
-            // while staying inside the existing 40 MP working-memory budget.
-            if max(sourceWidth, sourceHeight) <= 1920,
-               min(sourceWidth, sourceHeight) <= 1080,
-               fourPixels <= 40_000_000 { return 2 }
+            if max(sourceWidth, sourceHeight) < 1080 && fourPixels <= 40_000_000 { return 2 }
             if twoPixels <= 40_000_000 { return 1 }
             return 0
         }()
