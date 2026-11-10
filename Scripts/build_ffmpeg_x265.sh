@@ -29,6 +29,19 @@ if [[ ! -d x265/.git ]]; then
 fi
 git -C x265 fetch --depth 1 origin "refs/tags/${X265_TAG}:refs/tags/${X265_TAG}"
 git -C x265 checkout -f "$X265_TAG"
+python3 - "$SRC/x265/source/CMakeLists.txt" "$SRC/x265/source/dynamicHDR10/CMakeLists.txt" << 'PY'
+import pathlib, sys
+for name in sys.argv[1:]:
+    path = pathlib.Path(name)
+    if not path.is_file():
+        continue
+    text = path.read_text()
+    text = text.replace("cmake_policy(SET CMP0025 OLD)", "cmake_policy(SET CMP0025 NEW)")
+    text = text.replace("cmake_policy(SET CMP0054 OLD)", "cmake_policy(SET CMP0054 NEW)")
+    text = text.replace("cmake_minimum_required (VERSION 2.8.8)", "cmake_minimum_required(VERSION 3.5)")
+    text = text.replace("cmake_minimum_required (VERSION 2.8.11)", "cmake_minimum_required(VERSION 3.5)")
+    path.write_text(text)
+PY
 
 if [[ ! -d ffmpeg/.git ]]; then
   rm -rf ffmpeg
@@ -123,6 +136,7 @@ build_x265() {
     -DEXPORT_C_API=ON
     -DENABLE_LIBNUMA=OFF
     -DENABLE_ASSEMBLY="$asm_flag"
+    -DCMAKE_POLICY_VERSION_MINIMUM=3.5
   )
   if [[ "$TARGET" == iphoneos ]]; then
     cmake_args+=(
