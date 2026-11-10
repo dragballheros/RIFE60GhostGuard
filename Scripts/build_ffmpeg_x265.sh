@@ -104,6 +104,10 @@ python3 - "$SRC/x265/source/CMakeLists.txt" << 'PY'
 import pathlib, sys
 path = pathlib.Path(sys.argv[1])
 text = path.read_text()
+text = text.replace(
+    "if((MSVC_IDE OR XCODE OR GCC) AND ENABLE_ASSEMBLY)",
+    "if((MSVC_IDE OR XCODE OR GCC OR CMAKE_CXX_COMPILER_ID MATCHES \"Clang\") AND ENABLE_ASSEMBLY)",
+)
 old = """            add_custom_command(
                 OUTPUT ${ASM}.${SUFFIX}
                 COMMAND ${CMAKE_CXX_COMPILER}
