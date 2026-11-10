@@ -7,7 +7,7 @@ TARGET="${1:?target linux or iphoneos}"
 PREFIX="$(mkdir -p "$2" && cd "$2" && pwd)"
 X265_TAG="3.4+70"
 FFMPEG_TAG="n7.1"
-BUILD_ID="djatom-${X265_TAG}-ffmpeg-${FFMPEG_TAG}-${TARGET}-v1"
+BUILD_ID="djatom-${X265_TAG}-ffmpeg-${FFMPEG_TAG}-${TARGET}-v2"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SRC="${TMPDIR:-/tmp}/rife60-ffmpeg-x265-src-${TARGET}"
 JOBS="$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)"
@@ -321,6 +321,12 @@ fi
 cd "$SRC/ffmpeg"
 make -j "$JOBS"
 make install
+# libavcodec and libswscale both ship this object. force-loading both
+# archives makes the duplicate global a hard link error.
+if ar t "$PREFIX/lib/libswscale.a" | grep -qx 'half2float.o'; then
+  ar d "$PREFIX/lib/libswscale.a" half2float.o
+  ranlib "$PREFIX/lib/libswscale.a"
+fi
 
 cat > "$PREFIX/BUILD-INFO.txt" << EOF
 build-id=${BUILD_ID}
