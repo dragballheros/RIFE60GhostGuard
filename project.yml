@@ -23,11 +23,27 @@ targets:
       properties:
         UIFileSharingEnabled: true
         LSSupportsOpeningDocumentsInPlace: true
+        UTImportedTypeDeclarations:
+          - UTTypeIdentifier: org.matroska.mkv
+            UTTypeDescription: Matroska Video
+            UTTypeConformsTo:
+              - public.data
+              - public.movie
+            UTTypeTagSpecification:
+              public.filename-extension:
+                - mkv
+                - mka
+                - mk3d
+                - webm
+              public.mime-type:
+                - video/x-matroska
+                - video/webm
     sources:
       - path: .
         includes:
           - "*.swift"
           - "*.mm"
+          - "X265PresetTranscode.c"
       - path: Vendor/minimax-h3
         includes:
           - "*.c"
@@ -64,9 +80,12 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.za.rife60ghostguard
         SWIFT_OBJC_BRIDGING_HEADER: "$(SRCROOT)/RIFE60GhostGuard-Bridging-Header.h"
         HEADER_SEARCH_PATHS:
+          - "$(SRCROOT)"
+          - "$(SRCROOT)/Vendor/ffmpeg-ios/include"
           - "$(SRCROOT)/Vendor/minimax-h3"
           - "$(SRCROOT)/Vendor/h3-gguf"
         LIBRARY_SEARCH_PATHS:
+          - "$(SRCROOT)/Vendor/ffmpeg-ios/lib"
         OTHER_LDFLAGS:
           - "-framework"
           - "Metal"
@@ -77,9 +96,17 @@ targets:
           - "-framework"
           - "Accelerate"
           - "-lc++"
+          - "-lz"
+          - "-Wl,-force_load,$(SRCROOT)/Vendor/ffmpeg-ios/lib/libavformat.a"
+          - "-Wl,-force_load,$(SRCROOT)/Vendor/ffmpeg-ios/lib/libavcodec.a"
+          - "-Wl,-force_load,$(SRCROOT)/Vendor/ffmpeg-ios/lib/libavfilter.a"
+          - "-Wl,-force_load,$(SRCROOT)/Vendor/ffmpeg-ios/lib/libswscale.a"
+          - "-Wl,-force_load,$(SRCROOT)/Vendor/ffmpeg-ios/lib/libswresample.a"
+          - "-Wl,-force_load,$(SRCROOT)/Vendor/ffmpeg-ios/lib/libavutil.a"
+          - "-Wl,-force_load,$(SRCROOT)/Vendor/ffmpeg-ios/lib/libx265.a"
         PRODUCT_NAME: RIFE60GhostGuard
         MARKETING_VERSION: 1.0
-        CURRENT_PROJECT_VERSION: 193
+        CURRENT_PROJECT_VERSION: 194
         INFOPLIST_KEY_CFBundleShortVersionString: "$(MARKETING_VERSION)"
         INFOPLIST_KEY_CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
         SWIFT_VERSION: 5.10

@@ -554,7 +554,7 @@ struct ContentView: View {
                     )
                 }
                 .photosPicker(isPresented: $showingPhotosPicker, selection: $photoItems, maxSelectionCount: 100, selectionBehavior: .ordered, matching: .any(of: [.videos, .images]), photoLibrary: .shared())
-                .fileImporter(isPresented: $showingImporter, allowedContentTypes: [.movie, .mpeg4Movie, .quickTimeMovie, .video, .image], allowsMultipleSelection: true) { result in Task { await vm.handleImport(result) } }
+                .fileImporter(isPresented: $showingImporter, allowedContentTypes: [.movie, .mpeg4Movie, .quickTimeMovie, .video, .image, .matroska], allowsMultipleSelection: true) { result in Task { await vm.handleImport(result) } }
                 .fileImporter(isPresented: $showingExportFolderPicker, allowedContentTypes: [.folder], allowsMultipleSelection: false) { result in
                     vm.handleExportFolderSelection(result)
                     lastCompletedVideoURL = LastCompletedVideoStore.latestCompletedVideo() ?? lastCompletedVideoURL

@@ -517,13 +517,20 @@ final class VideoProcessorViewModel: ObservableObject {
                     }
                     try Task.checkCancellation()
                     DiagnosticsLogger.shared.log("GIF input bridged to video • source=\(selectedSource.lastPathComponent) • bridge=\(processingSource.lastPathComponent)")
-                    await MainActor.run { [weak self] in
+                }
+
+                let x265Source = try await X265PresetNormalizer.normalize(source: processingSource) { fraction, message in
+                    Task { @MainActor [weak self] in
                         guard let self, self.renderGeneration == generation, self.isProcessing else { return }
-                        self.statusText = "GIF converted • starting full RIFE/CUGAN video pipeline…"
-                        self.progress = 0.08
+                        self.progress = min(0.04, max(0, fraction) * 0.04)
+                        self.statusText = message
                         self.updateClock(progress: self.progress)
                     }
                 }
+                if inputWasGIF, processingSource != selectedSource {
+                    try? FileManager.default.removeItem(at: processingSource)
+                }
+                processingSource = x265Source
 
                 guard let self else { return }
                 var config = ProcessorConfiguration(quality: .hq, ghostProtection: guardEnabled, sceneCutProtection: cuts, compressionProtection: compressionEnabled, outlineProtection: outlineEnabled, ghostSensitivity: sensitivity, preserveAudio: audio, targetFPS: 60)
@@ -540,11 +547,11 @@ final class VideoProcessorViewModel: ObservableObject {
                 let result = try await processor.process(sourceURL: processingSource, recoveryDirectory: nil, progress: { p, message in
                     Task { @MainActor [weak self] in
                         guard let self, self.renderGeneration == generation, self.isProcessing else { return }
-                        self.progress = p
+                        self.progress = 0.04 + (p * 0.96)
                         if message.contains("Pass 1/3") { self.restorationProgress = min(max(p / 0.18, 0), 1) } else if p >= 0.19 { self.restorationProgress = 1 }
                         if p >= 0.56 { self.upscaleProgress = min(max((p - 0.56) / 0.41, 0), 1) }
                         self.statusText = message
-                        self.updateClock(progress: p)
+                        self.updateClock(progress: self.progress)
                     }
                 }, telemetry: { sample in Task { @MainActor [weak self] in
                     guard let self, self.renderGeneration == generation, self.isProcessing else { return }
@@ -559,6 +566,7 @@ final class VideoProcessorViewModel: ObservableObject {
                     self.etaSeconds = nil
                 }
                 let saved = try await self.saveFinishedVideo(result)
+                X265PresetNormalizer.discardCachedOutput(processingSource)
                 if inputWasGIF {
                     // The bridge is only an internal processing source. The final user-facing
                     // asset is the GIF produced from the fully processed video master.

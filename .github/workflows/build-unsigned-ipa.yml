@@ -18,9 +18,9 @@ concurrency:
 on:
   workflow_dispatch:
   pull_request:
-    branches: [main, feature/wan-vace-ondevice-component-test, feature/wan-vace-iphone-memory-first]
+    branches: [main, feature/wan-vace-ondevice-component-test, feature/wan-vace-iphone-memory-first, diagnostics/rife-real-stream-parity-gate]
   push:
-    branches: [main, feature/wan-vace-iphone-memory-first, feature/minimax-h3-ios-runtime, cursor/rife60-quality-speed-h3-1273, integration/h3-vace-720p-ios16, diagnostics/rife-real-stream-parity-gate]
+    branches: [main, feature/wan-vace-iphone-memory-first, feature/minimax-h3-ios-runtime, cursor/rife60-quality-speed-h3-1273, cursor/x265-preset-before-rife-4b45, integration/h3-vace-720p-ios16, diagnostics/rife-real-stream-parity-gate]
 
 permissions:
   contents: write
@@ -30,7 +30,8 @@ jobs:
   build:
     runs-on: macos-26
     # Large Draw Things SwiftPM dependency graph needs more than 45 minutes on a cold cache.
-    timeout-minutes: 120
+    # A cold DJATOM x265 + FFmpeg iOS build adds another compile before that link.
+    timeout-minutes: 180
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -320,6 +321,25 @@ jobs:
             echo "::error::Draw Things uses Metal GPU family APIs that require an iOS 26 SDK; selected SDK is $SDK_VERSION"
             exit 1
           fi
+
+      - name: Verify the fixed x265 preset parameter list
+        run: python3 Scripts/check_x265_preset_params.py
+
+      - name: Restore cached iOS FFmpeg and DJATOM x265
+        uses: actions/cache@v4
+        with:
+          path: Vendor/ffmpeg-ios
+          key: iphoneos-arm64-${{ hashFiles('Scripts/build_ffmpeg_x265.sh', 'Scripts/x265_preset_params.txt', 'X265PresetParams.h') }}
+
+      - name: Build iOS FFmpeg with DJATOM x265 when the cache is cold
+        timeout-minutes: 70
+        run: |
+          set -euo pipefail
+          if ! command -v cmake >/dev/null || ! command -v ninja >/dev/null || ! command -v pkg-config >/dev/null; then
+            brew install cmake ninja pkg-config
+          fi
+          bash Scripts/build_ffmpeg_x265.sh iphoneos Vendor/ffmpeg-ios
+
       - name: Install XcodeGen
         run: brew install xcodegen
 
@@ -604,6 +624,13 @@ jobs:
           swiftc -swift-version 5 -parse-as-library WatermarkConfiguration.swift WatermarkBrushMask.swift BatchMediaQueue.swift Scripts/check_batch_media.swift -o /tmp/batch-media-check/check
           /tmp/batch-media-check/check
 
+      - name: Verify x265 preset resume cache
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/x265-cache-check
+          swiftc -swift-version 5 -parse-as-library WatermarkConfiguration.swift WatermarkBrushMask.swift BatchMediaQueue.swift X265PresetCache.swift Scripts/check_x265_preset_cache.swift -o /tmp/x265-cache-check/check
+          /tmp/x265-cache-check/check
+
       - name: Verify adaptive eight-frame cache is active in every video stage
         run: python3 Scripts/check_frame_ahead_cache.py
 
@@ -833,6 +860,19 @@ jobs:
       - name: Verify H3 native engine is compiled and linked into the app
         run: python3 Scripts/verify_h3_native_link.py
 
+      - name: Verify DJATOM x265 is linked into the app
+        run: |
+          set -euo pipefail
+          BIN="build/Build/Products/Release-iphoneos/RIFE60GhostGuard.app/RIFE60GhostGuard"
+          test -f "$BIN"
+          nm "$BIN" > /tmp/app-symbols.txt
+          grep -q '_rife60_x265_build_number' /tmp/app-symbols.txt
+          strings "$BIN" > /tmp/app-strings.txt
+          grep -q 'x265.org' /tmp/app-strings.txt
+          nm Vendor/ffmpeg-ios/lib/libx265.a > /tmp/x265-symbols.txt
+          grep -q 'x265_api_get_198' /tmp/x265-symbols.txt
+          echo "DJATOM x265 build 198 is linked into the unsigned app"
+
       - name: Create verified IPA
         run: |
           set -euo pipefail
@@ -943,3 +983,25 @@ jobs:
           name: xcodebuild-log
           path: xcodebuild.log
           if-no-files-found: ignore
+
+  x265-preset-proof:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Install encoder build tools
+        run: sudo apt-get update && sudo apt-get install -y build-essential cmake ninja-build nasm pkg-config ffmpeg
+      - name: Restore cached Linux FFmpeg and DJATOM x265
+        uses: actions/cache@v4
+        with:
+          path: /tmp/rife60-ffmpeg-x265
+          key: linux-${{ hashFiles('Scripts/build_ffmpeg_x265.sh', 'Scripts/x265_preset_params.txt', 'X265PresetParams.h', 'X265PresetTranscode.c') }}
+      - name: Encode a sample and compare the x265 options string
+        run: bash Scripts/prove_x265_preset.sh /tmp/rife60-ffmpeg-x265
+      - name: Upload ffprobe proof
+        uses: actions/upload-artifact@v4
+        with:
+          name: x265-preset-ffprobe
+          path: /tmp/x265-preset-proof.txt
+          if-no-files-found: error
