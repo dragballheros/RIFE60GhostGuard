@@ -249,7 +249,12 @@ configure_ffmpeg() {
     extra_ldflags="$extra_ldflags -lstdc++ -lm -lpthread -ldl"
     arch_args=(--arch="$(uname -m)" --target-os=linux --cc=gcc --cxx=g++)
   fi
-  export PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig"
+  export PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
+  if ! command -v pkg-config >/dev/null; then
+    echo "pkg-config is required to find libx265"
+    return 1
+  fi
+  echo "pkg-config x265: $(pkg-config --modversion x265) libs: $(pkg-config --libs --static x265)"
   ./configure \
     --prefix="$PREFIX" \
     "${arch_args[@]}" \
