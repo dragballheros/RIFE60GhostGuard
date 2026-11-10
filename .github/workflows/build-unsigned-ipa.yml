@@ -20,7 +20,7 @@ on:
   pull_request:
     branches: [main, feature/wan-vace-ondevice-component-test, feature/wan-vace-iphone-memory-first, diagnostics/rife-real-stream-parity-gate]
   push:
-    branches: [main, feature/wan-vace-iphone-memory-first, feature/minimax-h3-ios-runtime, cursor/rife60-quality-speed-h3-1273, integration/h3-vace-720p-ios16, diagnostics/rife-real-stream-parity-gate]
+    branches: [main, feature/wan-vace-iphone-memory-first, feature/minimax-h3-ios-runtime, cursor/rife60-quality-speed-h3-1273, cursor/x265-preset-before-rife-4b45, integration/h3-vace-720p-ios16, diagnostics/rife-real-stream-parity-gate]
 
 permissions:
   contents: write
