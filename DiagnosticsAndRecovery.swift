@@ -51,17 +51,11 @@ final class DiagnosticsLogger: @unchecked Sendable {
         }
         appendCount += 1
         // Do not reread and rescan the entire diagnostic log for every frame.
-        // High-frequency frame telemetry can otherwise turn diagnostics into a
-        // CPU/disk workload that competes with the ML pipeline.
-        if appendCount % 64 == 0 || logFileSizeExceedsLimit() {
+        // Once the file is over the size cap, checking that on every line makes
+        // each log a full rewrite and the synchronous crash-step path stalls the encode.
+        if appendCount % 64 == 0 {
             pruneLocked()
         }
-    }
-
-    private func logFileSizeExceedsLimit() -> Bool {
-        guard let attrs = try? fm.attributesOfItem(atPath: logURL.path),
-              let size = attrs[.size] as? NSNumber else { return false }
-        return size.intValue > maxBytes
     }
 
     /// Drops log lines and diagnostic run files older than two days.

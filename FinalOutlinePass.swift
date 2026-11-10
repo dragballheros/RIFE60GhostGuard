@@ -5,6 +5,20 @@ import CoreImage
 import CoreVideo
 import VideoToolbox
 
+/// One Sharpie frame in flight. The next frame's CPU rebuild overlaps it.
+private final class SharpieJob: @unchecked Sendable {
+    var split: FinalOutlinePass.PolishSplit
+    var error: Error?
+    var finishedAt = 0.0
+    let pts: CMTime
+    let group = DispatchGroup()
+
+    init(split: FinalOutlinePass.PolishSplit, pts: CMTime) {
+        self.split = split
+        self.pts = pts
+    }
+}
+
 /// Final visual polish after Real-CUGAN. The 4K CUGAN frame remains the master.
 /// Deep-shadow chroma noise is cleaned first, then Sharpie is generated from that
 /// cleaned master, then only the light final compression polish is allowed after it.
@@ -153,16 +167,21 @@ final class FinalOutlinePass {
         var outlineSeconds = 0.0, shadowSeconds = 0.0, finalCompressionSeconds = 0.0, encodeSeconds = 0.0
         var downscaleTotal = 0.0, packTotal = 0.0, predictTotal = 0.0, unpackTotal = 0.0, refineTotal = 0.0, dissolveTotal = 0.0
         var queueWaitTotal = 0.0, assemblyTotal = 0.0, handoffTotal = 0.0, predictWallTotal = 0.0
-        var colorRebuildSeconds = 0.0, outlineRebuildSeconds = 0.0
+        var colorRebuildSeconds = 0.0, outlineRebuildSeconds = 0.0, overlapSeconds = 0.0
         let passStart = CFAbsoluteTimeGetCurrent()
+        let sharpieQueue = DispatchQueue(label: "rife60.final-sharpie", qos: .userInitiated)
+        let finalGuard = CompressionGuard()
+        var inflight: SharpieJob?
+        defer { inflight?.group.wait() }
+        DiagnosticsLogger.shared.log("Final polish schedule • Sharpie overlaps the next frame's shadow, color rebuild, and outline rebuild • row-parallel CPU rebuilds • Sharpie stays off the Real-CUGAN Neural Engine")
 
-        let ahead = FrameAheadReader(output: output)
-        while let item = ahead.next() {
-            try await checkpoint.checkCancellation()
-            let decoded = item.buffer
-            let pts = item.time
-
-            let split = try polishPrepared(decoded)
+        func accept(_ job: SharpieJob) async throws {
+            job.group.wait()
+            if let error = job.error { throw error }
+            let split = job.split
+            guard let polished = split.buffer else {
+                throw ProcessorError.conversionFailed("Final polish produced no frame")
+            }
             if split.shadowCleaned { shadowCleanedFrames += 1 }
             if split.finalCleaned { finalCleanedFrames += 1 }
             shadowSeconds += split.shadowSeconds
@@ -180,18 +199,16 @@ final class FinalOutlinePass {
             assemblyTotal += split.assemblySeconds
             handoffTotal += split.handoffSeconds
             predictWallTotal += split.predictWallSeconds
-            guard let polished = split.buffer else {
-                throw ProcessorError.conversionFailed("Final polish produced no frame")
-            }
 
             let encodeStart = CFAbsoluteTimeGetCurrent()
-            try await checkpoint.append10Bit(polished, at: pts)
+            try await checkpoint.append10Bit(polished, at: job.pts)
             encodeSeconds += CFAbsoluteTimeGetCurrent() - encodeStart
             frames += 1
 
             if frames == 1 || frames % 10 == 0 {
                 let frameWall = (split.shadowSeconds + split.outlineSeconds + split.compressionSeconds + split.colorRebuildSeconds + split.outlineRebuildSeconds) * 1000
-                DiagnosticsLogger.shared.log("Final polish frame \(frames) • wall=\(String(format: "%.1f", frameWall))ms • shadowPreSharpie=\(String(format: "%.1f", split.shadowSeconds*1000))ms • Sharpie=\(String(format: "%.1f", split.outlineSeconds*1000))ms • finalCompression=\(String(format: "%.1f", split.compressionSeconds*1000))ms • shadowCleaned=\(shadowCleanedFrames) • finalCleaned=\(finalCleanedFrames) • thermal=\(currentThermalStateName())")
+                let throughput = Double(frames) / max(CFAbsoluteTimeGetCurrent() - passStart, 0.001)
+                DiagnosticsLogger.shared.log("Final polish frame \(frames) • wall=\(String(format: "%.1f", frameWall))ms • throughput=\(String(format: "%.1f", 1000 / max(throughput, 0.001)))ms/frame • shadowPreSharpie=\(String(format: "%.1f", split.shadowSeconds*1000))ms • Sharpie=\(String(format: "%.1f", split.outlineSeconds*1000))ms • finalCompression=\(String(format: "%.1f", split.compressionSeconds*1000))ms • shadowCleaned=\(shadowCleanedFrames) • finalCleaned=\(finalCleanedFrames) • thermal=\(currentThermalStateName())")
                 DiagnosticsLogger.shared.log(String(format: "Sharpie split • downscale=%.1fms • pack=%.1fms • predictWall=%.1fms • predictCpuSum=%.1fms • unpack=%.1fms • visionRefine=%.1fms • upscaleDissolve=%.1fms", split.downscaleSeconds * 1000, split.packSeconds * 1000, split.predictWallSeconds * 1000, split.predictSeconds * 1000, split.unpackSeconds * 1000, split.refineSeconds * 1000, split.blendSeconds * 1000))
             }
             if frames % 3 == 0 {
@@ -201,12 +218,41 @@ final class FinalOutlinePass {
                 t.encodeMsPerOutputFrame = encodeSeconds * 1000 / Double(frames)
                 t.thermalState = currentThermalStateName()
                 telemetry(t)
-                let frac = min(max(CMTimeGetSeconds(pts) / seconds, 0), 1)
+                let frac = min(max(CMTimeGetSeconds(job.pts) / seconds, 0), 1)
                 let fps = Double(frames) / max(CFAbsoluteTimeGetCurrent()-passStart, 0.001)
                 let remaining = fps > 0 ? max(seconds*60-Double(frames),0)/fps : 0
                 progress(frac, "Final polish • Shadow cleanup → Sharpie → Compression Guard • \(frames) frames • ETA \(formatDuration(remaining))")
                 await Task.yield()
             }
+        }
+
+        let ahead = FrameAheadReader(output: output)
+        while let item = ahead.next() {
+            try await checkpoint.checkCancellation()
+            let prefixStart = CFAbsoluteTimeGetCurrent()
+            let prefix = try prepareCPUPrefix(item.buffer)
+            let prefixEnd = CFAbsoluteTimeGetCurrent()
+            if let previous = inflight {
+                try await accept(previous)
+                overlapSeconds += max(0, min(prefixEnd, previous.finishedAt) - prefixStart)
+            }
+            let job = SharpieJob(split: prefix, pts: item.time)
+            job.group.enter()
+            sharpieQueue.async {
+                do {
+                    var split = job.split
+                    try self.finishSharpie(&split, compression: finalGuard)
+                    job.split = split
+                } catch {
+                    job.error = error
+                }
+                job.finishedAt = CFAbsoluteTimeGetCurrent()
+                job.group.leave()
+            }
+            inflight = job
+        }
+        if let inflight {
+            try await accept(inflight)
         }
 
         if frames > 0 {
@@ -229,6 +275,13 @@ final class FinalOutlinePass {
             PipelineStageTimer.current?.recordText("sharpieStrategy", SharpieTileStore.plan().rawValue)
             PipelineStageTimer.current?.record("colorRebuildMs", milliseconds: colorRebuildSeconds * 1000 / count)
             PipelineStageTimer.current?.record("outlineRebuildMs", milliseconds: outlineRebuildSeconds * 1000 / count)
+            PipelineStageTimer.current?.record("shadowPreSharpieMs", milliseconds: shadowSeconds * 1000 / count)
+            PipelineStageTimer.current?.record("finalCompressionMs", milliseconds: finalCompressionSeconds * 1000 / count)
+            PipelineStageTimer.current?.record("finalPassWallMs", milliseconds: (CFAbsoluteTimeGetCurrent() - passStart) * 1000 / count)
+            PipelineStageTimer.current?.record("finalPassOverlapMs", milliseconds: overlapSeconds * 1000 / count)
+            let schedule = String(format: "Final pass pipeline • throughput %.1fms/frame • component sum %.1fms • overlap %.1fms • color %.1fms • outline rebuild %.1fms • Sharpie %.1fms", (CFAbsoluteTimeGetCurrent() - passStart) * 1000 / count, (shadowSeconds + colorRebuildSeconds + outlineRebuildSeconds + outlineSeconds + finalCompressionSeconds) * 1000 / count, overlapSeconds * 1000 / count, colorRebuildSeconds * 1000 / count, outlineRebuildSeconds * 1000 / count, outlineSeconds * 1000 / count)
+            DiagnosticsLogger.shared.log(schedule)
+            PipelineStageTimer.current?.note(schedule)
         }
         if reader.status == .failed { throw ProcessorError.reader(reader.error?.localizedDescription ?? "final polish decode failed") }
         guard frames > 0 else { throw ProcessorError.conversionFailed("Final polish pass received zero frames") }
@@ -254,6 +307,15 @@ final class FinalOutlinePass {
 
     /// Shadow chroma, optional rebuild, Sharpie, then light compression. Same order as the file pass.
     func polishPrepared(_ decoded: CVPixelBuffer) throws -> PolishSplit {
+        var split = try prepareCPUPrefix(decoded)
+        try finishSharpie(&split, compression: streamCompression)
+        return split
+    }
+
+    /// Shadow chroma, then color rebuild, then outline rebuild. Stays on the caller
+    /// thread so the previous-frame chroma history stays in order. Safe to run while
+    /// Sharpie of the previous frame uses the Neural Engine.
+    private func prepareCPUPrefix(_ decoded: CVPixelBuffer) throws -> PolishSplit {
         var split = PolishSplit()
         let shadowStart = CFAbsoluteTimeGetCurrent()
         let preSharpie: CVPixelBuffer
@@ -276,7 +338,16 @@ final class FinalOutlinePass {
             rebuilt = streamOutlineRebuild.apply(rebuilt, strength: outlineRebuildStrength)
             split.outlineRebuildSeconds = CFAbsoluteTimeGetCurrent() - started
         }
+        split.buffer = rebuilt
+        return split
+    }
 
+    /// Sharpie, then the light final compression. Uses its own CompressionGuard when
+    /// the video pass overlaps it with the next frame's shadow cleanup.
+    private func finishSharpie(_ split: inout PolishSplit, compression: CompressionGuard) throws {
+        guard let rebuilt = split.buffer else {
+            throw ProcessorError.conversionFailed("Final polish produced no frame")
+        }
         let outlineStart = CFAbsoluteTimeGetCurrent()
         let resizeStart = CFAbsoluteTimeGetCurrent()
         let narrowed: CVPixelBuffer
@@ -303,14 +374,13 @@ final class FinalOutlinePass {
         split.outlineSeconds = CFAbsoluteTimeGetCurrent() - outlineStart
 
         let compressionStart = CFAbsoluteTimeGetCurrent()
-        if let cleaned = try? streamCompression.cleanFinalCompression(narrowed) {
+        if let cleaned = try? compression.cleanFinalCompression(narrowed) {
             split.buffer = cleaned
             split.finalCleaned = true
         } else {
             split.buffer = narrowed
         }
         split.compressionSeconds = CFAbsoluteTimeGetCurrent() - compressionStart
-        return split
     }
 
     /// Single-image version of the per-frame final polish in run():

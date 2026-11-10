@@ -20,7 +20,7 @@ on:
   pull_request:
     branches: [main, feature/wan-vace-ondevice-component-test, feature/wan-vace-iphone-memory-first, diagnostics/rife-real-stream-parity-gate]
   push:
-    branches: [main, feature/wan-vace-iphone-memory-first, feature/minimax-h3-ios-runtime, cursor/rife60-quality-speed-h3-1273, cursor/x265-preset-before-rife-4b45, integration/h3-vace-720p-ios16, diagnostics/rife-real-stream-parity-gate]
+    branches: [main, feature/wan-vace-iphone-memory-first, feature/minimax-h3-ios-runtime, cursor/rife60-quality-speed-h3-1273, cursor/x265-preset-before-rife-4b45, cursor/pipeline-overlap-final-pass-4b45, integration/h3-vace-720p-ios16, diagnostics/rife-real-stream-parity-gate]
 
 permissions:
   contents: write
@@ -623,6 +623,14 @@ jobs:
           mkdir -p /tmp/batch-media-check
           swiftc -swift-version 5 -parse-as-library WatermarkConfiguration.swift WatermarkBrushMask.swift BatchMediaQueue.swift Scripts/check_batch_media.swift -o /tmp/batch-media-check/check
           /tmp/batch-media-check/check
+
+      - name: Verify row-parallel rebuild matches the serial pixels
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/rebuild-row-check
+          cp Scripts/check_rebuild_rows.swift /tmp/rebuild-row-check/main.swift
+          swiftc -swift-version 5 -framework CoreVideo ColorRebuild.swift OutlineRebuild.swift /tmp/rebuild-row-check/main.swift -o /tmp/rebuild-row-check/check
+          /tmp/rebuild-row-check/check
 
       - name: Verify x265 preset resume cache
         run: |
