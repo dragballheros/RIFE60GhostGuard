@@ -5,6 +5,7 @@ import CoreVideo
 /// A legitimate scene cut normally has a large A→C discontinuity while B
 /// remains temporally consistent with one side. A stray one-frame "ghost"
 /// instead creates a detour: A→B→C is substantially larger than A→C.
+/// A leftover frame parked on the cut matches neither neighbor.
 final class SourceFrameOutlierGuard {
     struct Result {
         let isOutlier: Bool
@@ -23,6 +24,24 @@ final class SourceFrameOutlierGuard {
         let ab = a.meanAbsoluteDifference(to: b)
         let bc = b.meanAbsoluteDifference(to: c)
         let ac = a.meanAbsoluteDifference(to: c)
+        let abColor = a.meanAbsoluteColorDifference(to: b)
+        let bcColor = b.meanAbsoluteColorDifference(to: c)
+        let acColor = a.meanAbsoluteColorDifference(to: c)
+
+        // A leftover frame between two different shots is far from both of
+        // them. A genuine cut frame belongs to the outgoing or incoming
+        // side, so its nearer distance stays small and this does not fire.
+        // The coarse RGB sample is what lets a similar-brightness cut count.
+        let cutAB = max(ab, abColor)
+        let cutBC = max(bc, bcColor)
+        let cutAC = max(ac, acColor)
+        let nearerCut = min(cutAB, cutBC)
+        let strayLimit = max(0.10, 0.6 * cutAC)
+        if cutAC > 0.12 && nearerCut > strayLimit {
+            let score = min(max(nearerCut / max(cutAC, 0.012), 0), 1)
+            return Result(isOutlier: true, score: max(score, 0.90), reason: "stray frame at scene cut")
+        }
+
         guard ab > 0.025, bc > 0.025 else {
             return Result(isOutlier: false, score: 0, reason: "candidate close to a neighbor")
         }
@@ -58,6 +77,17 @@ final class SourceFrameOutlierGuard {
             return Result(isOutlier: true, score: score, reason: "temporal source-frame outlier")
         }
         return Result(isOutlier: false, score: score, reason: "normal temporal path")
+    }
+
+    /// Repeats the neighbor a cut-boundary stray frame is closer to.
+    /// bridge() would cross-fade the two scenes, which is the wrong repair.
+    func nearestNeighbor(previous: CVPixelBuffer, candidate: CVPixelBuffer, next: CVPixelBuffer) -> CVPixelBuffer {
+        guard let a = Sample(previous), let b = Sample(candidate), let c = Sample(next) else {
+            return previous
+        }
+        let ab = max(a.meanAbsoluteDifference(to: b), a.meanAbsoluteColorDifference(to: b))
+        let bc = max(b.meanAbsoluteDifference(to: c), b.meanAbsoluteColorDifference(to: c))
+        return bc < ab ? next : previous
     }
 
     /// Builds a temporary bridge frame at the suspect frame's original time.
@@ -121,6 +151,7 @@ final class SourceFrameOutlierGuard {
         let width: Int
         let height: Int
         let values: [Float]
+        let color: [Float]
 
         init?(_ buffer: CVPixelBuffer) {
             guard CVPixelBufferGetPixelFormatType(buffer) == kCVPixelFormatType_32BGRA else { return nil }
@@ -139,7 +170,9 @@ final class SourceFrameOutlierGuard {
             let xOffset = xStep / 2
             let yOffset = yStep / 2
             var values: [Float] = []
+            var colors: [Float] = []
             values.reserveCapacity(64 * 36)
+            colors.reserveCapacity(64 * 36 * 3)
 
             for row in 0..<36 {
                 let y = min(height - 1, yOffset + row * yStep)
@@ -151,11 +184,15 @@ final class SourceFrameOutlierGuard {
                     let g = Float(source[i + 1]) / 255
                     let r = Float(source[i + 2]) / 255
                     values.append(0.0722 * b + 0.7152 * g + 0.2126 * r)
+                    colors.append(r)
+                    colors.append(g)
+                    colors.append(b)
                 }
             }
             self.width = 64
             self.height = 36
             self.values = values
+            self.color = colors
         }
 
         func meanAbsoluteDifference(to other: Sample) -> Double {
@@ -163,6 +200,14 @@ final class SourceFrameOutlierGuard {
             guard n > 0 else { return 0 }
             var sum: Float = 0
             for i in 0..<n { sum += abs(values[i] - other.values[i]) }
+            return Double(sum / Float(n))
+        }
+
+        func meanAbsoluteColorDifference(to other: Sample) -> Double {
+            let n = min(color.count, other.color.count)
+            guard n > 0 else { return 0 }
+            var sum: Float = 0
+            for i in 0..<n { sum += abs(color[i] - other.color[i]) }
             return Double(sum / Float(n))
         }
 
