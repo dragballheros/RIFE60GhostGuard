@@ -617,6 +617,14 @@ jobs:
           swiftc -swift-version 5 -framework CoreVideo LocalizedColorArtifactGuard.swift /tmp/color-artifact-check/main.swift -o /tmp/color-artifact-check/check
           /tmp/color-artifact-check/check
 
+      - name: Verify thin-line preservation on interpolated frames
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/thin-line-check
+          cp Scripts/check_thin_line_preservation.swift /tmp/thin-line-check/main.swift
+          swiftc -swift-version 5 -framework CoreVideo ThinLinePreservationPass.swift /tmp/thin-line-check/main.swift -o /tmp/thin-line-check/check
+          /tmp/thin-line-check/check
+
       - name: Verify persistent mixed media queue and strict serial scheduling
         run: |
           set -euo pipefail

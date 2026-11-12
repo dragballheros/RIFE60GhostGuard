@@ -152,6 +152,7 @@ final class RIFEVideoProcessor {
             : nil
         let compressionGuard = config.compressionProtection ? CompressionGuard() : nil
         let colorArtifactGuard = LocalizedColorArtifactGuard()
+        let thinLinePass = ThinLinePreservationPass(sensitivity: config.ghostSensitivity)
 
         let outlineEnhancer: OutlineEnhancer?
         if config.outlineProtection {
@@ -335,7 +336,10 @@ final class RIFEVideoProcessor {
                         progress: 0.5
                     )
                     if !midpointGuard.reject && !(midpointFast?.reject ?? false) && !midpointColor.isAnomaly {
-                        fastMotionAnchor = try PixelBufferOwnership.copy(midpoint)
+                        let stabilized = thinLinePass.preserve(
+                            previous: prevPB, interpolated: midpoint, next: currentPB, progress: 0.5
+                        ) ?? midpoint
+                        fastMotionAnchor = try PixelBufferOwnership.copy(stabilized)
                         DiagnosticsLogger.shared.log(
                             "Fast-motion RIFE span enabled • motion=\(String(format: "%.3f", fastMotionEstimate?.motionScore ?? 0)) • midpoint validated"
                         )
@@ -479,17 +483,20 @@ final class RIFEVideoProcessor {
                     return nil
                 }
 
-                if abs(t - 0.5) <= 0.001 { return try PixelBufferOwnership.copy(midpoint) }
+                let stabilizedMidpoint = thinLinePass.preserve(
+                    previous: prevPB, interpolated: midpoint, next: currentPB, progress: 0.5
+                ) ?? midpoint
+                if abs(t - 0.5) <= 0.001 { return try PixelBufferOwnership.copy(stabilizedMidpoint) }
 
                 let retryPrevious: CVPixelBuffer
                 let retryCurrent: CVPixelBuffer
                 let retryT: Float
                 if t < 0.5 {
                     retryPrevious = prevPB
-                    retryCurrent = midpoint
+                    retryCurrent = stabilizedMidpoint
                     retryT = Float(min(max(t * 2.0, 0.001), 0.999))
                 } else {
-                    retryPrevious = midpoint
+                    retryPrevious = stabilizedMidpoint
                     retryCurrent = currentPB
                     retryT = Float(min(max((t - 0.5) * 2.0, 0.001), 0.999))
                 }
@@ -644,6 +651,19 @@ final class RIFEVideoProcessor {
                         )
                     }
                 }
+
+                // Endpoint fallbacks are already a real source frame. On a kept
+                // in-between, put back only the thin dark strokes both sources
+                // still share so hair wisps stop flickering at 60 fps.
+                let lineStarted = CFAbsoluteTimeGetCurrent()
+                let replacedWithEndpoint = chosen === prevPB || chosen === currentPB
+                if !replacedWithEndpoint,
+                   let restored = thinLinePass.preserve(
+                        previous: prevPB, interpolated: chosen, next: currentPB, progress: t
+                   ) {
+                    chosen = restored
+                }
+                ghostSeconds += CFAbsoluteTimeGetCurrent() - lineStarted
 
                 if diagnosticFlagged {
                     BrokenTileDiagnostics.shared.inspect(synth, stage: "04-rife-raw-generated", frame: diagnosticFrame, seconds: diagnosticTime, force: true)
