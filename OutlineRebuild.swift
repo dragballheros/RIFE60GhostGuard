@@ -138,6 +138,10 @@ final class OutlineRebuild {
                 o[2] = p[2]
                 o[3] = p[3]
                 if y == 0 || x == 0 || y == height - 1 || x == width - 1 { continue }
+                if (closedBuf[index] == 1 || lineBuf[index] == 1),
+                   BlushStrokeGuard.protects(pixels: UnsafePointer(src), x: x, y: y, width: width, height: height, rowBytes: srcRow, bgra: true) {
+                    continue
+                }
                 let stats = neighborStats(closed: closedBuf, luma: lumaBuf, x: x, y: y, width: width)
                 let center = Int(lumaBuf[index])
 

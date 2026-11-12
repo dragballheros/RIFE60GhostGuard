@@ -350,6 +350,13 @@ final class OutlineEnhancer {
                 let drOff = dstBGRA ? 2 : 0
                 let dbOff = dstBGRA ? 0 : 2
 
+                if BlushStrokeGuard.protects(pixels: UnsafePointer(src), x: x, y: y, width: width, height: height, rowBytes: srcRow, bgra: srcBGRA) {
+                    dst[di + drOff] = src[i + rOff]
+                    dst[di + 1] = src[i + 1]
+                    dst[di + dbOff] = src[i + bOff]
+                    continue
+                }
+
                 let sr = Double(src[i + rOff]) / 255.0
                 let sg = Double(src[i + 1]) / 255.0
                 let sb = Double(src[i + bOff]) / 255.0
