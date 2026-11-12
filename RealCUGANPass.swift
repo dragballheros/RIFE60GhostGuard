@@ -95,6 +95,15 @@ final class RealCUGANPass {
     private var tileInputPool: CVPixelBufferPool?
     private var tileOutputPool: CVPixelBufferPool?
     private var stitchedFramePool: CVPixelBufferPool?
+    /// Tile surfaces and prediction options are rebuilt only when the slot count changes.
+    private struct CachedConcurrentTiles {
+        var slots: Int
+        var inputs: [CVPixelBuffer]
+        var outputs: [CVPixelBuffer]
+        var providers: [MLFeatureProvider]
+        var options: [MLPredictionOptions]
+    }
+    private var cachedConcurrentTiles: CachedConcurrentTiles?
     private var fixedBatchModels: [String: MLModel] = [:]
     private var loggedStrategyKey = ""
     private var forceCopyForRestOfPass = false
@@ -369,8 +378,6 @@ final class RealCUGANPass {
                 stitchMs,
                 wallMs
             )
-            DiagnosticsLogger.shared.log(frameLine)
-            DiagnosticsLogger.shared.log(String(format: "CUGAN wait_compute split: sharpie %.1f ms, encode %.1f ms", sharpieWait * 1000, encodeSlotWait * 1000))
             notedFrames += 1
             let done = max(frames, 1)
             let rolling = String(
@@ -384,6 +391,8 @@ final class RealCUGANPass {
                 (CFAbsoluteTimeGetCurrent() - passStart) * 1000 / Double(done)
             )
             if notedFrames == 1 || notedFrames % 12 == 0 {
+                DiagnosticsLogger.shared.log(frameLine)
+                DiagnosticsLogger.shared.log(String(format: "CUGAN wait_compute split: sharpie %.1f ms, encode %.1f ms", sharpieWait * 1000, encodeSlotWait * 1000))
                 DiagnosticsLogger.shared.log("CUGAN breakdown rolling • \(rolling)")
                 CrashCapture.step(rolling)
             }
@@ -397,8 +406,8 @@ final class RealCUGANPass {
             }
 
             // UI/diagnostic publishing is deliberately less frequent during CUGAN.
-            // It does not change inference output and avoids waking the main thread every 3 frames.
-            if notedFrames > 0 {
+            // It does not change inference output and avoids waking the main thread every frame.
+            if notedFrames == 1 || notedFrames % 12 == 0 {
                 let elapsed = max(CFAbsoluteTimeGetCurrent() - passStart, 0.001)
                 var t = PerformanceTelemetry()
                 t.upscaledFrames = frames
@@ -464,6 +473,7 @@ final class RealCUGANPass {
         let completedURL = try await checkpoint.finish()
         let completedBytes = (try? FileManager.default.attributesOfItem(atPath: completedURL.path)[.size] as? NSNumber)?.int64Value ?? 0
         let count = Double(frames)
+        PipelineStageTimer.current?.record("realCuganMs", milliseconds: inferenceSeconds * 1000 / count)
         PipelineStageTimer.current?.record("cuganDecodeMs", milliseconds: ahead.averageDecodeMilliseconds)
         PipelineStageTimer.current?.record("cuganPackMs", milliseconds: renderInSeconds * 1000 / count)
         PipelineStageTimer.current?.record("cuganPredictMs", milliseconds: predictionSeconds * 1000 / count)
@@ -524,6 +534,7 @@ final class RealCUGANPass {
         let stillProfile = useWideTiles ? fast1080Profile : fallbackProfile
         try preparePools(targetWidth: stillWidth * 2, targetHeight: stillHeight * 2, profile: stillProfile)
         defer {
+            cachedConcurrentTiles = nil
             tileInputPool = nil
             tileOutputPool = nil
             stitchedFramePool = nil
@@ -556,6 +567,7 @@ final class RealCUGANPass {
     }
 
     private func preparePools(targetWidth: Int, targetHeight: Int, profile: TileProfile) throws {
+        cachedConcurrentTiles = nil
         tileInputPool = nil
         tileOutputPool = nil
         stitchedFramePool = nil
@@ -859,7 +871,7 @@ final class RealCUGANPass {
         activeStrategyName = strategy.rawValue
         activeStrategySlots = slots
         activeStrategyLoaded = plan.medianMilliseconds != nil
-        let logKey = "\(profile.modelName)-\(strategy.rawValue)-\(slots)-\(Int(memory.effectiveMemoryMB))"
+        let logKey = "\(profile.modelName)-\(strategy.rawValue)-\(slots)"
         if loggedStrategyKey != logKey {
             loggedStrategyKey = logKey
             let timing = plan.medianMilliseconds.map { String(format: "%.1fms/tile", $0) } ?? "no benchmark yet"
@@ -1114,23 +1126,15 @@ final class RealCUGANPass {
         return stitched
     }
 
-    private func renderConcurrent(
-        _ source: CVPixelBuffer,
-        model: MLModel,
-        alpha: MLMultiArray,
-        profile: TileProfile,
-        slots: Int
-    ) throws -> CVPixelBuffer {
-        let sourceWidth = CVPixelBufferGetWidth(source)
-        let sourceHeight = CVPixelBufferGetHeight(source)
-        let targetHeight = sourceHeight * 2
-        guard let tileInputPool, let tileOutputPool, let stitchedFramePool else {
-            throw ProcessorError.conversionFailed("Real-CUGAN tile pools are unavailable")
+    /// The same pooled tiles, feature providers, and output backings are reused for
+    /// every frame at this slot count. Each wave overwrites the tile pixels before
+    /// prediction, which is the same order the per-frame allocation used.
+    private func reusableConcurrentTiles(slots: Int, model: MLModel, alpha: MLMultiArray) throws -> CachedConcurrentTiles {
+        if let cachedConcurrentTiles, cachedConcurrentTiles.slots == slots {
+            return cachedConcurrentTiles
         }
-        let specs = tileSpecs(sourceWidth: sourceWidth, sourceHeight: sourceHeight, profile: profile)
-        var stitchedBuffer: CVPixelBuffer?
-        guard CVPixelBufferPoolCreatePixelBuffer(nil, stitchedFramePool, &stitchedBuffer) == kCVReturnSuccess, let stitched = stitchedBuffer else {
-            throw ProcessorError.conversionFailed("could not allocate native 2x stitched frame")
+        guard let tileInputPool, let tileOutputPool else {
+            throw ProcessorError.conversionFailed("Real-CUGAN tile pools are unavailable")
         }
         var inputs: [CVPixelBuffer] = []
         var outputs: [CVPixelBuffer] = []
@@ -1154,6 +1158,34 @@ final class RealCUGANPass {
             options.outputBackings = backing.dictionary
             predictionOptions.append(options)
         }
+        let cached = CachedConcurrentTiles(slots: slots, inputs: inputs, outputs: outputs, providers: providers, options: predictionOptions)
+        cachedConcurrentTiles = cached
+        return cached
+    }
+
+    private func renderConcurrent(
+        _ source: CVPixelBuffer,
+        model: MLModel,
+        alpha: MLMultiArray,
+        profile: TileProfile,
+        slots: Int
+    ) throws -> CVPixelBuffer {
+        let sourceWidth = CVPixelBufferGetWidth(source)
+        let sourceHeight = CVPixelBufferGetHeight(source)
+        let targetHeight = sourceHeight * 2
+        guard tileInputPool != nil, tileOutputPool != nil, let stitchedFramePool else {
+            throw ProcessorError.conversionFailed("Real-CUGAN tile pools are unavailable")
+        }
+        let specs = tileSpecs(sourceWidth: sourceWidth, sourceHeight: sourceHeight, profile: profile)
+        var stitchedBuffer: CVPixelBuffer?
+        guard CVPixelBufferPoolCreatePixelBuffer(nil, stitchedFramePool, &stitchedBuffer) == kCVReturnSuccess, let stitched = stitchedBuffer else {
+            throw ProcessorError.conversionFailed("could not allocate native 2x stitched frame")
+        }
+        let tiles = try reusableConcurrentTiles(slots: slots, model: model, alpha: alpha)
+        let inputs = tiles.inputs
+        let outputs = tiles.outputs
+        let providers = tiles.providers
+        let predictionOptions = tiles.options
         CVPixelBufferLockBaseAddress(source, .readOnly)
         CVPixelBufferLockBaseAddress(stitched, [])
         defer {

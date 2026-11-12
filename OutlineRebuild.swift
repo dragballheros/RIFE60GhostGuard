@@ -1,6 +1,8 @@
 import CoreVideo
 import Foundation
+#if canImport(UIKit)
 import UIKit
+#endif
 
 /// Repairs broken line art before Sharpie. Sharpie only emphasizes lines that
 /// already exist. This pass closes short gaps, restores faded line darkness
@@ -38,17 +40,19 @@ final class OutlineRebuild {
 
     private static func lumaPlane(src: UnsafeMutablePointer<UInt8>, width: Int, height: Int, srcRow: Int) -> [UInt8] {
         var luma = [UInt8](repeating: 0, count: width * height)
-        for y in 0..<height {
-            let row = src.advanced(by: y * srcRow)
-            let base = y * width
-            for x in 0..<width {
-                let p = row.advanced(by: x * 4)
-                let r = Int(p[2])
-                let g = Int(p[1])
-                let b = Int(p[0])
-                let weighted: Int = 77 * r + 150 * g + 29 * b
-                let shifted: Int = weighted >> 8
-                luma[base + x] = UInt8(min(255, shifted))
+        luma.withUnsafeMutableBufferPointer { lumaBuf in
+            RebuildRows.forEach(height) { y in
+                let row = src.advanced(by: y * srcRow)
+                let base = y * width
+                for x in 0..<width {
+                    let p = row.advanced(by: x * 4)
+                    let r = Int(p[2])
+                    let g = Int(p[1])
+                    let b = Int(p[0])
+                    let weighted: Int = 77 * r + 150 * g + 29 * b
+                    let shifted: Int = weighted >> 8
+                    lumaBuf[base + x] = UInt8(min(255, shifted))
+                }
             }
         }
         return luma
@@ -56,22 +60,27 @@ final class OutlineRebuild {
 
     private static func lineMask(luma: [UInt8], width: Int, height: Int, gap: Int) -> [UInt8] {
         var line = [UInt8](repeating: 0, count: width * height)
-        for y in gap..<(height - gap) {
-            for x in gap..<(width - gap) {
-                let index = y * width + x
-                let center = Int(luma[index])
-                var localMax = center
-                var yy = y - gap
-                while yy <= y + gap {
-                    var xx = x - gap
-                    while xx <= x + gap {
-                        localMax = max(localMax, Int(luma[yy * width + xx]))
-                        xx += 1
+        luma.withUnsafeBufferPointer { lumaBuf in
+            line.withUnsafeMutableBufferPointer { lineBuf in
+                RebuildRows.forEach(height) { y in
+                    if y < gap || y >= height - gap { return }
+                    for x in gap..<(width - gap) {
+                        let index = y * width + x
+                        let center = Int(lumaBuf[index])
+                        var localMax = center
+                        var yy = y - gap
+                        while yy <= y + gap {
+                            var xx = x - gap
+                            while xx <= x + gap {
+                                localMax = max(localMax, Int(lumaBuf[yy * width + xx]))
+                                xx += 1
+                            }
+                            yy += 1
+                        }
+                        if center < 150 && center + 16 < localMax {
+                            lineBuf[index] = 1
+                        }
                     }
-                    yy += 1
-                }
-                if center < 150 && center + 16 < localMax {
-                    line[index] = 1
                 }
             }
         }
@@ -80,22 +89,29 @@ final class OutlineRebuild {
 
     private static func closedMask(line: [UInt8], luma: [UInt8], width: Int, height: Int, gap: Int) -> [UInt8] {
         var closed = line
-        for y in gap..<(height - gap) {
-            for x in gap..<(width - gap) {
-                let index = y * width + x
-                if line[index] == 1 { continue }
-                var hits = 0
-                var yy = y - gap
-                while yy <= y + gap {
-                    var xx = x - gap
-                    while xx <= x + gap {
-                        if line[yy * width + xx] == 1 { hits += 1 }
-                        xx += 1
+        closed.withUnsafeMutableBufferPointer { closedBuf in
+            line.withUnsafeBufferPointer { lineBuf in
+                luma.withUnsafeBufferPointer { lumaBuf in
+                    RebuildRows.forEach(height) { y in
+                        if y < gap || y >= height - gap { return }
+                        for x in gap..<(width - gap) {
+                            let index = y * width + x
+                            if lineBuf[index] == 1 { continue }
+                            var hits = 0
+                            var yy = y - gap
+                            while yy <= y + gap {
+                                var xx = x - gap
+                                while xx <= x + gap {
+                                    if lineBuf[yy * width + xx] == 1 { hits += 1 }
+                                    xx += 1
+                                }
+                                yy += 1
+                            }
+                            if hits >= 3 && Int(lumaBuf[index]) < 190 {
+                                closedBuf[index] = 1
+                            }
+                        }
                     }
-                    yy += 1
-                }
-                if hits >= 3 && Int(luma[index]) < 190 {
-                    closed[index] = 1
                 }
             }
         }
@@ -107,7 +123,10 @@ final class OutlineRebuild {
         luma: [UInt8], line: [UInt8], closed: [UInt8],
         width: Int, height: Int, srcRow: Int, dstRow: Int, amount: Double
     ) {
-        for y in 0..<height {
+        luma.withUnsafeBufferPointer { lumaBuf in
+        line.withUnsafeBufferPointer { lineBuf in
+        closed.withUnsafeBufferPointer { closedBuf in
+        RebuildRows.forEach(height) { y in
             let row = src.advanced(by: y * srcRow)
             let out = dst.advanced(by: y * dstRow)
             for x in 0..<width {
@@ -119,18 +138,18 @@ final class OutlineRebuild {
                 o[2] = p[2]
                 o[3] = p[3]
                 if y == 0 || x == 0 || y == height - 1 || x == width - 1 { continue }
-                let stats = neighborStats(closed: closed, luma: luma, x: x, y: y, width: width)
-                let center = Int(luma[index])
+                let stats = neighborStats(closed: closedBuf, luma: lumaBuf, x: x, y: y, width: width)
+                let center = Int(lumaBuf[index])
 
                 // Fine source details must bypass both the line-repair and
                 // isolated-speck paths. Otherwise a connected thin line can be
                 // darkened even though it is correctly protected from removal.
-                if (closed[index] == 1 || line[index] == 1),
+                if (closedBuf[index] == 1 || lineBuf[index] == 1),
                    isProtectedFineDetail(src: src, x: x, y: y, width: width, height: height, srcRow: srcRow) {
                     continue
                 }
 
-                if closed[index] == 1 && stats.neighbors >= 2 {
+                if closedBuf[index] == 1 && stats.neighbors >= 2 {
                     let fade: Double = 1.0 - amount
                     let lift = Int(fade * 18.0)
                     let target = min(center, stats.darkest + lift)
@@ -144,10 +163,10 @@ final class OutlineRebuild {
                         let denominator = Double(max(center, 1))
                         scale(pixel: o, by: numerator / denominator)
                     }
-                } else if line[index] == 1 && stats.neighbors <= 1 {
+                } else if lineBuf[index] == 1 && stats.neighbors <= 1 {
                     // Only isolated, non-structural specks are lifted. Connected
                     // line endpoints and narrow colored strokes are source detail.
-                    let paper = paperLuma(closed: closed, luma: luma, x: x, y: y, width: width)
+                    let paper = paperLuma(closed: closedBuf, luma: lumaBuf, x: x, y: y, width: width)
                     if let paper {
                         let keep: Double = 1.0 - amount * 0.7
                         let centerD = Double(center)
@@ -162,6 +181,9 @@ final class OutlineRebuild {
                     }
                 }
             }
+        }
+        }
+        }
         }
     }
 
@@ -200,7 +222,7 @@ final class OutlineRebuild {
             || (vertical >= 24 && verticalFlanks <= 64)
     }
 
-    private static func neighborStats(closed: [UInt8], luma: [UInt8], x: Int, y: Int, width: Int) -> (neighbors: Int, darkest: Int) {
+    private static func neighborStats(closed: UnsafeBufferPointer<UInt8>, luma: UnsafeBufferPointer<UInt8>, x: Int, y: Int, width: Int) -> (neighbors: Int, darkest: Int) {
         var neighbors = 0
         var darkest = 255
         for yy in (y - 1)...(y + 1) {
@@ -215,7 +237,7 @@ final class OutlineRebuild {
         return (neighbors, darkest)
     }
 
-    private static func paperLuma(closed: [UInt8], luma: [UInt8], x: Int, y: Int, width: Int) -> Int? {
+    private static func paperLuma(closed: UnsafeBufferPointer<UInt8>, luma: UnsafeBufferPointer<UInt8>, x: Int, y: Int, width: Int) -> Int? {
         var paper = 0
         var paperCount = 0
         for yy in (y - 1)...(y + 1) {
@@ -239,6 +261,7 @@ final class OutlineRebuild {
         pixel[2] = UInt8(min(255, max(0, Int(red.rounded()))))
     }
 
+#if canImport(UIKit)
     static func apply(to image: UIImage, strength: Double) -> UIImage? {
         guard let buffer = pixelBuffer(from: image) else { return nil }
         let rebuilt = OutlineRebuild().apply(buffer, strength: strength)
@@ -272,6 +295,7 @@ final class OutlineRebuild {
         guard let cg = context.createCGImage(ci, from: ci.extent) else { return nil }
         return UIImage(cgImage: cg, scale: scale, orientation: .up)
     }
+#endif
 }
 
 enum ColorRebuildBuffer {
