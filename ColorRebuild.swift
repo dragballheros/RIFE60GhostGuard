@@ -129,6 +129,20 @@ final class ColorRebuild {
                             continue
                         }
 
+                        // Blush hatch is too faint for the threshold above, and the
+                        // temporal chroma hold below would park last frame's pink
+                        // on a stroke that moved by a pixel. Keep the source bytes.
+                        if BlushStrokeGuard.protects(pixels: UnsafePointer(src), x: x, y: y, width: width, height: height, rowBytes: srcRow, bgra: true) {
+                            o[0] = p[0]
+                            o[1] = p[1]
+                            o[2] = p[2]
+                            o[3] = p[3]
+                            previousLumaBuf[index] = UInt8(y8)
+                            previousCbBuf[index] = UInt8(cb0)
+                            previousCrBuf[index] = UInt8(cr0)
+                            continue
+                        }
+
                         let edge = Self.lumaEdge(lumaRead, x: x, y: y, width: width, height: height)
                         let flatMix: Double = edge < 12 ? 0.82 : (edge < 28 ? 0.38 : 0.12)
                         var mix: Double = amount * flatMix
