@@ -202,7 +202,15 @@ final class RestorationPass {
                 sourceOutlierGuard.inspect(previous: a, candidate: b, next: frame)
             }
             if check.isOutlier {
-                if let bridge = sourceOutlierGuard.bridge(previous: a, next: frame, progress: position) {
+                if check.reason == "stray frame at scene cut" {
+                    // Cross-fading A and C would blend two different shots.
+                    // Repeat the nearer real neighbor at B's timestamp instead.
+                    correctedB = sourceOutlierGuard.nearestNeighbor(previous: a, candidate: b, next: frame)
+                    outlierCount += 1
+                    DiagnosticsLogger.shared.log(
+                        "Layer 1 stray cut frame replaced with nearest neighbor • frame=\(sourceFrames - 1) • score=\(String(format: "%.3f", check.score)) • reason=\(check.reason)"
+                    )
+                } else if let bridge = sourceOutlierGuard.bridge(previous: a, next: frame, progress: position) {
                     correctedB = bridge
                     outlierCount += 1
                     DiagnosticsLogger.shared.log(
