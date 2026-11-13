@@ -178,6 +178,11 @@ require(differentCut?.structuralCut == true, "different shapes in the same palet
 require(differentCut?.classicCut == false, "that cut should stay under the luma/RGB MAD gate")
 require((differentCut?.appearance ?? 0) > 0.05 && (differentCut?.appearance ?? 1) < 0.14,
         "appearance change should match the measured similar-palette range")
+require((differentCut?.overlap ?? 1) < 0.30, "1px dilation should put a different layout under the 0.30 Dice cut")
+let onePixelShift = try shapeFrame(rect: CGRect(x: 17, y: 20, width: 32, height: 32))
+let motionOverlap = StructuralSceneCut.assess(previous: leftShape, next: onePixelShift, sensitivity: 1.35)
+require((motionOverlap?.overlap ?? 0) > 0.90 && motionOverlap?.isCut == false,
+        "a 1px shift should keep Dice near 1, like ordinary motion")
 let shiftedCut = StructuralSceneCut.assess(previous: leftShape, next: shiftedShape, sensitivity: 1.35)
 require(shiftedCut?.isCut == false, "the same shape shifted a few pixels is motion, not a cut")
 
@@ -199,4 +204,80 @@ require(!ownedEndpoint.isOutlier, "a frame that belongs to the outgoing shot mus
 require(pass.preserve(previous: leftShape, interpolated: blendedCut, next: rightShape, progress: 0.5) == nil,
         "thin-line repair must not run across the structural cut")
 
-print("THIN_LINE_PRESERVATION_PASS: static restore, soft feather, slight-softness skip, 1px tolerance, moving-line skip, large-region skip, scene-cut skip, tiny-mask skip, sensitivity, structural same-palette cut, shifted-shape motion")
+func lineFrame(width: Int = 160, height: Int = 90, column: Int, extraColumn: Int? = nil) throws -> CVPixelBuffer {
+    var optional: CVPixelBuffer?
+    guard CVPixelBufferCreate(kCFAllocatorDefault, width, height, kCVPixelFormatType_32BGRA, nil, &optional) == kCVReturnSuccess,
+          let buffer = optional else {
+        throw NSError(domain: "ThinLineFixture", code: 5)
+    }
+    CVPixelBufferLockBaseAddress(buffer, [])
+    defer { CVPixelBufferUnlockBaseAddress(buffer, []) }
+    let base = CVPixelBufferGetBaseAddress(buffer)!.assumingMemoryBound(to: UInt8.self)
+    let rowBytes = CVPixelBufferGetBytesPerRow(buffer)
+    for y in 0..<height {
+        let row = base.advanced(by: y * rowBytes)
+        for x in 0..<width {
+            var value: UInt8 = 200
+            if y >= 8, y < height - 8, abs(x - column) <= 1 { value = 16 }
+            if let extraColumn, y >= 8, y < height - 8, abs(x - extraColumn) <= 1 { value = 16 }
+            let i = x * 4
+            row[i] = value
+            row[i + 1] = value
+            row[i + 2] = value
+            row[i + 3] = 255
+        }
+    }
+    return buffer
+}
+
+let stableLine = try lineFrame(column: 40)
+let stableGuard = ghost.inspect(previous: stableLine, generated: stableLine, current: stableLine)
+require(!stableGuard.reject, "an outline that is the same in all three frames is not warped")
+let novelLine = try lineFrame(column: 110)
+let novelGuard = ghost.inspect(previous: stableLine, generated: novelLine, current: stableLine)
+require(novelGuard.reject && novelGuard.reason == "warped/doubled outline",
+        "an outline present in neither source should be rejected")
+let startLine = try lineFrame(column: 24)
+let endLine = try lineFrame(column: 40)
+let betweenLine = try lineFrame(column: 32)
+let movingGuard = ghost.inspect(previous: startLine, generated: betweenLine, current: endLine)
+require(!movingGuard.reject, "a line halfway between the two source positions is legitimate motion")
+let doubledLine = try lineFrame(column: 40, extraColumn: 58)
+let doubledGuard = ghost.inspect(previous: stableLine, generated: doubledLine, current: stableLine)
+require(doubledGuard.reject && doubledGuard.reason == "warped/doubled outline",
+        "a second outline next to the real one should be rejected")
+
+func paintSquare(_ buffer: CVPixelBuffer, rect: CGRect, value: UInt8) {
+    CVPixelBufferLockBaseAddress(buffer, [])
+    defer { CVPixelBufferUnlockBaseAddress(buffer, []) }
+    let base = CVPixelBufferGetBaseAddress(buffer)!.assumingMemoryBound(to: UInt8.self)
+    let rowBytes = CVPixelBufferGetBytesPerRow(buffer)
+    let width = CVPixelBufferGetWidth(buffer)
+    let height = CVPixelBufferGetHeight(buffer)
+    for y in 0..<height where rect.minY <= CGFloat(y) && CGFloat(y) < rect.maxY {
+        let row = base.advanced(by: y * rowBytes)
+        for x in 0..<width where rect.minX <= CGFloat(x) && CGFloat(x) < rect.maxX {
+            let i = x * 4
+            row[i] = value
+            row[i + 1] = value
+            row[i + 2] = value
+        }
+    }
+}
+
+let staticA = try lineFrame(column: 80)
+let staticC = try lineFrame(column: 80)
+paintSquare(staticA, rect: CGRect(x: 8, y: 12, width: 16, height: 16), value: 30)
+paintSquare(staticC, rect: CGRect(x: 128, y: 12, width: 16, height: 16), value: 30)
+let dragged = try lineFrame(column: 96)
+paintSquare(dragged, rect: CGRect(x: 60, y: 12, width: 16, height: 16), value: 30)
+let lock = StaticRegionLock(sensitivity: 1.35)
+let locked = lock.lock(previous: staticA, interpolated: dragged, next: staticC, progress: 0.25)
+require(locked != nil, "static floor lines should be locked back to the sources")
+require(gray(locked!, x: 80, y: 40) < 40, "the real static line should come back from the nearer source")
+require(gray(locked!, x: 96, y: 40) > 150, "the dragged copy of that line should be removed")
+require(gray(locked!, x: 68, y: 20) == 30, "a solid moving body between the two poses must stay")
+require(lock.lock(previous: leftShape, interpolated: blendedCut, next: rightShape, progress: 0.5) == nil,
+        "static lock must not run across a detected cut")
+
+print("THIN_LINE_PRESERVATION_PASS: static restore, soft feather, slight-softness skip, 1px tolerance, moving-line skip, large-region skip, scene-cut skip, tiny-mask skip, sensitivity, structural same-palette cut, 1px dilation, warped outline, doubled outline, static-region lock")

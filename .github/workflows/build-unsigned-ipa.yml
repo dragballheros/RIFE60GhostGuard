@@ -622,7 +622,7 @@ jobs:
           set -euo pipefail
           mkdir -p /tmp/thin-line-check
           cp Scripts/check_thin_line_preservation.swift /tmp/thin-line-check/main.swift
-          swiftc -swift-version 5 -framework CoreVideo ThinLinePreservationPass.swift StructuralSceneCut.swift GhostGuard.swift SourceFrameOutlierGuard.swift /tmp/thin-line-check/main.swift -o /tmp/thin-line-check/check
+          swiftc -swift-version 5 -framework CoreVideo ThinLinePreservationPass.swift StructuralSceneCut.swift GhostGuard.swift WarpedOutlineGuard.swift StaticRegionLock.swift SourceFrameOutlierGuard.swift /tmp/thin-line-check/main.swift -o /tmp/thin-line-check/check
           /tmp/thin-line-check/check
 
       - name: Verify persistent mixed media queue and strict serial scheduling

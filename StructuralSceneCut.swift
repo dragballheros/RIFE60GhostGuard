@@ -130,8 +130,9 @@ enum StructuralSceneCut {
         } else if edges.dilatedA + edges.dilatedB == 0 {
             overlap = nil
         } else {
-            // Symmetric Dice of the dilated edge masks. A few pixels of motion
-            // still overlap; a different shape does not.
+            // Symmetric Dice after a 1px dilation. 2px left the missed
+            // same-palette cuts at 0.28-0.41; at 1px those fall to 0.15-0.28
+            // while ordinary motion stays near 1.
             overlap = Double(2 * edges.intersection) / Double(edges.dilatedA + edges.dilatedB)
         }
 
@@ -209,8 +210,8 @@ enum StructuralSceneCut {
                 }
             }
         }
-        dilate(&maskA, columns: columns, rows: rows, radius: 2)
-        dilate(&maskB, columns: columns, rows: rows, radius: 2)
+        dilate(&maskA, columns: columns, rows: rows, radius: 1)
+        dilate(&maskB, columns: columns, rows: rows, radius: 1)
         var dilatedA = 0
         var dilatedB = 0
         var intersection = 0

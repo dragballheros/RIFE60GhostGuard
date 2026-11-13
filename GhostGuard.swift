@@ -84,6 +84,13 @@ struct GhostGuard {
             return .init(reject: true, reason: "midframe inconsistency")
         }
 
+        // Bent or doubled outlines show up as edges that belong to neither
+        // source, or as a large jump in edge count. The caller repeats the
+        // nearer real frame; this does not cross-fade.
+        if WarpedOutlineGuard.rejects(previous: previous, generated: generated, next: current, sensitivity: sensitivity) {
+            return .init(reject: true, reason: "warped/doubled outline")
+        }
+
         return .init(reject: false, reason: "ok")
     }
 }

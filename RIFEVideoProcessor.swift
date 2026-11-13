@@ -153,6 +153,7 @@ final class RIFEVideoProcessor {
         let compressionGuard = config.compressionProtection ? CompressionGuard() : nil
         let colorArtifactGuard = LocalizedColorArtifactGuard()
         let thinLinePass = ThinLinePreservationPass(sensitivity: config.ghostSensitivity)
+        let staticRegionLock = StaticRegionLock(sensitivity: config.ghostSensitivity)
 
         let outlineEnhancer: OutlineEnhancer?
         if config.outlineProtection {
@@ -653,15 +654,21 @@ final class RIFEVideoProcessor {
                 }
 
                 // Endpoint fallbacks are already a real source frame. On a kept
-                // in-between, put back only the thin dark strokes both sources
-                // still share so hair wisps stop flickering at 60 fps.
+                // in-between, pin background that did not change between the
+                // sources, then put back thin strokes both sources still share.
                 let lineStarted = CFAbsoluteTimeGetCurrent()
                 let replacedWithEndpoint = chosen === prevPB || chosen === currentPB
-                if !replacedWithEndpoint,
-                   let restored = thinLinePass.preserve(
+                if !replacedWithEndpoint {
+                    if let locked = staticRegionLock.lock(
                         previous: prevPB, interpolated: chosen, next: currentPB, progress: t
-                   ) {
-                    chosen = restored
+                    ) {
+                        chosen = locked
+                    }
+                    if let restored = thinLinePass.preserve(
+                        previous: prevPB, interpolated: chosen, next: currentPB, progress: t
+                    ) {
+                        chosen = restored
+                    }
                 }
                 ghostSeconds += CFAbsoluteTimeGetCurrent() - lineStarted
 
