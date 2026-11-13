@@ -112,4 +112,91 @@ require(strict.preserve(previous: previous, interpolated: borderline, next: next
 require(loose.preserve(previous: previous, interpolated: borderline, next: next, progress: 0.5) == nil,
         "lower sensitivity should leave a milder fade alone")
 
-print("THIN_LINE_PRESERVATION_PASS: static restore, soft feather, slight-softness skip, 1px tolerance, moving-line skip, large-region skip, scene-cut skip, tiny-mask skip, sensitivity")
+func shapeFrame(width: Int = 160, height: Int = 90, rect: CGRect) throws -> CVPixelBuffer {
+    var optional: CVPixelBuffer?
+    guard CVPixelBufferCreate(kCFAllocatorDefault, width, height, kCVPixelFormatType_32BGRA, nil, &optional) == kCVReturnSuccess,
+          let buffer = optional else {
+        throw NSError(domain: "ThinLineFixture", code: 3)
+    }
+    CVPixelBufferLockBaseAddress(buffer, [])
+    defer { CVPixelBufferUnlockBaseAddress(buffer, []) }
+    let base = CVPixelBufferGetBaseAddress(buffer)!.assumingMemoryBound(to: UInt8.self)
+    let rowBytes = CVPixelBufferGetBytesPerRow(buffer)
+    for y in 0..<height {
+        let row = base.advanced(by: y * rowBytes)
+        for x in 0..<width {
+            let inside = rect.contains(CGPoint(x: x, y: y))
+            let i = x * 4
+            // Same pink/beige on a dark ground. Only the shape layout changes.
+            row[i] = inside ? 140 : 42
+            row[i + 1] = inside ? 150 : 36
+            row[i + 2] = inside ? 180 : 40
+            row[i + 3] = 255
+        }
+    }
+    return buffer
+}
+
+func blendFrames(_ a: CVPixelBuffer, _ b: CVPixelBuffer) throws -> CVPixelBuffer {
+    let width = CVPixelBufferGetWidth(a)
+    let height = CVPixelBufferGetHeight(a)
+    var optional: CVPixelBuffer?
+    guard CVPixelBufferCreate(kCFAllocatorDefault, width, height, kCVPixelFormatType_32BGRA, nil, &optional) == kCVReturnSuccess,
+          let buffer = optional else {
+        throw NSError(domain: "ThinLineFixture", code: 4)
+    }
+    CVPixelBufferLockBaseAddress(a, .readOnly)
+    CVPixelBufferLockBaseAddress(b, .readOnly)
+    CVPixelBufferLockBaseAddress(buffer, [])
+    defer {
+        CVPixelBufferUnlockBaseAddress(buffer, [])
+        CVPixelBufferUnlockBaseAddress(b, .readOnly)
+        CVPixelBufferUnlockBaseAddress(a, .readOnly)
+    }
+    let aBase = CVPixelBufferGetBaseAddress(a)!.assumingMemoryBound(to: UInt8.self)
+    let bBase = CVPixelBufferGetBaseAddress(b)!.assumingMemoryBound(to: UInt8.self)
+    let out = CVPixelBufferGetBaseAddress(buffer)!.assumingMemoryBound(to: UInt8.self)
+    let aRow = CVPixelBufferGetBytesPerRow(a)
+    let bRow = CVPixelBufferGetBytesPerRow(b)
+    let oRow = CVPixelBufferGetBytesPerRow(buffer)
+    for y in 0..<height {
+        let ar = aBase.advanced(by: y * aRow)
+        let br = bBase.advanced(by: y * bRow)
+        let orow = out.advanced(by: y * oRow)
+        for x in 0..<(width * 4) {
+            orow[x] = UInt8((Int(ar[x]) + Int(br[x])) / 2)
+        }
+    }
+    return buffer
+}
+
+let leftShape = try shapeFrame(rect: CGRect(x: 16, y: 20, width: 32, height: 32))
+let rightShape = try shapeFrame(rect: CGRect(x: 108, y: 24, width: 36, height: 28))
+let shiftedShape = try shapeFrame(rect: CGRect(x: 21, y: 20, width: 32, height: 32))
+let differentCut = StructuralSceneCut.assess(previous: leftShape, next: rightShape, sensitivity: 1.35)
+require(differentCut?.structuralCut == true, "different shapes in the same palette should be a structural cut")
+require(differentCut?.classicCut == false, "that cut should stay under the luma/RGB MAD gate")
+require((differentCut?.appearance ?? 0) > 0.05 && (differentCut?.appearance ?? 1) < 0.14,
+        "appearance change should match the measured similar-palette range")
+let shiftedCut = StructuralSceneCut.assess(previous: leftShape, next: shiftedShape, sensitivity: 1.35)
+require(shiftedCut?.isCut == false, "the same shape shifted a few pixels is motion, not a cut")
+
+let blendedCut = try blendFrames(leftShape, rightShape)
+let ghost = GhostGuard(sensitivity: 1.35, enableSceneCuts: true)
+let ghostCut = ghost.inspect(previous: leftShape, generated: blendedCut, current: rightShape)
+require(ghostCut.reject && ghostCut.reason == "scene cut / transition discontinuity",
+        "GhostGuard should reject the blended midframe of a same-palette cut")
+let ghostMotion = ghost.inspect(previous: leftShape, generated: leftShape, current: shiftedShape)
+require(!ghostMotion.reject, "a few pixels of motion should not be rejected as a cut")
+
+let sourceGuard = SourceFrameOutlierGuard()
+let strayBlend = sourceGuard.inspect(previous: leftShape, candidate: blendedCut, next: rightShape)
+require(strayBlend.isOutlier && strayBlend.reason == "stray frame at scene cut",
+        "a cross-fade parked on a structural cut should not be bridged")
+let ownedEndpoint = sourceGuard.inspect(previous: leftShape, candidate: leftShape, next: rightShape)
+require(!ownedEndpoint.isOutlier, "a frame that belongs to the outgoing shot must stay")
+
+require(pass.preserve(previous: leftShape, interpolated: blendedCut, next: rightShape, progress: 0.5) == nil,
+        "thin-line repair must not run across the structural cut")
+
+print("THIN_LINE_PRESERVATION_PASS: static restore, soft feather, slight-softness skip, 1px tolerance, moving-line skip, large-region skip, scene-cut skip, tiny-mask skip, sensitivity, structural same-palette cut, shifted-shape motion")

@@ -40,9 +40,14 @@ struct GhostGuard {
         // cuts/transitions through and produced one or two visibly mangled
         // in-between frames.  0.20 is still high enough to leave ordinary
         // motion alone while catching those high-discontinuity pairs.
-        // Luma MAD alone misses cuts that share a brightness level.  The same
-        // gate on a coarse RGB sample catches a different layout or palette.
-        if enableSceneCuts && max(ab, abColor) > 0.20 / sensitivity {
+        // Luma and RGB MAD still miss two different shots that share a palette.
+        // Edge overlap on a 64×36 grid catches those, including a cross-fade
+        // whose pixels sit halfway between the endpoints.
+        let structure = StructuralSceneCut.assess(
+            previous: previous, next: current, sensitivity: sensitivity, mid: generated
+        )
+        if enableSceneCuts &&
+            (max(ab, abColor) > 0.20 / sensitivity || (structure?.isCut ?? false)) {
             return .init(reject: true, reason: "scene cut / transition discontinuity")
         }
 

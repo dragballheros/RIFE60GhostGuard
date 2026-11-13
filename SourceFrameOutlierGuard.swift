@@ -15,6 +15,7 @@ final class SourceFrameOutlierGuard {
 
     private let sampleColumns = 64
     private let sampleRows = 36
+    var sensitivity: Double = 1.35
 
     func inspect(previous: CVPixelBuffer, candidate: CVPixelBuffer, next: CVPixelBuffer) -> Result {
         guard let a = Sample(previous), let b = Sample(candidate), let c = Sample(next) else {
@@ -31,13 +32,22 @@ final class SourceFrameOutlierGuard {
         // A leftover frame between two different shots is far from both of
         // them. A genuine cut frame belongs to the outgoing or incoming
         // side, so its nearer distance stays small and this does not fire.
-        // The coarse RGB sample is what lets a similar-brightness cut count.
+        // Palette-matched cuts are not bright enough for the 0.12 gate, so
+        // a low edge overlap counts as the same kind of boundary. A frame
+        // that is itself the A/C cross-fade is not kept either: bridge()
+        // would only blend the two shots again.
         let cutAB = max(ab, abColor)
         let cutBC = max(bc, bcColor)
         let cutAC = max(ac, acColor)
+        let structure = StructuralSceneCut.assess(
+            previous: previous, next: next, sensitivity: sensitivity, mid: candidate
+        )
+        if structure?.crossfadeCut == true {
+            return Result(isOutlier: true, score: 0.90, reason: "stray frame at scene cut")
+        }
         let nearerCut = min(cutAB, cutBC)
         let strayLimit = max(0.10, 0.6 * cutAC)
-        if cutAC > 0.12 && nearerCut > strayLimit {
+        if (cutAC > 0.12 || structure?.structuralCut == true) && nearerCut > strayLimit {
             let score = min(max(nearerCut / max(cutAC, 0.012), 0), 1)
             return Result(isOutlier: true, score: max(score, 0.90), reason: "stray frame at scene cut")
         }

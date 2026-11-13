@@ -55,12 +55,22 @@ final class ThinLinePreservationPass {
         let midPixels = midBase.assumingMemoryBound(to: UInt8.self)
         let nextPixels = nextBase.assumingMemoryBound(to: UInt8.self)
 
-        // Same gate GhostGuard uses for a shot change. A cross-fade here would
-        // paint one scene's line art onto the other.
-        if discontinuity(previousPixels, nextPixels, width: width, height: height,
-                         previousRow: previousRow, nextRow: nextRow, rgba: rgba) > 0.20 / sensitivity {
-            return nil
-        }
+        // Same combined cut signal as GhostGuard, including different shots
+        // that share a palette. Restoring lines across that boundary would
+        // paint one scene onto the other.
+        let cut = StructuralSceneCut.assess(
+            previous: previousPixels,
+            next: nextPixels,
+            width: width,
+            height: height,
+            previousRow: previousRow,
+            nextRow: nextRow,
+            rgba: rgba,
+            sensitivity: sensitivity,
+            mid: midPixels,
+            midRow: midRow
+        )
+        if cut.isCut { return nil }
 
         let previousLuma = lumaPlane(previousPixels, width: width, height: height, rowBytes: previousRow, rgba: rgba)
         let nextLuma = lumaPlane(nextPixels, width: width, height: height, rowBytes: nextRow, rgba: rgba)
@@ -271,44 +281,5 @@ final class ThinLinePreservationPass {
             }
         }
         return blurred
-    }
-
-    private func discontinuity(_ previous: UnsafePointer<UInt8>,
-                               _ next: UnsafePointer<UInt8>,
-                               width: Int,
-                               height: Int,
-                               previousRow: Int,
-                               nextRow: Int,
-                               rgba: Bool) -> Double {
-        let step = max(1, max(width, height) / 160)
-        var lumaSum: Float = 0
-        var colorSum: Float = 0
-        var samples: Float = 0
-        var y = 0
-        while y < height {
-            let previousRowPixels = previous.advanced(by: y * previousRow)
-            let nextRowPixels = next.advanced(by: y * nextRow)
-            var x = 0
-            while x < width {
-                let pixel = x * 4
-                let p0 = Float(previousRowPixels[pixel]) / 255
-                let p1 = Float(previousRowPixels[pixel + 1]) / 255
-                let p2 = Float(previousRowPixels[pixel + 2]) / 255
-                let n0 = Float(nextRowPixels[pixel]) / 255
-                let n1 = Float(nextRowPixels[pixel + 1]) / 255
-                let n2 = Float(nextRowPixels[pixel + 2]) / 255
-                let pr = rgba ? p0 : p2
-                let pb = rgba ? p2 : p0
-                let nr = rgba ? n0 : n2
-                let nb = rgba ? n2 : n0
-                lumaSum += abs(luma(b: pb, g: p1, r: pr) - luma(b: nb, g: n1, r: nr))
-                colorSum += (abs(p0 - n0) + abs(p1 - n1) + abs(p2 - n2)) / 3
-                samples += 1
-                x += step
-            }
-            y += step
-        }
-        guard samples > 0 else { return 0 }
-        return Double(max(lumaSum, colorSum) / samples)
     }
 }
