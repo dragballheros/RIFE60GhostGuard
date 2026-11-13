@@ -67,14 +67,15 @@ final class SmallMotionLineStabilizer {
                              width: width, height: height, rgba: rgba, format: format,
                              offsetX: placeX, offsetY: placeY,
                              linesOnly: shift.residual >= wholeFrameLimit,
-                             lineContrast: lineContrast)
+                             lineContrast: lineContrast, attachmentsFrom: interpolated)
         }
 
         return localTiles(previousPixels, midPixels, nextPixels,
                           width: width, height: height,
                           previousRow: previousRow, midRow: midRow, nextRow: nextRow,
                           rgba: rgba, format: format, nearerIsNext: nearerIsNext,
-                          lineContrast: lineContrast, localLimit: localLimit)
+                          lineContrast: lineContrast, localLimit: localLimit,
+                          attachmentsFrom: interpolated)
     }
 
     private struct Shift {
@@ -127,8 +128,13 @@ final class SmallMotionLineStabilizer {
                            rgba: rgba, dx: 0, dy: 0)
         let sadLimit = Float(0.034 + 0.014 * (sensitivity - 0.65) / 0.70)
         let moved = refined.dx != 0 || refined.dy != 0
+        // Background pixels agree under almost any shift, so a low SAD is not
+        // enough. The strokes themselves have to land on each other.
+        let lineAgreement = shiftedLineAgreement(a, c, width: width, height: height,
+                                                 aRow: previousRow, cRow: nextRow, rgba: rgba,
+                                                 dx: refined.dx, dy: refined.dy)
         let explained = moved && abs(refined.dx) <= 12 && abs(refined.dy) <= 12
-            && refined.sad < sadLimit && refined.sad < zero * 0.55
+            && refined.sad < sadLimit && refined.sad < zero * 0.55 && lineAgreement >= 0.90
         return Shift(dx: refined.dx, dy: refined.dy, residual: refined.sad, explained: explained)
     }
 
@@ -173,11 +179,48 @@ final class SmallMotionLineStabilizer {
         return n > 0 ? sum / n : 1
     }
 
+    /// Fraction of A's thin dark pixels that are still dark in C after `dx,dy`.
+    /// A real pan of the line art scores near 1. A shift past the search window does not.
+    private func shiftedLineAgreement(_ a: UnsafePointer<UInt8>, _ c: UnsafePointer<UInt8>,
+                                      width: Int, height: Int, aRow: Int, cRow: Int, rgba: Bool,
+                                      dx: Int, dy: Int) -> Float {
+        var hits: Float = 0
+        var matched: Float = 0
+        var y = 2
+        while y < height - 2 {
+            let aLine = a.advanced(by: y * aRow)
+            let up = a.advanced(by: (y - 1) * aRow)
+            let down = a.advanced(by: (y + 1) * aRow)
+            var x = 2
+            while x < width - 2 {
+                let center = luma(aLine, x * 4, rgba: rgba)
+                let around = max(
+                    max(luma(aLine, (x - 1) * 4, rgba: rgba), luma(aLine, (x + 1) * 4, rgba: rgba)),
+                    max(luma(up, x * 4, rgba: rgba), luma(down, x * 4, rgba: rgba))
+                )
+                if around - center >= 0.12 && center < 0.55 {
+                    hits += 1
+                    let xx = x + dx
+                    let yy = y + dy
+                    if xx >= 1, yy >= 1, xx < width - 1, yy < height - 1 {
+                        let cLine = c.advanced(by: yy * cRow)
+                        let cCenter = luma(cLine, xx * 4, rgba: rgba)
+                        if cCenter <= center + 0.08 { matched += 1 }
+                    }
+                }
+                x += 1
+            }
+            y += 1
+        }
+        guard hits >= 8 else { return 1 }
+        return matched / hits
+    }
+
     private func composite(_ mid: UnsafePointer<UInt8>, midRow: Int,
                            source: UnsafePointer<UInt8>, sourceRow: Int,
                            width: Int, height: Int, rgba: Bool, format: OSType,
                            offsetX: Float, offsetY: Float, linesOnly: Bool,
-                           lineContrast: Float) -> CVPixelBuffer? {
+                           lineContrast: Float, attachmentsFrom: CVPixelBuffer) -> CVPixelBuffer? {
         let sourceLuma = lumaPlane(source, width: width, height: height, rowBytes: sourceRow, rgba: rgba)
         let lines = lineMask(sourceLuma, width: width, height: height, contrast: lineContrast)
         var output: CVPixelBuffer?
@@ -224,7 +267,7 @@ final class SmallMotionLineStabilizer {
             }
         }
         guard wrote else { return nil }
-        CVBufferPropagateAttachments(mid, output)
+        CVBufferPropagateAttachments(attachmentsFrom, output)
         return output
     }
 
@@ -233,7 +276,8 @@ final class SmallMotionLineStabilizer {
     private func localTiles(_ a: UnsafePointer<UInt8>, _ m: UnsafePointer<UInt8>, _ c: UnsafePointer<UInt8>,
                             width: Int, height: Int, previousRow: Int, midRow: Int, nextRow: Int,
                             rgba: Bool, format: OSType, nearerIsNext: Bool,
-                            lineContrast: Float, localLimit: Float) -> CVPixelBuffer? {
+                            lineContrast: Float, localLimit: Float,
+                            attachmentsFrom: CVPixelBuffer) -> CVPixelBuffer? {
         let lumaA = lumaPlane(a, width: width, height: height, rowBytes: previousRow, rgba: rgba)
         let lumaC = lumaPlane(c, width: width, height: height, rowBytes: nextRow, rgba: rgba)
         let lumaM = lumaPlane(m, width: width, height: height, rowBytes: midRow, rgba: rgba)
@@ -260,8 +304,8 @@ final class SmallMotionLineStabilizer {
                                          width: width, x0: tx, y0: ty, x1: x1, y1: y1,
                                          nearerIsNext: nearerIsNext, localLimit: localLimit) {
                     any = true
-                    for y in y0..<y1 {
-                        for x in x0..<x1 {
+                    for y in ty..<y1 {
+                        for x in tx..<x1 {
                             let sourceX = x + match.dx
                             let sourceY = y + match.dy
                             guard sourceX >= 0, sourceY >= 0, sourceX < width, sourceY < height else { continue }
@@ -279,7 +323,8 @@ final class SmallMotionLineStabilizer {
         }
         guard any else { return nil }
         return blendWeights(m, midRow: midRow, width: width, height: height, format: format,
-                            weight: weight, blue: blue, green: green, red: red)
+                            weight: weight, blue: blue, green: green, red: red,
+                            attachmentsFrom: attachmentsFrom)
     }
 
     private struct Match {
@@ -398,7 +443,8 @@ final class SmallMotionLineStabilizer {
     }
 
     private func blendWeights(_ mid: UnsafePointer<UInt8>, midRow: Int, width: Int, height: Int, format: OSType,
-                              weight: [Float], blue: [Float], green: [Float], red: [Float]) -> CVPixelBuffer? {
+                              weight: [Float], blue: [Float], green: [Float], red: [Float],
+                              attachmentsFrom: CVPixelBuffer) -> CVPixelBuffer? {
         var output: CVPixelBuffer?
         let attributes: [CFString: Any] = [
             kCVPixelBufferIOSurfacePropertiesKey: [:],
@@ -427,7 +473,7 @@ final class SmallMotionLineStabilizer {
                 dest[pixel + 2] = byte(keep * Float(dest[pixel + 2]) + sampleWeight * red[index])
             }
         }
-        CVBufferPropagateAttachments(mid, output)
+        CVBufferPropagateAttachments(attachmentsFrom, output)
         return output
     }
 
@@ -454,7 +500,7 @@ final class SmallMotionLineStabilizer {
             let bottom = c + (d - c) * tx
             return top + (bottom - top) * ty
         }
-        var color = (mix(p00.0, p10.0, p01.0, p11.0), mix(p00.1, p10.1, p01.1, p11.1), mix(p00.2, p10.2, p01.2, p11.2))
+        let color = (mix(p00.0, p10.0, p01.0, p11.0), mix(p00.1, p10.1, p01.1, p11.1), mix(p00.2, p10.2, p01.2, p11.2))
         _ = rgba
         return color
     }

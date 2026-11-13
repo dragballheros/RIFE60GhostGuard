@@ -127,13 +127,16 @@ enum StructuralSceneCut {
         let overlap: Double?
         if edges.fractionA < 0.012 && edges.fractionB < 0.012 {
             overlap = nil
-        } else if edges.dilatedA + edges.dilatedB == 0 {
-            overlap = nil
+        } else if edges.edgesA == 0 || edges.edgesB == 0 {
+            // One shot has contours and the other does not.
+            overlap = edges.edgesA == 0 && edges.edgesB == 0 ? nil : 0
         } else {
-            // Symmetric Dice after a 1px dilation. 2px left the missed
-            // same-palette cuts at 0.28-0.41; at 1px those fall to 0.15-0.28
-            // while ordinary motion stays near 1.
-            overlap = Double(2 * edges.intersection) / Double(edges.dilatedA + edges.dilatedB)
+            // Symmetric 1px coverage, not Dice of the two dilated masks.
+            // A one-pixel shift of the same stroke scores 1. Dice of the fat
+            // masks is only about 0.87, because each outer halo misses.
+            let recallA = Double(edges.coveredA) / Double(edges.edgesA)
+            let recallB = Double(edges.coveredB) / Double(edges.edgesB)
+            overlap = 0.5 * (recallA + recallB)
         }
 
         let floor = appearanceFloor(sensitivity: tuned)
@@ -181,9 +184,10 @@ enum StructuralSceneCut {
     private struct Edges {
         var fractionA: Double
         var fractionB: Double
-        var dilatedA: Int
-        var dilatedB: Int
-        var intersection: Int
+        var coveredA: Int
+        var coveredB: Int
+        var edgesA: Int
+        var edgesB: Int
     }
 
     private static func edgeMasks(_ lumaA: [Float], _ lumaB: [Float], columns: Int, rows: Int) -> Edges {
@@ -210,24 +214,27 @@ enum StructuralSceneCut {
                 }
             }
         }
+        // Keep the undilated strokes. Dice of the two fat masks is only ~0.87
+        // for a 1px shift, because each halo sticks out the other side.
+        // Overlap is the fraction of each stroke that lands inside the other
+        // mask's 1px dilation, which is 1 when the same edge merely moves a pixel.
+        let rawA = maskA
+        let rawB = maskB
         dilate(&maskA, columns: columns, rows: rows, radius: 1)
         dilate(&maskB, columns: columns, rows: rows, radius: 1)
-        var dilatedA = 0
-        var dilatedB = 0
-        var intersection = 0
+        var coveredA = 0
+        var coveredB = 0
         for index in 0..<count {
-            let a = maskA[index] != 0
-            let b = maskB[index] != 0
-            if a { dilatedA += 1 }
-            if b { dilatedB += 1 }
-            if a && b { intersection += 1 }
+            if rawA[index] != 0 && maskB[index] != 0 { coveredA += 1 }
+            if rawB[index] != 0 && maskA[index] != 0 { coveredB += 1 }
         }
         return Edges(
             fractionA: Double(edgesA) / Double(max(count, 1)),
             fractionB: Double(edgesB) / Double(max(count, 1)),
-            dilatedA: dilatedA,
-            dilatedB: dilatedB,
-            intersection: intersection
+            coveredA: coveredA,
+            coveredB: coveredB,
+            edgesA: edgesA,
+            edgesB: edgesB
         )
     }
 
