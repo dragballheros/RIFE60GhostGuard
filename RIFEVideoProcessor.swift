@@ -154,6 +154,7 @@ final class RIFEVideoProcessor {
         let colorArtifactGuard = LocalizedColorArtifactGuard()
         let thinLinePass = ThinLinePreservationPass(sensitivity: config.ghostSensitivity)
         let staticRegionLock = StaticRegionLock(sensitivity: config.ghostSensitivity)
+        let smallMotionLines = SmallMotionLineStabilizer(sensitivity: config.ghostSensitivity)
 
         let outlineEnhancer: OutlineEnhancer?
         if config.outlineProtection {
@@ -654,8 +655,8 @@ final class RIFEVideoProcessor {
                 }
 
                 // Endpoint fallbacks are already a real source frame. On a kept
-                // in-between, pin background that did not change between the
-                // sources, then put back thin strokes both sources still share.
+                // in-between, pin static background, stabilize small-motion
+                // line art, then put back thin strokes both sources still share.
                 let lineStarted = CFAbsoluteTimeGetCurrent()
                 let replacedWithEndpoint = chosen === prevPB || chosen === currentPB
                 if !replacedWithEndpoint {
@@ -663,6 +664,11 @@ final class RIFEVideoProcessor {
                         previous: prevPB, interpolated: chosen, next: currentPB, progress: t
                     ) {
                         chosen = locked
+                    }
+                    if let stabilized = smallMotionLines.stabilize(
+                        previous: prevPB, interpolated: chosen, next: currentPB, progress: t
+                    ) {
+                        chosen = stabilized
                     }
                     if let restored = thinLinePass.preserve(
                         previous: prevPB, interpolated: chosen, next: currentPB, progress: t

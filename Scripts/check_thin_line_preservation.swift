@@ -280,4 +280,44 @@ require(gray(locked!, x: 68, y: 20) == 30, "a solid moving body between the two 
 require(lock.lock(previous: leftShape, interpolated: blendedCut, next: rightShape, progress: 0.5) == nil,
         "static lock must not run across a detected cut")
 
-print("THIN_LINE_PRESERVATION_PASS: static restore, soft feather, slight-softness skip, 1px tolerance, moving-line skip, large-region skip, scene-cut skip, tiny-mask skip, sensitivity, structural same-palette cut, 1px dilation, warped outline, doubled outline, static-region lock")
+func panFrame(width: Int = 128, height: Int = 72, shift: Int, soft: Bool) throws -> CVPixelBuffer {
+    var optional: CVPixelBuffer?
+    guard CVPixelBufferCreate(kCFAllocatorDefault, width, height, kCVPixelFormatType_32BGRA, nil, &optional) == kCVReturnSuccess,
+          let buffer = optional else {
+        throw NSError(domain: "ThinLineFixture", code: 6)
+    }
+    CVPixelBufferLockBaseAddress(buffer, [])
+    defer { CVPixelBufferUnlockBaseAddress(buffer, []) }
+    let base = CVPixelBufferGetBaseAddress(buffer)!.assumingMemoryBound(to: UInt8.self)
+    let rowBytes = CVPixelBufferGetBytesPerRow(buffer)
+    let columns = [12, 28, 44, 60]
+    for y in 0..<height {
+        let row = base.advanced(by: y * rowBytes)
+        for x in 0..<width {
+            var value: UInt8 = 210
+            if y >= 4, y < height - 4, columns.contains(where: { abs(x - ($0 + shift)) == 0 }) {
+                value = soft ? 120 : 18
+            }
+            let i = x * 4
+            row[i] = value
+            row[i + 1] = value
+            row[i + 2] = value
+            row[i + 3] = 255
+        }
+    }
+    return buffer
+}
+
+let panA = try panFrame(shift: 0, soft: false)
+let panC = try panFrame(shift: 3, soft: false)
+let panM = try panFrame(shift: 0, soft: true)
+let stabilizer = SmallMotionLineStabilizer(sensitivity: 1.35)
+let panned = stabilizer.stabilize(previous: panA, interpolated: panM, next: panC, progress: 1.0 / 3.0)
+require(panned != nil, "a 3px pan of thin lines should be stabilized")
+require(gray(panned!, x: 13, y: 30) < 40, "the line should be crisp at the 1px in-between position")
+require(gray(panned!, x: 12, y: 30) > 160, "the soft unshifted line should not remain")
+let farC = try panFrame(shift: 24, soft: false)
+require(stabilizer.stabilize(previous: panA, interpolated: panM, next: farC, progress: 0.5) == nil,
+        "a large pan must be left to RIFE")
+
+print("THIN_LINE_PRESERVATION_PASS: static restore, soft feather, slight-softness skip, 1px tolerance, moving-line skip, large-region skip, scene-cut skip, tiny-mask skip, sensitivity, structural same-palette cut, 1px dilation, warped outline, doubled outline, static-region lock, small-motion line pan")
