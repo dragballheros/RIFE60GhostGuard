@@ -55,22 +55,12 @@ final class ThinLinePreservationPass {
         let midPixels = midBase.assumingMemoryBound(to: UInt8.self)
         let nextPixels = nextBase.assumingMemoryBound(to: UInt8.self)
 
-        // Same combined cut signal as GhostGuard, including different shots
-        // that share a palette. Restoring lines across that boundary would
-        // paint one scene onto the other.
-        let cut = StructuralSceneCut.assess(
-            previous: previousPixels,
-            next: nextPixels,
-            width: width,
-            height: height,
-            previousRow: previousRow,
-            nextRow: nextRow,
-            rgba: rgba,
-            sensitivity: sensitivity,
-            mid: midPixels,
-            midRow: midRow
-        )
-        if cut.isCut { return nil }
+        // Same gate GhostGuard uses for a shot change. A cross-fade here would
+        // paint one scene's line art onto the other.
+        if discontinuity(previousPixels, nextPixels, width: width, height: height,
+                         previousRow: previousRow, nextRow: nextRow, rgba: rgba) > 0.20 / sensitivity {
+            return nil
+        }
 
         let previousLuma = lumaPlane(previousPixels, width: width, height: height, rowBytes: previousRow, rgba: rgba)
         let nextLuma = lumaPlane(nextPixels, width: width, height: height, rowBytes: nextRow, rgba: rgba)
@@ -78,60 +68,50 @@ final class ThinLinePreservationPass {
         let previousBlur = boxBlur(previousLuma, width: width, height: height, radius: 2)
         let nextBlur = boxBlur(nextLuma, width: width, height: height, radius: 2)
 
-        // Only restore strokes that occupy the same pixels in both source frames.
-        // Nearby-but-shifted lines belong to motion interpolation, not source pinning.
+        // Black top-hat on a 5×5 window: a thin dark stroke is darker than its
+        // neighborhood, while the inside of a large dark region is not.
         let lineContrast = Float(max(0.055, 0.12 / sensitivity))
         let previousLines = lineMask(previousLuma, blur: previousBlur, width: width, height: height, contrast: lineContrast)
-        let nextLines = lineMask(nextLuma, blur: nextBlur, width: width, height: height, contrast: lineContrast)
-        let tFloat = Float(t)
-        let count = width * height
+        var nextLines = lineMask(nextLuma, blur: nextBlur, width: width, height: height, contrast: lineContrast)
+        dilate3x3(&nextLines, width: width, height: height)
+
         var agreement = 0
-        var previousLineCount = 0
-        var nextLineCount = 0
-        for index in 0..<count {
-            let inPrevious = previousLines[index] != 0
-            let inNext = nextLines[index] != 0
-            if inPrevious { previousLineCount += 1 }
-            if inNext { nextLineCount += 1 }
-            if inPrevious && inNext { agreement += 1 }
+        let count = width * height
+        for index in 0..<count where previousLines[index] != 0 && nextLines[index] != 0 {
+            agreement += 1
         }
         let fraction = Double(agreement) / Double(count)
+        // A speckle is noise. A mask covering a large share of the frame is not
+        // a set of thin strokes, so leave that frame alone.
         if agreement < 12 || fraction > 0.06 { return nil }
-        let previousOverlap = Double(agreement) / Double(previousLineCount)
-        let nextOverlap = Double(agreement) / Double(nextLineCount)
-        // Exact-coordinate overlap is the static-line fast path. For moving
-        // contours, try a bounded, reciprocal local correspondence repair rather
-        // than pinning a moving stroke to either source endpoint.
-        if min(previousOverlap, nextOverlap) < 0.92 {
-            return preserveMotionCompensatedContours(
-                previous: previousPixels, interpolated: midPixels, next: nextPixels,
-                attachmentsFrom: interpolated,
-                previousLuma: previousLuma, midLuma: midLuma, nextLuma: nextLuma,
-                previousLines: previousLines, nextLines: nextLines,
-                width: width, height: height,
-                previousRow: previousRow, midRow: midRow, nextRow: nextRow,
-                format: format, progress: t
-            )
-        }
 
         let fadeGap = Float(max(0.045, 0.10 / sensitivity))
         var hits: [Hit] = []
         hits.reserveCapacity(agreement)
+        let preferPrevious = t <= 0.5
         for y in 2..<(height - 2) {
             let previousRowPixels = previousPixels.advanced(by: y * previousRow)
             let nextRowPixels = nextPixels.advanced(by: y * nextRow)
             for x in 2..<(width - 2) {
                 let index = y * width + x
-                // The exact same source pixel must be a line in both frames.
-                guard previousLines[index] != 0 && nextLines[index] != 0 else { continue }
-                let yS = previousLuma[index] * (1 - tFloat) + nextLuma[index] * tFloat
+                guard previousLines[index] != 0, nextLines[index] != 0 else { continue }
+                let yA = previousLuma[index]
+                let yB = nextLuma[index]
                 let yM = midLuma[index]
-                guard yM > yS + fadeGap else { continue }
+                let darker = min(yA, yB)
+                let average = (yA + yB) * 0.5
+                // Lost or faded: the in-between is lighter than both the darker
+                // source stroke and the average of the two.
+                guard yM > average + fadeGap, yM > darker + fadeGap else { continue }
+
                 let pixel = x * 4
-                let b = byte(Float(previousRowPixels[pixel]) * (1 - tFloat) + Float(nextRowPixels[pixel]) * tFloat)
-                let g = byte(Float(previousRowPixels[pixel + 1]) * (1 - tFloat) + Float(nextRowPixels[pixel + 1]) * tFloat)
-                let r = byte(Float(previousRowPixels[pixel + 2]) * (1 - tFloat) + Float(nextRowPixels[pixel + 2]) * tFloat)
-                hits.append(Hit(x: x, y: y, b: b, g: g, r: r, luma: yS))
+                let nearY = preferPrevious ? yA : yB
+                let near = preferPrevious ? previousRowPixels : nextRowPixels
+                let dark = yA <= yB ? previousRowPixels : nextRowPixels
+                // The nearer frame is right when its stroke is still on this
+                // pixel. A 1px tremble puts the stroke on the other side.
+                let source = nearY <= darker + 0.04 ? near : dark
+                hits.append(Hit(x: x, y: y, b: source[pixel], g: source[pixel + 1], r: source[pixel + 2]))
             }
         }
         guard !hits.isEmpty else { return nil }
@@ -140,31 +120,22 @@ final class ThinLinePreservationPass {
         var blue = [UInt8](repeating: 0, count: count)
         var green = [UInt8](repeating: 0, count: count)
         var red = [UInt8](repeating: 0, count: count)
-        var floorLuma = [Float](repeating: 0, count: count)
         for hit in hits {
-            let index = hit.y * width + hit.x
-            weight[index] = 1
-            blue[index] = hit.b
-            green[index] = hit.g
-            red[index] = hit.r
-            floorLuma[index] = hit.luma
-            // Alpha feather only, one pixel. The color is the source pixel at
-            // the neighbor, not the stroke color, so the line cannot grow.
-            for dy in -1...1 {
-                for dx in -1...1 where dx != 0 || dy != 0 {
+            for dy in -2...2 {
+                let yy = hit.y + dy
+                guard yy >= 0, yy < height else { continue }
+                for dx in -2...2 {
                     let xx = hit.x + dx
-                    let yy = hit.y + dy
-                    guard xx >= 0, yy >= 0, xx < width, yy < height else { continue }
+                    guard xx >= 0, xx < width else { continue }
+                    let distance = max(abs(dx), abs(dy))
+                    let sampleWeight: Float = distance == 0 ? 1 : (distance == 1 ? 0.58 : 0.26)
                     let dest = yy * width + xx
-                    guard weight[dest] < 0.35 else { continue }
-                    let previousRowPixels = previousPixels.advanced(by: yy * previousRow)
-                    let nextRowPixels = nextPixels.advanced(by: yy * nextRow)
-                    let pixel = xx * 4
-                    weight[dest] = 0.35
-                    blue[dest] = byte(Float(previousRowPixels[pixel]) * (1 - tFloat) + Float(nextRowPixels[pixel]) * tFloat)
-                    green[dest] = byte(Float(previousRowPixels[pixel + 1]) * (1 - tFloat) + Float(nextRowPixels[pixel + 1]) * tFloat)
-                    red[dest] = byte(Float(previousRowPixels[pixel + 2]) * (1 - tFloat) + Float(nextRowPixels[pixel + 2]) * tFloat)
-                    floorLuma[dest] = previousLuma[dest] * (1 - tFloat) + nextLuma[dest] * tFloat
+                    if sampleWeight > weight[dest] {
+                        weight[dest] = sampleWeight
+                        blue[dest] = hit.b
+                        green[dest] = hit.g
+                        red[dest] = hit.r
+                    }
                 }
             }
         }
@@ -195,138 +166,12 @@ final class ThinLinePreservationPass {
                 let pixel = x * 4
                 let keep = 1 - sampleWeight
                 let repaired = rowIndex + x
-                var b = keep * Float(dest[pixel]) + sampleWeight * Float(blue[repaired])
-                var g = keep * Float(dest[pixel + 1]) + sampleWeight * Float(green[repaired])
-                var r = keep * Float(dest[pixel + 2]) + sampleWeight * Float(red[repaired])
-                // Never darker than the time-weighted source pixel at this location.
-                if luma(b: b / 255, g: g / 255, r: r / 255) < floorLuma[repaired] {
-                    b = Float(blue[repaired])
-                    g = Float(green[repaired])
-                    r = Float(red[repaired])
-                }
-                dest[pixel] = byte(b)
-                dest[pixel + 1] = byte(g)
-                dest[pixel + 2] = byte(r)
+                dest[pixel] = byte(keep * Float(dest[pixel]) + sampleWeight * Float(blue[repaired]))
+                dest[pixel + 1] = byte(keep * Float(dest[pixel + 1]) + sampleWeight * Float(green[repaired]))
+                dest[pixel + 2] = byte(keep * Float(dest[pixel + 2]) + sampleWeight * Float(red[repaired]))
             }
         }
         CVBufferPropagateAttachments(interpolated, output)
-        return output
-    }
-
-    /// Repairs only source-supported thin contours whose local position changes
-    /// between endpoints. A reciprocal 5x5 patch match rejects ambiguous matches;
-    /// a strict candidate-count cap keeps this exceptional path bounded on 4K frames.
-    private func preserveMotionCompensatedContours(
-        previous: UnsafePointer<UInt8>, interpolated: UnsafePointer<UInt8>, next: UnsafePointer<UInt8>,
-        attachmentsFrom: CVPixelBuffer,
-        previousLuma: [Float], midLuma: [Float], nextLuma: [Float],
-        previousLines: [UInt8], nextLines: [UInt8],
-        width: Int, height: Int,
-        previousRow: Int, midRow: Int, nextRow: Int,
-        format: OSType, progress: Double
-    ) -> CVPixelBuffer? {
-        let previousLineCount = previousLines.reduce(0) { $0 + ($1 == 0 ? 0 : 1) }
-        guard previousLineCount >= 12, previousLineCount <= 60_000 else { return nil }
-
-        let radius = 4
-        let t = Float(min(max(progress, 0), 1))
-        let fadeGap = Float(max(0.045, 0.10 / sensitivity))
-
-        func patchCost(_ a: [Float], _ b: [Float], ax: Int, ay: Int, bx: Int, by: Int) -> Float {
-            var sum: Float = 0
-            for oy in -2...2 {
-                for ox in -2...2 {
-                    let ai = (ay + oy) * width + ax + ox
-                    let bi = (by + oy) * width + bx + ox
-                    sum += abs(a[ai] - b[bi])
-                }
-            }
-            return sum / 25
-        }
-
-        func bestMatch(
-            x: Int, y: Int,
-            sourceLuma: [Float], targetLuma: [Float], targetMask: [UInt8]
-        ) -> (x: Int, y: Int, cost: Float)? {
-            var best: (x: Int, y: Int, cost: Float)?
-            for dy in -radius...radius {
-                let yy = y + dy
-                guard yy >= 2, yy < height - 2 else { continue }
-                for dx in -radius...radius {
-                    let xx = x + dx
-                    guard xx >= 2, xx < width - 2,
-                          targetMask[yy * width + xx] != 0 else { continue }
-                    let cost = patchCost(sourceLuma, targetLuma, ax: x, ay: y, bx: xx, by: yy)
-                    let distance = dx * dx + dy * dy
-                    let bestDistance = best.map { ($0.x - x) * ($0.x - x) + ($0.y - y) * ($0.y - y) } ?? Int.max
-                    if best == nil || cost < best!.cost - 0.0001
-                        || (abs(cost - best!.cost) <= 0.0001 && distance < bestDistance) {
-                        best = (xx, yy, cost)
-                    }
-                }
-            }
-            guard let best, best.cost <= 0.35 else { return nil }
-            return best
-        }
-
-        var pairs: [(Int, Int, Int, Int)] = []
-        pairs.reserveCapacity(previousLineCount)
-        for y in 2..<(height - 2) {
-            for x in 2..<(width - 2) {
-                let sourceIndex = y * width + x
-                guard previousLines[sourceIndex] != 0 else { continue }
-                guard let match = bestMatch(
-                    x: x, y: y, sourceLuma: previousLuma,
-                    targetLuma: nextLuma, targetMask: nextLines
-                ) else { continue }
-                guard let reverse = bestMatch(
-                    x: match.x, y: match.y, sourceLuma: nextLuma,
-                    targetLuma: previousLuma, targetMask: previousLines
-                ), abs(reverse.x - x) <= 1, abs(reverse.y - y) <= 1 else { continue }
-                pairs.append((x, y, match.x, match.y))
-            }
-        }
-        guard pairs.count >= 12 else { return nil }
-
-        var output: CVPixelBuffer?
-        let attributes: [CFString: Any] = [
-            kCVPixelBufferIOSurfacePropertiesKey: [:],
-            kCVPixelBufferMetalCompatibilityKey: true
-        ]
-        guard CVPixelBufferCreate(kCFAllocatorDefault, width, height, format,
-                                  attributes as CFDictionary, &output) == kCVReturnSuccess,
-              let output else { return nil }
-        CVPixelBufferLockBaseAddress(output, [])
-        defer { CVPixelBufferUnlockBaseAddress(output, []) }
-        guard let outputBase = CVPixelBufferGetBaseAddress(output) else { return nil }
-        let outputRow = CVPixelBufferGetBytesPerRow(output)
-        let out = outputBase.assumingMemoryBound(to: UInt8.self)
-        for y in 0..<height {
-            out.advanced(by: y * outputRow).update(from: interpolated.advanced(by: y * midRow), count: width * 4)
-        }
-
-        var repaired = 0
-        for (px, py, nx, ny) in pairs {
-            let tx = Int((Float(px) * (1 - t) + Float(nx) * t).rounded())
-            let ty = Int((Float(py) * (1 - t) + Float(ny) * t).rounded())
-            guard tx >= 1, ty >= 1, tx < width - 1, ty < height - 1 else { continue }
-            let targetIndex = ty * width + tx
-            let expectedLuma = previousLuma[py * width + px] * (1 - t)
-                + nextLuma[ny * width + nx] * t
-            guard midLuma[targetIndex] > expectedLuma + fadeGap else { continue }
-
-            let p = previous.advanced(by: py * previousRow + px * 4)
-            let n = next.advanced(by: ny * nextRow + nx * 4)
-            let d = out.advanced(by: ty * outputRow + tx * 4)
-            for channel in 0..<3 {
-                d[channel] = UInt8(min(255, max(0,
-                    (Float(p[channel]) * (1 - t) + Float(n[channel]) * t).rounded()
-                )))
-            }
-            repaired += 1
-        }
-        guard repaired >= 6 else { return nil }
-        CVBufferPropagateAttachments(attachmentsFrom, output)
         return output
     }
 
@@ -336,7 +181,6 @@ final class ThinLinePreservationPass {
         var b: UInt8
         var g: UInt8
         var r: UInt8
-        var luma: Float
     }
 
     private func byte(_ value: Float) -> UInt8 {
@@ -380,6 +224,24 @@ final class ThinLinePreservationPass {
         return mask
     }
 
+    private func dilate3x3(_ mask: inout [UInt8], width: Int, height: Int) {
+        var dilated = mask
+        for y in 0..<height {
+            for x in 0..<width where mask[y * width + x] != 0 {
+                for dy in -1...1 {
+                    let yy = y + dy
+                    guard yy >= 0, yy < height else { continue }
+                    for dx in -1...1 {
+                        let xx = x + dx
+                        guard xx >= 0, xx < width else { continue }
+                        dilated[yy * width + xx] = 1
+                    }
+                }
+            }
+        }
+        mask = dilated
+    }
+
     private func boxBlur(_ luma: [Float], width: Int, height: Int, radius: Int) -> [Float] {
         let stride = width + 1
         var integral = [Float](repeating: 0, count: stride * (height + 1))
@@ -409,5 +271,44 @@ final class ThinLinePreservationPass {
             }
         }
         return blurred
+    }
+
+    private func discontinuity(_ previous: UnsafePointer<UInt8>,
+                               _ next: UnsafePointer<UInt8>,
+                               width: Int,
+                               height: Int,
+                               previousRow: Int,
+                               nextRow: Int,
+                               rgba: Bool) -> Double {
+        let step = max(1, max(width, height) / 160)
+        var lumaSum: Float = 0
+        var colorSum: Float = 0
+        var samples: Float = 0
+        var y = 0
+        while y < height {
+            let previousRowPixels = previous.advanced(by: y * previousRow)
+            let nextRowPixels = next.advanced(by: y * nextRow)
+            var x = 0
+            while x < width {
+                let pixel = x * 4
+                let p0 = Float(previousRowPixels[pixel]) / 255
+                let p1 = Float(previousRowPixels[pixel + 1]) / 255
+                let p2 = Float(previousRowPixels[pixel + 2]) / 255
+                let n0 = Float(nextRowPixels[pixel]) / 255
+                let n1 = Float(nextRowPixels[pixel + 1]) / 255
+                let n2 = Float(nextRowPixels[pixel + 2]) / 255
+                let pr = rgba ? p0 : p2
+                let pb = rgba ? p2 : p0
+                let nr = rgba ? n0 : n2
+                let nb = rgba ? n2 : n0
+                lumaSum += abs(luma(b: pb, g: p1, r: pr) - luma(b: nb, g: n1, r: nr))
+                colorSum += (abs(p0 - n0) + abs(p1 - n1) + abs(p2 - n2)) / 3
+                samples += 1
+                x += step
+            }
+            y += step
+        }
+        guard samples > 0 else { return 0 }
+        return Double(max(lumaSum, colorSum) / samples)
     }
 }
