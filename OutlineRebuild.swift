@@ -100,7 +100,7 @@ final class OutlineRebuild {
                             // Close only a real, two-sided contour gap. A
                             // neighborhood hit count can turn a curved stroke's
                             // nearby pixels into isolated dark dots.
-                            if Int(lumaBuf[index]) < 190,
+                            if Int(lumaBuf[index]) < 250,
                                hasOpposingLineSupport(line: lineBuf, x: x, y: y,
                                                       width: width, height: height,
                                                       maxDistance: gap) {
