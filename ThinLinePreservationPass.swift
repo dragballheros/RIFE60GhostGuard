@@ -105,6 +105,7 @@ final class ThinLinePreservationPass {
         if min(previousOverlap, nextOverlap) < 0.92 {
             return preserveMotionCompensatedContours(
                 previous: previousPixels, interpolated: midPixels, next: nextPixels,
+                attachmentsFrom: interpolated,
                 previousLuma: previousLuma, midLuma: midLuma, nextLuma: nextLuma,
                 previousLines: previousLines, nextLines: nextLines,
                 width: width, height: height,
@@ -217,6 +218,7 @@ final class ThinLinePreservationPass {
     /// a strict candidate-count cap keeps this exceptional path bounded on 4K frames.
     private func preserveMotionCompensatedContours(
         previous: UnsafePointer<UInt8>, interpolated: UnsafePointer<UInt8>, next: UnsafePointer<UInt8>,
+        attachmentsFrom: CVPixelBuffer,
         previousLuma: [Float], midLuma: [Float], nextLuma: [Float],
         previousLines: [UInt8], nextLines: [UInt8],
         width: Int, height: Int,
@@ -322,7 +324,7 @@ final class ThinLinePreservationPass {
             repaired += 1
         }
         guard repaired >= 6 else { return nil }
-        CVBufferPropagateAttachments(nil, output)
+        CVBufferPropagateAttachments(attachmentsFrom, output)
         return output
     }
 
