@@ -458,8 +458,6 @@ final class RIFEVideoProcessor {
             // We now allow at most one midpoint split, and the midpoint itself must pass both
             // guards before it is allowed to become an input to another RIFE inference.
             func motionAwareRetry(t: Double) throws -> CVPixelBuffer? {
-                guard fastMotionGuard != nil else { return nil }
-
                 let midpoint: CVPixelBuffer
                 if let fastMotionAnchor {
                     midpoint = fastMotionAnchor
@@ -566,27 +564,19 @@ final class RIFEVideoProcessor {
                         diagnosticFlagged = diagnosticFlagged || result.reject || result.recoveryRecommended
                     }
 
-                    // During genuine fast motion, a normal RIFE frame can trigger the
-                    // generic temporal-outlier test simply because endpoint displacement
-                    // is large. Do not collapse such a frame to 24 FPS unless the
-                    // fast-motion guard also finds a localized defect. Scene boundaries
-                    // and unresolved color anomalies remain hard failures.
+                    // A scene boundary is the only routine reason to freeze an endpoint.
+                    // Outline/edge findings on ordinary motion first get one validated
+                    // midpoint subdivision. These failures used to replace a 60 FPS
+                    // interpolation with a repeated source frame, producing visible judder.
                     let sceneBoundaryRejected = check.reason == "scene cut / transition discontinuity"
                         || check.reason == "isolated scene-end frame"
-                    existingGuardRejected = unresolvedColorAnomaly || (
-                        check.reject && (!(fastCheck?.fastMotion ?? false) || sceneBoundaryRejected)
-                    )
+                    let outlineQualityRejection = check.reason == "warped/doubled outline"
+                        || check.reason == "edge collapse / smeared midframe"
+                    let shouldAttemptRecovery = existingGuardRejected
+                        || (fastCheck?.reject ?? false)
+                        || (fastCheck?.recoveryRecommended ?? false)
 
-                    // Never recursively interpolate across a detected cut or an
-                    // isolated scene-end source frame. Midpoint recovery can recreate
-                    // the exact A/B warp that the scene guard rejected.
-                    // A fast-motion failure gets a real interpolation retry only
-                    // when the pair is not a scene boundary.
-                    if !sceneBoundaryRejected,
-                       let fastMotionGuard,
-                       let fastCheck,
-                       fastCheck.fastMotion,
-                       (existingGuardRejected || fastCheck.reject || fastCheck.recoveryRecommended),
+                    if !sceneBoundaryRejected, shouldAttemptRecovery,
                        let retry = try motionAwareRetry(t: t) {
                         var retryChosen = retry
                         let retryColorInspection = colorArtifactGuard.inspect(
@@ -608,49 +598,83 @@ final class RIFEVideoProcessor {
                         let retryGuard = autoreleasepool {
                             guarder.inspect(previous: prevPB, generated: retryChosen, current: currentPB, previousContext: previousPreviousPB)
                         }
-                        let retryFastGuard = fastMotionGuard.inspect(
+                        let retryFastGuard = fastMotionGuard?.inspect(
                             previous: prevPB,
                             generated: retryChosen,
                             current: currentPB
                         )
+                        let retryHasSoftOutlineIssue = retryGuard.reason == "warped/doubled outline"
+                            || retryGuard.reason == "edge collapse / smeared midframe"
 
-                        if !retryGuard.reject && !retryFastGuard.reject && !retryColorStillInvalid {
+                        if !retryColorStillInvalid,
+                           !(retryFastGuard?.reject ?? false),
+                           (!retryGuard.reject || retryHasSoftOutlineIssue) {
                             chosen = retryChosen
+                            if retryGuard.reject {
+                                DiagnosticsLogger.shared.log(
+                                    "RIFE midpoint recovery retained smooth outline interpolation • reason=\(retryGuard.reason) • t=\(String(format: "%.3f", t))"
+                                )
+                            } else {
+                                DiagnosticsLogger.shared.log(
+                                    "RIFE midpoint recovery accepted • t=\(String(format: "%.3f", t))"
+                                )
+                            }
+                        } else if outlineQualityRejection &&
+                                  !unresolvedColorAnomaly &&
+                                  !(fastCheck?.reject ?? false) {
+                            chosen = synth
                             DiagnosticsLogger.shared.log(
-                                "Fast-motion Ghost Guard recovered • motion=\(String(format: "%.3f", fastCheck.motionScore)) • originalArtifact=\(String(format: "%.3f", fastCheck.artifactScore)) • t=\(String(format: "%.3f", t))"
+                                "Outline guard soft fallback retained RIFE interpolation • t=\(String(format: "%.3f", t))"
+                            )
+                            PipelineStageTimer.recordRejection(
+                                seconds: CMTimeGetSeconds(requestedTimes[index]),
+                                reason: check.reason,
+                                disposition: "retained-rife"
                             )
                         } else {
                             rejected += 1
                             chosen = t < 0.5 ? prevPB : currentPB
                             DiagnosticsLogger.shared.log(
-                                "Fast-motion Ghost Guard final fallback • motion=\(String(format: "%.3f", fastCheck.motionScore)) • artifact=\(String(format: "%.3f", fastCheck.artifactScore)) • t=\(String(format: "%.3f", t))"
+                                "RIFE midpoint recovery rejected • motion=\(String(format: "%.3f", fastCheck?.motionScore ?? 0)) • artifact=\(String(format: "%.3f", fastCheck?.artifactScore ?? 0)) • t=\(String(format: "%.3f", t))"
                             )
                             PipelineStageTimer.recordRejection(
                                 seconds: CMTimeGetSeconds(requestedTimes[index]),
-                                reason: "Fast-motion Ghost Guard final fallback • motion=\(String(format: "%.3f", fastCheck.motionScore)) • artifact=\(String(format: "%.3f", fastCheck.artifactScore))",
+                                reason: "RIFE midpoint recovery rejected",
                                 disposition: "replaced"
                             )
                         }
                     } else if existingGuardRejected || (fastCheck?.reject ?? false) {
-                        // Hard failures preserve the timestamp without blending.
-                        // If the previous source frame is an isolated endpoint, use
-                        // the current frame, which matched the prior scene context.
-                        rejected += 1
-                        let rejectionReason = check.reason == "ok" ? (fastCheck?.reject == true ? "fast-motion artifact" : "guard rejected") : check.reason
-                        if check.reason == "isolated scene-end frame" {
-                            chosen = currentPB
-                            DiagnosticsLogger.shared.log("Ghost Guard fallback • isolated scene-end source frame replaced • t=\(String(format: "%.3f", t))")
+                        if outlineQualityRejection &&
+                           !unresolvedColorAnomaly &&
+                           !(fastCheck?.reject ?? false) {
+                            chosen = synth
+                            DiagnosticsLogger.shared.log(
+                                "Outline guard soft fallback retained RIFE interpolation • retry unavailable • t=\(String(format: "%.3f", t))"
+                            )
+                            PipelineStageTimer.recordRejection(
+                                seconds: CMTimeGetSeconds(requestedTimes[index]),
+                                reason: check.reason,
+                                disposition: "retained-rife"
+                            )
                         } else {
-                            chosen = t < 0.5 ? prevPB : currentPB
-                            if sceneBoundaryRejected {
-                                DiagnosticsLogger.shared.log("Ghost Guard fallback • scene boundary protected, recursive retry skipped • t=\(String(format: "%.3f", t))")
+                            rejected += 1
+                            if check.reason == "isolated scene-end frame" {
+                                chosen = currentPB
+                                DiagnosticsLogger.shared.log(
+                                    "Ghost Guard fallback • isolated scene-end source frame replaced • t=\(String(format: "%.3f", t))"
+                                )
+                            } else {
+                                chosen = t < 0.5 ? prevPB : currentPB
+                                DiagnosticsLogger.shared.log(
+                                    "Ghost Guard fallback • quality rejection • reason=\(check.reason) • t=\(String(format: "%.3f", t))"
+                                )
                             }
+                            PipelineStageTimer.recordRejection(
+                                seconds: CMTimeGetSeconds(requestedTimes[index]),
+                                reason: check.reason,
+                                disposition: "replaced"
+                            )
                         }
-                        PipelineStageTimer.recordRejection(
-                            seconds: CMTimeGetSeconds(requestedTimes[index]),
-                            reason: rejectionReason,
-                            disposition: "replaced"
-                        )
                     }
                 }
 

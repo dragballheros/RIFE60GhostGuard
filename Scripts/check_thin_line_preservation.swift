@@ -56,14 +56,22 @@ require(feather >= 200, "the restore must not darken the neighbor into a wider s
 require(gray(repaired!, x: 48, y: 40) == 210, "pixels outside the 2px feather must stay untouched")
 require(gray(repaired!, x: 10, y: 10) == gray(faded, x: 10, y: 10), "the rest of the frame must not be replaced")
 
+let slightlyDifferentNext = try makeFrame(width: width, height: height, fill: 210, column: 40, columnValue: 60)
+let fadedStaticLine = try makeFrame(width: width, height: height, fill: 210, column: 40, columnValue: 170)
+let beforeMidpoint = pass.preserve(previous: previous, interpolated: fadedStaticLine, next: slightlyDifferentNext, progress: 0.49)
+let afterMidpoint = pass.preserve(previous: previous, interpolated: fadedStaticLine, next: slightlyDifferentNext, progress: 0.51)
+require(beforeMidpoint != nil && afterMidpoint != nil, "a shared static line should remain restored on both sides of the midpoint")
+require(abs(Int(gray(beforeMidpoint!, x: 40, y: 40)) - Int(gray(afterMidpoint!, x: 40, y: 40))) <= 2,
+        "line restoration must blend source colors continuously through t=0.5")
+
 let soft = try makeFrame(width: width, height: height, fill: 210, column: 40, columnValue: 30)
 require(pass.preserve(previous: previous, interpolated: soft, next: next, progress: 0.5) == nil,
         "a stroke that is only slightly softer than the sources must be left alone")
 
 let shiftedNext = try makeFrame(width: width, height: height, fill: 210, column: 41)
 let shiftedRepair = pass.preserve(previous: previous, interpolated: faded, next: shiftedNext, progress: 0.25)
-require(shiftedRepair != nil && gray(shiftedRepair!, x: 40, y: 40) < 40,
-        "a 1px tremble should still count as the same static stroke")
+require(shiftedRepair == nil,
+        "a one-pixel moving line must not be pinned to the nearer source endpoint")
 
 let movedNext = try makeFrame(width: width, height: height, fill: 210, column: 46)
 require(pass.preserve(previous: previous, interpolated: faded, next: movedNext, progress: 0.5) == nil,
@@ -280,6 +288,15 @@ require(gray(locked!, x: 68, y: 20) == 30, "a solid moving body between the two 
 require(lock.lock(previous: leftShape, interpolated: blendedCut, next: rightShape, progress: 0.5) == nil,
         "static lock must not run across a detected cut")
 
+let slightlyChangedStatic = try lineFrame(column: 80)
+paintSquare(slightlyChangedStatic, rect: CGRect(x: 79, y: 8, width: 3, height: 74), value: 22)
+let staticMidpoint = try lineFrame(column: 80)
+let lockedBeforeMidpoint = lock.lock(previous: staticA, interpolated: staticMidpoint, next: slightlyChangedStatic, progress: 0.49)
+let lockedAfterMidpoint = lock.lock(previous: staticA, interpolated: staticMidpoint, next: slightlyChangedStatic, progress: 0.51)
+require(lockedBeforeMidpoint != nil && lockedAfterMidpoint != nil, "static region lock should preserve an agreeing background region")
+require(abs(Int(gray(lockedBeforeMidpoint!, x: 80, y: 40)) - Int(gray(lockedAfterMidpoint!, x: 80, y: 40))) <= 1,
+        "static region repair must not switch source frames at the midpoint")
+
 func panFrame(width: Int = 128, height: Int = 72, shift: Int, soft: Bool) throws -> CVPixelBuffer {
     var optional: CVPixelBuffer?
     guard CVPixelBufferCreate(kCFAllocatorDefault, width, height, kCVPixelFormatType_32BGRA, nil, &optional) == kCVReturnSuccess,
@@ -316,6 +333,11 @@ let panned = stabilizer.stabilize(previous: panA, interpolated: panM, next: panC
 require(panned != nil, "a 3px pan of thin lines should be stabilized")
 require(gray(panned!, x: 13, y: 30) < 40, "the line should be crisp at the 1px in-between position")
 require(gray(panned!, x: 12, y: 30) > 160, "the soft unshifted line should not remain")
+let panJustBefore = stabilizer.stabilize(previous: panA, interpolated: panM, next: panC, progress: 0.49)
+let panJustAfter = stabilizer.stabilize(previous: panA, interpolated: panM, next: panC, progress: 0.51)
+require(panJustBefore != nil && panJustAfter != nil, "global line motion should remain stabilized through the midpoint")
+require(abs(Int(gray(panJustBefore!, x: 13, y: 30)) - Int(gray(panJustAfter!, x: 13, y: 30))) <= 16,
+        "motion-compensated line placement must not snap when t crosses 0.5")
 let farC = try panFrame(shift: 24, soft: false)
 require(stabilizer.stabilize(previous: panA, interpolated: panM, next: farC, progress: 0.5) == nil,
         "a large pan must be left to RIFE")
@@ -324,9 +346,7 @@ let thickStroke = try makeFrame(width: 96, height: 80, fill: 210, column: 50, co
 paintSquare(thickStroke, rect: CGRect(x: 49, y: 8, width: 1, height: 64), value: 18)
 paintSquare(thickStroke, rect: CGRect(x: 51, y: 8, width: 1, height: 64), value: 18)
 let narrowed = stabilizer.stabilize(previous: thinStroke, interpolated: thickStroke, next: thinStroke, progress: 0.5)
-require(narrowed != nil, "a stroke more than 20% wider than the source should be corrected")
-require(gray(narrowed!, x: 50, y: 40) < 40, "the source stroke itself stays")
-require(gray(narrowed!, x: 49, y: 40) > 160 && gray(narrowed!, x: 51, y: 40) > 160,
-        "extra thickness is replaced by the nearer source background")
+require(narrowed == nil,
+        "without a verified motion field, line-width repair must leave the RIFE frame alone rather than snap to an endpoint")
 
-print("THIN_LINE_PRESERVATION_PASS: static restore, soft feather, slight-softness skip, 1px tolerance, moving-line skip, large-region skip, scene-cut skip, tiny-mask skip, sensitivity, structural same-palette cut, 1px dilation, warped outline, doubled outline, static-region lock, small-motion line pan")
+print("THIN_LINE_PRESERVATION_PASS: static restore, soft feather, slight-softness skip, 1px motion skip, midpoint-continuity checks, large-region skip, scene-cut skip, tiny-mask skip, sensitivity, structural same-palette cut, 1px dilation, warped outline, doubled outline, time-continuous static-region lock, motion-compensated small-motion line pan")

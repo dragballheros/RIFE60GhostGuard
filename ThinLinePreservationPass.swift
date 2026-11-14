@@ -78,21 +78,20 @@ final class ThinLinePreservationPass {
         let previousBlur = boxBlur(previousLuma, width: width, height: height, radius: 2)
         let nextBlur = boxBlur(nextLuma, width: width, height: height, radius: 2)
 
-        // One source only: the nearer frame. The other frame is checked so a
-        // line that has actually moved is not pinned, but its pixels are never
-        // unioned in, which is what was doubling the stroke width.
+        // Only restore strokes that occupy the same pixels in both source frames.
+        // Nearby-but-shifted lines belong to motion interpolation, not source pinning.
         let lineContrast = Float(max(0.055, 0.12 / sensitivity))
         let previousLines = lineMask(previousLuma, blur: previousBlur, width: width, height: height, contrast: lineContrast)
         let nextLines = lineMask(nextLuma, blur: nextBlur, width: width, height: height, contrast: lineContrast)
-        let preferPrevious = t <= 0.5
-        let sourceLines = preferPrevious ? previousLines : nextLines
-        let otherLines = preferPrevious ? nextLines : previousLines
-        let sourceLuma = preferPrevious ? previousLuma : nextLuma
-
-        var agreement = 0
+        let tFloat = Float(t)
         let count = width * height
-        for y in 2..<(height - 2) {
-            for x in 2..<(width - 2) where sourceLines[y * width + x] != 0 && lineNearby(otherLines, x: x, y: y, width: width, height: height) {
+        var commonLines = [UInt8](repeating: 0, count: count)
+        var sourceLuma = [Float](repeating: 0, count: count)
+        var agreement = 0
+        for index in 0..<count {
+            sourceLuma[index] = previousLuma[index] * (1 - tFloat) + nextLuma[index] * tFloat
+            if previousLines[index] != 0 && nextLines[index] != 0 {
+                commonLines[index] = 1
                 agreement += 1
             }
         }
@@ -103,18 +102,20 @@ final class ThinLinePreservationPass {
         var hits: [Hit] = []
         hits.reserveCapacity(agreement)
         for y in 2..<(height - 2) {
-            let sourceRowPixels = preferPrevious
-                ? previousPixels.advanced(by: y * previousRow)
-                : nextPixels.advanced(by: y * nextRow)
+            let previousRowPixels = previousPixels.advanced(by: y * previousRow)
+            let nextRowPixels = nextPixels.advanced(by: y * nextRow)
             for x in 2..<(width - 2) {
                 let index = y * width + x
-                // Paint only where the nearer source stroke actually is.
-                guard sourceLines[index] != 0, lineNearby(otherLines, x: x, y: y, width: width, height: height) else { continue }
+                // The exact same source pixel must be a line in both frames.
+                guard commonLines[index] != 0 else { continue }
                 let yS = sourceLuma[index]
                 let yM = midLuma[index]
                 guard yM > yS + fadeGap else { continue }
                 let pixel = x * 4
-                hits.append(Hit(x: x, y: y, b: sourceRowPixels[pixel], g: sourceRowPixels[pixel + 1], r: sourceRowPixels[pixel + 2], luma: yS))
+                let b = byte(Float(previousRowPixels[pixel]) * (1 - tFloat) + Float(nextRowPixels[pixel]) * tFloat)
+                let g = byte(Float(previousRowPixels[pixel + 1]) * (1 - tFloat) + Float(nextRowPixels[pixel + 1]) * tFloat)
+                let r = byte(Float(previousRowPixels[pixel + 2]) * (1 - tFloat) + Float(nextRowPixels[pixel + 2]) * tFloat)
+                hits.append(Hit(x: x, y: y, b: b, g: g, r: r, luma: yS))
             }
         }
         guard !hits.isEmpty else { return nil }
@@ -140,14 +141,13 @@ final class ThinLinePreservationPass {
                     guard xx >= 0, yy >= 0, xx < width, yy < height else { continue }
                     let dest = yy * width + xx
                     guard weight[dest] < 0.35 else { continue }
-                    let rowPixels = preferPrevious
-                        ? previousPixels.advanced(by: yy * previousRow)
-                        : nextPixels.advanced(by: yy * nextRow)
+                    let previousRowPixels = previousPixels.advanced(by: yy * previousRow)
+                    let nextRowPixels = nextPixels.advanced(by: yy * nextRow)
                     let pixel = xx * 4
                     weight[dest] = 0.35
-                    blue[dest] = rowPixels[pixel]
-                    green[dest] = rowPixels[pixel + 1]
-                    red[dest] = rowPixels[pixel + 2]
+                    blue[dest] = byte(Float(previousRowPixels[pixel]) * (1 - tFloat) + Float(nextRowPixels[pixel]) * tFloat)
+                    green[dest] = byte(Float(previousRowPixels[pixel + 1]) * (1 - tFloat) + Float(nextRowPixels[pixel + 1]) * tFloat)
+                    red[dest] = byte(Float(previousRowPixels[pixel + 2]) * (1 - tFloat) + Float(nextRowPixels[pixel + 2]) * tFloat)
                     floorLuma[dest] = sourceLuma[dest]
                 }
             }
@@ -204,19 +204,6 @@ final class ThinLinePreservationPass {
         var g: UInt8
         var r: UInt8
         var luma: Float
-    }
-
-    private func lineNearby(_ lines: [UInt8], x: Int, y: Int, width: Int, height: Int) -> Bool {
-        for dy in -1...1 {
-            let yy = y + dy
-            guard yy >= 0, yy < height else { continue }
-            for dx in -1...1 {
-                let xx = x + dx
-                guard xx >= 0, xx < width else { continue }
-                if lines[yy * width + xx] != 0 { return true }
-            }
-        }
-        return false
     }
 
     private func byte(_ value: Float) -> UInt8 {

@@ -47,49 +47,25 @@ final class SmallMotionLineStabilizer {
         let midPixels = midBase.assumingMemoryBound(to: UInt8.self)
         let nextPixels = nextBase.assumingMemoryBound(to: UInt8.self)
 
-        // Higher sensitivity accepts a slightly worse residual and fainter lines.
-        let wholeFrameLimit = Float(0.012 + 0.004 * (sensitivity - 0.65) / 0.70)
-        let localLimit = Float(0.042 + 0.020 * (sensitivity - 0.65) / 0.70)
+        // Only repair when one global translation explains the line motion.
+        // Reconstruct each line from BOTH time-aligned endpoints. Selecting the
+        // nearer endpoint at t=0.5 caused a one-frame position/contrast snap.
         let lineContrast = Float(max(0.055, 0.11 / sensitivity))
-
         let shift = globalShift(previousPixels, nextPixels, width: width, height: height,
                                 previousRow: previousRow, nextRow: nextRow, rgba: rgba)
-        let nearerIsNext = t > 0.5
-        let nearerPixels = nearerIsNext ? nextPixels : previousPixels
-        let nearerRow = nearerIsNext ? nextRow : previousRow
-        // A is at shift 0, C is at `shift`. The nearer frame is moved onto time t.
-        let placeScale = Float(nearerIsNext ? (t - 1) : t)
-        let placeX = placeScale * Float(shift.dx)
-        let placeY = placeScale * Float(shift.dy)
-
-        if shift.explained && shift.residual < wholeFrameLimit {
-            return composite(midPixels, midRow: midRow, source: nearerPixels, sourceRow: nearerRow,
-                             width: width, height: height, rgba: rgba, format: format,
-                             offsetX: placeX, offsetY: placeY, linesOnly: false,
-                             lineContrast: lineContrast, attachmentsFrom: interpolated)
+        guard shift.explained else {
+            // Local or ambiguous motion stays with RIFE. Copying a nearest source
+            // tile here can make otherwise smooth motion jump when the tile match changes.
+            return nil
         }
-        if let matched = enforceStrokeWidth(
-            midPixels, midRow: midRow, source: nearerPixels, sourceRow: nearerRow,
+        return compositeTemporal(
+            midPixels, midRow: midRow,
+            previous: previousPixels, previousRow: previousRow,
+            next: nextPixels, nextRow: nextRow,
             width: width, height: height, rgba: rgba, format: format,
-            offsetX: shift.explained ? placeX : 0, offsetY: shift.explained ? placeY : 0,
-            allowZeroOffset: !shift.explained, lineContrast: lineContrast,
-            attachmentsFrom: interpolated
-        ) {
-            return matched
-        }
-        if shift.explained {
-            return composite(midPixels, midRow: midRow, source: nearerPixels, sourceRow: nearerRow,
-                             width: width, height: height, rgba: rgba, format: format,
-                             offsetX: placeX, offsetY: placeY, linesOnly: true,
-                             lineContrast: lineContrast, attachmentsFrom: interpolated)
-        }
-
-        return localTiles(previousPixels, midPixels, nextPixels,
-                          width: width, height: height,
-                          previousRow: previousRow, midRow: midRow, nextRow: nextRow,
-                          rgba: rgba, format: format, nearerIsNext: nearerIsNext,
-                          lineContrast: lineContrast, localLimit: localLimit,
-                          attachmentsFrom: interpolated)
+            progress: t, dx: shift.dx, dy: shift.dy,
+            lineContrast: lineContrast, attachmentsFrom: interpolated
+        )
     }
 
     private struct Shift {
@@ -228,6 +204,86 @@ final class SmallMotionLineStabilizer {
         }
         guard hits >= 8 else { return 1 }
         return matched / hits
+    }
+
+    /// Repaints only source-supported line pixels at their interpolated position.
+    /// The two endpoints are sampled along the same motion trajectory and blended
+    /// by time, so the repair is continuous on both sides of the midpoint.
+    private func compositeTemporal(_ mid: UnsafePointer<UInt8>, midRow: Int,
+                                   previous: UnsafePointer<UInt8>, previousRow: Int,
+                                   next: UnsafePointer<UInt8>, nextRow: Int,
+                                   width: Int, height: Int, rgba: Bool, format: OSType,
+                                   progress: Double, dx: Int, dy: Int,
+                                   lineContrast: Float, attachmentsFrom: CVPixelBuffer) -> CVPixelBuffer? {
+        let t = Float(min(max(progress.isFinite ? progress : 0.5, 0), 1))
+        let previousLuma = lumaPlane(previous, width: width, height: height, rowBytes: previousRow, rgba: rgba)
+        let nextLuma = lumaPlane(next, width: width, height: height, rowBytes: nextRow, rgba: rgba)
+        let previousLines = lineMask(previousLuma, width: width, height: height, contrast: lineContrast)
+        let nextLines = lineMask(nextLuma, width: width, height: height, contrast: lineContrast)
+
+        var output: CVPixelBuffer?
+        let attributes: [CFString: Any] = [
+            kCVPixelBufferIOSurfacePropertiesKey: [:],
+            kCVPixelBufferMetalCompatibilityKey: true
+        ]
+        guard CVPixelBufferCreate(kCFAllocatorDefault, width, height, format,
+                                  attributes as CFDictionary, &output) == kCVReturnSuccess,
+              let output else { return nil }
+        CVPixelBufferLockBaseAddress(output, [])
+        defer { CVPixelBufferUnlockBaseAddress(output, []) }
+        guard let outputBase = CVPixelBufferGetBaseAddress(output) else { return nil }
+        let outputRow = CVPixelBufferGetBytesPerRow(output)
+        let outputPixels = outputBase.assumingMemoryBound(to: UInt8.self)
+        let previousXOffset = t * Float(dx)
+        let previousYOffset = t * Float(dy)
+        let nextXOffset = (1 - t) * Float(dx)
+        let nextYOffset = (1 - t) * Float(dy)
+        var wrote = false
+
+        for y in 0..<height {
+            let midLine = mid.advanced(by: y * midRow)
+            let dest = outputPixels.advanced(by: y * outputRow)
+            dest.update(from: midLine, count: width * 4)
+            for x in 0..<width {
+                // A moves from (x,y) to (x+dx,y+dy). Sample both endpoints
+                // at the source locations corresponding to this output pixel.
+                let ax = Float(x) - previousXOffset
+                let ay = Float(y) - previousYOffset
+                let cx = Float(x) + nextXOffset
+                let cy = Float(y) + nextYOffset
+                let nearestAX = Int(ax.rounded())
+                let nearestAY = Int(ay.rounded())
+                let nearestCX = Int(cx.rounded())
+                let nearestCY = Int(cy.rounded())
+
+                let onPreviousLine = nearestAX >= 0 && nearestAY >= 0 && nearestAX < width && nearestAY < height
+                    && previousLines[nearestAY * width + nearestAX] != 0
+                let onNextLine = nearestCX >= 0 && nearestCY >= 0 && nearestCX < width && nearestCY < height
+                    && nextLines[nearestCY * width + nearestCX] != 0
+                let featherPrevious = !onPreviousLine && nearLine(previousLines, x: nearestAX, y: nearestAY, width: width, height: height)
+                let featherNext = !onNextLine && nearLine(nextLines, x: nearestCX, y: nearestCY, width: width, height: height)
+                guard onPreviousLine || onNextLine || featherPrevious || featherNext else { continue }
+
+                guard let a = bilinear(previous, rowBytes: previousRow, width: width, height: height,
+                                       x: ax, y: ay, rgba: rgba),
+                      let c = bilinear(next, rowBytes: nextRow, width: width, height: height,
+                                       x: cx, y: cy, rgba: rgba) else { continue }
+
+                let sourceB = a.0 * (1 - t) + c.0 * t
+                let sourceG = a.1 * (1 - t) + c.1 * t
+                let sourceR = a.2 * (1 - t) + c.2 * t
+                let weight: Float = (onPreviousLine || onNextLine) ? 1 : 0.35
+                let keep = 1 - weight
+                let pixel = x * 4
+                dest[pixel] = byte(keep * Float(dest[pixel]) + weight * sourceB)
+                dest[pixel + 1] = byte(keep * Float(dest[pixel + 1]) + weight * sourceG)
+                dest[pixel + 2] = byte(keep * Float(dest[pixel + 2]) + weight * sourceR)
+                wrote = true
+            }
+        }
+        guard wrote else { return nil }
+        CVBufferPropagateAttachments(attachmentsFrom, output)
+        return output
     }
 
     private func composite(_ mid: UnsafePointer<UInt8>, midRow: Int,

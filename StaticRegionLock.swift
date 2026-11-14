@@ -102,7 +102,7 @@ final class StaticRegionLock {
         guard let outputBase = CVPixelBufferGetBaseAddress(output) else { return nil }
         let outputRow = CVPixelBufferGetBytesPerRow(output)
         let outputPixels = outputBase.assumingMemoryBound(to: UInt8.self)
-        let nearerIsNext = progress > 0.5
+        let t = Float(min(max(progress.isFinite ? progress : 0.5, 0), 1))
 
         for y in 0..<height {
             let source = midPixels.advanced(by: y * midRow)
@@ -110,17 +110,18 @@ final class StaticRegionLock {
             dest.update(from: source, count: width * 4)
             let previousLine = previousPixels.advanced(by: y * previousRow)
             let nextLine = nextPixels.advanced(by: y * nextRow)
-            let nearerLine = nearerIsNext ? nextLine : previousLine
             for x in 0..<width {
                 let index = y * width + x
                 guard mask[index] != 0 else { continue }
-                // Full strength inside the static area, about half within 2px
-                // of a moving pixel so the seam is not a hard edge.
+                // Blend the two agreeing sources at the requested timestamp.
+                // This avoids a visible source-side switch around t=0.5.
                 let weight: Float = coverage[index] > 0.99 ? 1 : 0.45
                 let keep = 1 - weight
                 let pixel = x * 4
                 for channel in 0..<3 {
-                    dest[pixel + channel] = byte(keep * Float(dest[pixel + channel]) + weight * Float(nearerLine[pixel + channel]))
+                    let source = Float(previousLine[pixel + channel]) * (1 - t)
+                        + Float(nextLine[pixel + channel]) * t
+                    dest[pixel + channel] = byte(keep * Float(dest[pixel + channel]) + weight * source)
                 }
             }
         }
