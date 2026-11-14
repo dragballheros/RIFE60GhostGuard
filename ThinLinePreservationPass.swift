@@ -99,9 +99,19 @@ final class ThinLinePreservationPass {
         if agreement < 12 || fraction > 0.06 { return nil }
         let previousOverlap = Double(agreement) / Double(previousLineCount)
         let nextOverlap = Double(agreement) / Double(nextLineCount)
-        // Require near-complete agreement in BOTH directions. A one-pixel shift
-        // of a thicker stroke can still overlap, but it is not a static stroke.
-        if min(previousOverlap, nextOverlap) < 0.92 { return nil }
+        // Exact-coordinate overlap is the static-line fast path. For moving
+        // contours, try a bounded, reciprocal local correspondence repair rather
+        // than pinning a moving stroke to either source endpoint.
+        if min(previousOverlap, nextOverlap) < 0.92 {
+            return preserveMotionCompensatedContours(
+                previous: previousPixels, interpolated: midPixels, next: nextPixels,
+                previousLuma: previousLuma, midLuma: midLuma, nextLuma: nextLuma,
+                previousLines: previousLines, nextLines: nextLines,
+                width: width, height: height,
+                previousRow: previousRow, midRow: midRow, nextRow: nextRow,
+                format: format, progress: t
+            )
+        }
 
         let fadeGap = Float(max(0.045, 0.10 / sensitivity))
         var hits: [Hit] = []
@@ -199,6 +209,120 @@ final class ThinLinePreservationPass {
             }
         }
         CVBufferPropagateAttachments(interpolated, output)
+        return output
+    }
+
+    /// Repairs only source-supported thin contours whose local position changes
+    /// between endpoints. A reciprocal 3x3 patch match rejects ambiguous matches;
+    /// a strict candidate-count cap keeps this exceptional path bounded on 4K frames.
+    private func preserveMotionCompensatedContours(
+        previous: UnsafePointer<UInt8>, interpolated: UnsafePointer<UInt8>, next: UnsafePointer<UInt8>,
+        previousLuma: [Float], midLuma: [Float], nextLuma: [Float],
+        previousLines: [UInt8], nextLines: [UInt8],
+        width: Int, height: Int,
+        previousRow: Int, midRow: Int, nextRow: Int,
+        format: OSType, progress: Double
+    ) -> CVPixelBuffer? {
+        let count = width * height
+        let previousLineCount = previousLines.reduce(0) { $0 + ($1 == 0 ? 0 : 1) }
+        guard previousLineCount >= 12, previousLineCount <= 60_000 else { return nil }
+
+        let radius = 4
+        let t = Float(min(max(progress, 0), 1))
+        let fadeGap = Float(max(0.045, 0.10 / sensitivity))
+
+        func patchCost(_ a: [Float], _ b: [Float], ax: Int, ay: Int, bx: Int, by: Int) -> Float {
+            var sum: Float = 0
+            for oy in -1...1 {
+                for ox in -1...1 {
+                    let ai = (ay + oy) * width + ax + ox
+                    let bi = (by + oy) * width + bx + ox
+                    sum += abs(a[ai] - b[bi])
+                }
+            }
+            return sum / 9
+        }
+
+        func bestMatch(
+            x: Int, y: Int,
+            sourceLuma: [Float], targetLuma: [Float], targetMask: [UInt8]
+        ) -> (x: Int, y: Int, cost: Float)? {
+            var best: (x: Int, y: Int, cost: Float)?
+            for dy in -radius...radius {
+                let yy = y + dy
+                guard yy >= 2, yy < height - 2 else { continue }
+                for dx in -radius...radius {
+                    let xx = x + dx
+                    guard xx >= 2, xx < width - 2,
+                          targetMask[yy * width + xx] != 0 else { continue }
+                    let cost = patchCost(sourceLuma, targetLuma, ax: x, ay: y, bx: xx, by: yy)
+                    if best == nil || cost < best!.cost {
+                        best = (xx, yy, cost)
+                    }
+                }
+            }
+            guard let best, best.cost <= 0.14 else { return nil }
+            return best
+        }
+
+        var pairs: [(Int, Int, Int, Int)] = []
+        pairs.reserveCapacity(previousLineCount)
+        for y in 2..<(height - 2) {
+            for x in 2..<(width - 2) {
+                let sourceIndex = y * width + x
+                guard previousLines[sourceIndex] != 0 else { continue }
+                guard let match = bestMatch(
+                    x: x, y: y, sourceLuma: previousLuma,
+                    targetLuma: nextLuma, targetMask: nextLines
+                ) else { continue }
+                guard let reverse = bestMatch(
+                    x: match.x, y: match.y, sourceLuma: nextLuma,
+                    targetLuma: previousLuma, targetMask: previousLines
+                ), reverse.x == x, reverse.y == y else { continue }
+                pairs.append((x, y, match.x, match.y))
+            }
+        }
+        guard pairs.count >= 12 else { return nil }
+
+        var output: CVPixelBuffer?
+        let attributes: [CFString: Any] = [
+            kCVPixelBufferIOSurfacePropertiesKey: [:],
+            kCVPixelBufferMetalCompatibilityKey: true
+        ]
+        guard CVPixelBufferCreate(kCFAllocatorDefault, width, height, format,
+                                  attributes as CFDictionary, &output) == kCVReturnSuccess,
+              let output else { return nil }
+        CVPixelBufferLockBaseAddress(output, [])
+        defer { CVPixelBufferUnlockBaseAddress(output, []) }
+        guard let outputBase = CVPixelBufferGetBaseAddress(output) else { return nil }
+        let outputRow = CVPixelBufferGetBytesPerRow(output)
+        let out = outputBase.assumingMemoryBound(to: UInt8.self)
+        for y in 0..<height {
+            out.advanced(by: y * outputRow).update(from: interpolated.advanced(by: y * midRow), count: width * 4)
+        }
+
+        var repaired = 0
+        for (px, py, nx, ny) in pairs {
+            let tx = Int((Float(px) * (1 - t) + Float(nx) * t).rounded())
+            let ty = Int((Float(py) * (1 - t) + Float(ny) * t).rounded())
+            guard tx >= 1, ty >= 1, tx < width - 1, ty < height - 1 else { continue }
+            let targetIndex = ty * width + tx
+            let expectedLuma = previousLuma[py * width + px] * (1 - t)
+                + nextLuma[ny * width + nx] * t
+            guard midLuma[targetIndex] > expectedLuma + fadeGap else { continue }
+
+            let p = previous.advanced(by: py * previousRow + px * 4)
+            let n = next.advanced(by: ny * nextRow + nx * 4)
+            let d = out.advanced(by: ty * outputRow + tx * 4)
+            for channel in 0..<3 {
+                d[channel] = UInt8(min(255, max(0,
+                    (Float(p[channel]) * (1 - t) + Float(n[channel]) * t).rounded()
+                )))
+            }
+            repaired += 1
+        }
+        guard repaired >= 6 else { return nil }
+        CVBufferPropagateAttachments(nil, output)
         return output
     }
 
