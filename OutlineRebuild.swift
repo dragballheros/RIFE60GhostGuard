@@ -97,17 +97,13 @@ final class OutlineRebuild {
                         for x in gap..<(width - gap) {
                             let index = y * width + x
                             if lineBuf[index] == 1 { continue }
-                            var hits = 0
-                            var yy = y - gap
-                            while yy <= y + gap {
-                                var xx = x - gap
-                                while xx <= x + gap {
-                                    if lineBuf[yy * width + xx] == 1 { hits += 1 }
-                                    xx += 1
-                                }
-                                yy += 1
-                            }
-                            if hits >= 3 && Int(lumaBuf[index]) < 190 {
+                            // Close only a real, two-sided contour gap. A
+                            // neighborhood hit count can turn a curved stroke's
+                            // nearby pixels into isolated dark dots.
+                            if Int(lumaBuf[index]) < 190,
+                               hasOpposingLineSupport(line: lineBuf, x: x, y: y,
+                                                      width: width, height: height,
+                                                      maxDistance: gap) {
                                 closedBuf[index] = 1
                             }
                         }
@@ -116,6 +112,30 @@ final class OutlineRebuild {
             }
         }
         return closed
+    }
+
+    /// A candidate gap pixel is admitted only when line pixels bracket it
+    /// along the same horizontal, vertical, or diagonal direction. This keeps
+    /// closing directional and prevents nearby but unrelated strokes from
+    /// manufacturing a speck.
+    private static func hasOpposingLineSupport(
+        line: UnsafeBufferPointer<UInt8>, x: Int, y: Int,
+        width: Int, height: Int, maxDistance: Int
+    ) -> Bool {
+        let directions: [(Int, Int)] = [(1, 0), (0, 1), (1, 1), (1, -1)]
+        for distance in 1...maxDistance {
+            for (dx, dy) in directions {
+                let ax = x - dx * distance
+                let ay = y - dy * distance
+                let bx = x + dx * distance
+                let by = y + dy * distance
+                guard ax >= 0, ay >= 0, bx < width, by >= 0, by < height else { continue }
+                if line[ay * width + ax] != 0 && line[by * width + bx] != 0 {
+                    return true
+                }
+            }
+        }
+        return false
     }
 
     private static func paint(
