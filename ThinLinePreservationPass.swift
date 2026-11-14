@@ -114,6 +114,8 @@ final class ThinLinePreservationPass {
             }
         }
         guard !hits.isEmpty else { return nil }
+        let supportedHits = connectedStrokeHits(hits, width: width, height: height)
+        guard !supportedHits.isEmpty else { return nil }
 
         // Repair only pixels independently confirmed as the same thin stroke
         // in both source frames. Do not feather into neighboring pixels: that
@@ -162,6 +164,65 @@ final class ThinLinePreservationPass {
         }
         CVBufferPropagateAttachments(interpolated, output)
         return output
+    }
+
+    /// Reject isolated restoration fragments while retaining genuinely thin
+    /// one-pixel contours. A candidate must belong to an 8-connected stroke
+    /// with at least three pixels and a spatial extent of at least two pixels.
+    /// This is deliberately applied only to repaired pixels, never to the
+    /// source outline itself.
+    private func connectedStrokeHits(_ hits: [Hit], width: Int, height: Int) -> [Hit] {
+        let count = width * height
+        var candidate = [UInt8](repeating: 0, count: count)
+        for hit in hits {
+            candidate[hit.y * width + hit.x] = 1
+        }
+
+        var visited = [UInt8](repeating: 0, count: count)
+        var accepted = [UInt8](repeating: 0, count: count)
+        var queue: [Int] = []
+        queue.reserveCapacity(64)
+
+        for hit in hits {
+            let start = hit.y * width + hit.x
+            guard visited[start] == 0 else { continue }
+            queue.removeAll(keepingCapacity: true)
+            queue.append(start)
+            visited[start] = 1
+            var cursor = 0
+            var minX = hit.x, maxX = hit.x
+            var minY = hit.y, maxY = hit.y
+
+            while cursor < queue.count {
+                let index = queue[cursor]
+                cursor += 1
+                let x = index % width
+                let y = index / width
+                minX = min(minX, x); maxX = max(maxX, x)
+                minY = min(minY, y); maxY = max(maxY, y)
+
+                for dy in -1...1 {
+                    let ny = y + dy
+                    guard ny >= 0, ny < height else { continue }
+                    for dx in -1...1 where dx != 0 || dy != 0 {
+                        let nx = x + dx
+                        guard nx >= 0, nx < width else { continue }
+                        let neighbor = ny * width + nx
+                        if candidate[neighbor] != 0 && visited[neighbor] == 0 {
+                            visited[neighbor] = 1
+                            queue.append(neighbor)
+                        }
+                    }
+                }
+            }
+
+            let extent = max(maxX - minX, maxY - minY)
+            if queue.count >= 3 && extent >= 2 {
+                for index in queue { accepted[index] = 1 }
+            }
+        }
+
+        return hits.filter { accepted[$0.y * width + $0.x] != 0 }
     }
 
     private struct Hit {
