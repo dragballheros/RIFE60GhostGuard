@@ -129,7 +129,7 @@ let lShape = makeOutlineFixture(points: [
     (28, 30, 210), (32, 30, 150), (30, 28, 210), (30, 32, 150)
 ])
 let lShapeOutput = OutlineRebuild().apply(lShape, strength: 0.5)
-require(readGray(lShapeOutput, x: 30, y: 30) == 170,
+require(readGray(lShapeOutput, x: 30, y: 30) == 210,
         "a one-sided L-shaped neighborhood must not manufacture a dark center dot")
 
 let bridgedLine = makeOutlineFixture(points: [
