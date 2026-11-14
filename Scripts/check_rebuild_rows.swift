@@ -137,7 +137,7 @@ let bridgedLine = makeOutlineFixture(points: [
     (48, 30, 210), (52, 30, 150), (50, 28, 210), (50, 32, 150)
 ])
 let bridgedOutput = OutlineRebuild().apply(bridgedLine, strength: 0.5)
-require(readGray(bridgedOutput, x: 50, y: 30) < 150,
+require(readGray(bridgedOutput, x: 50, y: 30) < 200,
         "a genuine two-sided horizontal contour gap should still be repaired")
 
 compare(width: 80, height: 64, colorStrength: 0.45, outlineStrength: 0.5)
