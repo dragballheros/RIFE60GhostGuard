@@ -6,6 +6,10 @@ func fail(_ message: String) -> Never {
     exit(1)
 }
 
+func require(_ condition: @autoclosure () -> Bool, _ message: String) {
+    if !condition() { fail(message) }
+}
+
 func makeBuffer(width: Int, height: Int, seed: Int) -> CVPixelBuffer {
     var optional: CVPixelBuffer?
     let attrs: [String: Any] = [
