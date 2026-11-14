@@ -625,6 +625,9 @@ jobs:
           swiftc -swift-version 5 -framework CoreVideo ThinLinePreservationPass.swift StructuralSceneCut.swift GhostGuard.swift WarpedOutlineGuard.swift StaticRegionLock.swift SmallMotionLineStabilizer.swift SourceFrameOutlierGuard.swift /tmp/thin-line-check/main.swift -o /tmp/thin-line-check/check
           /tmp/thin-line-check/check
 
+      - name: Verify RIFE endpoint replacement is scene-boundary-only
+        run: python3 Scripts/check_rife_endpoint_fallback_policy.py
+
       - name: Verify persistent mixed media queue and strict serial scheduling
         run: |
           set -euo pipefail
