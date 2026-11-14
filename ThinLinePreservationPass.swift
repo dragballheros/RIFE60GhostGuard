@@ -72,8 +72,7 @@ final class ThinLinePreservationPass {
         // neighborhood, while the inside of a large dark region is not.
         let lineContrast = Float(max(0.055, 0.12 / sensitivity))
         let previousLines = lineMask(previousLuma, blur: previousBlur, width: width, height: height, contrast: lineContrast)
-        var nextLines = lineMask(nextLuma, blur: nextBlur, width: width, height: height, contrast: lineContrast)
-        dilate3x3(&nextLines, width: width, height: height)
+        let nextLines = lineMask(nextLuma, blur: nextBlur, width: width, height: height, contrast: lineContrast)
 
         var agreement = 0
         let count = width * height
