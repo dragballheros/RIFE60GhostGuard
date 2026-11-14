@@ -623,6 +623,7 @@ final class RIFEVideoProcessor {
                         } else if outlineQualityRejection &&
                                   !retryColorStillInvalid &&
                                   !unresolvedColorAnomaly &&
+                                  !(retryFastGuard?.reject ?? false) &&
                                   !(fastCheck?.reject ?? false) {
                             // Keep the color-checked original interpolation if the
                             // one-level retry is still flagged only for outline shape.
