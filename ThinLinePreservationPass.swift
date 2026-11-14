@@ -115,28 +115,20 @@ final class ThinLinePreservationPass {
         }
         guard !hits.isEmpty else { return nil }
 
-        var weight = [Float](repeating: 0, count: count)
+        // Repair only pixels independently confirmed as the same thin stroke
+        // in both source frames. Do not feather into neighboring pixels: that
+        // widens line art and creates the very edge shimmer this pass is meant
+        // to prevent. RIFE remains responsible for all spatial transitions.
         var blue = [UInt8](repeating: 0, count: count)
         var green = [UInt8](repeating: 0, count: count)
         var red = [UInt8](repeating: 0, count: count)
+        var repairMask = [UInt8](repeating: 0, count: count)
         for hit in hits {
-            for dy in -2...2 {
-                let yy = hit.y + dy
-                guard yy >= 0, yy < height else { continue }
-                for dx in -2...2 {
-                    let xx = hit.x + dx
-                    guard xx >= 0, xx < width else { continue }
-                    let distance = max(abs(dx), abs(dy))
-                    let sampleWeight: Float = distance == 0 ? 1 : (distance == 1 ? 0.58 : 0.26)
-                    let dest = yy * width + xx
-                    if sampleWeight > weight[dest] {
-                        weight[dest] = sampleWeight
-                        blue[dest] = hit.b
-                        green[dest] = hit.g
-                        red[dest] = hit.r
-                    }
-                }
-            }
+            let index = hit.y * width + hit.x
+            repairMask[index] = 1
+            blue[index] = hit.b
+            green[index] = hit.g
+            red[index] = hit.r
         }
 
         var output: CVPixelBuffer?
@@ -160,14 +152,12 @@ final class ThinLinePreservationPass {
             dest.update(from: source, count: width * 4)
             let rowIndex = y * width
             for x in 0..<width {
-                let sampleWeight = weight[rowIndex + x]
-                if sampleWeight <= 0 { continue }
-                let pixel = x * 4
-                let keep = 1 - sampleWeight
                 let repaired = rowIndex + x
-                dest[pixel] = byte(keep * Float(dest[pixel]) + sampleWeight * Float(blue[repaired]))
-                dest[pixel + 1] = byte(keep * Float(dest[pixel + 1]) + sampleWeight * Float(green[repaired]))
-                dest[pixel + 2] = byte(keep * Float(dest[pixel + 2]) + sampleWeight * Float(red[repaired]))
+                guard repairMask[repaired] != 0 else { continue }
+                let pixel = x * 4
+                dest[pixel] = blue[repaired]
+                dest[pixel + 1] = green[repaired]
+                dest[pixel + 2] = red[repaired]
             }
         }
         CVBufferPropagateAttachments(interpolated, output)
