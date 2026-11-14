@@ -349,4 +349,44 @@ let narrowed = stabilizer.stabilize(previous: thinStroke, interpolated: thickStr
 require(narrowed == nil,
         "without a verified motion field, line-width repair must leave the RIFE frame alone rather than snap to an endpoint")
 
+// Endpoint replacement is an explicit scene-boundary operation, never a
+// generic response to interpolation quality findings. These checks protect
+// both sides of the temporal midpoint where the old ternary snapped frames.
+let nonBoundaryRejectionReasons = [
+    "warped/doubled outline",
+    "edge collapse / smeared midframe",
+    "temporal outlier",
+    "double-edge/ghost energy",
+    "midframe inconsistency",
+    "localized color anomaly",
+    "fast-motion artifact rejection",
+    "RIFE midpoint recovery rejected",
+    "unrecognized future quality reason"
+]
+for reason in nonBoundaryRejectionReasons {
+    for progress in [0.49, 0.50, 0.51] {
+        require(
+            RIFEEndpointFallbackPolicy.disposition(reason: reason, progress: progress) == .retainInterpolation,
+            "\(reason) at t=\(progress) must retain an interpolated frame, not snap to a source endpoint"
+        )
+    }
+}
+require(
+    RIFEEndpointFallbackPolicy.disposition(reason: "scene cut / transition discontinuity", progress: 0.49) == .usePreviousSource,
+    "a confirmed cut just before the midpoint may select the previous source"
+)
+require(
+    RIFEEndpointFallbackPolicy.disposition(reason: "scene cut / transition discontinuity", progress: 0.51) == .useCurrentSource,
+    "a confirmed cut just after the midpoint may select the current source"
+)
+require(
+    RIFEEndpointFallbackPolicy.disposition(reason: "stray frame at scene cut", progress: 0.49) == .usePreviousSource,
+    "a stray cut frame must use the temporally nearer real source"
+)
+require(
+    RIFEEndpointFallbackPolicy.disposition(reason: "isolated scene-end frame", progress: 0.49) == .useCurrentSource &&
+    RIFEEndpointFallbackPolicy.disposition(reason: "isolated scene-end frame", progress: 0.51) == .useCurrentSource,
+    "an isolated prior scene-end source must be replaced by the current contextual source"
+)
+
 print("THIN_LINE_PRESERVATION_PASS: static restore, soft feather, slight-softness skip, 1px motion skip, midpoint-continuity checks, large-region skip, scene-cut skip, tiny-mask skip, sensitivity, structural same-palette cut, 1px dilation, warped outline, doubled outline, time-continuous static-region lock, motion-compensated small-motion line pan")
