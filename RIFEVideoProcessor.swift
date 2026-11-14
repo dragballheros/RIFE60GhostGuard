@@ -570,7 +570,7 @@ final class RIFEVideoProcessor {
                     // interpolation with a repeated source frame, producing visible judder.
                     let sceneBoundaryRejected = check.reason == "scene cut / transition discontinuity"
                         || check.reason == "isolated scene-end frame"
-                    existingGuardRejected = unresolvedColorAnomaly || check.reject
+                    existingGuardRejected = unresolvedColorAnomaly || check.reject || sceneBoundaryRejected
                     let outlineQualityRejection = check.reason == "warped/doubled outline"
                         || check.reason == "edge collapse / smeared midframe"
                     let shouldAttemptRecovery = existingGuardRejected
@@ -606,6 +606,8 @@ final class RIFEVideoProcessor {
                         )
                         let retryHasSoftOutlineIssue = retryGuard.reason == "warped/doubled outline"
                             || retryGuard.reason == "edge collapse / smeared midframe"
+                        let retrySceneBoundary = retryGuard.reason == "scene cut / transition discontinuity"
+                            || retryGuard.reason == "isolated scene-end frame"
 
                         if !retryColorStillInvalid,
                            !(retryFastGuard?.reject ?? false),
@@ -624,7 +626,8 @@ final class RIFEVideoProcessor {
                                   !retryColorStillInvalid &&
                                   !unresolvedColorAnomaly &&
                                   !(retryFastGuard?.reject ?? false) &&
-                                  !(fastCheck?.reject ?? false) {
+                                  !(fastCheck?.reject ?? false) &&
+                                  !retrySceneBoundary {
                             // Keep the color-checked original interpolation if the
                             // one-level retry is still flagged only for outline shape.
                             DiagnosticsLogger.shared.log(

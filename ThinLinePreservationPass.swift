@@ -85,18 +85,23 @@ final class ThinLinePreservationPass {
         let nextLines = lineMask(nextLuma, blur: nextBlur, width: width, height: height, contrast: lineContrast)
         let tFloat = Float(t)
         let count = width * height
-        var commonLines = [UInt8](repeating: 0, count: count)
-        var sourceLuma = [Float](repeating: 0, count: count)
         var agreement = 0
+        var previousLineCount = 0
+        var nextLineCount = 0
         for index in 0..<count {
-            sourceLuma[index] = previousLuma[index] * (1 - tFloat) + nextLuma[index] * tFloat
-            if previousLines[index] != 0 && nextLines[index] != 0 {
-                commonLines[index] = 1
-                agreement += 1
-            }
+            let inPrevious = previousLines[index] != 0
+            let inNext = nextLines[index] != 0
+            if inPrevious { previousLineCount += 1 }
+            if inNext { nextLineCount += 1 }
+            if inPrevious && inNext { agreement += 1 }
         }
         let fraction = Double(agreement) / Double(count)
         if agreement < 12 || fraction > 0.06 { return nil }
+        let previousOverlap = Double(agreement) / Double(previousLineCount)
+        let nextOverlap = Double(agreement) / Double(nextLineCount)
+        // Require near-complete agreement in BOTH directions. A one-pixel shift
+        // of a thicker stroke can still overlap, but it is not a static stroke.
+        if min(previousOverlap, nextOverlap) < 0.92 { return nil }
 
         let fadeGap = Float(max(0.045, 0.10 / sensitivity))
         var hits: [Hit] = []
@@ -107,8 +112,8 @@ final class ThinLinePreservationPass {
             for x in 2..<(width - 2) {
                 let index = y * width + x
                 // The exact same source pixel must be a line in both frames.
-                guard commonLines[index] != 0 else { continue }
-                let yS = sourceLuma[index]
+                guard previousLines[index] != 0 && nextLines[index] != 0 else { continue }
+                let yS = previousLuma[index] * (1 - tFloat) + nextLuma[index] * tFloat
                 let yM = midLuma[index]
                 guard yM > yS + fadeGap else { continue }
                 let pixel = x * 4
@@ -148,7 +153,7 @@ final class ThinLinePreservationPass {
                     blue[dest] = byte(Float(previousRowPixels[pixel]) * (1 - tFloat) + Float(nextRowPixels[pixel]) * tFloat)
                     green[dest] = byte(Float(previousRowPixels[pixel + 1]) * (1 - tFloat) + Float(nextRowPixels[pixel + 1]) * tFloat)
                     red[dest] = byte(Float(previousRowPixels[pixel + 2]) * (1 - tFloat) + Float(nextRowPixels[pixel + 2]) * tFloat)
-                    floorLuma[dest] = sourceLuma[dest]
+                    floorLuma[dest] = previousLuma[dest] * (1 - tFloat) + nextLuma[dest] * tFloat
                 }
             }
         }

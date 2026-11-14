@@ -251,11 +251,6 @@ final class SmallMotionLineStabilizer {
                 let ay = Float(y) - previousYOffset
                 let cx = Float(x) + nextXOffset
                 let cy = Float(y) + nextYOffset
-                let nearestAX = Int(ax.rounded())
-                let nearestAY = Int(ay.rounded())
-                let nearestCX = Int(cx.rounded())
-                let nearestCY = Int(cy.rounded())
-
                 // Sample the binary line masks at subpixel coordinates. A one-bit
                 // nearest-pixel test would still flicker as a moving stroke crosses
                 // a pixel boundary; interpolated coverage changes smoothly with t.
