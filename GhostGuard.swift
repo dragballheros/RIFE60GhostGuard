@@ -6,6 +6,40 @@ struct GhostGuardResult {
     let reason: String
 }
 
+/// Source-frame substitution is reserved for explicit temporal boundaries.
+/// Artifact/quality rejections must not freeze an in-between to the nearest
+/// source frame, because that creates visible cadence judder.
+enum RIFEEndpointFallbackPolicy {
+    enum Disposition: Equatable {
+        case retainInterpolation
+        case usePreviousSource
+        case useCurrentSource
+    }
+
+    static func disposition(reason: String, progress: Double) -> Disposition {
+        let t = progress.isFinite ? min(max(progress, 0), 1) : 0.5
+        switch reason {
+        case "scene cut / transition discontinuity", "stray frame at scene cut":
+            return t < 0.5 ? .usePreviousSource : .useCurrentSource
+        case "isolated scene-end frame":
+            // The prior source frame is the isolated frame; context agrees
+            // with the current source, so the current endpoint is authoritative.
+            return .useCurrentSource
+        default:
+            return .retainInterpolation
+        }
+    }
+
+    static func endpointFrame(reason: String, progress: Double,
+                              previous: CVPixelBuffer, current: CVPixelBuffer) -> CVPixelBuffer? {
+        switch disposition(reason: reason, progress: progress) {
+        case .usePreviousSource: return previous
+        case .useCurrentSource: return current
+        case .retainInterpolation: return nil
+        }
+    }
+}
+
 struct GhostGuard {
     var sensitivity: Double = 1.35
     var enableSceneCuts: Bool = true
@@ -84,9 +118,10 @@ struct GhostGuard {
             return .init(reject: true, reason: "midframe inconsistency")
         }
 
-        // Bent or doubled outlines show up as edges that belong to neither
-        // source, or as a large jump in edge count. The caller repeats the
-        // nearer real frame; this does not cross-fade.
+        // Bent or doubled outlines are quality findings, not shot boundaries.
+        // The caller attempts one validated midpoint subdivision. If recovery
+        // cannot improve the result, it retains an interpolated frame rather
+        // than freezing the timestamp to a source endpoint.
         if WarpedOutlineGuard.rejects(previous: previous, generated: generated, next: current, sensitivity: sensitivity) {
             return .init(reject: true, reason: "warped/doubled outline")
         }
