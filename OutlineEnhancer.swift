@@ -322,23 +322,27 @@ final class OutlineEnhancer {
             ) / 765.0
         }
         @inline(__always) func narrowDetailStrength(_ x: Int, _ y: Int) -> Double {
-            let lx = max(0, x - 2)
-            let rx = min(width - 1, x + 2)
-            let ty = max(0, y - 2)
-            let by = min(height - 1, y + 2)
-            let horizontalContrast = min(
-                sourceColorDistance(x, y, lx, y),
-                sourceColorDistance(x, y, rx, y)
-            )
-            let horizontalFlankDifference = sourceColorDistance(lx, y, rx, y)
-            let verticalContrast = min(
-                sourceColorDistance(x, y, x, ty),
-                sourceColorDistance(x, y, x, by)
-            )
-            let verticalFlankDifference = sourceColorDistance(x, ty, x, by)
-            let horizontalResponse = horizontalContrast * (1.0 - smooth(0.025, 0.10, horizontalFlankDifference))
-            let verticalResponse = verticalContrast * (1.0 - smooth(0.025, 0.10, verticalFlankDifference))
-            return smooth(0.020, 0.085, max(horizontalResponse, verticalResponse))
+            // Test four unoriented axes, including both diagonals. The old
+            // horizontal/vertical-only test missed thin diagonal contours, so
+            // Sharpie's confidence gate could erase short sections of fingers,
+            // hair wisps and curved anime line art.
+            let directions: [(Int, Int)] = [(2, 0), (2, 1), (1, 2), (0, 2)]
+            var bestResponse = 0.0
+            for (dx, dy) in directions {
+                let ax = x - dx
+                let ay = y - dy
+                let bx = x + dx
+                let by = y + dy
+                guard ax >= 0, ay >= 0, bx < width, by < height else { continue }
+                let nearContrast = min(
+                    sourceColorDistance(x, y, ax, ay),
+                    sourceColorDistance(x, y, bx, by)
+                )
+                let flankDifference = sourceColorDistance(ax, ay, bx, by)
+                let response = nearContrast * (1.0 - smooth(0.025, 0.10, flankDifference))
+                bestResponse = max(bestResponse, response)
+            }
+            return smooth(0.020, 0.085, bestResponse)
         }
 
         let rowCount = max(0, height - 2)
@@ -379,9 +383,15 @@ final class OutlineEnhancer {
                     continue
                 }
 
-                let gx = abs(lumaAt(x + 1, y) - lumaAt(x - 1, y))
-                let gy = abs(lumaAt(x, y + 1) - lumaAt(x, y - 1))
-                let sourceEdge = max(gx, gy)
+                // Isotropic Sobel magnitude avoids the axis bias of max(gx, gy).
+                // Diagonal contours now receive the same structural confidence as
+                // horizontal and vertical edges instead of alternating in strength.
+                let tl = lumaAt(x - 1, y - 1), tc = lumaAt(x, y - 1), tr = lumaAt(x + 1, y - 1)
+                let ml = lumaAt(x - 1, y),                                  mr = lumaAt(x + 1, y)
+                let bl = lumaAt(x - 1, y + 1), bc = lumaAt(x, y + 1), br = lumaAt(x + 1, y + 1)
+                let gx = (tr + 2.0 * mr + br - tl - 2.0 * ml - bl) * 0.25
+                let gy = (bl + 2.0 * bc + br - tl - 2.0 * tc - tr) * 0.25
+                let sourceEdge = min(1.0, hypot(gx, gy))
                 let structural = smooth(0.055, 0.18, sourceEdge)
                 let strongStructural = smooth(0.11, 0.24, sourceEdge)
                 let person = personAt(x, y)
