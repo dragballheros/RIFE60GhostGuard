@@ -256,12 +256,13 @@ final class SmallMotionLineStabilizer {
                 let nearestCX = Int(cx.rounded())
                 let nearestCY = Int(cy.rounded())
 
-                // Include the neighboring source-mask pixel because fractional motion
-                // naturally straddles raster samples. This support region is evaluated
-                // at every t, so its weight does not switch abruptly at 0.5.
-                let onPreviousLine = nearLine(previousLines, x: nearestAX, y: nearestAY, width: width, height: height)
-                let onNextLine = nearLine(nextLines, x: nearestCX, y: nearestCY, width: width, height: height)
-                guard onPreviousLine || onNextLine else { continue }
+                // Sample the binary line masks at subpixel coordinates. A one-bit
+                // nearest-pixel test would still flicker as a moving stroke crosses
+                // a pixel boundary; interpolated coverage changes smoothly with t.
+                let previousCoverage = maskCoverage(previousLines, width: width, height: height, x: ax, y: ay)
+                let nextCoverage = maskCoverage(nextLines, width: width, height: height, x: cx, y: cy)
+                let weight = max(previousCoverage, nextCoverage)
+                guard weight > 0.001 else { continue }
 
                 guard let a = bilinear(previous, rowBytes: previousRow, width: width, height: height,
                                        x: ax, y: ay, rgba: rgba),
@@ -271,7 +272,6 @@ final class SmallMotionLineStabilizer {
                 let sourceB = a.0 * (1 - t) + c.0 * t
                 let sourceG = a.1 * (1 - t) + c.1 * t
                 let sourceR = a.2 * (1 - t) + c.2 * t
-                let weight: Float = 1
                 let keep = 1 - weight
                 let pixel = x * 4
                 dest[pixel] = byte(keep * Float(dest[pixel]) + weight * sourceB)
@@ -283,6 +283,20 @@ final class SmallMotionLineStabilizer {
         guard wrote else { return nil }
         CVBufferPropagateAttachments(attachmentsFrom, output)
         return output
+    }
+
+    /// Bilinear coverage of a binary source line mask at a subpixel location.
+    private func maskCoverage(_ mask: [UInt8], width: Int, height: Int, x: Float, y: Float) -> Float {
+        guard x >= 0, y >= 0, x <= Float(width - 1), y <= Float(height - 1) else { return 0 }
+        let x0 = Int(floor(x))
+        let y0 = Int(floor(y))
+        let x1 = min(width - 1, x0 + 1)
+        let y1 = min(height - 1, y0 + 1)
+        let tx = x - Float(x0)
+        let ty = y - Float(y0)
+        let top = Float(mask[y0 * width + x0]) * (1 - tx) + Float(mask[y0 * width + x1]) * tx
+        let bottom = Float(mask[y1 * width + x0]) * (1 - tx) + Float(mask[y1 * width + x1]) * tx
+        return top * (1 - ty) + bottom * ty
     }
 
     private func composite(_ mid: UnsafePointer<UInt8>, midRow: Int,
