@@ -90,6 +90,52 @@ func compare(width: Int, height: Int, colorStrength: Double, outlineStrength: Do
     samePixels(serialOutline, parallelOutline, label: "outline \(width)x\(height) strength \(outlineStrength)")
 }
 
+// A three-pixel L-shaped neighborhood is not a contour bridge. It used
+// to satisfy the broad >=3-neighbor closing rule and could darken the empty
+// center into a one-frame dot.
+func makeOutlineFixture(points: [(Int, Int, UInt8)], width: Int = 64, height: Int = 48) -> CVPixelBuffer {
+    let buffer = makeBuffer(width: width, height: height, seed: 4)
+    CVPixelBufferLockBaseAddress(buffer, [])
+    defer { CVPixelBufferUnlockBaseAddress(buffer, []) }
+    let base = CVPixelBufferGetBaseAddress(buffer)!.assumingMemoryBound(to: UInt8.self)
+    let rowBytes = CVPixelBufferGetBytesPerRow(buffer)
+    for y in 0..<height {
+        let row = base.advanced(by: y * rowBytes)
+        for x in 0..<width {
+            let p = row.advanced(by: x * 4)
+            p[0] = 210; p[1] = 210; p[2] = 210; p[3] = 255
+        }
+    }
+    for (x, y, value) in points {
+        let p = base.advanced(by: y * rowBytes + x * 4)
+        p[0] = value; p[1] = value; p[2] = value; p[3] = 255
+    }
+    return buffer
+}
+
+func readGray(_ buffer: CVPixelBuffer, x: Int, y: Int) -> UInt8 {
+    CVPixelBufferLockBaseAddress(buffer, .readOnly)
+    defer { CVPixelBufferUnlockBaseAddress(buffer, .readOnly) }
+    let base = CVPixelBufferGetBaseAddress(buffer)!.assumingMemoryBound(to: UInt8.self)
+    return base[y * CVPixelBufferGetBytesPerRow(buffer) + x * 4]
+}
+
+let lShape = makeOutlineFixture(points: [
+    (29, 30, 20), (29, 29, 20), (30, 29, 20),
+    (28, 30, 210), (32, 30, 150), (30, 28, 210), (30, 32, 150)
+])
+let lShapeOutput = OutlineRebuild().apply(lShape, strength: 0.5)
+require(readGray(lShapeOutput, x: 30, y: 30) == 170,
+        "a one-sided L-shaped neighborhood must not manufacture a dark center dot")
+
+let bridgedLine = makeOutlineFixture(points: [
+    (49, 30, 20), (51, 30, 20),
+    (48, 30, 210), (52, 30, 150), (50, 28, 210), (50, 32, 150)
+])
+let bridgedOutput = OutlineRebuild().apply(bridgedLine, strength: 0.5)
+require(readGray(bridgedOutput, x: 50, y: 30) < 150,
+        "a genuine two-sided horizontal contour gap should still be repaired")
+
 compare(width: 80, height: 64, colorStrength: 0.45, outlineStrength: 0.5)
 compare(width: 96, height: 64, colorStrength: 0.85, outlineStrength: 0.8)
 compare(width: 40, height: 24, colorStrength: 0.45, outlineStrength: 0.5)
