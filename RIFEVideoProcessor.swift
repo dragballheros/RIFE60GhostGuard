@@ -187,6 +187,8 @@ final class RIFEVideoProcessor {
         var previousPreviousPB: CVPixelBuffer?
         var previousTime = CMTime.zero
         var rejected = 0
+        var endpointFallbacks = 0
+        var interpolationRetainedAfterRecoveryFailure = 0
         var generated = 0
         var cleaned = 0
         var outlined = 0
@@ -309,8 +311,9 @@ final class RIFEVideoProcessor {
             // Large endpoint motion is handled before Ghost Guard can reject a
             // normal RIFE result. A validated midpoint reduces the temporal distance
             // for both requested 60 FPS samples without changing the source cadence.
-            // This is the primary fast-motion path. Endpoint fallback remains the final
-            // safety net only when both direct and reduced-span RIFE inference fail.
+            // This is the primary fast-motion path. Source endpoints are not a generic
+            // artifact fallback: only an explicit scene boundary or isolated scene-end
+            // source frame may replace an in-between. Failed artifact recovery retains RIFE.
             let fastMotionEstimate = fastMotionGuard?.estimateMotion(previous: prevPB, current: currentPB)
             var fastMotionAnchor: CVPixelBuffer?
             if !requestedTimesteps.isEmpty, fastMotionEstimate?.fastMotion == true {
@@ -569,6 +572,7 @@ final class RIFEVideoProcessor {
                     // midpoint subdivision. These failures used to replace a 60 FPS
                     // interpolation with a repeated source frame, producing visible judder.
                     let sceneBoundaryRejected = check.reason == "scene cut / transition discontinuity"
+                        || check.reason == "stray frame at scene cut"
                         || check.reason == "isolated scene-end frame"
                     existingGuardRejected = unresolvedColorAnomaly || check.reject || sceneBoundaryRejected
                     let outlineQualityRejection = check.reason == "warped/doubled outline"
@@ -607,6 +611,7 @@ final class RIFEVideoProcessor {
                         let retryHasSoftOutlineIssue = retryGuard.reason == "warped/doubled outline"
                             || retryGuard.reason == "edge collapse / smeared midframe"
                         let retrySceneBoundary = retryGuard.reason == "scene cut / transition discontinuity"
+                            || retryGuard.reason == "stray frame at scene cut"
                             || retryGuard.reason == "isolated scene-end frame"
 
                         if !retryColorStillInvalid,
@@ -640,15 +645,36 @@ final class RIFEVideoProcessor {
                             )
                         } else {
                             rejected += 1
-                            chosen = t < 0.5 ? prevPB : currentPB
-                            DiagnosticsLogger.shared.log(
-                                "RIFE midpoint recovery rejected • motion=\(String(format: "%.3f", fastCheck?.motionScore ?? 0)) • artifact=\(String(format: "%.3f", fastCheck?.artifactScore ?? 0)) • t=\(String(format: "%.3f", t))"
-                            )
-                            PipelineStageTimer.recordRejection(
-                                seconds: CMTimeGetSeconds(requestedTimes[index]),
-                                reason: "RIFE midpoint recovery rejected",
-                                disposition: "replaced"
-                            )
+                            if let endpoint = RIFEEndpointFallbackPolicy.endpointFrame(
+                                reason: check.reason,
+                                progress: t,
+                                previous: prevPB,
+                                current: currentPB
+                            ) {
+                                chosen = endpoint
+                                endpointFallbacks += 1
+                                DiagnosticsLogger.shared.log(
+                                    "RIFE scene-boundary endpoint selected after failed recovery • reason=\(check.reason) • t=\(String(format: "%.3f", t))"
+                                )
+                                PipelineStageTimer.recordRejection(
+                                    seconds: CMTimeGetSeconds(requestedTimes[index]),
+                                    reason: check.reason,
+                                    disposition: "scene-boundary-endpoint"
+                                )
+                            } else {
+                                interpolationRetainedAfterRecoveryFailure += 1
+                                let rejectionReason = check.reason == "ok"
+                                    ? (unresolvedColorAnomaly ? "localized color anomaly" : "fast-motion recovery")
+                                    : check.reason
+                                DiagnosticsLogger.shared.log(
+                                    "RIFE recovery did not produce a safe improvement • retained interpolated frame • reason=\(rejectionReason) • motion=\(String(format: "%.3f", fastCheck?.motionScore ?? 0)) • artifact=\(String(format: "%.3f", fastCheck?.artifactScore ?? 0)) • t=\(String(format: "%.3f", t))"
+                                )
+                                PipelineStageTimer.recordRejection(
+                                    seconds: CMTimeGetSeconds(requestedTimes[index]),
+                                    reason: rejectionReason,
+                                    disposition: "retained-rife"
+                                )
+                            }
                         }
                     } else if existingGuardRejected || (fastCheck?.reject ?? false) {
                         if outlineQualityRejection &&
@@ -665,29 +691,43 @@ final class RIFEVideoProcessor {
                             )
                         } else {
                             rejected += 1
-                            if check.reason == "isolated scene-end frame" {
-                                chosen = currentPB
+                            if let endpoint = RIFEEndpointFallbackPolicy.endpointFrame(
+                                reason: check.reason,
+                                progress: t,
+                                previous: prevPB,
+                                current: currentPB
+                            ) {
+                                chosen = endpoint
+                                endpointFallbacks += 1
                                 DiagnosticsLogger.shared.log(
-                                    "Ghost Guard fallback • isolated scene-end source frame replaced • t=\(String(format: "%.3f", t))"
+                                    "Ghost Guard scene-boundary endpoint selected • reason=\(check.reason) • t=\(String(format: "%.3f", t))"
+                                )
+                                PipelineStageTimer.recordRejection(
+                                    seconds: CMTimeGetSeconds(requestedTimes[index]),
+                                    reason: check.reason,
+                                    disposition: "scene-boundary-endpoint"
                                 )
                             } else {
-                                chosen = t < 0.5 ? prevPB : currentPB
+                                interpolationRetainedAfterRecoveryFailure += 1
+                                let rejectionReason = check.reason == "ok"
+                                    ? (unresolvedColorAnomaly ? "localized color anomaly" : "fast-motion artifact rejection")
+                                    : check.reason
                                 DiagnosticsLogger.shared.log(
-                                    "Ghost Guard fallback • quality rejection • reason=\(check.reason) • t=\(String(format: "%.3f", t))"
+                                    "Ghost Guard quality rejection • retained interpolated frame • reason=\(rejectionReason) • t=\(String(format: "%.3f", t))"
+                                )
+                                PipelineStageTimer.recordRejection(
+                                    seconds: CMTimeGetSeconds(requestedTimes[index]),
+                                    reason: rejectionReason,
+                                    disposition: "retained-rife"
                                 )
                             }
-                            PipelineStageTimer.recordRejection(
-                                seconds: CMTimeGetSeconds(requestedTimes[index]),
-                                reason: check.reason,
-                                disposition: "replaced"
-                            )
                         }
                     }
                 }
 
-                // Endpoint fallbacks are already a real source frame. On a kept
-                // in-between, pin static background, stabilize small-motion
-                // line art, then put back thin strokes both sources still share.
+                // Only the explicit scene-boundary policy may select a real source
+                // endpoint. Every other in-between remains eligible for static-region
+                // locking, motion-aware line stabilization, and thin-stroke restoration.
                 let lineStarted = CFAbsoluteTimeGetCurrent()
                 let replacedWithEndpoint = chosen === prevPB || chosen === currentPB
                 if !replacedWithEndpoint {
@@ -743,6 +783,9 @@ final class RIFEVideoProcessor {
         }
 
         emitTelemetry()
+        DiagnosticsLogger.shared.log(
+            "RIFE frame disposition summary • detected rejections=\(rejected) • scene-boundary endpoint fallbacks=\(endpointFallbacks) • interpolations retained after recovery failure=\(interpolationRetainedAfterRecoveryFailure)"
+        )
 
         if reader.status == .failed {
             throw ProcessorError.reader(reader.error?.localizedDescription ?? "decode failed")
