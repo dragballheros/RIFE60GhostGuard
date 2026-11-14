@@ -125,7 +125,7 @@ final class ThinLinePreservationPass {
         var green = [UInt8](repeating: 0, count: count)
         var red = [UInt8](repeating: 0, count: count)
         var repairMask = [UInt8](repeating: 0, count: count)
-        for hit in hits {
+        for hit in supportedHits {
             let index = hit.y * width + hit.x
             repairMask[index] = 1
             blue[index] = hit.b
