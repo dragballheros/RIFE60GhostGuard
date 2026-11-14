@@ -265,7 +265,7 @@ final class ThinLinePreservationPass {
                     }
                 }
             }
-            guard let best, best.cost <= 0.14 else { return nil }
+            guard let best, best.cost <= 0.35 else { return nil }
             return best
         }
 
@@ -282,7 +282,7 @@ final class ThinLinePreservationPass {
                 guard let reverse = bestMatch(
                     x: match.x, y: match.y, sourceLuma: nextLuma,
                     targetLuma: previousLuma, targetMask: previousLines
-                ), reverse.x == x, reverse.y == y else { continue }
+                ), abs(reverse.x - x) <= 1, abs(reverse.y - y) <= 1 else { continue }
                 pairs.append((x, y, match.x, match.y))
             }
         }
