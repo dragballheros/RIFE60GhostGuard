@@ -9,9 +9,9 @@ processor = (ROOT / "RIFEVideoProcessor.swift").read_text(encoding="utf-8")
 guard = (ROOT / "GhostGuard.swift").read_text(encoding="utf-8")
 
 forbidden = [
-    r"chosen\\s*=\\s*t\\s*<\\s*0\\.5\\s*\\?\\s*prevPB\\s*:\\s*currentPB",
-    r"chosen\\s*=\\s*prevPB\\b",
-    r"chosen\\s*=\\s*currentPB\\b",
+    r"chosen\s*=\s*t\s*<\s*0\.5\s*\?\s*prevPB\s*:\s*currentPB",
+    r"chosen\s*=\s*prevPB\b",
+    r"chosen\s*=\s*currentPB\b",
 ]
 for pattern in forbidden:
     if re.search(pattern, processor):
