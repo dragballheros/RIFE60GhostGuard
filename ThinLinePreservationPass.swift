@@ -214,7 +214,7 @@ final class ThinLinePreservationPass {
     }
 
     /// Repairs only source-supported thin contours whose local position changes
-    /// between endpoints. A reciprocal 3x3 patch match rejects ambiguous matches;
+    /// between endpoints. A reciprocal 5x5 patch match rejects ambiguous matches;
     /// a strict candidate-count cap keeps this exceptional path bounded on 4K frames.
     private func preserveMotionCompensatedContours(
         previous: UnsafePointer<UInt8>, interpolated: UnsafePointer<UInt8>, next: UnsafePointer<UInt8>,
