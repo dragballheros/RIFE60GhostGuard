@@ -218,8 +218,14 @@ final class SmallMotionLineStabilizer {
         let t = Float(min(max(progress.isFinite ? progress : 0.5, 0), 1))
         let previousLuma = lumaPlane(previous, width: width, height: height, rowBytes: previousRow, rgba: rgba)
         let nextLuma = lumaPlane(next, width: width, height: height, rowBytes: nextRow, rgba: rgba)
-        let previousLines = lineMask(previousLuma, width: width, height: height, contrast: lineContrast)
-        let nextLines = lineMask(nextLuma, width: width, height: height, contrast: lineContrast)
+        let previousLines = expandedLineMask(
+            lineMask(previousLuma, width: width, height: height, contrast: lineContrast),
+            width: width, height: height
+        )
+        let nextLines = expandedLineMask(
+            lineMask(nextLuma, width: width, height: height, contrast: lineContrast),
+            width: width, height: height
+        )
 
         var output: CVPixelBuffer?
         let attributes: [CFString: Any] = [
@@ -280,7 +286,31 @@ final class SmallMotionLineStabilizer {
         return output
     }
 
-    /// Bilinear coverage of a binary source line mask at a subpixel location.
+    /// Adds a smoothly sampled one-pixel support band around source strokes.
+    /// Full stroke pixels have weight 1, axial neighbors 0.5 and diagonal
+    /// neighbors 0.25. Bilinear sampling then keeps the feather continuous.
+    private func expandedLineMask(_ lines: [UInt8], width: Int, height: Int) -> [UInt8] {
+        var expanded = [UInt8](repeating: 0, count: width * height)
+        for y in 0..<height {
+            for x in 0..<width {
+                var coverage: UInt8 = 0
+                for dy in -1...1 {
+                    let yy = y + dy
+                    guard yy >= 0, yy < height else { continue }
+                    for dx in -1...1 {
+                        let xx = x + dx
+                        guard xx >= 0, xx < width, lines[yy * width + xx] != 0 else { continue }
+                        let candidate: UInt8 = dx == 0 && dy == 0 ? 255 : ((dx == 0 || dy == 0) ? 128 : 64)
+                        coverage = max(coverage, candidate)
+                    }
+                }
+                expanded[y * width + x] = coverage
+            }
+        }
+        return expanded
+    }
+
+    /// Bilinear coverage of the soft source-line support mask at subpixel position.
     private func maskCoverage(_ mask: [UInt8], width: Int, height: Int, x: Float, y: Float) -> Float {
         guard x >= 0, y >= 0, x <= Float(width - 1), y <= Float(height - 1) else { return 0 }
         let x0 = Int(floor(x))
@@ -289,8 +319,8 @@ final class SmallMotionLineStabilizer {
         let y1 = min(height - 1, y0 + 1)
         let tx = x - Float(x0)
         let ty = y - Float(y0)
-        let top = Float(mask[y0 * width + x0]) * (1 - tx) + Float(mask[y0 * width + x1]) * tx
-        let bottom = Float(mask[y1 * width + x0]) * (1 - tx) + Float(mask[y1 * width + x1]) * tx
+        let top = (Float(mask[y0 * width + x0]) * (1 - tx) + Float(mask[y0 * width + x1]) * tx) / 255
+        let bottom = (Float(mask[y1 * width + x0]) * (1 - tx) + Float(mask[y1 * width + x1]) * tx) / 255
         return top * (1 - ty) + bottom * ty
     }
 
