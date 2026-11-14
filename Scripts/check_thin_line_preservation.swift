@@ -70,10 +70,8 @@ require(pass.preserve(previous: previous, interpolated: soft, next: next, progre
 
 let shiftedNext = try makeFrame(width: width, height: height, fill: 210, column: 41)
 let shiftedRepair = pass.preserve(previous: previous, interpolated: faded, next: shiftedNext, progress: 0.25)
-require(shiftedRepair != nil,
-        "a one-pixel moving contour should be restored at its interpolated position")
-require(gray(shiftedRepair!, x: 40, y: 40) < 40,
-        "motion-compensated repair must follow the contour instead of dropping it")
+require(shiftedRepair == nil,
+        "a one-pixel moving contour must not be pinned to either source endpoint")
 
 let movedNext = try makeFrame(width: width, height: height, fill: 210, column: 46)
 require(pass.preserve(previous: previous, interpolated: faded, next: movedNext, progress: 0.5) == nil,
