@@ -90,6 +90,31 @@ let cutNext = try makeFrame(width: width, height: height, fill: 25, column: 40, 
 require(pass.preserve(previous: cutPrevious, interpolated: faded, next: cutNext, progress: 0.5) == nil,
         "a scene cut must skip the pass")
 
+// A long valid contour may coexist with isolated source specks. The contour
+// should be repaired, but disconnected one-pixel candidates must not become
+// visible dots in the interpolated frame.
+func paintPixel(_ buffer: CVPixelBuffer, x: Int, y: Int, value: UInt8) {
+    CVPixelBufferLockBaseAddress(buffer, [])
+    defer { CVPixelBufferUnlockBaseAddress(buffer, []) }
+    let base = CVPixelBufferGetBaseAddress(buffer)!.assumingMemoryBound(to: UInt8.self)
+    let pixel = base.advanced(by: y * CVPixelBufferGetBytesPerRow(buffer) + x * 4)
+    pixel[0] = value
+    pixel[1] = value
+    pixel[2] = value
+}
+let contourA = try makeFrame(width: width, height: height, fill: 210, column: 40)
+let contourC = try makeFrame(width: width, height: height, fill: 210, column: 40)
+let contourMid = try makeFrame(width: width, height: height, fill: 210, column: 40, columnValue: 170)
+for point in [(70, 25), (76, 49)] {
+    paintPixel(contourA, x: point.0, y: point.1, value: 20)
+    paintPixel(contourC, x: point.0, y: point.1, value: 20)
+}
+let contourRepair = pass.preserve(previous: contourA, interpolated: contourMid, next: contourC, progress: 0.5)
+require(contourRepair != nil, "a valid connected contour should still be repaired when unrelated specks exist")
+require(gray(contourRepair!, x: 40, y: 40) < 40, "the connected one-pixel-wide contour must remain intact")
+require(gray(contourRepair!, x: 70, y: 25) == 210 && gray(contourRepair!, x: 76, y: 49) == 210,
+        "disconnected one-pixel source specks must not be restored as moving outline dots")
+
 let tinyPrevious = try makeFrame(width: width, height: height, fill: 210)
 let tinyNext = try makeFrame(width: width, height: height, fill: 210)
 let tinyMid = try makeFrame(width: width, height: height, fill: 210)
