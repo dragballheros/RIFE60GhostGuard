@@ -172,23 +172,22 @@ final class ThinLinePreservationPass {
     /// This is deliberately applied only to repaired pixels, never to the
     /// source outline itself.
     private func connectedStrokeHits(_ hits: [Hit], width: Int, height: Int) -> [Hit] {
-        let count = width * height
-        var candidate = [UInt8](repeating: 0, count: count)
+        // 0 = no candidate, 1 = unvisited, 2 = visited/rejected,
+        // 3 = accepted component. Reuse one byte plane instead of allocating
+        // separate candidate, visited, and accepted masks on 4K frames.
+        var state = [UInt8](repeating: 0, count: width * height)
         for hit in hits {
-            candidate[hit.y * width + hit.x] = 1
+            state[hit.y * width + hit.x] = 1
         }
 
-        var visited = [UInt8](repeating: 0, count: count)
-        var accepted = [UInt8](repeating: 0, count: count)
         var queue: [Int] = []
         queue.reserveCapacity(64)
-
         for hit in hits {
             let start = hit.y * width + hit.x
-            guard visited[start] == 0 else { continue }
+            guard state[start] == 1 else { continue }
             queue.removeAll(keepingCapacity: true)
             queue.append(start)
-            visited[start] = 1
+            state[start] = 2
             var cursor = 0
             var minX = hit.x, maxX = hit.x
             var minY = hit.y, maxY = hit.y
@@ -208,8 +207,8 @@ final class ThinLinePreservationPass {
                         let nx = x + dx
                         guard nx >= 0, nx < width else { continue }
                         let neighbor = ny * width + nx
-                        if candidate[neighbor] != 0 && visited[neighbor] == 0 {
-                            visited[neighbor] = 1
+                        if state[neighbor] == 1 {
+                            state[neighbor] = 2
                             queue.append(neighbor)
                         }
                     }
@@ -218,11 +217,11 @@ final class ThinLinePreservationPass {
 
             let extent = max(maxX - minX, maxY - minY)
             if queue.count >= 3 && extent >= 2 {
-                for index in queue { accepted[index] = 1 }
+                for index in queue { state[index] = 3 }
             }
         }
 
-        return hits.filter { accepted[$0.y * width + $0.x] != 0 }
+        return hits.filter { state[$0.y * width + $0.x] == 3 }
     }
 
     private struct Hit {
