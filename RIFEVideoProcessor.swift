@@ -570,6 +570,7 @@ final class RIFEVideoProcessor {
                     // interpolation with a repeated source frame, producing visible judder.
                     let sceneBoundaryRejected = check.reason == "scene cut / transition discontinuity"
                         || check.reason == "isolated scene-end frame"
+                    existingGuardRejected = unresolvedColorAnomaly || check.reject
                     let outlineQualityRejection = check.reason == "warped/doubled outline"
                         || check.reason == "edge collapse / smeared midframe"
                     let shouldAttemptRecovery = existingGuardRejected
@@ -620,9 +621,11 @@ final class RIFEVideoProcessor {
                                 )
                             }
                         } else if outlineQualityRejection &&
+                                  !retryColorStillInvalid &&
                                   !unresolvedColorAnomaly &&
                                   !(fastCheck?.reject ?? false) {
-                            chosen = synth
+                            // Keep the color-checked original interpolation if the
+                            // one-level retry is still flagged only for outline shape.
                             DiagnosticsLogger.shared.log(
                                 "Outline guard soft fallback retained RIFE interpolation • t=\(String(format: "%.3f", t))"
                             )
@@ -647,7 +650,7 @@ final class RIFEVideoProcessor {
                         if outlineQualityRejection &&
                            !unresolvedColorAnomaly &&
                            !(fastCheck?.reject ?? false) {
-                            chosen = synth
+                            // Keep the original candidate, including any localized color repair.
                             DiagnosticsLogger.shared.log(
                                 "Outline guard soft fallback retained RIFE interpolation • retry unavailable • t=\(String(format: "%.3f", t))"
                             )

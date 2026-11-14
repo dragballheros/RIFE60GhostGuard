@@ -182,7 +182,7 @@ final class ThinLinePreservationPass {
                 var b = keep * Float(dest[pixel]) + sampleWeight * Float(blue[repaired])
                 var g = keep * Float(dest[pixel + 1]) + sampleWeight * Float(green[repaired])
                 var r = keep * Float(dest[pixel + 2]) + sampleWeight * Float(red[repaired])
-                // Never darker than the nearer source pixel at this location.
+                // Never darker than the time-weighted source pixel at this location.
                 if luma(b: b / 255, g: g / 255, r: r / 255) < floorLuma[repaired] {
                     b = Float(blue[repaired])
                     g = Float(green[repaired])

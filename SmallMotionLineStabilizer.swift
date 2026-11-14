@@ -1,8 +1,8 @@
 import CoreVideo
 import Foundation
 
-/// Keeps thin line art crisp during a slow pan or a small local tremble.
-/// RIFE's in-between is left alone when the motion is large or the match is poor.
+/// Keeps thin line art temporally aligned during a coherent global pan.
+/// Ambiguous/local motion is left to RIFE instead of copying nearest-source tiles.
 /// A detected cut returns nil.
 final class SmallMotionLineStabilizer {
     let sensitivity: Double
@@ -256,13 +256,12 @@ final class SmallMotionLineStabilizer {
                 let nearestCX = Int(cx.rounded())
                 let nearestCY = Int(cy.rounded())
 
-                let onPreviousLine = nearestAX >= 0 && nearestAY >= 0 && nearestAX < width && nearestAY < height
-                    && previousLines[nearestAY * width + nearestAX] != 0
-                let onNextLine = nearestCX >= 0 && nearestCY >= 0 && nearestCX < width && nearestCY < height
-                    && nextLines[nearestCY * width + nearestCX] != 0
-                let featherPrevious = !onPreviousLine && nearLine(previousLines, x: nearestAX, y: nearestAY, width: width, height: height)
-                let featherNext = !onNextLine && nearLine(nextLines, x: nearestCX, y: nearestCY, width: width, height: height)
-                guard onPreviousLine || onNextLine || featherPrevious || featherNext else { continue }
+                // Include the neighboring source-mask pixel because fractional motion
+                // naturally straddles raster samples. This support region is evaluated
+                // at every t, so its weight does not switch abruptly at 0.5.
+                let onPreviousLine = nearLine(previousLines, x: nearestAX, y: nearestAY, width: width, height: height)
+                let onNextLine = nearLine(nextLines, x: nearestCX, y: nearestCY, width: width, height: height)
+                guard onPreviousLine || onNextLine else { continue }
 
                 guard let a = bilinear(previous, rowBytes: previousRow, width: width, height: height,
                                        x: ax, y: ay, rgba: rgba),
@@ -272,7 +271,7 @@ final class SmallMotionLineStabilizer {
                 let sourceB = a.0 * (1 - t) + c.0 * t
                 let sourceG = a.1 * (1 - t) + c.1 * t
                 let sourceR = a.2 * (1 - t) + c.2 * t
-                let weight: Float = (onPreviousLine || onNextLine) ? 1 : 0.35
+                let weight: Float = 1
                 let keep = 1 - weight
                 let pixel = x * 4
                 dest[pixel] = byte(keep * Float(dest[pixel]) + weight * sourceB)
