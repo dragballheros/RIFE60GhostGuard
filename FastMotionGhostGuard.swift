@@ -2,9 +2,9 @@ import Foundation
 import CoreVideo
 
 /// A second, deliberately narrow guard for RIFE failures that occur during
-/// large/fast motion. It never drops an output timestamp. When a synthesized
-/// frame is rejected, the timestamp is kept and the nearest source endpoint
-/// is written instead, so the output cadence remains 60 FPS.
+/// large/fast motion. It never drops an output timestamp. A rejection requests
+/// one validated midpoint recovery; if that cannot safely improve the frame,
+/// the processor retains the in-between instead of freezing to a source endpoint.
 final class FastMotionGhostGuard {
     struct Result {
         let fastMotion: Bool
