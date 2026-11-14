@@ -225,7 +225,6 @@ final class ThinLinePreservationPass {
         previousRow: Int, midRow: Int, nextRow: Int,
         format: OSType, progress: Double
     ) -> CVPixelBuffer? {
-        let count = width * height
         let previousLineCount = previousLines.reduce(0) { $0 + ($1 == 0 ? 0 : 1) }
         guard previousLineCount >= 12, previousLineCount <= 60_000 else { return nil }
 
@@ -235,14 +234,14 @@ final class ThinLinePreservationPass {
 
         func patchCost(_ a: [Float], _ b: [Float], ax: Int, ay: Int, bx: Int, by: Int) -> Float {
             var sum: Float = 0
-            for oy in -1...1 {
-                for ox in -1...1 {
+            for oy in -2...2 {
+                for ox in -2...2 {
                     let ai = (ay + oy) * width + ax + ox
                     let bi = (by + oy) * width + bx + ox
                     sum += abs(a[ai] - b[bi])
                 }
             }
-            return sum / 9
+            return sum / 25
         }
 
         func bestMatch(
@@ -258,7 +257,10 @@ final class ThinLinePreservationPass {
                     guard xx >= 2, xx < width - 2,
                           targetMask[yy * width + xx] != 0 else { continue }
                     let cost = patchCost(sourceLuma, targetLuma, ax: x, ay: y, bx: xx, by: yy)
-                    if best == nil || cost < best!.cost {
+                    let distance = dx * dx + dy * dy
+                    let bestDistance = best.map { ($0.x - x) * ($0.x - x) + ($0.y - y) * ($0.y - y) } ?? Int.max
+                    if best == nil || cost < best!.cost - 0.0001
+                        || (abs(cost - best!.cost) <= 0.0001 && distance < bestDistance) {
                         best = (xx, yy, cost)
                     }
                 }
