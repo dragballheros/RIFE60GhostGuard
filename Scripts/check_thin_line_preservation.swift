@@ -52,7 +52,7 @@ require(repaired != nil, "a static hair line missing from the in-between should 
 require(gray(repaired!, x: 40, y: 40) < 40, "the restored stroke should be dark again")
 require(gray(repaired!, x: 40, y: 40) <= gray(previous, x: 40, y: 40) + 2, "the stroke should come back from a real source")
 let feather = Int(gray(repaired!, x: 41, y: 40))
-require(feather < 210 && feather > 40, "the 1px neighbor should be a soft mix, not a hard seam or the original background")
+require(feather >= 200, "the restore must not darken the neighbor into a wider stroke")
 require(gray(repaired!, x: 48, y: 40) == 210, "pixels outside the 2px feather must stay untouched")
 require(gray(repaired!, x: 10, y: 10) == gray(faded, x: 10, y: 10), "the rest of the frame must not be replaced")
 
@@ -319,5 +319,14 @@ require(gray(panned!, x: 12, y: 30) > 160, "the soft unshifted line should not r
 let farC = try panFrame(shift: 24, soft: false)
 require(stabilizer.stabilize(previous: panA, interpolated: panM, next: farC, progress: 0.5) == nil,
         "a large pan must be left to RIFE")
+let thinStroke = try makeFrame(width: 96, height: 80, fill: 210, column: 50, columnValue: 18)
+let thickStroke = try makeFrame(width: 96, height: 80, fill: 210, column: 50, columnValue: 18)
+paintSquare(thickStroke, rect: CGRect(x: 49, y: 8, width: 1, height: 64), value: 18)
+paintSquare(thickStroke, rect: CGRect(x: 51, y: 8, width: 1, height: 64), value: 18)
+let narrowed = stabilizer.stabilize(previous: thinStroke, interpolated: thickStroke, next: thinStroke, progress: 0.5)
+require(narrowed != nil, "a stroke more than 20% wider than the source should be corrected")
+require(gray(narrowed!, x: 50, y: 40) < 40, "the source stroke itself stays")
+require(gray(narrowed!, x: 49, y: 40) > 160 && gray(narrowed!, x: 51, y: 40) > 160,
+        "extra thickness is replaced by the nearer source background")
 
 print("THIN_LINE_PRESERVATION_PASS: static restore, soft feather, slight-softness skip, 1px tolerance, moving-line skip, large-region skip, scene-cut skip, tiny-mask skip, sensitivity, structural same-palette cut, 1px dilation, warped outline, doubled outline, static-region lock, small-motion line pan")

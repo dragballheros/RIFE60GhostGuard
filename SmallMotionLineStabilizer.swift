@@ -62,11 +62,25 @@ final class SmallMotionLineStabilizer {
         let placeX = placeScale * Float(shift.dx)
         let placeY = placeScale * Float(shift.dy)
 
+        if shift.explained && shift.residual < wholeFrameLimit {
+            return composite(midPixels, midRow: midRow, source: nearerPixels, sourceRow: nearerRow,
+                             width: width, height: height, rgba: rgba, format: format,
+                             offsetX: placeX, offsetY: placeY, linesOnly: false,
+                             lineContrast: lineContrast, attachmentsFrom: interpolated)
+        }
+        if let matched = enforceStrokeWidth(
+            midPixels, midRow: midRow, source: nearerPixels, sourceRow: nearerRow,
+            width: width, height: height, rgba: rgba, format: format,
+            offsetX: shift.explained ? placeX : 0, offsetY: shift.explained ? placeY : 0,
+            allowZeroOffset: !shift.explained, lineContrast: lineContrast,
+            attachmentsFrom: interpolated
+        ) {
+            return matched
+        }
         if shift.explained {
             return composite(midPixels, midRow: midRow, source: nearerPixels, sourceRow: nearerRow,
                              width: width, height: height, rgba: rgba, format: format,
-                             offsetX: placeX, offsetY: placeY,
-                             linesOnly: shift.residual >= wholeFrameLimit,
+                             offsetX: placeX, offsetY: placeY, linesOnly: true,
                              lineContrast: lineContrast, attachmentsFrom: interpolated)
         }
 
@@ -248,21 +262,30 @@ final class SmallMotionLineStabilizer {
                 let nearestY = Int(sampleY.rounded())
                 let onLine = nearestX >= 0 && nearestY >= 0 && nearestX < width && nearestY < height
                     && lines[nearestY * width + nearestX] != 0
-                if linesOnly && !onLine && !nearLine(lines, x: nearestX, y: nearestY, width: width, height: height) {
-                    continue
-                }
-                guard var color = bilinear(source, rowBytes: sourceRow, width: width, height: height,
+                let feather = !onLine && nearLine(lines, x: nearestX, y: nearestY, width: width, height: height)
+                if linesOnly && !onLine && !feather { continue }
+                guard let color = bilinear(source, rowBytes: sourceRow, width: width, height: height,
                                            x: sampleX, y: sampleY, rgba: rgba) else { continue }
-                if onLine {
-                    color = sharpen(color, source: source, rowBytes: sourceRow, width: width, height: height,
-                                    x: nearestX, y: nearestY, rgba: rgba)
-                }
-                let weight: Float = linesOnly ? (onLine ? 1 : 0.45) : 1
+                // Full weight only on the source stroke. One pixel of alpha
+                // around it, never darker than the source pixel there.
+                let weight: Float = linesOnly ? (onLine ? 1 : 0.35) : 1
                 let pixel = x * 4
                 let keep = 1 - weight
-                dest[pixel] = byte(keep * Float(dest[pixel]) + weight * color.0)
-                dest[pixel + 1] = byte(keep * Float(dest[pixel + 1]) + weight * color.1)
-                dest[pixel + 2] = byte(keep * Float(dest[pixel + 2]) + weight * color.2)
+                var b = keep * Float(dest[pixel]) + weight * color.0
+                var g = keep * Float(dest[pixel + 1]) + weight * color.1
+                var r = keep * Float(dest[pixel + 2]) + weight * color.2
+                if nearestX >= 0, nearestY >= 0, nearestX < width, nearestY < height {
+                    let limit = sourceLuma[nearestY * width + nearestX]
+                    if (0.0722 * b + 0.7152 * g + 0.2126 * r) / 255 < limit {
+                        let src = pixelBytes(source, rowBytes: sourceRow, x: nearestX, y: nearestY)
+                        b = src.0
+                        g = src.1
+                        r = src.2
+                    }
+                }
+                dest[pixel] = byte(b)
+                dest[pixel + 1] = byte(g)
+                dest[pixel + 2] = byte(r)
                 wrote = true
             }
         }
@@ -312,8 +335,13 @@ final class SmallMotionLineStabilizer {
                             let sourceIndex = sourceY * width + sourceX
                             guard nearerLines[sourceIndex] != 0 else { continue }
                             let color = pixel(nearer, rowBytes: nearerRow, x: sourceX, y: sourceY)
-                            splat(x: x, y: y, width: width, height: height, color: color,
-                                  weight: &weight, blue: &blue, green: &green, red: &red)
+                            let index = y * width + x
+                            if weight[index] < 1 {
+                                weight[index] = 1
+                                blue[index] = color.0
+                                green[index] = color.1
+                                red[index] = color.2
+                            }
                         }
                     }
                 }
@@ -421,25 +449,111 @@ final class SmallMotionLineStabilizer {
         return false
     }
 
-    private func splat(x: Int, y: Int, width: Int, height: Int, color: (Float, Float, Float),
-                       weight: inout [Float], blue: inout [Float], green: inout [Float], red: inout [Float]) {
-        for dy in -2...2 {
-            let yy = y + dy
-            guard yy >= 0, yy < height else { continue }
-            for dx in -2...2 {
-                let xx = x + dx
-                guard xx >= 0, xx < width else { continue }
-                let distance = max(abs(dx), abs(dy))
-                let sampleWeight: Float = distance == 0 ? 1 : (distance == 1 ? 0.55 : 0.28)
-                let index = yy * width + xx
-                if sampleWeight > weight[index] {
-                    weight[index] = sampleWeight
-                    blue[index] = color.0
-                    green[index] = color.1
-                    red[index] = color.2
-                }
+    /// Mean stroke width is the shorter run of the thin-line mask (area over
+    /// the long direction). When M's strokes differ from the nearer source by
+    /// more than 20%, those pixels are replaced by that one source.
+    private func enforceStrokeWidth(_ mid: UnsafePointer<UInt8>, midRow: Int,
+                                    source: UnsafePointer<UInt8>, sourceRow: Int,
+                                    width: Int, height: Int, rgba: Bool, format: OSType,
+                                    offsetX: Float, offsetY: Float, allowZeroOffset: Bool,
+                                    lineContrast: Float, attachmentsFrom: CVPixelBuffer) -> CVPixelBuffer? {
+        let sourceLuma = lumaPlane(source, width: width, height: height, rowBytes: sourceRow, rgba: rgba)
+        let midLuma = lumaPlane(mid, width: width, height: height, rowBytes: midRow, rgba: rgba)
+        let sourceLines = lineMask(sourceLuma, width: width, height: height, contrast: lineContrast)
+        let midLines = lineMask(midLuma, width: width, height: height, contrast: lineContrast)
+        let dx = Int(offsetX.rounded())
+        let dy = Int(offsetY.rounded())
+        let sourceWidth = meanStrokeWidth(sourceLines, width: width, height: height)
+        let midWidth = meanStrokeWidth(midLines, width: width, height: height)
+        guard sourceWidth > 0.5, midWidth > 0.5 else { return nil }
+        guard abs(midWidth - sourceWidth) / sourceWidth > 0.20 else { return nil }
+        if dx == 0 && dy == 0 && allowZeroOffset && !linesContained(sourceLines, in: midLines, width: width, height: height) {
+            return nil
+        }
+        var output: CVPixelBuffer?
+        let attributes: [CFString: Any] = [
+            kCVPixelBufferIOSurfacePropertiesKey: [:],
+            kCVPixelBufferMetalCompatibilityKey: true
+        ]
+        guard CVPixelBufferCreate(kCFAllocatorDefault, width, height, format,
+                                  attributes as CFDictionary, &output) == kCVReturnSuccess,
+              let output else { return nil }
+        CVPixelBufferLockBaseAddress(output, [])
+        defer { CVPixelBufferUnlockBaseAddress(output, []) }
+        guard let base = CVPixelBufferGetBaseAddress(output) else { return nil }
+        let rowBytes = CVPixelBufferGetBytesPerRow(output)
+        let pixels = base.assumingMemoryBound(to: UInt8.self)
+        for y in 0..<height {
+            let midLine = mid.advanced(by: y * midRow)
+            let dest = pixels.advanced(by: y * rowBytes)
+            dest.update(from: midLine, count: width * 4)
+            for x in 0..<width where midLines[y * width + x] != 0 {
+                let sx = x - dx
+                let sy = y - dy
+                guard sx >= 0, sy >= 0, sx < width, sy < height else { continue }
+                let src = pixelBytes(source, rowBytes: sourceRow, x: sx, y: sy)
+                let pixel = x * 4
+                dest[pixel] = byte(src.0)
+                dest[pixel + 1] = byte(src.1)
+                dest[pixel + 2] = byte(src.2)
             }
         }
+        CVBufferPropagateAttachments(attachmentsFrom, output)
+        return output
+    }
+
+    private func meanStrokeWidth(_ lines: [UInt8], width: Int, height: Int) -> Float {
+        var horizontal = 0
+        var horizontalRuns = 0
+        for y in 0..<height {
+            var run = 0
+            for x in 0..<width {
+                if lines[y * width + x] != 0 {
+                    run += 1
+                } else if run > 0 {
+                    horizontal += run
+                    horizontalRuns += 1
+                    run = 0
+                }
+            }
+            if run > 0 {
+                horizontal += run
+                horizontalRuns += 1
+            }
+        }
+        var vertical = 0
+        var verticalRuns = 0
+        for x in 0..<width {
+            var run = 0
+            for y in 0..<height {
+                if lines[y * width + x] != 0 {
+                    run += 1
+                } else if run > 0 {
+                    vertical += run
+                    verticalRuns += 1
+                    run = 0
+                }
+            }
+            if run > 0 {
+                vertical += run
+                verticalRuns += 1
+            }
+        }
+        let horizontalMean = horizontalRuns > 0 ? Float(horizontal) / Float(horizontalRuns) : 0
+        let verticalMean = verticalRuns > 0 ? Float(vertical) / Float(verticalRuns) : 0
+        if horizontalMean == 0 { return verticalMean }
+        if verticalMean == 0 { return horizontalMean }
+        return min(horizontalMean, verticalMean)
+    }
+
+    private func linesContained(_ source: [UInt8], in mid: [UInt8], width: Int, height: Int) -> Bool {
+        var hits = 0
+        var inside = 0
+        for index in 0..<(width * height) where source[index] != 0 {
+            hits += 1
+            if mid[index] != 0 { inside += 1 }
+        }
+        return hits >= 8 && Double(inside) / Double(hits) >= 0.6
     }
 
     private func blendWeights(_ mid: UnsafePointer<UInt8>, midRow: Int, width: Int, height: Int, format: OSType,
@@ -505,47 +619,21 @@ final class SmallMotionLineStabilizer {
         return color
     }
 
-    /// Pull a half-pixel sample toward the darkest source tap so a stroke
-    /// does not alternate soft and sharp. Integer samples are unchanged.
-    private func sharpen(_ color: (Float, Float, Float), source: UnsafePointer<UInt8>, rowBytes: Int,
-                         width: Int, height: Int, x: Int, y: Int, rgba: Bool) -> (Float, Float, Float) {
-        var darkest = color
-        var darkLuma = lumaValue(color)
+    private func nearLine(_ lines: [UInt8], x: Int, y: Int, width: Int, height: Int) -> Bool {
         for dy in -1...1 {
             let yy = y + dy
             guard yy >= 0, yy < height else { continue }
             for dx in -1...1 {
                 let xx = x + dx
                 guard xx >= 0, xx < width else { continue }
-                let sample = pixel(source, rowBytes: rowBytes, x: xx, y: yy)
-                let sampleLuma = lumaValue(sample)
-                if sampleLuma < darkLuma {
-                    darkLuma = sampleLuma
-                    darkest = sample
-                }
-            }
-        }
-        guard lumaValue(color) > darkLuma + 0.05, darkLuma < 0.45 else { return color }
-        let pull: Float = 0.40
-        return (
-            color.0 + (darkest.0 - color.0) * pull,
-            color.1 + (darkest.1 - color.1) * pull,
-            color.2 + (darkest.2 - color.2) * pull
-        )
-    }
-
-    private func nearLine(_ lines: [UInt8], x: Int, y: Int, width: Int, height: Int) -> Bool {
-        guard x >= -2, y >= -2, x <= width + 1, y <= height + 1 else { return false }
-        for dy in -2...2 {
-            let yy = y + dy
-            guard yy >= 0, yy < height else { continue }
-            for dx in -2...2 {
-                let xx = x + dx
-                guard xx >= 0, xx < width else { continue }
                 if lines[yy * width + xx] != 0 { return true }
             }
         }
         return false
+    }
+
+    private func pixelBytes(_ pixels: UnsafePointer<UInt8>, rowBytes: Int, x: Int, y: Int) -> (Float, Float, Float) {
+        pixel(pixels, rowBytes: rowBytes, x: x, y: y)
     }
 
     private func lumaPlane(_ pixels: UnsafePointer<UInt8>, width: Int, height: Int, rowBytes: Int, rgba: Bool) -> [Float] {
@@ -617,11 +705,6 @@ final class SmallMotionLineStabilizer {
         let r = rgba ? c0 : c2
         let b = rgba ? c2 : c0
         return 0.2126 * r + 0.7152 * c1 + 0.0722 * b
-    }
-
-    private func lumaValue(_ color: (Float, Float, Float)) -> Float {
-        // Stored channels are buffer order. BGRA luma uses B=0, G=1, R=2.
-        (0.0722 * color.0 + 0.7152 * color.1 + 0.2126 * color.2) / 255
     }
 
     private func byte(_ value: Float) -> UInt8 {
