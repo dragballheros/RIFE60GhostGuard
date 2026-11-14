@@ -153,8 +153,6 @@ final class RIFEVideoProcessor {
         let compressionGuard = config.compressionProtection ? CompressionGuard() : nil
         let colorArtifactGuard = LocalizedColorArtifactGuard()
         let thinLinePass = ThinLinePreservationPass(sensitivity: config.ghostSensitivity)
-        let staticRegionLock = StaticRegionLock(sensitivity: config.ghostSensitivity)
-        let smallMotionLines = SmallMotionLineStabilizer(sensitivity: config.ghostSensitivity)
 
         let outlineEnhancer: OutlineEnhancer?
         if config.outlineProtection {
@@ -725,27 +723,17 @@ final class RIFEVideoProcessor {
                     }
                 }
 
-                // Only the explicit scene-boundary policy may select a real source
-                // endpoint. Every other in-between remains eligible for static-region
-                // locking, motion-aware line stabilization, and thin-stroke restoration.
+                // Keep outline repair deliberately conservative: restore only thin
+                // strokes independently confirmed at the same coordinates in both
+                // source frames. Do not stack temporal reconstruction passes that
+                // can change contour position or intensity between adjacent outputs.
                 let lineStarted = CFAbsoluteTimeGetCurrent()
                 let replacedWithEndpoint = chosen === prevPB || chosen === currentPB
-                if !replacedWithEndpoint {
-                    if let locked = staticRegionLock.lock(
-                        previous: prevPB, interpolated: chosen, next: currentPB, progress: t
-                    ) {
-                        chosen = locked
-                    }
-                    if let stabilized = smallMotionLines.stabilize(
-                        previous: prevPB, interpolated: chosen, next: currentPB, progress: t
-                    ) {
-                        chosen = stabilized
-                    }
-                    if let restored = thinLinePass.preserve(
-                        previous: prevPB, interpolated: chosen, next: currentPB, progress: t
-                    ) {
-                        chosen = restored
-                    }
+                if !replacedWithEndpoint,
+                   let restored = thinLinePass.preserve(
+                       previous: prevPB, interpolated: chosen, next: currentPB, progress: t
+                   ) {
+                    chosen = restored
                 }
                 ghostSeconds += CFAbsoluteTimeGetCurrent() - lineStarted
 
