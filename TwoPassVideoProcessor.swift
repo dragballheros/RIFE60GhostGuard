@@ -391,7 +391,7 @@ final class TwoPassVideoProcessor {
         var postCUGANSource: URL?
         var fusedFinalURL: URL?
         var outlineUpscaleRoutePlan: VideoUpscalePlan?
-        if upscaleTo4K && !outlineCheckpointValid {
+        if upscaleTo4K && !outlineCheckpointValid && (!cugan4xCheckpointValid || visualPolish) {
             let routeSource = rifeResult ?? sourceURL
             outlineUpscaleRoutePlan = try await VideoUpscaleModelRouter.makePlan(
                 sourceURL: routeSource,
