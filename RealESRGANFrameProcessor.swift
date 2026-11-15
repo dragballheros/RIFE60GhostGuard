@@ -10,6 +10,10 @@ final class RealESRGANFrameProcessor: @unchecked Sendable {
     private let model: MLModel
     private let inputArray: MLMultiArray
     private let inputStride: [Int]
+    private let tileInput: UnsafeMutablePointer<UInt8>
+    private let tileOutput: UnsafeMutablePointer<UInt8>
+    private var outputPool: CVPixelBufferPool?
+    private var outputDimensions: (width: Int, height: Int)?
 
     init() throws {
         guard let modelURL = Bundle.main.url(forResource: "RealESRGAN_x2plus_Tile384", withExtension: "mlmodelc") else {
@@ -30,6 +34,8 @@ final class RealESRGANFrameProcessor: @unchecked Sendable {
         self.model = loaded
         self.inputArray = try MLMultiArray(shape: inputDescription.shape, dataType: .float32)
         self.inputStride = inputArray.strides.map(\.intValue)
+        self.tileInput = UnsafeMutablePointer<UInt8>.allocate(capacity: tileSize * tileSize * 4)
+        self.tileOutput = UnsafeMutablePointer<UInt8>.allocate(capacity: tileSize * 2 * tileSize * 2 * 4)
         DiagnosticsLogger.shared.log("Real-ESRGAN x2plus loaded • tile=\(tileSize)x\(tileSize) • core=\(tileSize - overlap * 2)x\(tileSize - overlap * 2) • compute=\(configuration.computeUnits.rawValue)")
     }
 
@@ -41,30 +47,33 @@ final class RealESRGANFrameProcessor: @unchecked Sendable {
         }
         let targetWidth = sourceWidth * 2
         let targetHeight = sourceHeight * 2
-        let attributes: [String: Any] = [
-            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
-            kCVPixelBufferWidthKey as String: targetWidth,
-            kCVPixelBufferHeightKey as String: targetHeight,
-            kCVPixelBufferMetalCompatibilityKey as String: true,
-            kCVPixelBufferIOSurfacePropertiesKey as String: [:]
-        ]
-        var targetBuffer: CVPixelBuffer?
-        guard CVPixelBufferCreate(
-            kCFAllocatorDefault,
-            targetWidth,
-            targetHeight,
-            kCVPixelFormatType_32BGRA,
-            attributes as CFDictionary,
-            &targetBuffer
-        ) == kCVReturnSuccess, let target = targetBuffer else {
-            throw ProcessorError.conversionFailed("Could not allocate the Real-ESRGAN 2× output frame.")
+        if outputPool == nil || outputDimensions?.width != targetWidth || outputDimensions?.height != targetHeight {
+            outputPool = nil
+            ReclaimableMemoryRegistry.shared.remove(name: "esrgan-stitched")
+            let attributes: [String: Any] = [
+                kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
+                kCVPixelBufferWidthKey as String: targetWidth,
+                kCVPixelBufferHeightKey as String: targetHeight,
+                kCVPixelBufferMetalCompatibilityKey as String: true,
+                kCVPixelBufferIOSurfacePropertiesKey as String: [:],
+                kCVPixelBufferPoolMinimumBufferCountKey as String: 3
+            ]
+            var pool: CVPixelBufferPool?
+            guard CVPixelBufferPoolCreate(kCFAllocatorDefault, nil, attributes as CFDictionary, &pool) == kCVReturnSuccess,
+                  let pool else {
+                throw ProcessorError.conversionFailed("Could not create the Real-ESRGAN 2× output pool.")
+            }
+            outputPool = pool
+            outputDimensions = (targetWidth, targetHeight)
+            ReclaimableMemoryRegistry.shared.trackPixelPool(pool, name: "esrgan-stitched", width: targetWidth, height: targetHeight)
         }
-
-        let tileInput = UnsafeMutablePointer<UInt8>.allocate(capacity: tileSize * tileSize * 4)
-        let tileOutput = UnsafeMutablePointer<UInt8>.allocate(capacity: tileSize * 2 * tileSize * 2 * 4)
-        defer {
-            tileInput.deallocate()
-            tileOutput.deallocate()
+        guard let outputPool else {
+            throw ProcessorError.conversionFailed("Real-ESRGAN output pool is unavailable.")
+        }
+        var targetBuffer: CVPixelBuffer?
+        guard CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault, outputPool, &targetBuffer) == kCVReturnSuccess,
+              let target = targetBuffer else {
+            throw ProcessorError.conversionFailed("Could not allocate a Real-ESRGAN 2× output frame from its pool.")
         }
 
         CVPixelBufferLockBaseAddress(source, .readOnly)
@@ -132,6 +141,12 @@ final class RealESRGANFrameProcessor: @unchecked Sendable {
             throw ProcessorError.conversionFailed("Real-ESRGAN stitched frame dimensions are incorrect.")
         }
         return target
+    }
+
+    deinit {
+        tileInput.deallocate()
+        tileOutput.deallocate()
+        ReclaimableMemoryRegistry.shared.remove(name: "esrgan-stitched")
     }
 
     private func packInput(_ bgra: UnsafePointer<UInt8>) {
