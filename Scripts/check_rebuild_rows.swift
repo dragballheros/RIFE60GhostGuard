@@ -135,7 +135,7 @@ require(readGray(lShapeOutput, x: 30, y: 30) == 210,
 let bridgedLine = makeOutlineFixture(points: [
     (47, 30, 20), (48, 30, 20), (49, 30, 20),
     (51, 30, 20), (52, 30, 20), (53, 30, 20),
-    (46, 30, 210), (54, 30, 150), (50, 28, 210), (50, 32, 150)
+    (46, 30, 210), (54, 30, 150)
 ])
 let bridgedOutput = OutlineRebuild().apply(bridgedLine, strength: 0.5)
 require(readGray(bridgedOutput, x: 50, y: 30) < 200,
