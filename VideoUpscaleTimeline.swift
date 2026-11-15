@@ -76,10 +76,16 @@ struct VideoUpscalePlan: Sendable {
             ?? .realCUGAN
     }
 
-    /// Anime-specific color consolidation, line-gap repair, and Sharpie are only
-    /// appropriate on the Real-CUGAN scenes in a scene-aware route.
+    /// Anime-specific color consolidation, line-gap repair, and Sharpie require a
+    /// confident anime classification. Ambiguous scenes keep the conservative CUGAN
+    /// upscaler fallback but preserve natural contours. Manual CUGAN remains enabled
+    /// because its fixed route carries confidence 1.0.
     func usesAnimeOutline(at seconds: Double) -> Bool {
-        engine(at: seconds) == .realCUGAN
+        let time = max(0, min(seconds.isFinite ? seconds : 0, duration))
+        guard let segment = segments.first(where: { time >= $0.startSeconds && time < $0.endSeconds }) ?? segments.last else {
+            return false
+        }
+        return segment.engine == .realCUGAN && segment.confidence >= 0.54
     }
 
     static func fixed(duration: Double, engine: VideoUpscaleEngine, reason: String) -> VideoUpscalePlan {
