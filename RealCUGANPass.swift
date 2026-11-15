@@ -424,7 +424,7 @@ final class RealCUGANPass {
                 let frameForPolish = upscaled
                 polishQueue.async {
                     do {
-                        let split = try fusedPolish.polishPrepared(frameForPolish)
+                        let split = try fusedPolish.polishPrepared(frameForPolish, at: pts)
                         polishBox.buffer = split.buffer
                         polishBox.note(split)
                     } catch {
