@@ -77,6 +77,9 @@ final class VideoProcessorViewModel: ObservableObject {
     @Published var colorPopStrength = 1.0 { didSet { ProcessingSettings.save(colorPopStrength, ProcessingSettings.colorPopStrength) } }
     @Published var upscaleTo4K = true
     @Published var upscaleFirst = false
+    @Published var upscaleModelSelection: UpscaleModelSelection = UpscaleModelSelection(rawValue: UserDefaults.standard.string(forKey: "RIFE60.upscaleModelSelection") ?? "auto") ?? .auto {
+        didSet { UserDefaults.standard.set(upscaleModelSelection.rawValue, forKey: "RIFE60.upscaleModelSelection") }
+    }
     @Published var computePreference = ModelComputePreference.current { didSet { computePreference.persist() } }
     @Published var isBenchmarking = false
     @Published var benchmarkProgress: Double = 0
@@ -488,10 +491,11 @@ final class VideoProcessorViewModel: ObservableObject {
         let audio = preserveAudio
         let upscale = upscaleTo4K
         let upscaleBeforeRIFE = upscaleFirst && upscale
+        let selectedUpscaleModel = upscaleModelSelection
         let modelCompute = computePreference.rawValue
         let tileDiagnostics = brokenTileDiagnosticsEnabled
         let selectedTargetFPS = self.selectedTargetFPS
-        let configKey = ["pipeline-v7-rebuild", "hq", "ghost=\(guardEnabled)", "cuts=\(cuts)", "compression=\(compressionEnabled)", "outline=\(outlineEnabled)", "colorRebuild=\(colorRebuild)", String(format: "colorRebuildStrength=%.2f", colorStrength), "outlineRebuild=\(lineRebuild)", String(format: "outlineRebuildStrength=%.2f", lineStrength), "animeRestore=\(animeRestoreUser)", String(format: "animeRestoreStrength=%.2f", animeRestoreUserStrength), "animeRestoreSuppressAuto=\(animeRestoreSuppress)", "animeRestoreQuality=\(animeRestoreQualityChoice)", "colorpop=\(colorPop)", "colorpopStrength=\(gradeStrength)", "warmthMode=\(warmthMode)", "skinToneMode=\(skinToneMode)", "watermark=\(watermark.enabled)", "watermarkMasks=\(watermark.serializedRegions)", "watermarkPadding=\(watermark.paddingPixels)", "watermarkModel=\(watermark.model.rawValue)", String(format: "sensitivity=%.2f", sensitivity), "audio=\(audio)", "reddit=\(redditMode)", "videoToGIF=\(videoToGIFEnabled)", "upscale=\(upscale)", "upscaleFirst=\(upscaleBeforeRIFE)", "computeUnits=\(modelCompute)", "tileDiagnostics=\(tileDiagnostics)", "fps=60"].joined(separator: "|")
+        let configKey = ["pipeline-v7-rebuild", "hq", "ghost=\(guardEnabled)", "cuts=\(cuts)", "compression=\(compressionEnabled)", "outline=\(outlineEnabled)", "colorRebuild=\(colorRebuild)", String(format: "colorRebuildStrength=%.2f", colorStrength), "outlineRebuild=\(lineRebuild)", String(format: "outlineRebuildStrength=%.2f", lineStrength), "animeRestore=\(animeRestoreUser)", String(format: "animeRestoreStrength=%.2f", animeRestoreUserStrength), "animeRestoreSuppressAuto=\(animeRestoreSuppress)", "animeRestoreQuality=\(animeRestoreQualityChoice)", "colorpop=\(colorPop)", "colorpopStrength=\(gradeStrength)", "warmthMode=\(warmthMode)", "skinToneMode=\(skinToneMode)", "watermark=\(watermark.enabled)", "watermarkMasks=\(watermark.serializedRegions)", "watermarkPadding=\(watermark.paddingPixels)", "watermarkModel=\(watermark.model.rawValue)", String(format: "sensitivity=%.2f", sensitivity), "audio=\(audio)", "reddit=\(redditMode)", "videoToGIF=\(videoToGIFEnabled)", "upscale=\(upscale)", "upscaleFirst=\(upscaleBeforeRIFE)", "upscaleModel=\(selectedUpscaleModel.rawValue)", "computeUnits=\(modelCompute)", "tileDiagnostics=\(tileDiagnostics)", "fps=60"].joined(separator: "|")
         DiagnosticsLogger.shared.log("Render requested • \(configKey)")
 
         currentTask = Task.detached(priority: .userInitiated) { [weak self] in
@@ -543,7 +547,7 @@ final class VideoProcessorViewModel: ObservableObject {
                 config.animeRestoreStrength = animeRestoreUserStrength
                 config.animeRestoreQuality = animeRestoreQualityChoice
                 config.brokenTileDiagnosticsEnabled = tileDiagnostics
-                let processor = TwoPassVideoProcessor(configuration: config, upscaleTo4K: upscale, colorPopEnabled: colorPop, colorPopStrength: gradeStrength, watermark: watermark, upscaleFirst: upscaleBeforeRIFE)
+                let processor = TwoPassVideoProcessor(configuration: config, upscaleTo4K: upscale, colorPopEnabled: colorPop, colorPopStrength: gradeStrength, watermark: watermark, upscaleFirst: upscaleBeforeRIFE, upscaleModelSelection: selectedUpscaleModel)
                 let result = try await processor.process(sourceURL: processingSource, recoveryDirectory: nil, progress: { p, message in
                     Task { @MainActor [weak self] in
                         guard let self, self.renderGeneration == generation, self.isProcessing else { return }
@@ -1236,7 +1240,7 @@ final class VideoProcessorViewModel: ObservableObject {
         let sensitivity = ghostSensitivity, audio = preserveAudio, upscale = upscaleTo4K
         let upscaleBeforeRIFE = upscaleFirst && upscale, modelCompute = computePreference.rawValue
         let watermark = WatermarkConfiguration(enabled: watermarkRemovalEnabled, regions: watermarkRegions, paddingPixels: Int(watermarkPaddingPixels), model: watermarkModel)
-        return ["pipeline-v5-colorpop", "hq", "ghost=\(guardEnabled)", "cuts=\(cuts)", "compression=\(compressionEnabled)", "outline=\(outlineEnabled)", "animeRestore=\(animeRestoreEnabled)", String(format: "animeRestoreStrength=%.2f", animeRestoreStrength), "animeRestoreQuality=\(animeRestoreQuality)", "colorpop=\(colorPop)", "colorpopStrength=\(gradeStrength)", "warmthMode=\(warmthMode)", "skinToneMode=\(skinToneMode)", "watermark=\(watermark.enabled)", "watermarkMasks=\(watermark.serializedRegions)", "watermarkPadding=\(watermark.paddingPixels)", "watermarkModel=\(WatermarkConfiguration.modelID)", String(format: "sensitivity=%.2f", sensitivity), "audio=\(audio)", "reddit=\(redditMode)", "videoToGIF=\(videoToGIFEnabled)", "upscale=\(upscale)", "upscaleFirst=\(upscaleBeforeRIFE)", "computeUnits=\(modelCompute)", "fps=60"].joined(separator: "|")
+        return ["pipeline-v5-colorpop", "hq", "ghost=\(guardEnabled)", "cuts=\(cuts)", "compression=\(compressionEnabled)", "outline=\(outlineEnabled)", "animeRestore=\(animeRestoreEnabled)", String(format: "animeRestoreStrength=%.2f", animeRestoreStrength), "animeRestoreQuality=\(animeRestoreQuality)", "colorpop=\(colorPop)", "colorpopStrength=\(gradeStrength)", "warmthMode=\(warmthMode)", "skinToneMode=\(skinToneMode)", "watermark=\(watermark.enabled)", "watermarkMasks=\(watermark.serializedRegions)", "watermarkPadding=\(watermark.paddingPixels)", "watermarkModel=\(WatermarkConfiguration.modelID)", String(format: "sensitivity=%.2f", sensitivity), "audio=\(audio)", "reddit=\(redditMode)", "videoToGIF=\(videoToGIFEnabled)", "upscale=\(upscale)", "upscaleFirst=\(upscaleBeforeRIFE)", "upscaleModel=\(selectedUpscaleModel.rawValue)", "computeUnits=\(modelCompute)", "fps=60"].joined(separator: "|")
     }
 
     private func restoreProcessingSettings() {
