@@ -38,6 +38,7 @@ let ambiguous = VideoUpscalePlan.stabilized(duration: 5, samples: [
 ])
 require(ambiguous.engine(at: 0.5) == .realCUGAN, "ambiguous opening must default to CUGAN")
 require(ambiguous.segments.count == 1, "unconfirmed ESRGAN samples must not cause a switch")
+require(!ambiguous.usesAnimeOutline(at: 0.5), "ambiguous Auto scenes must preserve natural contours even when CUGAN is the upscaler fallback")
 
 let noSceneCut = VideoUpscalePlan.stabilized(duration: 6, samples: [
     sample(0, .realCUGAN), sample(1, .realCUGAN), sample(2, .realESRGAN),
