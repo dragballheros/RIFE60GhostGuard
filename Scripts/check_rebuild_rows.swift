@@ -124,6 +124,14 @@ func readGray(_ buffer: CVPixelBuffer, x: Int, y: Int) -> UInt8 {
     return base[y * CVPixelBufferGetBytesPerRow(buffer) + x * 4]
 }
 
+func readBGRA(_ buffer: CVPixelBuffer, x: Int, y: Int) -> [UInt8] {
+    CVPixelBufferLockBaseAddress(buffer, .readOnly)
+    defer { CVPixelBufferUnlockBaseAddress(buffer, .readOnly) }
+    let base = CVPixelBufferGetBaseAddress(buffer)!.assumingMemoryBound(to: UInt8.self)
+    let pixel = base.advanced(by: y * CVPixelBufferGetBytesPerRow(buffer) + x * 4)
+    return [pixel[0], pixel[1], pixel[2], pixel[3]]
+}
+
 let lShape = makeOutlineFixture(points: [
     (29, 30, 20), (29, 29, 20), (30, 29, 20),
     (28, 30, 210), (32, 30, 150), (30, 28, 210), (30, 32, 150)
@@ -141,6 +149,31 @@ let bridgedOutput = OutlineRebuild().apply(bridgedLine, strength: 0.5)
 require(readGray(bridgedOutput, x: 50, y: 30) < 200,
         "a genuine two-sided horizontal contour gap should still be repaired")
 
+// At maximum strength the closing radius expands to two pixels. A real gap
+// must still close when both contour ends have tangent continuation.
+let wideGap = makeOutlineFixture(points: [
+    (46, 30, 20), (47, 30, 20), (48, 30, 20),
+    (52, 30, 20), (53, 30, 20), (54, 30, 20)
+])
+let wideGapOutput = OutlineRebuild().apply(wideGap, strength: 0.8)
+require(readGray(wideGapOutput, x: 50, y: 30) < 200,
+        "a genuine two-pixel-radius contour gap should still be repaired")
+
+// A colored one-pixel source detail must remain byte-identical. This confirms
+// that moving the fine-detail guard does not weaken protection for real marks.
+let coloredDetail = makeOutlineFixture(points: [(30, 30, 20)])
+CVPixelBufferLockBaseAddress(coloredDetail, [])
+let coloredBase = CVPixelBufferGetBaseAddress(coloredDetail)!.assumingMemoryBound(to: UInt8.self)
+let coloredPixel = coloredBase.advanced(by: 30 * CVPixelBufferGetBytesPerRow(coloredDetail) + 30 * 4)
+coloredPixel[0] = 180
+coloredPixel[1] = 30
+coloredPixel[2] = 30
+coloredPixel[3] = 255
+CVPixelBufferUnlockBaseAddress(coloredDetail, [])
+let coloredDetailOutput = OutlineRebuild().apply(coloredDetail, strength: 0.8)
+require(readBGRA(coloredDetailOutput, x: 30, y: 30) == [180, 30, 30, 255],
+        "a protected colored one-pixel source detail must remain unchanged")
+
 // Two nearby parallel outlines are separate contours, not a gap to bridge.
 // This specifically models tight shirt/skin, finger/nail, and similar
 // close-outline geometry.
@@ -151,6 +184,17 @@ let parallelLines = makeOutlineFixture(points: [
 let parallelOutput = OutlineRebuild().apply(parallelLines, strength: 0.5)
 require(readGray(parallelOutput, x: 30, y: 30) == 210,
         "parallel close outlines must not be bridged into a dark seam")
+
+// Repeat the parallel-contour rejection at the two-pixel closing radius.
+let parallelLinesWide = makeOutlineFixture(points: [
+    (29, 26, 20), (29, 27, 20), (29, 28, 20), (29, 29, 20), (29, 30, 20),
+    (29, 31, 20), (29, 32, 20), (29, 33, 20), (29, 34, 20),
+    (31, 26, 20), (31, 27, 20), (31, 28, 20), (31, 29, 20), (31, 30, 20),
+    (31, 31, 20), (31, 32, 20), (31, 33, 20), (31, 34, 20)
+])
+let parallelWideOutput = OutlineRebuild().apply(parallelLinesWide, strength: 0.8)
+require(readGray(parallelWideOutput, x: 30, y: 30) == 210,
+        "parallel close outlines must not be bridged at the two-pixel closing radius")
 
 compare(width: 80, height: 64, colorStrength: 0.45, outlineStrength: 0.5)
 compare(width: 96, height: 64, colorStrength: 0.85, outlineStrength: 0.8)
