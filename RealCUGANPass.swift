@@ -216,15 +216,15 @@ final class RealCUGANPass {
             kCVPixelBufferIOSurfacePropertiesKey as String: [:]
         ])
         output.alwaysCopiesSampleData = false
-        guard reader.canAdd(output) else { throw ProcessorError.reader("cannot attach Real-CUGAN reader") }
+        guard reader.canAdd(output) else { throw ProcessorError.reader("cannot attach the 2× upscaler reader") }
         reader.add(output)
 
         let checkpointRoot = recoveryDirectory ?? FileManager.default.temporaryDirectory
         let freeAtStart = availableDiskSpaceBytes(at: checkpointRoot)
         if let freeAtStart, freeAtStart < 1_500_000_000 {
-            throw ProcessorError.writer("Not enough free storage for the 4K Real-CUGAN pass • \(formatStorageMB(freeAtStart)) MB available • at least 1500 MB required")
+            throw ProcessorError.writer("Not enough free storage for the 2× video upscaler pass • \(formatStorageMB(freeAtStart)) MB available • at least 1500 MB required")
         }
-        DiagnosticsLogger.shared.log("Real-CUGAN storage preflight • free=\(freeAtStart.map(formatStorageMB) ?? "unknown") MB")
+        DiagnosticsLogger.shared.log("Video upscaler storage preflight • free=\(freeAtStart.map(formatStorageMB) ?? "unknown") MB")
         let targetTotalBytes = 950_000_000.0
         let containerReserveBytes = 16_000_000.0
         let usableBits = max((targetTotalBytes - containerReserveBytes) * 8.0, 8_000_000.0)
@@ -239,7 +239,7 @@ final class RealCUGANPass {
             : max(((1_080_000_000.0 - 16_000_000.0) * 8.0 - audioBits) / seconds * 0.96, 500_000.0)
         let videoBitrate = Int(max(500_000.0, min(qualityBitrate, fusedSizeBudget, codecSafetyCeiling)))
         let estimatedTotalMB = ((Double(videoBitrate) + max(finalAudioBitrate, 0)) * seconds / 8.0) / 1_000_000.0
-        DiagnosticsLogger.shared.log("Real-CUGAN bitrate policy • qualityTarget=\(Int(qualityBitrate)) • sizeCeiling=\(Int(sizeBudgetBitrate)) • selected=\(videoBitrate) • estimated=\(String(format: "%.1f", estimatedTotalMB)) MB")
+        DiagnosticsLogger.shared.log("Video upscaler bitrate policy • qualityTarget=\(Int(qualityBitrate)) • sizeCeiling=\(Int(sizeBudgetBitrate)) • selected=\(videoBitrate) • estimated=\(String(format: "%.1f", estimatedTotalMB)) MB")
 
         let compression: [String: Any] = [
             AVVideoAverageBitRateKey: videoBitrate,
@@ -262,8 +262,8 @@ final class RealCUGANPass {
         fusedPolishActive = fusedPolish != nil
         if fusedPolish != nil {
             try fusedPolish?.prepareStream(width: targetWidth, height: targetHeight)
-            DiagnosticsLogger.shared.log("Fused schedule • CUGAN concurrent slots capped at 2 while Sharpie runs • compute units unchanged so the pixels stay on the saved path")
-            DiagnosticsLogger.shared.log("Fused Real-CUGAN + final polish • Sharpie runs on the upscaled frame while the next frame is upscaled • no intermediate 4K file")
+            DiagnosticsLogger.shared.log("Fused schedule • Upscaler concurrent slots capped at 2 while Sharpie runs • compute units unchanged so the pixels stay on the saved path")
+            DiagnosticsLogger.shared.log("Fused 2× upscaler + final polish • Sharpie runs on the upscaled frame while the next frame is upscaled • no intermediate 4K file")
         }
         let checkpoint = try IncrementalVideoCheckpointWriter(
             recoveryDirectory: recoveryDirectory,
@@ -477,8 +477,8 @@ final class RealCUGANPass {
             )
             if notedFrames == 1 || notedFrames % 12 == 0 {
                 DiagnosticsLogger.shared.log(frameLine)
-                DiagnosticsLogger.shared.log(String(format: "CUGAN wait_compute split: sharpie %.1f ms, encode %.1f ms", sharpieWait * 1000, encodeSlotWait * 1000))
-                DiagnosticsLogger.shared.log("CUGAN breakdown rolling • \(rolling)")
+                DiagnosticsLogger.shared.log(String(format: "Upscaler wait_compute split: sharpie %.1f ms, encode %.1f ms", sharpieWait * 1000, encodeSlotWait * 1000))
+                DiagnosticsLogger.shared.log("Upscaler breakdown rolling • \(rolling)")
                 CrashCapture.step(rolling)
             }
             iterationStart = CFAbsoluteTimeGetCurrent()
