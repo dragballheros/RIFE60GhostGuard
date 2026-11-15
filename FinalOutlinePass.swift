@@ -85,9 +85,9 @@ final class FinalOutlinePass {
         self.upscaleRoutePlan = upscaleRoutePlan
     }
 
-    // Use a slightly higher-resolution style map so the Sharpie line expands less
-    // when returned to 4K. Keep the blend strength unchanged so the line stays bold.
-    private let enhancedWeight: CGFloat = 0.82
+    // Broad contours recover the former bold Sharpie contribution. Fine contours
+    // are attenuated per pixel in OutlineEnhancer to retain the current 0.82 width.
+    private let enhancedWeight: CGFloat = CGFloat(AdaptiveOutlineBlend.boldContourWeight)
     private let maxSharpieLongEdge = 3072
 
     func run(
