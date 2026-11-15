@@ -118,6 +118,25 @@ final class OutlineRebuild {
     /// along the same horizontal, vertical, or diagonal direction. This keeps
     /// closing directional and prevents nearby but unrelated strokes from
     /// manufacturing a speck.
+    /// The two brackets must continue outward along the same direction.
+    /// Without this tangent-continuity check, two nearby parallel outlines can
+    /// look like opposite sides of a gap and the pixels between them get bridged.
+    private static func hasDirectionalContinuation(
+        line: UnsafeBufferPointer<UInt8>, x: Int, y: Int,
+        dx: Int, dy: Int, direction: Int,
+        width: Int, height: Int
+    ) -> Bool {
+        for distance in 1...2 {
+            let nx = x + dx * distance * direction
+            let ny = y + dy * distance * direction
+            guard nx >= 0, ny >= 0, nx < width, ny < height else { return false }
+            if line[ny * width + nx] != 0 {
+                return true
+            }
+        }
+        return false
+    }
+
     private static func hasOpposingLineSupport(
         line: UnsafeBufferPointer<UInt8>, x: Int, y: Int,
         width: Int, height: Int, maxDistance: Int
@@ -130,7 +149,11 @@ final class OutlineRebuild {
                 let bx = x + dx * distance
                 let by = y + dy * distance
                 guard ax >= 0, ay >= 0, bx < width, by >= 0, by < height else { continue }
-                if line[ay * width + ax] != 0 && line[by * width + bx] != 0 {
+                if line[ay * width + ax] != 0 && line[by * width + bx] != 0,
+                   hasDirectionalContinuation(line: line, x: ax, y: ay, dx: dx, dy: dy,
+                                              direction: -1, width: width, height: height),
+                   hasDirectionalContinuation(line: line, x: bx, y: by, dx: dx, dy: dy,
+                                              direction: 1, width: width, height: height) {
                     return true
                 }
             }
