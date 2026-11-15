@@ -4,17 +4,12 @@ import CoreVideo
 
 /// Single-frame tiled RealESRGAN_x2plus inference. The model is loaded once per
 /// routed segment and released before the CUGAN backend is reactivated.
-final class RealESRGANFrameProcessor {
+final class RealESRGANFrameProcessor: @unchecked Sendable {
     private let tileSize = 384
     private let overlap = 32
     private let model: MLModel
     private let inputArray: MLMultiArray
-    private let outputArray: MLMultiArray
-    private let predictionOptions: MLPredictionOptions
     private let inputStride: [Int]
-    private let outputStride: [Int]
-    private let inputPlane: Int
-    private let outputPlane: Int
 
     init() throws {
         guard let modelURL = Bundle.main.url(forResource: "RealESRGAN_x2plus_Tile384", withExtension: "mlmodelc") else {
@@ -34,19 +29,8 @@ final class RealESRGANFrameProcessor {
         }
         self.model = loaded
         self.inputArray = try MLMultiArray(shape: inputDescription.shape, dataType: .float32)
-        self.outputArray = try MLMultiArray(shape: outputDescription.shape, dataType: .float32)
         self.inputStride = inputArray.strides.map(\.intValue)
-        self.outputStride = outputArray.strides.map(\.intValue)
-        self.inputPlane = tileSize * tileSize
-        self.outputPlane = tileSize * 2 * tileSize * 2
-        let options = MLPredictionOptions()
-        options.outputBackings = ["output": outputArray]
-        self.predictionOptions = options
         DiagnosticsLogger.shared.log("Real-ESRGAN x2plus loaded • tile=\(tileSize)x\(tileSize) • core=\(tileSize - overlap * 2)x\(tileSize - overlap * 2) • compute=\(configuration.computeUnits.rawValue)")
-    }
-
-    var tilesAcrossEstimate: (Int) -> Int {
-        { width in Int(ceil(Double(width) / Double(self.tileSize - self.overlap * 2))) }
     }
 
     func upscaleFrame(_ source: CVPixelBuffer) throws -> CVPixelBuffer {
@@ -97,7 +81,6 @@ final class RealESRGANFrameProcessor {
         let step = tileSize - overlap * 2
         let sourceStride = CVPixelBufferGetBytesPerRow(source)
         let targetStride = CVPixelBufferGetBytesPerRow(target)
-        var tileCount = 0
         var y = 0
         while y < sourceHeight {
             let coreHeight = min(step, sourceHeight - y)
@@ -121,8 +104,12 @@ final class RealESRGANFrameProcessor {
                 let provider = try MLDictionaryFeatureProvider(dictionary: [
                     "input": MLFeatureValue(multiArray: inputArray)
                 ])
-                _ = try model.prediction(from: provider, options: predictionOptions)
-                unpackOutput(tileOutput)
+                let prediction = try model.prediction(from: provider)
+                guard let output = prediction.featureValue(for: "output")?.multiArrayValue,
+                      output.shape.map(\.intValue) == [1, 3, tileSize * 2, tileSize * 2] else {
+                    throw ProcessorError.conversionFailed("Real-ESRGAN returned an invalid output tensor.")
+                }
+                unpackOutput(output, into: tileOutput)
 
                 RealCUGANTileCopy.stitch(
                     modelOutput: tileOutput,
@@ -137,7 +124,6 @@ final class RealESRGANFrameProcessor {
                     coreHeight: coreHeight,
                     overlap: overlap
                 )
-                tileCount += 1
                 x += step
             }
             y += step
@@ -161,8 +147,9 @@ final class RealESRGANFrameProcessor {
         }
     }
 
-    private func unpackOutput(_ bgra: UnsafeMutablePointer<UInt8>) {
-        let source = outputArray.dataPointer.assumingMemoryBound(to: Float.self)
+    private func unpackOutput(_ output: MLMultiArray, into bgra: UnsafeMutablePointer<UInt8>) {
+        let source = output.dataPointer.assumingMemoryBound(to: Float.self)
+        let outputStride = output.strides.map(\.intValue)
         let width = tileSize * 2
         let height = tileSize * 2
         for y in 0..<height {
