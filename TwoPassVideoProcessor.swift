@@ -708,6 +708,7 @@ final class TwoPassVideoProcessor {
         var transient: [URL] = []
         defer { for url in transient { try? fm.removeItem(at: url) } }
         var combined = PerformanceTelemetry()
+        var outlineUpscaleRoutePlan: VideoUpscalePlan?
         if startIndex < stages.count {
             for index in startIndex..<stages.count {
                 try Task.checkCancellation()
