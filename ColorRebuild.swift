@@ -25,8 +25,18 @@ final class ColorRebuild {
     private var previousCb: [UInt8] = []
     private var previousCr: [UInt8] = []
     private var previousWidth = 0
-    private var previousHeight = 0
     private var hasHistory = false
+
+    /// Drop temporal chroma state when the scene-aware pipeline leaves anime mode.
+    /// Reusing old cel colors after a CGI segment can create a visible cross-scene blend.
+    func resetHistory() {
+        previousLuma.removeAll(keepingCapacity: false)
+        previousCb.removeAll(keepingCapacity: false)
+        previousCr.removeAll(keepingCapacity: false)
+        previousWidth = 0
+        previousHeight = 0
+        hasHistory = false
+    }
 
     func apply(_ source: CVPixelBuffer, strength: Double) -> CVPixelBuffer {
         let amount = min(max(strength, 0), 1)
