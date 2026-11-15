@@ -15,9 +15,9 @@ enum UpscaleModelSelection: String, CaseIterable, Identifiable, Sendable, Equata
     }
     var explanation: String {
         switch self {
-        case .auto: return "Analyzes the clip and routes anime/cel-shaded scenes to Real-CUGAN and realistic CGI/movie scenes to Real-ESRGAN. Mixed clips can use both."
+        case .auto: return "Routes anime/cel-shaded scenes to Real-CUGAN and realistic CGI/movie scenes to Real-ESRGAN. Anime line-art repair and Sharpie run only on Real-CUGAN scenes; CGI scenes keep natural contours."
         case .realCUGAN: return "Uses Real-CUGAN Anime 2× Noise 3 for the entire clip."
-        case .realESRGAN: return "Uses Real-ESRGAN x2plus for the entire clip."
+        case .realESRGAN: return "Uses Real-ESRGAN x2plus for the entire clip and bypasses anime-specific color and outline reconstruction."
         }
     }
 }
@@ -74,6 +74,12 @@ struct VideoUpscalePlan: Sendable {
         return segments.first(where: { time >= $0.startSeconds && time < $0.endSeconds })?.engine
             ?? segments.last?.engine
             ?? .realCUGAN
+    }
+
+    /// Anime-specific color consolidation, line-gap repair, and Sharpie are only
+    /// appropriate on the Real-CUGAN scenes in a scene-aware route.
+    func usesAnimeOutline(at seconds: Double) -> Bool {
+        engine(at: seconds) == .realCUGAN
     }
 
     static func fixed(duration: Double, engine: VideoUpscaleEngine, reason: String) -> VideoUpscalePlan {
