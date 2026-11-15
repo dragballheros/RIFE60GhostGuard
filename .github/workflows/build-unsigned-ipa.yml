@@ -428,6 +428,14 @@ jobs:
           swiftc -swift-version 5 VideoUpscaleTimeline.swift /tmp/upscale-route-check/main.swift -o /tmp/upscale-route-check/check
           /tmp/upscale-route-check/check
 
+      - name: Verify adaptive bold outline width and fine-detail preservation
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/adaptive-outline-check
+          cp Scripts/check_adaptive_outline_blend.swift /tmp/adaptive-outline-check/main.swift
+          swiftc -swift-version 5 AdaptiveOutlineBlend.swift /tmp/adaptive-outline-check/main.swift -o /tmp/adaptive-outline-check/check
+          /tmp/adaptive-outline-check/check
+
       - name: Restore Real-ESRGAN x2plus Core ML cache
         uses: actions/cache@v4
         with:
