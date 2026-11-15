@@ -3,9 +3,12 @@ name: Build Unsigned IPA
 # Fresh IPA delivery rebuild 715 (artifact/release refresh; no app-code changes)
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  # Supersede stale PR and diagnostics-branch builds without cancelling release builds elsewhere.
-  cancel-in-progress: ${{ github.event_name == 'pull_request' || github.ref == 'refs/heads/diagnostics/rife-real-stream-parity-gate' }}
+  # Use the source branch name for both push and pull_request events so they share
+  # one concurrency group instead of building the same commit twice.
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref_name }}
+  # Cancel superseded PR runs and duplicate push/PR runs on this development branch.
+  # Keep main/release builds protected from automatic cancellation.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || github.ref_name == 'cursor/edge-collapse-on-blush-stack-8e49' || github.ref_name == 'diagnostics/rife-real-stream-parity-gate' }}
 
 # Rebuild trigger after reverting mobile compression restoration
 # Color Pop skin-state preservation fix build trigger
@@ -20,7 +23,7 @@ on:
   pull_request:
     branches: [main, feature/wan-vace-ondevice-component-test, feature/wan-vace-iphone-memory-first, diagnostics/rife-real-stream-parity-gate]
   push:
-    branches: [main, feature/wan-vace-iphone-memory-first, feature/minimax-h3-ios-runtime, cursor/rife60-quality-speed-h3-1273, cursor/x265-preset-before-rife-4b45, cursor/pipeline-overlap-final-pass-4b45, integration/h3-vace-720p-ios16, diagnostics/rife-real-stream-parity-gate]
+    branches: [main, feature/wan-vace-iphone-memory-first, feature/minimax-h3-ios-runtime, cursor/rife60-quality-speed-h3-1273, cursor/x265-preset-before-rife-4b45, cursor/pipeline-overlap-final-pass-4b45, cursor/edge-collapse-on-blush-stack-8e49, integration/h3-vace-720p-ios16, diagnostics/rife-real-stream-parity-gate]
 
 permissions:
   contents: write
@@ -616,6 +619,17 @@ jobs:
           cp Scripts/check_localized_color_artifacts.swift /tmp/color-artifact-check/main.swift
           swiftc -swift-version 5 -framework CoreVideo LocalizedColorArtifactGuard.swift /tmp/color-artifact-check/main.swift -o /tmp/color-artifact-check/check
           /tmp/color-artifact-check/check
+
+      - name: Verify thin-line preservation on interpolated frames
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/thin-line-check
+          cp Scripts/check_thin_line_preservation.swift /tmp/thin-line-check/main.swift
+          swiftc -swift-version 5 -framework CoreVideo ThinLinePreservationPass.swift StructuralSceneCut.swift GhostGuard.swift WarpedOutlineGuard.swift StaticRegionLock.swift SmallMotionLineStabilizer.swift SourceFrameOutlierGuard.swift /tmp/thin-line-check/main.swift -o /tmp/thin-line-check/check
+          /tmp/thin-line-check/check
+
+      - name: Verify RIFE endpoint replacement is scene-boundary-only
+        run: python3 Scripts/check_rife_endpoint_fallback_policy.py
 
       - name: Verify persistent mixed media queue and strict serial scheduling
         run: |

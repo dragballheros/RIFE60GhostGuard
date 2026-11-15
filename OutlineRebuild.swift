@@ -97,17 +97,13 @@ final class OutlineRebuild {
                         for x in gap..<(width - gap) {
                             let index = y * width + x
                             if lineBuf[index] == 1 { continue }
-                            var hits = 0
-                            var yy = y - gap
-                            while yy <= y + gap {
-                                var xx = x - gap
-                                while xx <= x + gap {
-                                    if lineBuf[yy * width + xx] == 1 { hits += 1 }
-                                    xx += 1
-                                }
-                                yy += 1
-                            }
-                            if hits >= 3 && Int(lumaBuf[index]) < 190 {
+                            // Close only a real, two-sided contour gap. A
+                            // neighborhood hit count can turn a curved stroke's
+                            // nearby pixels into isolated dark dots.
+                            if Int(lumaBuf[index]) < 250,
+                               hasOpposingLineSupport(line: lineBuf, x: x, y: y,
+                                                      width: width, height: height,
+                                                      maxDistance: gap) {
                                 closedBuf[index] = 1
                             }
                         }
@@ -116,6 +112,53 @@ final class OutlineRebuild {
             }
         }
         return closed
+    }
+
+    /// A candidate gap pixel is admitted only when line pixels bracket it
+    /// along the same horizontal, vertical, or diagonal direction. This keeps
+    /// closing directional and prevents nearby but unrelated strokes from
+    /// manufacturing a speck.
+    /// The two brackets must continue outward along the same direction.
+    /// Without this tangent-continuity check, two nearby parallel outlines can
+    /// look like opposite sides of a gap and the pixels between them get bridged.
+    private static func hasDirectionalContinuation(
+        line: UnsafeBufferPointer<UInt8>, x: Int, y: Int,
+        dx: Int, dy: Int, direction: Int,
+        width: Int, height: Int
+    ) -> Bool {
+        for distance in 1...2 {
+            let nx = x + dx * distance * direction
+            let ny = y + dy * distance * direction
+            guard nx >= 0, ny >= 0, nx < width, ny < height else { return false }
+            if line[ny * width + nx] != 0 {
+                return true
+            }
+        }
+        return false
+    }
+
+    private static func hasOpposingLineSupport(
+        line: UnsafeBufferPointer<UInt8>, x: Int, y: Int,
+        width: Int, height: Int, maxDistance: Int
+    ) -> Bool {
+        let directions: [(Int, Int)] = [(1, 0), (0, 1), (1, 1), (1, -1)]
+        for distance in 1...maxDistance {
+            for (dx, dy) in directions {
+                let ax = x - dx * distance
+                let ay = y - dy * distance
+                let bx = x + dx * distance
+                let by = y + dy * distance
+                guard ax >= 0, ay >= 0, bx < width, by >= 0, by < height else { continue }
+                if line[ay * width + ax] != 0 && line[by * width + bx] != 0,
+                   hasDirectionalContinuation(line: line, x: ax, y: ay, dx: dx, dy: dy,
+                                              direction: -1, width: width, height: height),
+                   hasDirectionalContinuation(line: line, x: bx, y: by, dx: dx, dy: dy,
+                                              direction: 1, width: width, height: height) {
+                    return true
+                }
+            }
+        }
+        return false
     }
 
     private static func paint(
@@ -145,10 +188,12 @@ final class OutlineRebuild {
                 let stats = neighborStats(closed: closedBuf, luma: lumaBuf, x: x, y: y, width: width)
                 let center = Int(lumaBuf[index])
 
-                // Fine source details must bypass both the line-repair and
-                // isolated-speck paths. Otherwise a connected thin line can be
-                // darkened even though it is correctly protected from removal.
-                if (closedBuf[index] == 1 || lineBuf[index] == 1),
+                // Fine-detail protection applies only to pixels that were
+                // already classified as source line art. A newly inferred gap
+                // pixel is not a source stroke: testing its flanks here can
+                // mistake the two ends of a broken contour for a thin detail
+                // and suppress the repair itself.
+                if lineBuf[index] == 1,
                    isProtectedFineDetail(src: src, x: x, y: y, width: width, height: height, srcRow: srcRow) {
                     continue
                 }

@@ -6,6 +6,40 @@ struct GhostGuardResult {
     let reason: String
 }
 
+/// Source-frame substitution is reserved for explicit temporal boundaries.
+/// Artifact/quality rejections must not freeze an in-between to the nearest
+/// source frame, because that creates visible cadence judder.
+enum RIFEEndpointFallbackPolicy {
+    enum Disposition: Equatable {
+        case retainInterpolation
+        case usePreviousSource
+        case useCurrentSource
+    }
+
+    static func disposition(reason: String, progress: Double) -> Disposition {
+        let t = progress.isFinite ? min(max(progress, 0), 1) : 0.5
+        switch reason {
+        case "scene cut / transition discontinuity", "stray frame at scene cut":
+            return t < 0.5 ? .usePreviousSource : .useCurrentSource
+        case "isolated scene-end frame":
+            // The prior source frame is the isolated frame; context agrees
+            // with the current source, so the current endpoint is authoritative.
+            return .useCurrentSource
+        default:
+            return .retainInterpolation
+        }
+    }
+
+    static func endpointFrame(reason: String, progress: Double,
+                              previous: CVPixelBuffer, current: CVPixelBuffer) -> CVPixelBuffer? {
+        switch disposition(reason: reason, progress: progress) {
+        case .usePreviousSource: return previous
+        case .useCurrentSource: return current
+        case .retainInterpolation: return nil
+        }
+    }
+}
+
 struct GhostGuard {
     var sensitivity: Double = 1.35
     var enableSceneCuts: Bool = true
@@ -19,6 +53,7 @@ struct GhostGuard {
         }
 
         let ab = a.meanAbsoluteDifference(to: b)
+        let abColor = a.meanAbsoluteColorDifference(to: b)
 
         // Detect a single anomalous source frame at a scene edge. The prior
         // source frame and the current frame should agree if "previous" is a
@@ -39,7 +74,14 @@ struct GhostGuard {
         // cuts/transitions through and produced one or two visibly mangled
         // in-between frames.  0.20 is still high enough to leave ordinary
         // motion alone while catching those high-discontinuity pairs.
-        if enableSceneCuts && ab > 0.20 / sensitivity {
+        // Luma and RGB MAD still miss two different shots that share a palette.
+        // Edge overlap on a 64×36 grid catches those, including a cross-fade
+        // whose pixels sit halfway between the endpoints.
+        let structure = StructuralSceneCut.assess(
+            previous: previous, next: current, sensitivity: sensitivity, mid: generated
+        )
+        if enableSceneCuts &&
+            (max(ab, abColor) > 0.20 / sensitivity || (structure?.isCut ?? false)) {
             return .init(reject: true, reason: "scene cut / transition discontinuity")
         }
 
@@ -57,9 +99,31 @@ struct GhostGuard {
             return .init(reject: true, reason: "double-edge/ghost energy")
         }
 
+        // A smear between two similar-brightness shots sits halfway in luma, so
+        // the outlier and blend checks accept it, and its line art has melted
+        // into blobs rather than growing the doubled edges rejected above.
+        // Require both endpoints to actually differ and to carry real edges,
+        // then reject only when the midframe falls well below the weaker one.
+        // The factor is capped at 0.8 so a normal RIFE frame, which is only
+        // slightly softer than its sources, still passes.  Higher sensitivity
+        // raises the floor and is stricter.
+        let edgeFloor = min(ea, eb)
+        let collapseFactor = min(0.8, 0.5 * sensitivity)
+        if ab > 0.03 && edgeFloor > 0.01 && em < edgeFloor * collapseFactor {
+            return .init(reject: true, reason: "edge collapse / smeared midframe")
+        }
+
         let blend = a.blendDifference(mid: m, other: b)
         if ab > 0.04 && blend > 0.23 / sensitivity {
             return .init(reject: true, reason: "midframe inconsistency")
+        }
+
+        // Bent or doubled outlines are quality findings, not shot boundaries.
+        // The caller attempts one validated midpoint subdivision. If recovery
+        // cannot improve the result, it retains an interpolated frame rather
+        // than freezing the timestamp to a source endpoint.
+        if WarpedOutlineGuard.rejects(previous: previous, generated: generated, next: current, sensitivity: sensitivity) {
+            return .init(reject: true, reason: "warped/doubled outline")
         }
 
         return .init(reject: false, reason: "ok")
@@ -70,6 +134,7 @@ private struct SampledBuffer {
     let w: Int
     let h: Int
     let luma: [Float]
+    let color: [Float]
 
     init?(buffer: CVPixelBuffer) {
         let format = CVPixelBufferGetPixelFormatType(buffer)
@@ -85,7 +150,9 @@ private struct SampledBuffer {
         let outH = max(1, srcH / step)
         let p = base.assumingMemoryBound(to: UInt8.self)
         var values = [Float]()
+        var colors = [Float]()
         values.reserveCapacity(outW * outH)
+        colors.reserveCapacity(outW * outH * 3)
 
         for y in stride(from: 0, to: srcH, by: step) {
             for x in stride(from: 0, to: srcW, by: step) {
@@ -97,11 +164,13 @@ private struct SampledBuffer {
                     r = Float(p[i]) / 255; g = Float(p[i+1]) / 255; b = Float(p[i+2]) / 255
                 }
                 values.append(0.2126*r + 0.7152*g + 0.0722*b)
+                colors.append(r); colors.append(g); colors.append(b)
             }
         }
         self.w = Int(ceil(Double(srcW) / Double(step)))
         self.h = Int(ceil(Double(srcH) / Double(step)))
         self.luma = values
+        self.color = colors
     }
 
     func meanAbsoluteDifference(to other: SampledBuffer) -> Double {
@@ -109,6 +178,14 @@ private struct SampledBuffer {
         guard n > 0 else { return 0 }
         var s: Float = 0
         for i in 0..<n { s += abs(luma[i] - other.luma[i]) }
+        return Double(s / Float(n))
+    }
+
+    func meanAbsoluteColorDifference(to other: SampledBuffer) -> Double {
+        let n = min(color.count, other.color.count)
+        guard n > 0 else { return 0 }
+        var s: Float = 0
+        for i in 0..<n { s += abs(color[i] - other.color[i]) }
         return Double(s / Float(n))
     }
 

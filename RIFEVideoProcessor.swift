@@ -152,6 +152,7 @@ final class RIFEVideoProcessor {
             : nil
         let compressionGuard = config.compressionProtection ? CompressionGuard() : nil
         let colorArtifactGuard = LocalizedColorArtifactGuard()
+        let thinLinePass = ThinLinePreservationPass(sensitivity: config.ghostSensitivity)
 
         let outlineEnhancer: OutlineEnhancer?
         if config.outlineProtection {
@@ -184,6 +185,8 @@ final class RIFEVideoProcessor {
         var previousPreviousPB: CVPixelBuffer?
         var previousTime = CMTime.zero
         var rejected = 0
+        var endpointFallbacks = 0
+        var interpolationRetainedAfterRecoveryFailure = 0
         var generated = 0
         var cleaned = 0
         var outlined = 0
@@ -306,8 +309,9 @@ final class RIFEVideoProcessor {
             // Large endpoint motion is handled before Ghost Guard can reject a
             // normal RIFE result. A validated midpoint reduces the temporal distance
             // for both requested 60 FPS samples without changing the source cadence.
-            // This is the primary fast-motion path. Endpoint fallback remains the final
-            // safety net only when both direct and reduced-span RIFE inference fail.
+            // This is the primary fast-motion path. Source endpoints are not a generic
+            // artifact fallback: only an explicit scene boundary or isolated scene-end
+            // source frame may replace an in-between. Failed artifact recovery retains RIFE.
             let fastMotionEstimate = fastMotionGuard?.estimateMotion(previous: prevPB, current: currentPB)
             var fastMotionAnchor: CVPixelBuffer?
             if !requestedTimesteps.isEmpty, fastMotionEstimate?.fastMotion == true {
@@ -335,7 +339,10 @@ final class RIFEVideoProcessor {
                         progress: 0.5
                     )
                     if !midpointGuard.reject && !(midpointFast?.reject ?? false) && !midpointColor.isAnomaly {
-                        fastMotionAnchor = try PixelBufferOwnership.copy(midpoint)
+                        let stabilized = thinLinePass.preserve(
+                            previous: prevPB, interpolated: midpoint, next: currentPB, progress: 0.5
+                        ) ?? midpoint
+                        fastMotionAnchor = try PixelBufferOwnership.copy(stabilized)
                         DiagnosticsLogger.shared.log(
                             "Fast-motion RIFE span enabled • motion=\(String(format: "%.3f", fastMotionEstimate?.motionScore ?? 0)) • midpoint validated"
                         )
@@ -452,8 +459,6 @@ final class RIFEVideoProcessor {
             // We now allow at most one midpoint split, and the midpoint itself must pass both
             // guards before it is allowed to become an input to another RIFE inference.
             func motionAwareRetry(t: Double) throws -> CVPixelBuffer? {
-                guard fastMotionGuard != nil else { return nil }
-
                 let midpoint: CVPixelBuffer
                 if let fastMotionAnchor {
                     midpoint = fastMotionAnchor
@@ -479,17 +484,20 @@ final class RIFEVideoProcessor {
                     return nil
                 }
 
-                if abs(t - 0.5) <= 0.001 { return try PixelBufferOwnership.copy(midpoint) }
+                let stabilizedMidpoint = thinLinePass.preserve(
+                    previous: prevPB, interpolated: midpoint, next: currentPB, progress: 0.5
+                ) ?? midpoint
+                if abs(t - 0.5) <= 0.001 { return try PixelBufferOwnership.copy(stabilizedMidpoint) }
 
                 let retryPrevious: CVPixelBuffer
                 let retryCurrent: CVPixelBuffer
                 let retryT: Float
                 if t < 0.5 {
                     retryPrevious = prevPB
-                    retryCurrent = midpoint
+                    retryCurrent = stabilizedMidpoint
                     retryT = Float(min(max(t * 2.0, 0.001), 0.999))
                 } else {
-                    retryPrevious = midpoint
+                    retryPrevious = stabilizedMidpoint
                     retryCurrent = currentPB
                     retryT = Float(min(max((t - 0.5) * 2.0, 0.001), 0.999))
                 }
@@ -557,27 +565,21 @@ final class RIFEVideoProcessor {
                         diagnosticFlagged = diagnosticFlagged || result.reject || result.recoveryRecommended
                     }
 
-                    // During genuine fast motion, a normal RIFE frame can trigger the
-                    // generic temporal-outlier test simply because endpoint displacement
-                    // is large. Do not collapse such a frame to 24 FPS unless the
-                    // fast-motion guard also finds a localized defect. Scene boundaries
-                    // and unresolved color anomalies remain hard failures.
+                    // A scene boundary is the only routine reason to freeze an endpoint.
+                    // Outline/edge findings on ordinary motion first get one validated
+                    // midpoint subdivision. These failures used to replace a 60 FPS
+                    // interpolation with a repeated source frame, producing visible judder.
                     let sceneBoundaryRejected = check.reason == "scene cut / transition discontinuity"
+                        || check.reason == "stray frame at scene cut"
                         || check.reason == "isolated scene-end frame"
-                    existingGuardRejected = unresolvedColorAnomaly || (
-                        check.reject && (!(fastCheck?.fastMotion ?? false) || sceneBoundaryRejected)
-                    )
+                    existingGuardRejected = unresolvedColorAnomaly || check.reject || sceneBoundaryRejected
+                    let outlineQualityRejection = check.reason == "warped/doubled outline"
+                        || check.reason == "edge collapse / smeared midframe"
+                    let shouldAttemptRecovery = existingGuardRejected
+                        || (fastCheck?.reject ?? false)
+                        || (fastCheck?.recoveryRecommended ?? false)
 
-                    // Never recursively interpolate across a detected cut or an
-                    // isolated scene-end source frame. Midpoint recovery can recreate
-                    // the exact A/B warp that the scene guard rejected.
-                    // A fast-motion failure gets a real interpolation retry only
-                    // when the pair is not a scene boundary.
-                    if !sceneBoundaryRejected,
-                       let fastMotionGuard,
-                       let fastCheck,
-                       fastCheck.fastMotion,
-                       (existingGuardRejected || fastCheck.reject || fastCheck.recoveryRecommended),
+                    if !sceneBoundaryRejected, shouldAttemptRecovery,
                        let retry = try motionAwareRetry(t: t) {
                         var retryChosen = retry
                         let retryColorInspection = colorArtifactGuard.inspect(
@@ -599,51 +601,141 @@ final class RIFEVideoProcessor {
                         let retryGuard = autoreleasepool {
                             guarder.inspect(previous: prevPB, generated: retryChosen, current: currentPB, previousContext: previousPreviousPB)
                         }
-                        let retryFastGuard = fastMotionGuard.inspect(
+                        let retryFastGuard = fastMotionGuard?.inspect(
                             previous: prevPB,
                             generated: retryChosen,
                             current: currentPB
                         )
+                        let retryHasSoftOutlineIssue = retryGuard.reason == "warped/doubled outline"
+                            || retryGuard.reason == "edge collapse / smeared midframe"
+                        let retrySceneBoundary = retryGuard.reason == "scene cut / transition discontinuity"
+                            || retryGuard.reason == "stray frame at scene cut"
+                            || retryGuard.reason == "isolated scene-end frame"
 
-                        if !retryGuard.reject && !retryFastGuard.reject && !retryColorStillInvalid {
+                        if !retryColorStillInvalid,
+                           !(retryFastGuard?.reject ?? false),
+                           (!retryGuard.reject || retryHasSoftOutlineIssue) {
                             chosen = retryChosen
+                            if retryGuard.reject {
+                                DiagnosticsLogger.shared.log(
+                                    "RIFE midpoint recovery retained smooth outline interpolation • reason=\(retryGuard.reason) • t=\(String(format: "%.3f", t))"
+                                )
+                            } else {
+                                DiagnosticsLogger.shared.log(
+                                    "RIFE midpoint recovery accepted • t=\(String(format: "%.3f", t))"
+                                )
+                            }
+                        } else if outlineQualityRejection &&
+                                  !retryColorStillInvalid &&
+                                  !unresolvedColorAnomaly &&
+                                  !(retryFastGuard?.reject ?? false) &&
+                                  !(fastCheck?.reject ?? false) &&
+                                  !retrySceneBoundary {
+                            // Keep the color-checked original interpolation if the
+                            // one-level retry is still flagged only for outline shape.
                             DiagnosticsLogger.shared.log(
-                                "Fast-motion Ghost Guard recovered • motion=\(String(format: "%.3f", fastCheck.motionScore)) • originalArtifact=\(String(format: "%.3f", fastCheck.artifactScore)) • t=\(String(format: "%.3f", t))"
-                            )
-                        } else {
-                            rejected += 1
-                            chosen = t < 0.5 ? prevPB : currentPB
-                            DiagnosticsLogger.shared.log(
-                                "Fast-motion Ghost Guard final fallback • motion=\(String(format: "%.3f", fastCheck.motionScore)) • artifact=\(String(format: "%.3f", fastCheck.artifactScore)) • t=\(String(format: "%.3f", t))"
+                                "Outline guard soft fallback retained RIFE interpolation • t=\(String(format: "%.3f", t))"
                             )
                             PipelineStageTimer.recordRejection(
                                 seconds: CMTimeGetSeconds(requestedTimes[index]),
-                                reason: "Fast-motion Ghost Guard final fallback • motion=\(String(format: "%.3f", fastCheck.motionScore)) • artifact=\(String(format: "%.3f", fastCheck.artifactScore))",
-                                disposition: "replaced"
+                                reason: check.reason,
+                                disposition: "retained-rife"
                             )
-                        }
-                    } else if existingGuardRejected || (fastCheck?.reject ?? false) {
-                        // Hard failures preserve the timestamp without blending.
-                        // If the previous source frame is an isolated endpoint, use
-                        // the current frame, which matched the prior scene context.
-                        rejected += 1
-                        let rejectionReason = check.reason == "ok" ? (fastCheck?.reject == true ? "fast-motion artifact" : "guard rejected") : check.reason
-                        if check.reason == "isolated scene-end frame" {
-                            chosen = currentPB
-                            DiagnosticsLogger.shared.log("Ghost Guard fallback • isolated scene-end source frame replaced • t=\(String(format: "%.3f", t))")
                         } else {
-                            chosen = t < 0.5 ? prevPB : currentPB
-                            if sceneBoundaryRejected {
-                                DiagnosticsLogger.shared.log("Ghost Guard fallback • scene boundary protected, recursive retry skipped • t=\(String(format: "%.3f", t))")
+                            rejected += 1
+                            if let endpoint = RIFEEndpointFallbackPolicy.endpointFrame(
+                                reason: check.reason,
+                                progress: t,
+                                previous: prevPB,
+                                current: currentPB
+                            ) {
+                                chosen = endpoint
+                                endpointFallbacks += 1
+                                DiagnosticsLogger.shared.log(
+                                    "RIFE scene-boundary endpoint selected after failed recovery • reason=\(check.reason) • t=\(String(format: "%.3f", t))"
+                                )
+                                PipelineStageTimer.recordRejection(
+                                    seconds: CMTimeGetSeconds(requestedTimes[index]),
+                                    reason: check.reason,
+                                    disposition: "scene-boundary-endpoint"
+                                )
+                            } else {
+                                interpolationRetainedAfterRecoveryFailure += 1
+                                let rejectionReason = check.reason == "ok"
+                                    ? (unresolvedColorAnomaly ? "localized color anomaly" : "fast-motion recovery")
+                                    : check.reason
+                                DiagnosticsLogger.shared.log(
+                                    "RIFE recovery did not produce a safe improvement • retained interpolated frame • reason=\(rejectionReason) • motion=\(String(format: "%.3f", fastCheck?.motionScore ?? 0)) • artifact=\(String(format: "%.3f", fastCheck?.artifactScore ?? 0)) • t=\(String(format: "%.3f", t))"
+                                )
+                                PipelineStageTimer.recordRejection(
+                                    seconds: CMTimeGetSeconds(requestedTimes[index]),
+                                    reason: rejectionReason,
+                                    disposition: "retained-rife"
+                                )
                             }
                         }
-                        PipelineStageTimer.recordRejection(
-                            seconds: CMTimeGetSeconds(requestedTimes[index]),
-                            reason: rejectionReason,
-                            disposition: "replaced"
-                        )
+                    } else if existingGuardRejected || (fastCheck?.reject ?? false) {
+                        if outlineQualityRejection &&
+                           !unresolvedColorAnomaly &&
+                           !(fastCheck?.reject ?? false) {
+                            // Keep the original candidate, including any localized color repair.
+                            DiagnosticsLogger.shared.log(
+                                "Outline guard soft fallback retained RIFE interpolation • retry unavailable • t=\(String(format: "%.3f", t))"
+                            )
+                            PipelineStageTimer.recordRejection(
+                                seconds: CMTimeGetSeconds(requestedTimes[index]),
+                                reason: check.reason,
+                                disposition: "retained-rife"
+                            )
+                        } else {
+                            rejected += 1
+                            if let endpoint = RIFEEndpointFallbackPolicy.endpointFrame(
+                                reason: check.reason,
+                                progress: t,
+                                previous: prevPB,
+                                current: currentPB
+                            ) {
+                                chosen = endpoint
+                                endpointFallbacks += 1
+                                DiagnosticsLogger.shared.log(
+                                    "Ghost Guard scene-boundary endpoint selected • reason=\(check.reason) • t=\(String(format: "%.3f", t))"
+                                )
+                                PipelineStageTimer.recordRejection(
+                                    seconds: CMTimeGetSeconds(requestedTimes[index]),
+                                    reason: check.reason,
+                                    disposition: "scene-boundary-endpoint"
+                                )
+                            } else {
+                                interpolationRetainedAfterRecoveryFailure += 1
+                                let rejectionReason = check.reason == "ok"
+                                    ? (unresolvedColorAnomaly ? "localized color anomaly" : "fast-motion artifact rejection")
+                                    : check.reason
+                                DiagnosticsLogger.shared.log(
+                                    "Ghost Guard quality rejection • retained interpolated frame • reason=\(rejectionReason) • t=\(String(format: "%.3f", t))"
+                                )
+                                PipelineStageTimer.recordRejection(
+                                    seconds: CMTimeGetSeconds(requestedTimes[index]),
+                                    reason: rejectionReason,
+                                    disposition: "retained-rife"
+                                )
+                            }
+                        }
                     }
                 }
+
+                // Keep outline repair deliberately conservative: restore only thin
+                // strokes independently confirmed at the same coordinates in both
+                // source frames. Do not stack temporal reconstruction passes that
+                // can change contour position or intensity between adjacent outputs.
+                let lineStarted = CFAbsoluteTimeGetCurrent()
+                let replacedWithEndpoint = chosen === prevPB || chosen === currentPB
+                if !replacedWithEndpoint,
+                   let restored = thinLinePass.preserve(
+                       previous: prevPB, interpolated: chosen, next: currentPB, progress: t
+                   ) {
+                    chosen = restored
+                }
+                ghostSeconds += CFAbsoluteTimeGetCurrent() - lineStarted
 
                 if diagnosticFlagged {
                     BrokenTileDiagnostics.shared.inspect(synth, stage: "04-rife-raw-generated", frame: diagnosticFrame, seconds: diagnosticTime, force: true)
@@ -679,6 +771,9 @@ final class RIFEVideoProcessor {
         }
 
         emitTelemetry()
+        DiagnosticsLogger.shared.log(
+            "RIFE frame disposition summary • detected rejections=\(rejected) • scene-boundary endpoint fallbacks=\(endpointFallbacks) • interpolations retained after recovery failure=\(interpolationRetainedAfterRecoveryFailure)"
+        )
 
         if reader.status == .failed {
             throw ProcessorError.reader(reader.error?.localizedDescription ?? "decode failed")
