@@ -308,11 +308,42 @@ struct ContentView: View {
                                 .disabled(vm.queueLocked || vm.isBusy || vm.isBenchmarking || !vm.upscaleTo4K)
                             Text("Upscales original frames, then runs RIFE at 2× resolution. The look changes slightly and 4K RIFE is heavier. RIFE reduces band size under memory pressure; total speedup is not guaranteed.").font(.caption).foregroundStyle(.secondary)
                         }
-                        LabeledContent("Model", value: "Real-CUGAN – Anime")
+                        if vm.inputKind == .video {
+                            VStack(alignment: .leading, spacing: 7) {
+                                Text("Video upscaler").font(.subheadline.weight(.semibold))
+                                ForEach(UpscaleModelSelection.allCases) { option in
+                                    Button {
+                                        guard !vm.queueLocked && !vm.isBusy && !vm.isBenchmarking else { return }
+                                        vm.upscaleModelSelection = option
+                                    } label: {
+                                        HStack(spacing: 12) {
+                                            Text(option.title).foregroundStyle(.primary)
+                                            Spacer(minLength: 8)
+                                            Image(systemName: vm.upscaleModelSelection == option ? "checkmark.circle.fill" : "circle")
+                                                .foregroundStyle(vm.upscaleModelSelection == option ? Color.accentColor : Color.secondary)
+                                        }
+                                        .contentShape(Rectangle())
+                                        .padding(.vertical, 7)
+                                    }
+                                    .buttonStyle(.plain)
+                                    .disabled(vm.queueLocked || vm.isBusy || vm.isBenchmarking || !vm.upscaleTo4K)
+                                    .accessibilityAddTraits(vm.upscaleModelSelection == option ? .isSelected : [])
+                                }
+                            }
+                            Text(vm.upscaleModelSelection.explanation)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        } else {
+                            LabeledContent("Model", value: "Real-CUGAN – Anime")
+                            LabeledContent("Noise", value: "Level 3")
+                            LabeledContent("Intensity", value: "1.30")
+                        }
                         LabeledContent("Upscale", value: "2× source resolution")
-                        LabeledContent("Noise", value: "Level 3")
-                        LabeledContent("Intensity", value: "1.30")
-                        Text("Runs after RIFE and before the final Sharpie pass. Real-CUGAN processes overlapping tiles and stitches them back to exactly 2× the original source dimensions without converting the source to 1080p first.").font(.caption).foregroundStyle(.secondary)
+                        Text(vm.inputKind == .video
+                            ? "The selected 2× backend runs after RIFE and before the final Sharpie pass. Auto analyzes visual scenes and can switch between models only after a stable scene change. Both backends use overlapping tiles and stitch to the exact 2× source dimensions."
+                            : "Real-CUGAN processes overlapping tiles and stitches them back to exactly 2× the original source dimensions without converting the source to 1080p first.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                     }
 
                     if vm.inputKind == .video {
