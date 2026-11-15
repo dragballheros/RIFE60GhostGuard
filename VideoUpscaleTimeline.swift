@@ -85,7 +85,8 @@ struct VideoUpscalePlan: Sendable {
         guard let segment = segments.first(where: { time >= $0.startSeconds && time < $0.endSeconds }) ?? segments.last else {
             return false
         }
-        return segment.engine == .realCUGAN && segment.confidence >= 0.54
+        let hasClassificationFallback = segment.reason.lowercased().contains("fallback")
+        return segment.engine == .realCUGAN && segment.confidence >= 0.54 && !hasClassificationFallback
     }
 
     static func fixed(duration: Double, engine: VideoUpscaleEngine, reason: String) -> VideoUpscalePlan {
