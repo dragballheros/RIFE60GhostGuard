@@ -76,8 +76,15 @@ final class RealESRGANFrameProcessor: @unchecked Sendable {
             throw ProcessorError.conversionFailed("Could not allocate a Real-ESRGAN 2× output frame from its pool.")
         }
 
-        CVPixelBufferLockBaseAddress(source, .readOnly)
-        CVPixelBufferLockBaseAddress(target, [])
+        let sourceLock = CVPixelBufferLockBaseAddress(source, .readOnly)
+        guard sourceLock == kCVReturnSuccess else {
+            throw ProcessorError.conversionFailed("Could not lock the Real-ESRGAN source frame.")
+        }
+        let targetLock = CVPixelBufferLockBaseAddress(target, [])
+        guard targetLock == kCVReturnSuccess else {
+            CVPixelBufferUnlockBaseAddress(source, .readOnly)
+            throw ProcessorError.conversionFailed("Could not lock the Real-ESRGAN destination frame.")
+        }
         defer {
             CVPixelBufferUnlockBaseAddress(target, [])
             CVPixelBufferUnlockBaseAddress(source, .readOnly)
@@ -109,14 +116,17 @@ final class RealESRGANFrameProcessor: @unchecked Sendable {
                     tileWidth: tileSize,
                     tileHeight: tileSize
                 )
-                packInput(tileInput)
-                let provider = try MLDictionaryFeatureProvider(dictionary: [
-                    "input": MLFeatureValue(multiArray: inputArray)
-                ])
-                let prediction = try model.prediction(from: provider)
-                guard let output = prediction.featureValue(for: "output")?.multiArrayValue,
-                      output.shape.map(\.intValue) == [1, 3, tileSize * 2, tileSize * 2] else {
-                    throw ProcessorError.conversionFailed("Real-ESRGAN returned an invalid output tensor.")
+                let output = try autoreleasepool { () throws -> MLMultiArray in
+                    packInput(tileInput)
+                    let provider = try MLDictionaryFeatureProvider(dictionary: [
+                        "input": MLFeatureValue(multiArray: inputArray)
+                    ])
+                    let prediction = try model.prediction(from: provider)
+                    guard let result = prediction.featureValue(for: "output")?.multiArrayValue,
+                          result.shape.map(\.intValue) == [1, 3, tileSize * 2, tileSize * 2] else {
+                        throw ProcessorError.conversionFailed("Real-ESRGAN returned an invalid output tensor.")
+                    }
+                    return result
                 }
                 unpackOutput(output, into: tileOutput)
 
