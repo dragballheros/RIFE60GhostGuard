@@ -372,10 +372,51 @@ final class OutlineEnhancer {
                 let modelDelta = sourceDelta / 3.0
                 guard modelDelta > 0.012 else { continue }
 
+                // Reject isolated model additions before the adaptive width decision.
+                // A one-pixel or two-pixel response is a classic source of moving
+                // dots: RIFE changes the local pixel values slightly from frame to
+                // frame, and a per-pixel Sharpie blend can then turn that tiny change
+                // into a visible flicker. Real line art has directional neighbors.
+                @inline(__always) func modelActivity(_ nx: Int, _ ny: Int) -> Double {
+                    let ni = ny * srcRow + nx * 4
+                    let ndr = Double(dst[ni + drOff]) / 255.0
+                    let ndg = Double(dst[ni + 1]) / 255.0
+                    let ndb = Double(dst[ni + dbOff]) / 255.0
+                    return (abs(ndr - Double(src[ni + rOff]) / 255.0)
+                        + abs(ndg - Double(src[ni + 1]) / 255.0)
+                        + abs(ndb - Double(src[ni + bOff]) / 255.0)) / 3.0
+                }
+
+                var supported = 0
+                let neighborThreshold = 0.010
+                if x > 1 && modelActivity(x - 1, y) > neighborThreshold { supported += 1 }
+                if x + 2 < width && modelActivity(x + 1, y) > neighborThreshold { supported += 1 }
+                if y > 1 && modelActivity(x, y - 1) > neighborThreshold { supported += 1 }
+                if y + 2 < height && modelActivity(x, y + 1) > neighborThreshold { supported += 1 }
+
+                // Diagonal support catches slanted anime contours without allowing
+                // nearby unrelated pixels to manufacture a connection.
+                if supported == 0 {
+                    if x > 1 && y > 1 && modelActivity(x - 1, y - 1) > neighborThreshold { supported += 1 }
+                    if x + 2 < width && y + 2 < height && modelActivity(x + 1, y + 1) > neighborThreshold { supported += 1 }
+                    if x > 1 && y + 2 < height && modelActivity(x - 1, y + 1) > neighborThreshold { supported += 1 }
+                    if x + 2 < width && y > 1 && modelActivity(x + 1, y - 1) > neighborThreshold { supported += 1 }
+                }
+
+                // Keep connected contours intact, but attenuate a single supported
+                // pixel. This removes isolated dots without deleting genuine narrow
+                // strokes such as fingernails or lashes.
+                let coherence: Double
+                switch supported {
+                case 0: coherence = 0.0
+                case 1: coherence = 0.42
+                default: coherence = 1.0
+                }
+
                 // Estimate source contour width continuously. Thin source strokes
                 // retain the current 0.82 model contribution; broad, continuous
-                // contours recover 0.94. Avoid a hard copy-through threshold because
-                // it can make fingernails and other tiny contours appear fragmented.
+                // contours recover 0.94. The width choice is still local, but only
+                // after spatial coherence has established that this is a real line.
                 let narrowDetail = narrowDetailStrength(x, y)
                 let adaptiveWidthScale = AdaptiveOutlineBlend.modelAmountScale(
                     narrowDetailStrength: narrowDetail
