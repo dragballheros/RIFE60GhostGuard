@@ -23,7 +23,7 @@ on:
   pull_request:
     branches: [main, feature/wan-vace-ondevice-component-test, feature/wan-vace-iphone-memory-first, diagnostics/rife-real-stream-parity-gate]
   push:
-    branches: [main, feature/wan-vace-iphone-memory-first, feature/minimax-h3-ios-runtime, cursor/rife60-quality-speed-h3-1273, cursor/x265-preset-before-rife-4b45, cursor/pipeline-overlap-final-pass-4b45, cursor/edge-collapse-on-blush-stack-8e49, integration/h3-vace-720p-ios16, diagnostics/rife-real-stream-parity-gate]
+    branches: [main, feature/wan-vace-iphone-memory-first, feature/minimax-h3-ios-runtime, feature/auto-cugan-esrgan-router, cursor/rife60-quality-speed-h3-1273, cursor/x265-preset-before-rife-4b45, cursor/pipeline-overlap-final-pass-4b45, cursor/edge-collapse-on-blush-stack-8e49, integration/h3-vace-720p-ios16, diagnostics/rife-real-stream-parity-gate]
 
 permissions:
   contents: write
@@ -419,6 +419,31 @@ jobs:
           if [ ! -d CompiledModels/RealCUGAN2xNoise3_Tile704x608.mlmodelc ]; then xcrun coremlcompiler compile Models/RealCUGAN2xNoise3_Tile704x608.mlpackage CompiledModels; fi
           test -d CompiledModels/RealCUGAN2xNoise3_Tile512.mlmodelc
           test -d CompiledModels/RealCUGAN2xNoise3_Tile704x608.mlmodelc
+
+      - name: Restore Real-ESRGAN x2plus Core ML cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            Models/RealESRGAN_x2plus_Tile384.mlpackage
+            CompiledModels/RealESRGAN_x2plus_Tile384.mlmodelc
+          key: real-esrgan-x2plus-384-fp16-ios16-v1
+
+      - name: Prepare and compile Real-ESRGAN x2plus for iPhone
+        timeout-minutes: 90
+        run: |
+          set -euo pipefail
+          mkdir -p Models CompiledModels
+          if [ ! -f Models/RealESRGAN_x2plus_Tile384.mlpackage/Manifest.json ]; then
+            python3 -m pip install --upgrade pip
+            python3 -m pip install 'torch==2.5.0' 'coremltools==8.3' 'numpy==1.26.4'
+            REALESRGAN_OUT=Models/RealESRGAN_x2plus_Tile384.mlpackage REALESRGAN_TILE_SIZE=384 python3 Scripts/export_realesrgan_x2plus.py
+          fi
+          test -f Models/RealESRGAN_x2plus_Tile384.mlpackage/Manifest.json
+          if [ ! -d CompiledModels/RealESRGAN_x2plus_Tile384.mlmodelc ]; then
+            xcrun coremlcompiler compile Models/RealESRGAN_x2plus_Tile384.mlpackage CompiledModels
+          fi
+          test -d CompiledModels/RealESRGAN_x2plus_Tile384.mlmodelc
+          echo "Real-ESRGAN x2plus model is compiled for on-device iOS inference"
 
       - name: Restore anime inpainting model cache
         uses: actions/cache@v4
@@ -906,9 +931,11 @@ jobs:
           cp -R Models/AnimeSharpieOutlineSubtle_Tile1024.mlpackage Payload/RIFE60GhostGuard.app/
           cp -R CompiledModels/RealCUGAN2xNoise3_Tile512.mlmodelc Payload/RIFE60GhostGuard.app/
           cp -R CompiledModels/RealCUGAN2xNoise3_Tile704x608.mlmodelc Payload/RIFE60GhostGuard.app/
+          cp -R CompiledModels/RealESRGAN_x2plus_Tile384.mlmodelc Payload/RIFE60GhostGuard.app/
           cp -R CompiledModels/AnimeWatermarkLaMa512.mlmodelc Payload/RIFE60GhostGuard.app/
           cp ThirdPartyNotices-AnimeWatermark.md Payload/RIFE60GhostGuard.app/
           cp Licenses/LaMa-Apache-2.0.txt Payload/RIFE60GhostGuard.app/
+          cp Licenses/Real-ESRGAN-BSD-3-Clause.txt Payload/RIFE60GhostGuard.app/
           test -d Payload/RIFE60GhostGuard.app/AnimeWatermarkLaMa512.mlmodelc
           test -f Payload/RIFE60GhostGuard.app/AnimeSharpieOutlineSubtle.mlpackage/Manifest.json
           test -f Payload/RIFE60GhostGuard.app/AnimeSharpieOutlineSubtle_Tile768.mlpackage/Manifest.json
@@ -928,6 +955,8 @@ jobs:
           test -s "$SHARPIE_WEIGHT"
           test -d Payload/RIFE60GhostGuard.app/RealCUGAN2xNoise3_Tile512.mlmodelc
           test -d Payload/RIFE60GhostGuard.app/RealCUGAN2xNoise3_Tile704x608.mlmodelc
+          test -d Payload/RIFE60GhostGuard.app/RealESRGAN_x2plus_Tile384.mlmodelc
+          test -s Payload/RIFE60GhostGuard.app/Real-ESRGAN-BSD-3-Clause.txt
           zip -qry RIFE60GhostGuard-verified-unsigned.ipa Payload
           unzip -t RIFE60GhostGuard-verified-unsigned.ipa >/dev/null
 
