@@ -19,9 +19,9 @@ private final class SharpieJob: @unchecked Sendable {
     }
 }
 
-/// Final visual polish after Real-CUGAN. The 4K CUGAN frame remains the master.
-/// Deep-shadow chroma noise is cleaned first, then Sharpie is generated from that
-/// cleaned master, then only the light final compression polish is allowed after it.
+/// Final visual polish after the selected upscaler. Anime line-art operations follow
+/// the shared scene route; realistic CGI keeps its native contours. Shadow cleanup
+/// and final compression remain active in both profiles.
 final class FinalOutlinePass {
     private var transferSession: VTPixelTransferSession?
     private let ciContext = FinalOutlinePass.sharedContext
@@ -48,6 +48,7 @@ final class FinalOutlinePass {
     private var streamWorkingWidth = 0
     private var streamWorkingHeight = 0
     private var streamScale = 1.0
+    private var previousAnimeOutlineProfile: Bool?
 
     struct PolishSplit {
         var shadowSeconds = 0.0
@@ -108,8 +109,8 @@ final class FinalOutlinePass {
         let scale = min(1.0, Double(maxSharpieLongEdge) / Double(max(width, height)))
         let workingWidth = max(2, Int((Double(width) * scale / 2.0).rounded() * 2.0))
         let workingHeight = max(2, Int((Double(height) * scale / 2.0).rounded() * 2.0))
-        DiagnosticsLogger.shared.log("Final visual pass entered • 4K master=\(width)x\(height) • Shadow Chroma → Sharpie → Final Compression • Sharpie style map=\(workingWidth)x\(workingHeight) • thermal=\(currentThermalStateName())")
-        progress(0.001, "Final polish • Shadow cleanup → Sharpie → Compression Guard…")
+        DiagnosticsLogger.shared.log("Final visual pass entered • 4K master=\(width)x\(height) • Shadow Chroma → Scene-aware Outline Profile → Final Compression • style map=\(workingWidth)x\(workingHeight) • thermal=\(currentThermalStateName())")
+        progress(0.001, "Final polish • Shadow cleanup → Scene-aware outline profile → Compression Guard…")
 
         if let upscaleRoutePlan {
             let route = upscaleRoutePlan.segments.map { "\($0.engine.displayName) \(String(format: "%.2f", $0.startSeconds))–\(String(format: "%.2f", $0.endSeconds))s" }.joined(separator: " | ")
@@ -300,7 +301,7 @@ final class FinalOutlinePass {
         return completedURL
     }
 
-    /// Loads Sharpie once. Video `run` and the fused CUGAN stream both call this.
+    /// Loads the anime Sharpie model only when the route contains CUGAN scenes.
     func prepareStream(width: Int, height: Int) throws {
         let scale = min(1.0, Double(maxSharpieLongEdge) / Double(max(width, height)))
         let workingWidth = max(2, Int((Double(width) * scale / 2.0).rounded() * 2.0))
@@ -310,24 +311,30 @@ final class FinalOutlinePass {
         streamHeight = height
         streamWorkingWidth = workingWidth
         streamWorkingHeight = workingHeight
+        previousAnimeOutlineProfile = nil
         let hasAnimeScenes = upscaleRoutePlan?.segments.contains(where: { $0.engine == .realCUGAN }) ?? true
         streamEnhancer = sharpen && hasAnimeScenes ? try autoreleasepool { try OutlineEnhancer(computeUnits: sharpieUnits) } : nil
         try preparePools(fullWidth: width, fullHeight: height, workingWidth: workingWidth, workingHeight: workingHeight)
     }
 
-    /// Shadow chroma, optional rebuild, Sharpie, then light compression. Same order as the file pass.
+    /// Shadow chroma, scene-appropriate reconstruction, optional Sharpie, then light compression.
     func polishPrepared(_ decoded: CVPixelBuffer, at time: CMTime = .zero) throws -> PolishSplit {
         var split = try prepareCPUPrefix(decoded, at: time)
         try finishSharpie(&split, compression: streamCompression)
         return split
     }
 
-    /// Shadow chroma, then color rebuild, then outline rebuild. Stays on the caller
+    /// Shadow chroma, then scene-appropriate color and outline reconstruction. Stays on the caller
     /// thread so the previous-frame chroma history stays in order. Safe to run while
     /// Sharpie of the previous frame uses the Neural Engine.
     private func prepareCPUPrefix(_ decoded: CVPixelBuffer, at time: CMTime) throws -> PolishSplit {
         var split = PolishSplit()
         let usesAnimeOutline = upscaleRoutePlan?.usesAnimeOutline(at: CMTimeGetSeconds(time)) ?? true
+        if let previousAnimeOutlineProfile, previousAnimeOutlineProfile != usesAnimeOutline {
+            streamColorRebuild.resetHistory()
+            DiagnosticsLogger.shared.log("Final outline profile transition • \(usesAnimeOutline ? "Anime line-art repair + Sharpie" : "Natural CGI contour preservation") • temporal Color Rebuild history reset")
+        }
+        previousAnimeOutlineProfile = usesAnimeOutline
         split.usesAnimeOutline = usesAnimeOutline
         let shadowStart = CFAbsoluteTimeGetCurrent()
         let preSharpie: CVPixelBuffer
@@ -354,7 +361,7 @@ final class FinalOutlinePass {
         return split
     }
 
-    /// Sharpie, then the light final compression. Uses its own CompressionGuard when
+    /// Optional Sharpie, then light final compression. Uses its own CompressionGuard when
     /// the video pass overlaps it with the next frame's shadow cleanup.
     private func finishSharpie(_ split: inout PolishSplit, compression: CompressionGuard) throws {
         guard let rebuilt = split.buffer else {
