@@ -8,7 +8,7 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.ref_name }}
   # Cancel superseded PR runs and duplicate push/PR runs on this development branch.
   # Keep main/release builds protected from automatic cancellation.
-  cancel-in-progress: ${{ github.event_name == 'pull_request' || github.ref_name == 'feature/auto-cugan-esrgan-router' || github.ref_name == 'cursor/edge-collapse-on-blush-stack-8e49' || github.ref_name == 'diagnostics/rife-real-stream-parity-gate' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || github.ref_name == 'feature/auto-cugan-esrgan-router' || github.ref_name == 'feature/scene-aware-outline-routing' || github.ref_name == 'cursor/edge-collapse-on-blush-stack-8e49' || github.ref_name == 'diagnostics/rife-real-stream-parity-gate' }}
 
 # Rebuild trigger after reverting mobile compression restoration
 # Color Pop skin-state preservation fix build trigger
@@ -23,7 +23,7 @@ on:
   pull_request:
     branches: [main, feature/wan-vace-ondevice-component-test, feature/wan-vace-iphone-memory-first, diagnostics/rife-real-stream-parity-gate]
   push:
-    branches: [main, feature/wan-vace-iphone-memory-first, feature/minimax-h3-ios-runtime, feature/auto-cugan-esrgan-router, cursor/rife60-quality-speed-h3-1273, cursor/x265-preset-before-rife-4b45, cursor/pipeline-overlap-final-pass-4b45, cursor/edge-collapse-on-blush-stack-8e49, integration/h3-vace-720p-ios16, diagnostics/rife-real-stream-parity-gate]
+    branches: [main, feature/wan-vace-iphone-memory-first, feature/minimax-h3-ios-runtime, feature/auto-cugan-esrgan-router, feature/scene-aware-outline-routing, cursor/rife60-quality-speed-h3-1273, cursor/x265-preset-before-rife-4b45, cursor/pipeline-overlap-final-pass-4b45, cursor/edge-collapse-on-blush-stack-8e49, integration/h3-vace-720p-ios16, diagnostics/rife-real-stream-parity-gate]
 
 permissions:
   contents: write
@@ -420,7 +420,7 @@ jobs:
           test -d CompiledModels/RealCUGAN2xNoise3_Tile512.mlmodelc
           test -d CompiledModels/RealCUGAN2xNoise3_Tile704x608.mlmodelc
 
-      - name: Verify scene-aware upscaler timeline and anti-flicker rules
+      - name: Verify scene-aware upscaler, outline policy, and anti-flicker rules
         run: |
           set -euo pipefail
           mkdir -p /tmp/upscale-route-check
