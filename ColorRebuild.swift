@@ -25,6 +25,7 @@ final class ColorRebuild {
     private var previousCb: [UInt8] = []
     private var previousCr: [UInt8] = []
     private var previousWidth = 0
+    private var previousHeight = 0
     private var hasHistory = false
 
     /// Drop temporal chroma state when the scene-aware pipeline leaves anime mode.
