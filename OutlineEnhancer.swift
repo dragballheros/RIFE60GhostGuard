@@ -372,16 +372,14 @@ final class OutlineEnhancer {
                 let modelDelta = sourceDelta / 3.0
                 guard modelDelta > 0.012 else { continue }
 
-                // Do not let Sharpie redraw a one-to-few-pixel source stroke.
-                // Matching flanks indicate a narrow contour, including colored
-                // blush marks whose luma gradient may be weak.
+                // Estimate source contour width continuously. Thin source strokes
+                // retain the current 0.82 model contribution; broad, continuous
+                // contours recover 0.94. Avoid a hard copy-through threshold because
+                // it can make fingernails and other tiny contours appear fragmented.
                 let narrowDetail = narrowDetailStrength(x, y)
-                if narrowDetail >= 0.52 {
-                    dst[di + drOff] = src[i + rOff]
-                    dst[di + 1] = src[i + 1]
-                    dst[di + dbOff] = src[i + bOff]
-                    continue
-                }
+                let adaptiveWidthScale = AdaptiveOutlineBlend.modelAmountScale(
+                    narrowDetailStrength: narrowDetail
+                )
 
                 // Isotropic Sobel magnitude avoids the axis bias of max(gx, gy).
                 // Diagonal contours now receive the same structural confidence as
@@ -432,7 +430,7 @@ final class OutlineEnhancer {
                 // The model's enhanced frame is blended back toward the source
                 // according to the content-aware confidence. This is intentionally
                 // soft, so there is no visible halo at the subject boundary.
-                let amount = Float32(clamp01(keep))
+                let amount = Float32(clamp01(keep * adaptiveWidthScale))
                 dst[di + drOff] = UInt8((sr + (er - sr) * Double(amount)) * 255.0)
                 dst[di + 1] = UInt8((sg + (eg - sg) * Double(amount)) * 255.0)
                 dst[di + dbOff] = UInt8((sb + (eb - sb) * Double(amount)) * 255.0)
