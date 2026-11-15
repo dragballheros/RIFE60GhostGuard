@@ -87,7 +87,7 @@ struct VideoUpscalePlan: Sendable {
         var assigned = Array(repeating: VideoUpscaleEngine.realCUGAN, count: ordered.count)
         var confidences = Array(repeating: 0.0, count: ordered.count)
         var reasons = Array(repeating: "Conservative fallback to Real-CUGAN", count: ordered.count)
-        var stable = ordered.first(where: { $0.engine != nil })?.engine ?? .realCUGAN
+        var stable = ordered.first?.engine ?? .realCUGAN
         var pendingEngine: VideoUpscaleEngine?
         var pendingIndices: [Int] = []
 
