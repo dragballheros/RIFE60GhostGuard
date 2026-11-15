@@ -86,7 +86,7 @@ struct VideoUpscalePlan: Sendable {
             return false
         }
         let hasClassificationFallback = segment.reason.lowercased().contains("fallback")
-        return segment.engine == .realCUGAN && segment.confidence >= 0.54 && !hasClassificationFallback
+        return segment.engine == .realCUGAN && segment.confidence > 0.54 && !hasClassificationFallback
     }
 
     static func fixed(duration: Double, engine: VideoUpscaleEngine, reason: String) -> VideoUpscalePlan {
