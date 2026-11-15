@@ -1,5 +1,4 @@
 import Foundation
-import Foundation
 
 enum UpscaleModelSelection: String, CaseIterable, Identifiable, Sendable {
     case auto
@@ -92,7 +91,7 @@ struct VideoUpscalePlan: Sendable {
         var pendingIndices: [Int] = []
 
         for (index, sample) in ordered.enumerated() {
-            if let candidate = sample.engine, candidate != stable, sample.confidence >= 0.55 {
+            if let candidate = sample.engine, candidate != stable, sample.confidence >= 0.54 {
                 if pendingEngine == candidate {
                     pendingIndices.append(index)
                 } else {
