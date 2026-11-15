@@ -424,7 +424,8 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p /tmp/upscale-route-check
-          swiftc -swift-version 5 VideoUpscaleTimeline.swift Scripts/check_video_upscale_timeline.swift -o /tmp/upscale-route-check/check
+          cp Scripts/check_video_upscale_timeline.swift /tmp/upscale-route-check/main.swift
+          swiftc -swift-version 5 VideoUpscaleTimeline.swift /tmp/upscale-route-check/main.swift -o /tmp/upscale-route-check/check
           /tmp/upscale-route-check/check
 
       - name: Restore Real-ESRGAN x2plus Core ML cache
