@@ -391,7 +391,7 @@ final class TwoPassVideoProcessor {
         var postCUGANSource: URL?
         var fusedFinalURL: URL?
         var outlineUpscaleRoutePlan: VideoUpscalePlan?
-        if upscaleTo4K && visualPolish && !outlineCheckpointValid {
+        if upscaleTo4K && !outlineCheckpointValid {
             let routeSource = rifeResult ?? sourceURL
             outlineUpscaleRoutePlan = try await VideoUpscaleModelRouter.makePlan(
                 sourceURL: routeSource,
@@ -508,7 +508,7 @@ final class TwoPassVideoProcessor {
                             colorPopStrength: cuganSecondIsFinalVisualStage ? colorPopStrength : 0,
                             applyWarmthCorrection: cuganSecondIsFinalVisualStage,
                             modelSelection: upscaleModelSelection,
-                            routePlan: cugan.routePlan
+                            routePlan: outlineUpscaleRoutePlan
                         )
                         let generated4x = try await cuganSecond.run(
                             sourceURL: firstPassOutput,
