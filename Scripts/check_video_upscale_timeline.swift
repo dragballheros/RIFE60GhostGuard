@@ -42,6 +42,14 @@ let noSceneCut = VideoUpscalePlan.stabilized(duration: 6, samples: [
 ])
 require(noSceneCut.segments.count == 1, "classifier agreement without a scene cut must not switch models")
 
+let ambiguousCut = VideoUpscalePlan.stabilized(duration: 7, samples: [
+    sample(0, .realCUGAN), sample(1, .realCUGAN), sample(2, nil, 0.2, cut: true),
+    sample(3, .realESRGAN), sample(4, .realESRGAN), sample(5, .realESRGAN),
+    sample(6, .realESRGAN)
+])
+require(ambiguousCut.engine(at: 3.5) == .realESRGAN, "confident samples shortly after an ambiguous cut should still switch")
+require(ambiguousCut.segments.first?.endSeconds == 3, "the confirmed switch should be backdated to first confident post-cut sample")
+
 let manual = VideoUpscalePlan.fixed(duration: 9, engine: .realESRGAN, reason: "manual")
 require(manual.segments.count == 1 && manual.engine(at: 4.5) == .realESRGAN, "manual selection must remain fixed")
 
