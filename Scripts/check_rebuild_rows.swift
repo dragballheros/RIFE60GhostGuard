@@ -140,6 +140,17 @@ let bridgedOutput = OutlineRebuild().apply(bridgedLine, strength: 0.5)
 require(readGray(bridgedOutput, x: 50, y: 30) < 200,
         "a genuine two-sided horizontal contour gap should still be repaired")
 
+// Two nearby parallel outlines are separate contours, not a gap to bridge.
+// This specifically models tight shirt/skin, finger/nail, and similar
+// close-outline geometry.
+let parallelLines = makeOutlineFixture(points: [
+    (29, 28, 20), (29, 29, 20), (29, 30, 20), (29, 31, 20), (29, 32, 20),
+    (31, 28, 20), (31, 29, 20), (31, 30, 20), (31, 31, 20), (31, 32, 20)
+])
+let parallelOutput = OutlineRebuild().apply(parallelLines, strength: 0.5)
+require(readGray(parallelOutput, x: 30, y: 30) == 210,
+        "parallel close outlines must not be bridged into a dark seam")
+
 compare(width: 80, height: 64, colorStrength: 0.45, outlineStrength: 0.5)
 compare(width: 96, height: 64, colorStrength: 0.85, outlineStrength: 0.8)
 compare(width: 40, height: 24, colorStrength: 0.45, outlineStrength: 0.5)
