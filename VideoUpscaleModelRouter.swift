@@ -130,7 +130,6 @@ enum VideoUpscaleModelRouter {
         var semanticAnime = 0.0
         var semanticPhoto = 0.0
         let request = VNClassifyImageRequest()
-        request.usesCPUOnly = false
         if (try? VNImageRequestHandler(cgImage: image).perform([request])) != nil {
             for observation in (request.results ?? []).prefix(12) {
                 let label = observation.identifier.lowercased()
@@ -138,7 +137,7 @@ enum VideoUpscaleModelRouter {
                 if ["cartoon", "animation", "comic", "manga", "illustration", "drawing", "anime", "graphic"].contains(where: label.contains) {
                     semanticAnime = max(semanticAnime, confidence)
                 }
-                if ["photograph", "photography", "photo", "realistic", "metal", "machine", "robot", "vehicle", "architecture"].contains(where: label.contains) {
+                if ["photograph", "photography", "photo", "realistic", "3d render", "computer generated", "rendering"].contains(where: label.contains) {
                     semanticPhoto = max(semanticPhoto, confidence)
                 }
             }
