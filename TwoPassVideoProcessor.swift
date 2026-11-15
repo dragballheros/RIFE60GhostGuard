@@ -432,7 +432,7 @@ final class TwoPassVideoProcessor {
                         // Sharpie is a later pass so it does not share the Neural Engine with Real-CUGAN.
                         let fusePolish = false
                         let fusedOutline: FinalOutlinePass? = nil
-                        let separateSharpie = "Final Sharpie runs as its own pass after Real-CUGAN"
+                        let separateSharpie = "Scene-aware outline policy runs as its own pass after the selected upscaler"
                         DiagnosticsLogger.shared.log(separateSharpie)
                         CrashCapture.step(separateSharpie)
                         let generated = try await cugan.run(
@@ -581,7 +581,7 @@ final class TwoPassVideoProcessor {
                 autoreleasepool { }
                 try await thermalHandoff(progress: progress, position: upscaleTo4K ? 0.84 : 0.40, next: "final Sharpie outline")
                 let outlineStart = upscaleTo4K ? 0.85 : 0.41
-                progress(outlineStart, upscaleTo4K ? "Pass 4/4 • Applying final Sharpie after Real-CUGAN…" : "Pass 3/3 • Applying final Sharpie after RIFE…")
+                progress(outlineStart, upscaleTo4K ? "Pass 4/4 • Applying scene-aware outline profile…" : "Pass 3/3 • Applying final visual profile after RIFE…")
                 stageTimer.begin("sharpie")
                 let finalOutline = FinalOutlinePass(colorPopStrength: colorPopStrength, colorRebuild: config.colorRebuild, colorRebuildStrength: config.colorRebuildStrength, outlineRebuild: config.outlineRebuild, outlineRebuildStrength: config.outlineRebuildStrength, sharpen: config.outlineProtection, upscaleRoutePlan: outlineUpscaleRoutePlan)
                 let generated = try await finalOutline.run(
