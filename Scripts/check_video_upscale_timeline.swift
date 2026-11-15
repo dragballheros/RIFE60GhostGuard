@@ -18,6 +18,9 @@ require(mixed.segments.count == 3, "mixed source should form three stable runs")
 require(mixed.engine(at: 1.5) == .realCUGAN, "opening anime scene should use CUGAN")
 require(mixed.engine(at: 5.5) == .realESRGAN, "movie CGI scene should use ESRGAN")
 require(mixed.engine(at: 10.5) == .realCUGAN, "return to anime scene should use CUGAN")
+require(mixed.usesAnimeOutline(at: 1.5), "anime scene should retain anime outline reconstruction")
+require(!mixed.usesAnimeOutline(at: 5.5), "CGI scene should bypass anime outline reconstruction")
+require(mixed.usesAnimeOutline(at: 10.5), "return to anime scene should restore anime outline reconstruction")
 require(mixed.segments[0].startSeconds == 0 && mixed.segments[0].endSeconds == 4, "first scene boundary")
 require(mixed.segments[1].startSeconds == 4 && mixed.segments[1].endSeconds == 9, "second scene boundary")
 
@@ -52,5 +55,8 @@ require(ambiguousCut.segments.first?.endSeconds == 3, "the confirmed switch shou
 
 let manual = VideoUpscalePlan.fixed(duration: 9, engine: .realESRGAN, reason: "manual")
 require(manual.segments.count == 1 && manual.engine(at: 4.5) == .realESRGAN, "manual selection must remain fixed")
+require(!manual.usesAnimeOutline(at: 4.5), "manual Real-ESRGAN must bypass anime outline reconstruction")
+let manualCUGAN = VideoUpscalePlan.fixed(duration: 9, engine: .realCUGAN, reason: "manual")
+require(manualCUGAN.usesAnimeOutline(at: 4.5), "manual Real-CUGAN must retain anime outline reconstruction")
 
-print("UPSCALE_ROUTE_PASS: mixed scenes, switch hysteresis, ambiguous fallback, manual override")
+print("UPSCALE_ROUTE_PASS: scene routing, outline policy, switch hysteresis, ambiguous fallback, manual overrides")
