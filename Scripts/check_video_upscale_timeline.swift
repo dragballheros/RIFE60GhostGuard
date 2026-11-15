@@ -39,6 +39,10 @@ let ambiguous = VideoUpscalePlan.stabilized(duration: 5, samples: [
 require(ambiguous.engine(at: 0.5) == .realCUGAN, "ambiguous opening must default to CUGAN")
 require(ambiguous.segments.count == 1, "unconfirmed ESRGAN samples must not cause a switch")
 require(!ambiguous.usesAnimeOutline(at: 0.5), "ambiguous Auto scenes must preserve natural contours even when CUGAN is the upscaler fallback")
+let thresholdAmbiguous = VideoUpscalePlan.stabilized(duration: 4, samples: [
+    sample(0, .realCUGAN, 0.9), sample(1, nil, 0.54), sample(2, nil, 0.54), sample(3, nil, 0.54)
+])
+require(!thresholdAmbiguous.usesAnimeOutline(at: 2.5), "0.54 ambiguous classifier boundary must not enable anime outline reconstruction")
 let noEvidence = VideoUpscalePlan.stabilized(duration: 4, samples: [])
 require(!noEvidence.usesAnimeOutline(at: 1), "missing Auto evidence must not enable anime outline reconstruction")
 
