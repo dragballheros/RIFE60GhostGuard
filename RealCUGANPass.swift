@@ -75,6 +75,9 @@ private final class BoundedEncodeQueue: @unchecked Sendable {
 
 final class RealCUGANPass {
     private let intensity: Double
+    private let modelSelection: UpscaleModelSelection
+    private let suppliedRoutePlan: VideoUpscalePlan?
+    private(set) var routePlan: VideoUpscalePlan?
     private var outputTransferSession: VTPixelTransferSession?
 
     private struct TileProfile {
@@ -132,8 +135,16 @@ final class RealCUGANPass {
     private var activeStrategyFallback = ""
     private var stitchSeconds = 0.0
 
-    init(intensity: Double = 1.30, colorPopStrength: Double = 0, applyWarmthCorrection: Bool? = nil) {
+    init(
+        intensity: Double = 1.30,
+        colorPopStrength: Double = 0,
+        applyWarmthCorrection: Bool? = nil,
+        modelSelection: UpscaleModelSelection = .realCUGAN,
+        routePlan: VideoUpscalePlan? = nil
+    ) {
         self.intensity = intensity
+        self.modelSelection = modelSelection
+        self.suppliedRoutePlan = routePlan
         let shouldApplyWarmth = applyWarmthCorrection ?? (colorPopStrength > 0)
         self.colorPopGrade = (colorPopStrength > 0 || shouldApplyWarmth)
             ? ColorPopGrade(strength: colorPopStrength, warmthMode: applyWarmthCorrection == false ? .off : nil)
@@ -162,23 +173,41 @@ final class RealCUGANPass {
         let targetHeight = height * 2
 
         let profile = (width >= 1600 || height >= 1600) ? fast1080Profile : fallbackProfile
-        let tilesAcross = Int(ceil(Double(width) / Double(profile.stepX)))
-        let tilesDown = Int(ceil(Double(height) / Double(profile.stepY)))
-        let tilesPerFrame = tilesAcross * tilesDown
+        let cuganTilesAcross = Int(ceil(Double(width) / Double(profile.stepX)))
+        let cuganTilesDown = Int(ceil(Double(height) / Double(profile.stepY)))
+        let cuganTilesPerFrame = cuganTilesAcross * cuganTilesDown
 
-        let strategyExplanation = RealCUGANStrategyStore.lookupExplanation(modelName: profile.modelName, tileWidth: profile.width, tileHeight: profile.height)
-        PipelineStageTimer.current?.recordText("cuganStrategyLookup", strategyExplanation)
-        DiagnosticsLogger.shared.log("Real-CUGAN entered • native source=\(width)x\(height) • native 2x target=\(targetWidth)x\(targetHeight) • tile=\(profile.width)x\(profile.height) • core=\(profile.stepX)x\(profile.stepY) • tiles/frame=\(tilesPerFrame) • strategy=\(strategyExplanation) • thermal=\(currentThermalStateName()) • benchmark tiles are timed on a cool phone; this pass follows RIFE so per-tile time can be higher")
-        progress(0.001, "Pass 3/3 • Real-CUGAN native 2× • \(width)×\(height) → \(targetWidth)×\(targetHeight)…")
+        let selectedPlan: VideoUpscalePlan
+        if let suppliedRoutePlan {
+            selectedPlan = suppliedRoutePlan
+        } else {
+            selectedPlan = try await VideoUpscaleModelRouter.makePlan(
+                sourceURL: sourceURL,
+                selection: modelSelection,
+                progress: { fraction, message in
+                    progress(min(max(fraction, 0), 1) * 0.02, message)
+                }
+            )
+        }
+        self.routePlan = selectedPlan
+        let routeSummary = selectedPlan.segments.map {
+            "\($0.engine.displayName) \(String(format: "%.2f", $0.startSeconds))–\(String(format: "%.2f", $0.endSeconds))s"
+        }.joined(separator: " | ")
+        DiagnosticsLogger.shared.log("Upscale routing ready • selection=\(modelSelection.rawValue) • \(routeSummary)")
+        CrashCapture.step("Upscale routing • \(routeSummary)")
+        if selectedPlan.segments.contains(where: { $0.engine == .realCUGAN }) {
+            let strategyExplanation = RealCUGANStrategyStore.lookupExplanation(modelName: profile.modelName, tileWidth: profile.width, tileHeight: profile.height)
+            PipelineStageTimer.current?.recordText("cuganStrategyLookup", strategyExplanation)
+            DiagnosticsLogger.shared.log("Real-CUGAN profile available • source=\(width)x\(height) • tile=\(profile.width)x\(profile.height) • core=\(profile.stepX)x\(profile.stepY) • tiles/frame=\(cuganTilesPerFrame) • strategy=\(strategyExplanation)")
+        }
+        DiagnosticsLogger.shared.log("Scene-aware 2× upscaler entered • native source=\(width)x\(height) • target=\(targetWidth)x\(targetHeight) • thermal=\(currentThermalStateName())")
+        progress(0.002, "Pass 3/3 • Preparing selected 2× upscaler…")
 
-        try preparePools(targetWidth: targetWidth, targetHeight: targetHeight, profile: profile)
-        DiagnosticsLogger.shared.log("Real-CUGAN tile pools ready • Metal compatible • tile=\(profile.width)x\(profile.height) • overlap=\(profile.overlap) • core=\(profile.stepX)x\(profile.stepY)")
-
-        progress(0.002, "Pass 3/3 • Loading Real-CUGAN Anime 2x Noise 3…")
-        DiagnosticsLogger.shared.log("Real-CUGAN tiled model load begin • \(profile.modelName)")
-        let preferNeuralEngine = profile.modelName == fast1080Profile.modelName && ModelComputePreference.current == .auto
-        let model = try loadModel(named: profile.modelName, preferNeuralEngine: preferNeuralEngine)
-        DiagnosticsLogger.shared.log("Real-CUGAN tiled model load complete")
+        var activeCUGANModel: MLModel?
+        var cuganAlpha: MLMultiArray?
+        var cuganPoolsReady = false
+        var esrganFrameProcessor: RealESRGANFrameProcessor?
+        var previousEngine: VideoUpscaleEngine?
 
         let reader = try AVAssetReader(asset: asset)
         let output = AVAssetReaderTrackOutput(track: track, outputSettings: [
@@ -254,9 +283,6 @@ final class RealCUGANPass {
         guard reader.startReading() else { throw ProcessorError.reader(reader.error?.localizedDescription ?? "Real-CUGAN reader failed") }
         DiagnosticsLogger.shared.log("Real-CUGAN reader/writer started • target=\(targetWidth)x\(targetHeight) HEVC Main10 • bitrate=\(videoBitrate)")
 
-        let alphaValue = Float(1.0 / max(intensity, 0.01))
-        let alpha = try MLMultiArray(shape: [1], dataType: .float16)
-        alpha[0] = NSNumber(value: alphaValue)
         var frames = 0
         var inferenceSeconds = 0.0
         var handoffSeconds = 0.0
@@ -284,17 +310,72 @@ final class RealCUGANPass {
             let pts = item.time
             waitInSeconds += waitIn
             let frameNumber = frames + 1
-            let predictBefore = predictionSeconds
+            let inferenceBefore = inferenceSeconds
             let copyBefore = renderInSeconds
             let stitchBefore = stitchSeconds
+            let frameEngine = selectedPlan.engine(at: CMTimeGetSeconds(pts))
+
+            if previousEngine != frameEngine {
+                DiagnosticsLogger.shared.log("Upscaler scene switch • frame=\(frameNumber) • time=\(String(format: "%.3f", CMTimeGetSeconds(pts)))s • engine=\(frameEngine.displayName)")
+                CrashCapture.step("Upscaler switch • \(frameEngine.displayName) • frame \(frameNumber)")
+                previousEngine = frameEngine
+            }
 
             if frameNumber == 1 {
-                DiagnosticsLogger.shared.log("Real-CUGAN first frame decoded • pixel=\(CVPixelBufferGetWidth(decodedFrame))x\(CVPixelBufferGetHeight(decodedFrame)) • tiled prediction begin")
+                DiagnosticsLogger.shared.log("Upscaler first frame decoded • engine=\(frameEngine.displayName) • pixel=\(CVPixelBufferGetWidth(decodedFrame))x\(CVPixelBufferGetHeight(decodedFrame)) • tiled prediction begin")
             }
 
             let inferenceStart = CFAbsoluteTimeGetCurrent()
-            let upscaled = try await Self.offTask {
-                try self.upscaleNative2x(decodedFrame, model: model, alpha: alpha, frameNumber: frameNumber, profile: profile)
+            let upscaled: CVPixelBuffer
+            if frameEngine == .realCUGAN {
+                esrganFrameProcessor = nil
+                if !cuganPoolsReady {
+                    try preparePools(targetWidth: targetWidth, targetHeight: targetHeight, profile: profile)
+                    cuganPoolsReady = true
+                    DiagnosticsLogger.shared.log("Real-CUGAN tile pools ready • tile=\(profile.width)x\(profile.height) • overlap=\(profile.overlap) • core=\(profile.stepX)x\(profile.stepY)")
+                }
+                if activeCUGANModel == nil {
+                    let preferNeuralEngine = profile.modelName == fast1080Profile.modelName && ModelComputePreference.current == .auto
+                    DiagnosticsLogger.shared.log("Real-CUGAN tiled model load begin • \(profile.modelName)")
+                    activeCUGANModel = try loadModel(named: profile.modelName, preferNeuralEngine: preferNeuralEngine)
+                    DiagnosticsLogger.shared.log("Real-CUGAN tiled model load complete")
+                }
+                if cuganAlpha == nil {
+                    let alphaValue = Float(1.0 / max(intensity, 0.01))
+                    let alpha = try MLMultiArray(shape: [1], dataType: .float16)
+                    alpha[0] = NSNumber(value: alphaValue)
+                    cuganAlpha = alpha
+                }
+                guard let cuganModel = activeCUGANModel, let alpha = cuganAlpha else {
+                    throw ProcessorError.conversionFailed("Real-CUGAN model initialization failed.")
+                }
+                upscaled = try await Self.offTask {
+                    try self.upscaleNative2x(decodedFrame, model: cuganModel, alpha: alpha, frameNumber: frameNumber, profile: profile)
+                }
+            } else {
+                if activeCUGANModel != nil || cuganPoolsReady {
+                    activeCUGANModel = nil
+                    cuganAlpha = nil
+                    cachedConcurrentTiles = nil
+                    fixedBatchModels.removeAll(keepingCapacity: false)
+                    tileInputPool = nil
+                    tileOutputPool = nil
+                    stitchedFramePool = nil
+                    cuganPoolsReady = false
+                    ReclaimableMemoryRegistry.shared.remove(name: "cugan-tile-input")
+                    ReclaimableMemoryRegistry.shared.remove(name: "cugan-tile-output")
+                    ReclaimableMemoryRegistry.shared.remove(name: "cugan-stitched")
+                    DiagnosticsLogger.shared.log("Released Real-CUGAN Core ML model and tile surfaces before Real-ESRGAN segment.")
+                }
+                if esrganFrameProcessor == nil {
+                    esrganFrameProcessor = try RealESRGANFrameProcessor()
+                }
+                guard let processor = esrganFrameProcessor else {
+                    throw ProcessorError.conversionFailed("Real-ESRGAN model initialization failed.")
+                }
+                upscaled = try await Self.offTask {
+                    try processor.upscaleFrame(decodedFrame)
+                }
             }
             inferenceSeconds += CFAbsoluteTimeGetCurrent() - inferenceStart
 
@@ -365,29 +446,33 @@ final class RealCUGANPass {
             }
             computeWaitSeconds += computeWait
             handoffSeconds += CFAbsoluteTimeGetCurrent() - handoffStart
-            let predictMs = (predictionSeconds - predictBefore) * 1000
+            let predictMs = (inferenceSeconds - inferenceBefore) * 1000
             let stitchMs = (stitchSeconds - stitchBefore + renderInSeconds - copyBefore) * 1000
+            let tilesThisFrame = frameEngine == .realCUGAN
+                ? cuganTilesPerFrame
+                : Int(ceil(Double(width) / 320.0)) * Int(ceil(Double(height) / 320.0))
+            let slotsThisFrame = frameEngine == .realCUGAN ? activeStrategySlots : 1
             let wallMs = (CFAbsoluteTimeGetCurrent() - iterationStart) * 1000
             let frameLine = String(
-                format: "CUGAN breakdown: wait_in %.1f ms, wait_compute %.1f ms, predict %.1f ms (%d tiles, %d concurrent), stitch %.1f ms, wall %.1f ms",
+                format: "Upscale breakdown • engine=%@ • wait_in %.1f ms • wait_compute %.1f ms • inference %.1f ms (%d tiles, %d concurrent) • stitch/copy %.1f ms • wall %.1f ms",
+                frameEngine.displayName,
                 waitIn * 1000,
                 computeWait * 1000,
                 predictMs,
-                tilesPerFrame,
-                activeStrategySlots,
+                tilesThisFrame,
+                slotsThisFrame,
                 stitchMs,
                 wallMs
             )
             notedFrames += 1
             let done = max(frames, 1)
             let rolling = String(
-                format: "CUGAN breakdown: wait_in %.1f ms, wait_compute %.1f ms, predict %.1f ms (%d tiles, %d concurrent), stitch %.1f ms, wall %.1f ms",
+                format: "Upscale average • engine=%@ • wait_in %.1f ms • wait_compute %.1f ms • inference %.1f ms • tiles=%d • wall %.1f ms",
+                frameEngine.displayName,
                 waitInSeconds * 1000 / Double(done),
                 computeWaitSeconds * 1000 / Double(done),
-                predictionSeconds * 1000 / Double(done),
-                tilesPerFrame,
-                activeStrategySlots,
-                (stitchSeconds + renderInSeconds) * 1000 / Double(done),
+                inferenceSeconds * 1000 / Double(done),
+                tilesThisFrame,
                 (CFAbsoluteTimeGetCurrent() - passStart) * 1000 / Double(done)
             )
             if notedFrames == 1 || notedFrames % 12 == 0 {
@@ -399,10 +484,10 @@ final class RealCUGANPass {
             iterationStart = CFAbsoluteTimeGetCurrent()
 
             if frames > 0 && (frames == 1 || frames % 20 == 0) {
-                let perTile = predictionSeconds * 1000 / Double(frames * max(tilesPerFrame, 1))
-                DiagnosticsLogger.shared.log(String(format: "Real-CUGAN breakdown (running averages) • frame=%d • tiles/frame=%d • prediction=%.1fms/frame • %.1fms/tile • render-in=%.1fms • stitch=%.1fms • sharpieWait+submit=%.1fms • thermal=%@", frames, tilesPerFrame, predictionSeconds * 1000 / Double(frames), perTile, renderInSeconds * 1000 / Double(frames), stitchSeconds * 1000 / Double(frames), handoffSeconds * 1000 / Double(frames), currentThermalStateName()))
+                let perTile = inferenceSeconds * 1000 / Double(frames * max(tilesThisFrame, 1))
+                DiagnosticsLogger.shared.log(String(format: "Upscaler running average • engine=%@ • frame=%d • tiles/frame=%d • inference=%.1fms/frame • %.1fms/tile • encodeWait=%.1fms • thermal=%@", frameEngine.displayName, frames, tilesThisFrame, inferenceSeconds * 1000 / Double(frames), perTile, handoffSeconds * 1000 / Double(frames), currentThermalStateName()))
                 let memory = currentRenderPerformanceSnapshot()
-                DiagnosticsLogger.shared.log("Real-CUGAN frame \(frames) complete • \(tilesPerFrame) tiles/frame • inference=\(String(format: "%.1f", inferenceSeconds * 1000.0 / Double(frames)))ms/frame • headroom=\(Int(memory.availableMemoryMB.rounded())) MB • thermal=\(memory.thermalAndMode)")
+                DiagnosticsLogger.shared.log("Upscaler frame \(frames) complete • engine=\(frameEngine.displayName) • tiles=\(tilesThisFrame) • inference=\(String(format: "%.1f", inferenceSeconds * 1000.0 / Double(frames)))ms/frame • headroom=\(Int(memory.availableMemoryMB.rounded())) MB • thermal=\(memory.thermalAndMode)")
             }
 
             // UI/diagnostic publishing is deliberately less frequent during CUGAN.
@@ -418,14 +503,16 @@ final class RealCUGANPass {
                 t.cuganWaitInMs = waitIn * 1000
                 t.cuganWaitComputeMs = computeWait * 1000
                 t.cuganPredictMs = predictMs
-                t.cuganTiles = tilesPerFrame
-                t.cuganConcurrency = activeStrategySlots
+                t.cuganTiles = tilesThisFrame
+                t.cuganConcurrency = slotsThisFrame
                 t.cuganStitchMs = stitchMs
                 t.cuganWallMs = wallMs
                 t.thermalState = currentThermalStateName()
                 DiagnosticsLogger.shared.log(runtimePassDiagnosticLine(
-                    pass: "Real-CUGAN",
-                    computeUnits: modelComputeUnitsLabel(model),
+                    pass: frameEngine.displayName,
+                    computeUnits: frameEngine == .realCUGAN
+                        ? (activeCUGANModel.map(modelComputeUnitsLabel) ?? "Core ML")
+                        : "Core ML \(ModelComputePreference.current.rawValue)",
                     decodeMs: waitIn * 1000.0,
                     predictMs: predictMs,
                     postMs: stitchMs + sharpieWait * 1000.0,
@@ -440,7 +527,7 @@ final class RealCUGANPass {
                 let frac = min(max(CMTimeGetSeconds(pts) / seconds, 0), 1)
                 let fps = Double(frames) / elapsed
                 let remaining = fps > 0 ? (seconds * estimatedFrameRate - Double(frames)) / fps : 0
-                progress(frac, "Pass 3/3 • Real-CUGAN native 2× • \(frames) frames • ETA \(formatDuration(remaining))")
+                progress(frac, "Pass 3/3 • \(frameEngine.displayName) native 2× • \(frames) frames • ETA \(formatDuration(remaining))")
                 await Task.yield()
             }
         }
@@ -473,7 +560,7 @@ final class RealCUGANPass {
         let completedURL = try await checkpoint.finish()
         let completedBytes = (try? FileManager.default.attributesOfItem(atPath: completedURL.path)[.size] as? NSNumber)?.int64Value ?? 0
         let count = Double(frames)
-        PipelineStageTimer.current?.record("realCuganMs", milliseconds: inferenceSeconds * 1000 / count)
+        PipelineStageTimer.current?.record("realUpscalerMs", milliseconds: inferenceSeconds * 1000 / count)
         PipelineStageTimer.current?.record("cuganDecodeMs", milliseconds: ahead.averageDecodeMilliseconds)
         PipelineStageTimer.current?.record("cuganPackMs", milliseconds: renderInSeconds * 1000 / count)
         PipelineStageTimer.current?.record("cuganPredictMs", milliseconds: predictionSeconds * 1000 / count)
@@ -496,7 +583,7 @@ final class RealCUGANPass {
         let overlapMs = max(0, predictMs + sharpieMs - busy)
         let stageSum = predictMs + sharpieMs + convertMs + readyMs
         let summary = String(
-            format: "Stage wall • frames=%.0f • pass=%.1fs • %.0fms/frame • animeRestore=%.0fms • cuganPredict=%.0fms • sharpie=%.0fms (predict %.0f • pack %.0f • refine %.0f • shadow %.0f • compression %.0f) • convert=%.0fms • encoderReady=%.0fms • append=%.0fms • sharpieWait=%.0fms • idle=%.0fms • stageSum=%.0fms • overlap=%.0fms",
+            format: "Stage wall • frames=%.0f • pass=%.1fs • %.0fms/frame • animeRestore=%.0fms • upscaleInference=%.0fms • sharpie=%.0fms (predict %.0f • pack %.0f • refine %.0f • shadow %.0f • compression %.0f) • convert=%.0fms • encoderReady=%.0fms • append=%.0fms • sharpieWait=%.0fms • idle=%.0fms • stageSum=%.0fms • overlap=%.0fms",
             count,
             passWall,
             passMs,
