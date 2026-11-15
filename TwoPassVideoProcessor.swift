@@ -28,9 +28,11 @@ final class TwoPassVideoProcessor {
     private let colorPopStrength: Double
     private let watermark: WatermarkConfiguration
     private let upscaleFirst: Bool
+    private let upscaleModelSelection: UpscaleModelSelection
 
-    init(configuration: ProcessorConfiguration, upscaleTo4K: Bool = true, colorPopEnabled: Bool = false, colorPopStrength: Double = 0.5, watermark: WatermarkConfiguration = WatermarkConfiguration(), upscaleFirst: Bool = false) {
+    init(configuration: ProcessorConfiguration, upscaleTo4K: Bool = true, colorPopEnabled: Bool = false, colorPopStrength: Double = 0.5, watermark: WatermarkConfiguration = WatermarkConfiguration(), upscaleFirst: Bool = false, upscaleModelSelection: UpscaleModelSelection = .realCUGAN) {
         self.upscaleFirst = upscaleFirst && upscaleTo4K
+        self.upscaleModelSelection = upscaleModelSelection
         self.watermark = watermark
         self.colorPopStrength = colorPopEnabled && colorPopStrength.isFinite ? min(max(colorPopStrength, 0), 1) : 0
         self.config = configuration
@@ -405,7 +407,8 @@ final class TwoPassVideoProcessor {
                         let cugan = RealCUGANPass(
                             intensity: 1.30,
                             colorPopStrength: cuganIsFinalVisualStage ? colorPopStrength : 0,
-                            applyWarmthCorrection: cuganIsFinalVisualStage
+                            applyWarmthCorrection: cuganIsFinalVisualStage,
+                            modelSelection: upscaleModelSelection
                         )
                         // Sharpie is a later pass so it does not share the Neural Engine with Real-CUGAN.
                         let fusePolish = false
@@ -422,7 +425,7 @@ final class TwoPassVideoProcessor {
                             },
                             telemetry: { sample in
                                 stageTelemetry.cugan = sample
-                                PipelineStageTimer.current?.record("realCuganMs", milliseconds: sample.cuganMsPerFrame)
+                                PipelineStageTimer.current?.record("realUpscalerMs", milliseconds: sample.cuganMsPerFrame)
                                 PipelineStageTimer.current?.record("encodeMs", milliseconds: sample.encodeMsPerOutputFrame)
                                 var combined = stageTelemetry.rife
                                 combined.sourceFrames = max(stageTelemetry.rife.sourceFrames, stageTelemetry.restoration.sourceFrames)
@@ -484,7 +487,9 @@ final class TwoPassVideoProcessor {
                         let cuganSecond = RealCUGANPass(
                             intensity: 1.30,
                             colorPopStrength: cuganSecondIsFinalVisualStage ? colorPopStrength : 0,
-                            applyWarmthCorrection: cuganSecondIsFinalVisualStage
+                            applyWarmthCorrection: cuganSecondIsFinalVisualStage,
+                            modelSelection: upscaleModelSelection,
+                            routePlan: cugan.routePlan
                         )
                         let generated4x = try await cuganSecond.run(
                             sourceURL: firstPassOutput,
@@ -495,7 +500,7 @@ final class TwoPassVideoProcessor {
                             },
                             telemetry: { sample in
                                 stageTelemetry.cugan = sample
-                                PipelineStageTimer.current?.record("realCuganMs", milliseconds: sample.cuganMsPerFrame)
+                                PipelineStageTimer.current?.record("realUpscalerMs", milliseconds: sample.cuganMsPerFrame)
                                 PipelineStageTimer.current?.record("encodeMs", milliseconds: sample.encodeMsPerOutputFrame)
                                 var combined = stageTelemetry.rife
                                 combined.sourceFrames = max(stageTelemetry.rife.sourceFrames, stageTelemetry.restoration.sourceFrames)
@@ -706,7 +711,7 @@ final class TwoPassVideoProcessor {
                     generated = result.url
                 case "cugan":
                     try requireUpscaleFirstMemory(width: outputWidth, height: outputHeight)
-                    generated = try await RealCUGANPass(intensity: 1.30).run(sourceURL: inputURL, finalAudioBitrate: audioBitrate, progress: publish, telemetry: { sample in
+                    generated = try await RealCUGANPass(intensity: 1.30, modelSelection: upscaleModelSelection).run(sourceURL: inputURL, finalAudioBitrate: audioBitrate, progress: publish, telemetry: { sample in
                         combined.upscaledFrames = sample.upscaledFrames; combined.cuganMsPerFrame = sample.cuganMsPerFrame; combined.upscaleFPS = sample.upscaleFPS; combined.applyCUGANBreakdown(from: sample)
                         telemetry(combined)
                     }, recoveryDirectory: recoveryDirectory)
