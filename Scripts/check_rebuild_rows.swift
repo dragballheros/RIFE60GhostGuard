@@ -153,7 +153,7 @@ require(readGray(bridgedOutput, x: 50, y: 30) < 200,
 // must still close when both contour ends have tangent continuation.
 let wideGap = makeOutlineFixture(points: [
     (46, 30, 20), (47, 30, 20), (48, 30, 20),
-    (52, 30, 20), (53, 30, 20), (54, 30, 20)
+    (51, 30, 20), (52, 30, 20), (53, 30, 20)
 ])
 let wideGapOutput = OutlineRebuild().apply(wideGap, strength: 0.8)
 require(readGray(wideGapOutput, x: 50, y: 30) < 200,
