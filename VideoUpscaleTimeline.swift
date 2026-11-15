@@ -47,6 +47,21 @@ struct VideoUpscaleSample: Sendable, Equatable {
     let engine: VideoUpscaleEngine?
     let confidence: Double
     let reason: String
+    let sceneCutBefore: Bool
+
+    init(
+        timeSeconds: Double,
+        engine: VideoUpscaleEngine?,
+        confidence: Double,
+        reason: String,
+        sceneCutBefore: Bool = false
+    ) {
+        self.timeSeconds = timeSeconds
+        self.engine = engine
+        self.confidence = confidence
+        self.reason = reason
+        self.sceneCutBefore = sceneCutBefore
+    }
 }
 
 struct VideoUpscalePlan: Sendable {
@@ -94,11 +109,14 @@ struct VideoUpscalePlan: Sendable {
             if let candidate = sample.engine, candidate != stable, sample.confidence >= 0.54 {
                 if pendingEngine == candidate {
                     pendingIndices.append(index)
-                } else {
+                } else if sample.sceneCutBefore {
                     pendingEngine = candidate
                     pendingIndices = [index]
+                } else {
+                    pendingEngine = nil
+                    pendingIndices.removeAll(keepingCapacity: true)
                 }
-                if pendingIndices.count >= max(2, minimumConsecutive) {
+                if pendingEngine == candidate, pendingIndices.count >= max(2, minimumConsecutive) {
                     stable = candidate
                     for pendingIndex in pendingIndices {
                         assigned[pendingIndex] = stable
@@ -110,7 +128,9 @@ struct VideoUpscalePlan: Sendable {
                 } else {
                     assigned[index] = assigned[index == 0 ? 0 : index - 1]
                     confidences[index] = sample.confidence
-                    reasons[index] = "Pending temporal confirmation"
+                    reasons[index] = sample.sceneCutBefore
+                        ? "Model switch pending scene confirmation"
+                        : "Retained current model until a scene cut"
                 }
             } else {
                 pendingEngine = nil
