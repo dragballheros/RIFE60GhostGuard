@@ -639,7 +639,7 @@ final class TwoPassVideoProcessor {
             progress(0.98, "Finalizing • Restoring original audio…")
             let final = try await FinalAudioMuxer().addOriginalAudio(videoURL: finalVideoInput, sourceURL: originalSourceURL)
             let description = upscaleTo4K
-                ? (config.outlineProtection ? "Finished • Automatic 2×/4× 60fps • Real-CUGAN → Final Sharpie" : "Finished • Automatic 2×/4× 60fps • Real-CUGAN")
+                ? (config.outlineProtection ? "Finished • Automatic 2×/4× 60fps • \(upscaleEngineLabel) → Final Sharpie" : "Finished • Automatic 2×/4× 60fps • \(upscaleEngineLabel)")
                 : (config.outlineProtection ? "Finished • 60fps • Final Sharpie" : "Finished • 60fps")
             progress(1.0, description)
             return final
@@ -647,7 +647,7 @@ final class TwoPassVideoProcessor {
 
         transientURLs.removeAll { $0 == finalVideoInput }
         let description = upscaleTo4K
-            ? (config.outlineProtection ? "Finished • Automatic 2×/4× 60fps • Real-CUGAN → Final Sharpie" : "Finished • Automatic 2×/4× 60fps • Real-CUGAN")
+            ? (config.outlineProtection ? "Finished • Automatic 2×/4× 60fps • \(upscaleEngineLabel) → Final Sharpie" : "Finished • Automatic 2×/4× 60fps • \(upscaleEngineLabel)")
             : (config.outlineProtection ? "Finished • 60fps • Final Sharpie" : "Finished • 60fps")
         progress(1.0, description)
         return finalVideoInput
