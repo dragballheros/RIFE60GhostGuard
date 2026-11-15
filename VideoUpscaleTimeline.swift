@@ -104,12 +104,20 @@ struct VideoUpscalePlan: Sendable {
         var stable = ordered.first?.engine ?? .realCUGAN
         var pendingEngine: VideoUpscaleEngine?
         var pendingIndices: [Int] = []
+        var recentSceneCutSamples = 0
+        let sceneCutEvidenceWindow = max(4, minimumConsecutive + 1)
 
         for (index, sample) in ordered.enumerated() {
+            if sample.sceneCutBefore {
+                recentSceneCutSamples = sceneCutEvidenceWindow
+            } else if recentSceneCutSamples > 0 {
+                recentSceneCutSamples -= 1
+            }
+
             if let candidate = sample.engine, candidate != stable, sample.confidence >= 0.54 {
                 if pendingEngine == candidate {
                     pendingIndices.append(index)
-                } else if sample.sceneCutBefore {
+                } else if recentSceneCutSamples > 0 {
                     pendingEngine = candidate
                     pendingIndices = [index]
                 } else {
