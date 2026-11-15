@@ -1,6 +1,6 @@
 import Foundation
 
-enum UpscaleModelSelection: String, CaseIterable, Identifiable, Sendable {
+enum UpscaleModelSelection: String, CaseIterable, Identifiable, Sendable, Equatable {
     case auto
     case realCUGAN
     case realESRGAN
@@ -22,7 +22,7 @@ enum UpscaleModelSelection: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
-enum VideoUpscaleEngine: String, Sendable {
+enum VideoUpscaleEngine: String, Sendable, Equatable {
     case realCUGAN
     case realESRGAN
 
