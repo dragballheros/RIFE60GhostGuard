@@ -4,15 +4,15 @@ func require(_ condition: Bool, _ message: String) {
     if !condition { fatalError("UPSCALE_ROUTE_CHECK_FAILED: \(message)") }
 }
 
-func sample(_ time: Double, _ engine: VideoUpscaleEngine?, _ confidence: Double = 0.9) -> VideoUpscaleSample {
-    VideoUpscaleSample(timeSeconds: time, engine: engine, confidence: confidence, reason: "fixture")
+func sample(_ time: Double, _ engine: VideoUpscaleEngine?, _ confidence: Double = 0.9, cut: Bool = false) -> VideoUpscaleSample {
+    VideoUpscaleSample(timeSeconds: time, engine: engine, confidence: confidence, reason: "fixture", sceneCutBefore: cut)
 }
 
 let mixed = VideoUpscalePlan.stabilized(duration: 12, samples: [
     sample(0, .realCUGAN), sample(1, .realCUGAN), sample(2, .realCUGAN),
-    sample(3, .realCUGAN), sample(4, .realESRGAN), sample(5, .realESRGAN),
+    sample(3, .realCUGAN), sample(4, .realESRGAN, 0.9, cut: true), sample(5, .realESRGAN),
     sample(6, .realESRGAN), sample(7, .realESRGAN), sample(8, .realESRGAN),
-    sample(9, .realCUGAN), sample(10, .realCUGAN), sample(11, .realCUGAN)
+    sample(9, .realCUGAN, 0.9, cut: true), sample(10, .realCUGAN), sample(11, .realCUGAN)
 ])
 require(mixed.segments.count == 3, "mixed source should form three stable runs")
 require(mixed.engine(at: 1.5) == .realCUGAN, "opening anime scene should use CUGAN")
@@ -35,6 +35,12 @@ let ambiguous = VideoUpscalePlan.stabilized(duration: 5, samples: [
 ])
 require(ambiguous.engine(at: 0.5) == .realCUGAN, "ambiguous opening must default to CUGAN")
 require(ambiguous.segments.count == 1, "unconfirmed ESRGAN samples must not cause a switch")
+
+let noSceneCut = VideoUpscalePlan.stabilized(duration: 6, samples: [
+    sample(0, .realCUGAN), sample(1, .realCUGAN), sample(2, .realESRGAN),
+    sample(3, .realESRGAN), sample(4, .realESRGAN), sample(5, .realESRGAN)
+])
+require(noSceneCut.segments.count == 1, "classifier agreement without a scene cut must not switch models")
 
 let manual = VideoUpscalePlan.fixed(duration: 9, engine: .realESRGAN, reason: "manual")
 require(manual.segments.count == 1 && manual.engine(at: 4.5) == .realESRGAN, "manual selection must remain fixed")
