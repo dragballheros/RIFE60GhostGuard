@@ -36,6 +36,7 @@ enum VideoUpscaleModelRouter {
         let sampleCount = min(240, max(1, Int(ceil(duration / interval))))
         var samples: [VideoUpscaleSample] = []
         samples.reserveCapacity(sampleCount)
+        var previousAnalysisImage: CGImage?
 
         for index in 0..<sampleCount {
             try Task.checkCancellation()
@@ -45,12 +46,19 @@ enum VideoUpscaleModelRouter {
             do {
                 let cgImage = try generator.copyCGImage(at: time, actualTime: &actualTime)
                 let visual = classify(cgImage)
+                let cutScore = previousAnalysisImage.map { sceneCutScore(previous: $0, current: cgImage) } ?? 1.0
+                let sceneCutBefore = index == 0 || cutScore >= 0.42
                 samples.append(VideoUpscaleSample(
                     timeSeconds: seconds,
                     engine: visual.engine,
                     confidence: visual.confidence,
-                    reason: visual.reason
+                    reason: visual.reason,
+                    sceneCutBefore: sceneCutBefore
                 ))
+                if sceneCutBefore && index > 0 {
+                    DiagnosticsLogger.shared.log("Upscaler scene boundary detected • time=\(String(format: "%.2f", seconds))s • visualDifference=\(String(format: "%.3f", cutScore))")
+                }
+                previousAnalysisImage = cgImage
             } catch {
                 samples.append(VideoUpscaleSample(
                     timeSeconds: seconds,
@@ -71,6 +79,54 @@ enum VideoUpscaleModelRouter {
         DiagnosticsLogger.shared.log("AUTO UPSCALE ROUTE • \(summary)")
         CrashCapture.step("Auto upscale route • \(summary)")
         return plan
+    }
+
+    /// A sampled scene boundary requires a large histogram or spatial change.
+    /// Consecutive model evidence is still required before the active upscaler changes.
+    private static func sceneCutScore(previous: CGImage, current: CGImage) -> Double {
+        let side = 32
+        func rgba(_ image: CGImage) -> [UInt8]? {
+            var bytes = [UInt8](repeating: 0, count: side * side * 4)
+            let colorSpace = CGColorSpaceCreateDeviceRGB()
+            let info = CGBitmapInfo.byteOrder32Big.rawValue | CGImageAlphaInfo.premultipliedLast.rawValue
+            let created = bytes.withUnsafeMutableBytes { raw -> Bool in
+                guard let base = raw.baseAddress,
+                      let context = CGContext(
+                        data: base,
+                        width: side,
+                        height: side,
+                        bitsPerComponent: 8,
+                        bytesPerRow: side * 4,
+                        space: colorSpace,
+                        bitmapInfo: info
+                      ) else { return false }
+                context.interpolationQuality = .low
+                context.draw(image, in: CGRect(x: 0, y: 0, width: side, height: side))
+                return true
+            }
+            return created ? bytes : nil
+        }
+        guard let a = rgba(previous), let b = rgba(current) else { return 0 }
+        var histA = Array(repeating: 0, count: 64)
+        var histB = Array(repeating: 0, count: 64)
+        var difference = 0.0
+        for pixel in 0..<(side * side) {
+            let offset = pixel * 4
+            let ar = Int(a[offset]), ag = Int(a[offset + 1]), ab = Int(a[offset + 2])
+            let br = Int(b[offset]), bg = Int(b[offset + 1]), bb = Int(b[offset + 2])
+            let binA = (ar >> 6) * 16 + (ag >> 6) * 4 + (ab >> 6)
+            let binB = (br >> 6) * 16 + (bg >> 6) * 4 + (bb >> 6)
+            histA[binA] += 1
+            histB[binB] += 1
+            difference += Double(abs(ar - br) + abs(ag - bg) + abs(ab - bb)) / (3.0 * 255.0)
+        }
+        let pixels = Double(side * side)
+        var histogramDistance = 0.0
+        for index in 0..<64 {
+            histogramDistance += abs(Double(histA[index] - histB[index])) / (2.0 * pixels)
+        }
+        let spatialDifference = difference / pixels
+        return min(1.0, max(histogramDistance, spatialDifference * 0.85))
     }
 
     private static func classify(_ image: CGImage) -> (engine: VideoUpscaleEngine?, confidence: Double, reason: String) {
