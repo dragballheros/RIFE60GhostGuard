@@ -471,7 +471,7 @@ final class OutlineEnhancer {
                 // The model's enhanced frame is blended back toward the source
                 // according to the content-aware confidence. This is intentionally
                 // soft, so there is no visible halo at the subject boundary.
-                let amount = Float32(clamp01(keep * adaptiveWidthScale))
+                let amount = Float32(clamp01(keep * adaptiveWidthScale * coherence))
                 dst[di + drOff] = UInt8((sr + (er - sr) * Double(amount)) * 255.0)
                 dst[di + 1] = UInt8((sg + (eg - sg) * Double(amount)) * 255.0)
                 dst[di + dbOff] = UInt8((sb + (eb - sb) * Double(amount)) * 255.0)
