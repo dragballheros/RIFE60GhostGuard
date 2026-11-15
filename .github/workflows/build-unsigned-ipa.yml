@@ -420,6 +420,13 @@ jobs:
           test -d CompiledModels/RealCUGAN2xNoise3_Tile512.mlmodelc
           test -d CompiledModels/RealCUGAN2xNoise3_Tile704x608.mlmodelc
 
+      - name: Verify scene-aware upscaler timeline and anti-flicker rules
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/upscale-route-check
+          swiftc -swift-version 5 VideoUpscaleTimeline.swift Scripts/check_video_upscale_timeline.swift -o /tmp/upscale-route-check/check
+          /tmp/upscale-route-check/check
+
       - name: Restore Real-ESRGAN x2plus Core ML cache
         uses: actions/cache@v4
         with:
@@ -433,6 +440,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p Models CompiledModels
+          python3 -m py_compile Scripts/export_realesrgan_x2plus.py
           if [ ! -f Models/RealESRGAN_x2plus_Tile384.mlpackage/Manifest.json ]; then
             python3 -m pip install --upgrade pip
             python3 -m pip install 'torch==2.5.0' 'coremltools==8.3' 'numpy==1.26.4'
@@ -444,6 +452,9 @@ jobs:
           fi
           test -d CompiledModels/RealESRGAN_x2plus_Tile384.mlmodelc
           echo "Real-ESRGAN x2plus model is compiled for on-device iOS inference"
+          mkdir -p /tmp/realesrgan-coreml-check
+          swiftc -swift-version 5 -framework Foundation -framework CoreML Scripts/check_realesrgan_model.swift -o /tmp/realesrgan-coreml-check/check
+          /tmp/realesrgan-coreml-check/check CompiledModels/RealESRGAN_x2plus_Tile384.mlmodelc
 
       - name: Restore anime inpainting model cache
         uses: actions/cache@v4
