@@ -29,6 +29,13 @@ final class TwoPassVideoProcessor {
     private let watermark: WatermarkConfiguration
     private let upscaleFirst: Bool
     private let upscaleModelSelection: UpscaleModelSelection
+    private var upscaleEngineLabel: String {
+        switch upscaleModelSelection {
+        case .auto: return "Auto scene routing (Real-CUGAN / Real-ESRGAN)"
+        case .realCUGAN: return "Real-CUGAN"
+        case .realESRGAN: return "Real-ESRGAN"
+        }
+    }
 
     init(configuration: ProcessorConfiguration, upscaleTo4K: Bool = true, colorPopEnabled: Bool = false, colorPopStrength: Double = 0.5, watermark: WatermarkConfiguration = WatermarkConfiguration(), upscaleFirst: Bool = false, upscaleModelSelection: UpscaleModelSelection = .realCUGAN) {
         self.upscaleFirst = upscaleFirst && upscaleTo4K
@@ -208,8 +215,8 @@ final class TwoPassVideoProcessor {
 
         if outlineCheckpointValid || cugan4xCheckpointValid || cuganCheckpointValid || rifeCheckpointValid || restoredCheckpointValid {
             let resumePoint = outlineCheckpointValid ? "final Sharpie"
-                : cugan4xCheckpointValid ? "Real-CUGAN automatic 4×"
-                : cuganCheckpointValid ? "Real-CUGAN native 2×"
+                : cugan4xCheckpointValid ? "\(upscaleEngineLabel) automatic 4×"
+                : cuganCheckpointValid ? "\(upscaleEngineLabel) native 2×"
                 : rifeCheckpointValid ? "RIFE HQ"
                 : restorationName
             DiagnosticsLogger.shared.log("Recovery plan: furthest valid checkpoint is \(resumePoint). Stages before it will NOT be re-run.")
@@ -387,8 +394,8 @@ final class TwoPassVideoProcessor {
             if upscaleTo4K {
                 if cugan4xCheckpointValid, let cugan4xCheckpoint {
                     postCUGANSource = cugan4xCheckpoint
-                    progress(cuganEnd, "Recovered checkpoint • Real-CUGAN automatic 4× complete")
-                    DiagnosticsLogger.shared.log("Recovery: reused completed Real-CUGAN automatic 4× checkpoint.")
+                    progress(cuganEnd, "Recovered checkpoint • \(upscaleEngineLabel) automatic 4× complete")
+                    DiagnosticsLogger.shared.log("Recovery: reused completed \(upscaleEngineLabel) automatic 4× checkpoint.")
                 } else {
                     guard let cuganInput = rifeResult ?? (cuganCheckpointValid ? cuganCheckpoint : nil) else { throw ProcessorError.noOutput }
 
@@ -400,8 +407,8 @@ final class TwoPassVideoProcessor {
                     } else {
                         if let cuganCheckpoint { try? fm.removeItem(at: cuganCheckpoint) }
                         autoreleasepool { }
-                        try await thermalHandoff(progress: progress, position: 0.40, next: "Real-CUGAN native 2×")
-                        progress(0.41, "Pass 3/4 • Loading Real-CUGAN Anime native 2×…")
+                        try await thermalHandoff(progress: progress, position: 0.40, next: "\(upscaleEngineLabel) native 2×")
+                        progress(0.41, "Pass 3/4 • Loading \(upscaleEngineLabel) native 2×…")
                         let cuganIsFinalVisualStage = !visualPolish && automaticCuganPasses == 1
                         stageTimer.begin("cugan")
                         let cugan = RealCUGANPass(
@@ -468,7 +475,7 @@ final class TwoPassVideoProcessor {
                             try persistCheckpoint(from: generated, to: cuganCheckpoint)
                             try? fm.removeItem(at: generated)
                             firstPassOutput = cuganCheckpoint
-                            DiagnosticsLogger.shared.log("Checkpoint saved: Real-CUGAN native 2×.")
+                            DiagnosticsLogger.shared.log("Checkpoint saved: \(upscaleEngineLabel) native 2×.")
                             IncrementalVideoCheckpointWriter.cleanup(recoveryDirectory: recoveryDirectory, stageID: "cugan")
                             if let rifeCheckpoint { try? fm.removeItem(at: rifeCheckpoint) }
                         } else {
@@ -481,8 +488,8 @@ final class TwoPassVideoProcessor {
                         if let cugan4xCheckpoint {
                             try? fm.removeItem(at: cugan4xCheckpoint)
                         }
-                        try await thermalHandoff(progress: progress, position: 0.62, next: "Real-CUGAN automatic 4×")
-                        progress(0.63, "Pass 4/4 • Real-CUGAN automatic second 2× pass…")
+                        try await thermalHandoff(progress: progress, position: 0.62, next: "\(upscaleEngineLabel) automatic 4×")
+                        progress(0.63, "Pass 4/4 • \(upscaleEngineLabel) automatic second 2× pass…")
                         let cuganSecondIsFinalVisualStage = !visualPolish && automaticCuganPasses == 2
                         let cuganSecond = RealCUGANPass(
                             intensity: 1.30,
@@ -525,7 +532,7 @@ final class TwoPassVideoProcessor {
                             try persistCheckpoint(from: generated4x, to: cugan4xCheckpoint)
                             try? fm.removeItem(at: generated4x)
                             postCUGANSource = cugan4xCheckpoint
-                            DiagnosticsLogger.shared.log("Checkpoint saved: Real-CUGAN automatic 4×.")
+                            DiagnosticsLogger.shared.log("Checkpoint saved: \(upscaleEngineLabel) automatic 4×.")
                             if let cuganCheckpoint { try? fm.removeItem(at: cuganCheckpoint) }
                         } else {
                             transientURLs.append(generated4x)
