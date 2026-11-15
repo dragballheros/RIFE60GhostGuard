@@ -188,10 +188,12 @@ final class OutlineRebuild {
                 let stats = neighborStats(closed: closedBuf, luma: lumaBuf, x: x, y: y, width: width)
                 let center = Int(lumaBuf[index])
 
-                // Fine source details must bypass both the line-repair and
-                // isolated-speck paths. Otherwise a connected thin line can be
-                // darkened even though it is correctly protected from removal.
-                if (closedBuf[index] == 1 || lineBuf[index] == 1),
+                // Fine-detail protection applies only to pixels that were
+                // already classified as source line art. A newly inferred gap
+                // pixel is not a source stroke: testing its flanks here can
+                // mistake the two ends of a broken contour for a thin detail
+                // and suppress the repair itself.
+                if lineBuf[index] == 1,
                    isProtectedFineDetail(src: src, x: x, y: y, width: width, height: height, srcRow: srcRow) {
                     continue
                 }
