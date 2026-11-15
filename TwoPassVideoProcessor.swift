@@ -390,6 +390,17 @@ final class TwoPassVideoProcessor {
         // 2× passes when the 4× result fits the 40 MP working budget.
         var postCUGANSource: URL?
         var fusedFinalURL: URL?
+        var outlineUpscaleRoutePlan: VideoUpscalePlan?
+        if upscaleTo4K && visualPolish && !outlineCheckpointValid {
+            let routeSource = rifeResult ?? sourceURL
+            outlineUpscaleRoutePlan = try await VideoUpscaleModelRouter.makePlan(
+                sourceURL: routeSource,
+                selection: upscaleModelSelection,
+                progress: { p, message in
+                    progress(0.40 + min(max(p, 0), 1) * 0.01, message)
+                }
+            )
+        }
         if !outlineCheckpointValid {
             if upscaleTo4K {
                 if cugan4xCheckpointValid, let cugan4xCheckpoint {
@@ -415,7 +426,8 @@ final class TwoPassVideoProcessor {
                             intensity: 1.30,
                             colorPopStrength: cuganIsFinalVisualStage ? colorPopStrength : 0,
                             applyWarmthCorrection: cuganIsFinalVisualStage,
-                            modelSelection: upscaleModelSelection
+                            modelSelection: upscaleModelSelection,
+                            routePlan: outlineUpscaleRoutePlan
                         )
                         // Sharpie is a later pass so it does not share the Neural Engine with Real-CUGAN.
                         let fusePolish = false
@@ -571,7 +583,7 @@ final class TwoPassVideoProcessor {
                 let outlineStart = upscaleTo4K ? 0.85 : 0.41
                 progress(outlineStart, upscaleTo4K ? "Pass 4/4 • Applying final Sharpie after Real-CUGAN…" : "Pass 3/3 • Applying final Sharpie after RIFE…")
                 stageTimer.begin("sharpie")
-                let finalOutline = FinalOutlinePass(colorPopStrength: colorPopStrength, colorRebuild: config.colorRebuild, colorRebuildStrength: config.colorRebuildStrength, outlineRebuild: config.outlineRebuild, outlineRebuildStrength: config.outlineRebuildStrength, sharpen: config.outlineProtection)
+                let finalOutline = FinalOutlinePass(colorPopStrength: colorPopStrength, colorRebuild: config.colorRebuild, colorRebuildStrength: config.colorRebuildStrength, outlineRebuild: config.outlineRebuild, outlineRebuildStrength: config.outlineRebuildStrength, sharpen: config.outlineProtection, upscaleRoutePlan: outlineUpscaleRoutePlan)
                 let generated = try await finalOutline.run(
                     sourceURL: outlineInput,
                     finalAudioBitrate: audioBitrate,
@@ -718,10 +730,12 @@ final class TwoPassVideoProcessor {
                     generated = result.url
                 case "cugan":
                     try requireUpscaleFirstMemory(width: outputWidth, height: outputHeight)
-                    generated = try await RealCUGANPass(intensity: 1.30, modelSelection: upscaleModelSelection).run(sourceURL: inputURL, finalAudioBitrate: audioBitrate, progress: publish, telemetry: { sample in
+                    let cugan = RealCUGANPass(intensity: 1.30, modelSelection: upscaleModelSelection, routePlan: outlineUpscaleRoutePlan)
+                    generated = try await cugan.run(sourceURL: inputURL, finalAudioBitrate: audioBitrate, progress: publish, telemetry: { sample in
                         combined.upscaledFrames = sample.upscaledFrames; combined.cuganMsPerFrame = sample.cuganMsPerFrame; combined.upscaleFPS = sample.upscaleFPS; combined.applyCUGANBreakdown(from: sample)
                         telemetry(combined)
                     }, recoveryDirectory: recoveryDirectory)
+                    outlineUpscaleRoutePlan = cugan.routePlan
                 case "rife":
                     // Recheck after the CUGAN model has been released. Never silently
                     // change order on recovery: reject and retain completed checkpoints.
@@ -733,7 +747,16 @@ final class TwoPassVideoProcessor {
                         telemetry(combined)
                     }, recoveryDirectory: recoveryDirectory)
                 default:
-                    generated = try await FinalOutlinePass(colorPopStrength: colorPopStrength, colorRebuild: config.colorRebuild, colorRebuildStrength: config.colorRebuildStrength, outlineRebuild: config.outlineRebuild, outlineRebuildStrength: config.outlineRebuildStrength, sharpen: config.outlineProtection).run(sourceURL: inputURL, finalAudioBitrate: audioBitrate, progress: publish, telemetry: { sample in combined.outlineMsPerFrame = sample.outlineMsPerFrame; telemetry(combined) }, recoveryDirectory: recoveryDirectory)
+                    if outlineUpscaleRoutePlan == nil {
+                        // A recovered CUGAN/RIFE checkpoint can skip the CUGAN stage.
+                        // Rebuild the source-time plan so the outline profile still tracks scenes.
+                        outlineUpscaleRoutePlan = try await VideoUpscaleModelRouter.makePlan(
+                            sourceURL: sourceURL,
+                            selection: upscaleModelSelection,
+                            progress: { _, _ in }
+                        )
+                    }
+                    generated = try await FinalOutlinePass(colorPopStrength: colorPopStrength, colorRebuild: config.colorRebuild, colorRebuildStrength: config.colorRebuildStrength, outlineRebuild: config.outlineRebuild, outlineRebuildStrength: config.outlineRebuildStrength, sharpen: config.outlineProtection, upscaleRoutePlan: outlineUpscaleRoutePlan).run(sourceURL: inputURL, finalAudioBitrate: audioBitrate, progress: publish, telemetry: { sample in combined.outlineMsPerFrame = sample.outlineMsPerFrame; telemetry(combined) }, recoveryDirectory: recoveryDirectory)
                 }
                 await BrokenTileDiagnostics.shared.scanVideo(url: generated, stage: "upscale-first-\(stage)")
                 if let checkpoint = checkpoints[index] {
