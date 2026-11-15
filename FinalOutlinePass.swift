@@ -37,6 +37,7 @@ final class FinalOutlinePass {
     private let outlineRebuildEnabled: Bool
     private let outlineRebuildStrength: Double
     private let sharpen: Bool
+    private let upscaleRoutePlan: VideoUpscalePlan?
     private let sharpieUnits: MLComputeUnits?
     private var streamEnhancer: OutlineEnhancer?
     private var streamCompression = CompressionGuard()
@@ -58,6 +59,7 @@ final class FinalOutlinePass {
         var compressionSeconds = 0.0
         var shadowCleaned = false
         var finalCleaned = false
+        var usesAnimeOutline = true
         var packSeconds = 0.0
         var predictSeconds = 0.0
         var unpackSeconds = 0.0
@@ -69,7 +71,7 @@ final class FinalOutlinePass {
         var buffer: CVPixelBuffer?
     }
 
-    init(colorPopStrength: Double = 0, applyWarmthCorrection: Bool = true, colorRebuild: Bool = false, colorRebuildStrength: Double = 0.45, outlineRebuild: Bool = false, outlineRebuildStrength: Double = 0.5, sharpen: Bool = true, sharpieComputeUnits: MLComputeUnits? = nil) {
+    init(colorPopStrength: Double = 0, applyWarmthCorrection: Bool = true, colorRebuild: Bool = false, colorRebuildStrength: Double = 0.45, outlineRebuild: Bool = false, outlineRebuildStrength: Double = 0.5, sharpen: Bool = true, sharpieComputeUnits: MLComputeUnits? = nil, upscaleRoutePlan: VideoUpscalePlan? = nil) {
         self.sharpieUnits = sharpieComputeUnits
         self.colorPopGrade = (colorPopStrength > 0 || applyWarmthCorrection)
             ? ColorPopGrade(strength: colorPopStrength, warmthMode: applyWarmthCorrection ? nil : .off)
@@ -79,6 +81,7 @@ final class FinalOutlinePass {
         self.outlineRebuildEnabled = outlineRebuild
         self.outlineRebuildStrength = outlineRebuildStrength
         self.sharpen = sharpen
+        self.upscaleRoutePlan = upscaleRoutePlan
     }
 
     // Use a slightly higher-resolution style map so the Sharpie line expands less
@@ -108,6 +111,10 @@ final class FinalOutlinePass {
         DiagnosticsLogger.shared.log("Final visual pass entered • 4K master=\(width)x\(height) • Shadow Chroma → Sharpie → Final Compression • Sharpie style map=\(workingWidth)x\(workingHeight) • thermal=\(currentThermalStateName())")
         progress(0.001, "Final polish • Shadow cleanup → Sharpie → Compression Guard…")
 
+        if let upscaleRoutePlan {
+            let route = upscaleRoutePlan.segments.map { "\($0.engine.displayName) \(String(format: "%.2f", $0.startSeconds))–\(String(format: "%.2f", $0.endSeconds))s" }.joined(separator: " | ")
+            DiagnosticsLogger.shared.log("Scene-aware final outline policy • \(route) • Real-ESRGAN scenes bypass Color Rebuild, Outline Rebuild, and anime Sharpie")
+        }
         try prepareStream(width: width, height: height)
 
         let reader = try AVAssetReader(asset: asset)
@@ -168,12 +175,13 @@ final class FinalOutlinePass {
         var downscaleTotal = 0.0, packTotal = 0.0, predictTotal = 0.0, unpackTotal = 0.0, refineTotal = 0.0, dissolveTotal = 0.0
         var queueWaitTotal = 0.0, assemblyTotal = 0.0, handoffTotal = 0.0, predictWallTotal = 0.0
         var colorRebuildSeconds = 0.0, outlineRebuildSeconds = 0.0, overlapSeconds = 0.0
+        var animeProfileFrames = 0, naturalContourFrames = 0
         let passStart = CFAbsoluteTimeGetCurrent()
         let sharpieQueue = DispatchQueue(label: "rife60.final-sharpie", qos: .userInitiated)
         let finalGuard = CompressionGuard()
         var inflight: SharpieJob?
         defer { inflight?.group.wait() }
-        DiagnosticsLogger.shared.log("Final polish schedule • Sharpie overlaps the next frame's shadow, color rebuild, and outline rebuild • row-parallel CPU rebuilds • Sharpie stays off the Real-CUGAN Neural Engine")
+        DiagnosticsLogger.shared.log("Final polish schedule • scene-aware outline profile • anime Color Rebuild/Outline Rebuild/Sharpie only on CUGAN scenes • natural contour preservation on ESRGAN scenes")
 
         func accept(_ job: SharpieJob) async throws {
             job.group.wait()
@@ -184,6 +192,7 @@ final class FinalOutlinePass {
             }
             if split.shadowCleaned { shadowCleanedFrames += 1 }
             if split.finalCleaned { finalCleanedFrames += 1 }
+            if split.usesAnimeOutline { animeProfileFrames += 1 } else { naturalContourFrames += 1 }
             shadowSeconds += split.shadowSeconds
             colorRebuildSeconds += split.colorRebuildSeconds
             outlineRebuildSeconds += split.outlineRebuildSeconds
@@ -221,7 +230,7 @@ final class FinalOutlinePass {
                 let frac = min(max(CMTimeGetSeconds(job.pts) / seconds, 0), 1)
                 let fps = Double(frames) / max(CFAbsoluteTimeGetCurrent()-passStart, 0.001)
                 let remaining = fps > 0 ? max(seconds*60-Double(frames),0)/fps : 0
-                progress(frac, "Final polish • Shadow cleanup → Sharpie → Compression Guard • \(frames) frames • ETA \(formatDuration(remaining))")
+                progress(frac, "Final polish • Shadow cleanup → Scene-aware outlines → Compression Guard • \(frames) frames • ETA \(formatDuration(remaining))")
                 await Task.yield()
             }
         }
@@ -230,7 +239,7 @@ final class FinalOutlinePass {
         while let item = ahead.next() {
             try await checkpoint.checkCancellation()
             let prefixStart = CFAbsoluteTimeGetCurrent()
-            let prefix = try prepareCPUPrefix(item.buffer)
+            let prefix = try prepareCPUPrefix(item.buffer, at: item.time)
             let prefixEnd = CFAbsoluteTimeGetCurrent()
             if let previous = inflight {
                 try await accept(previous)
@@ -287,7 +296,7 @@ final class FinalOutlinePass {
         guard frames > 0 else { throw ProcessorError.conversionFailed("Final polish pass received zero frames") }
         let completedURL = try await checkpoint.finish()
         let completedBytes = (try? FileManager.default.attributesOfItem(atPath: completedURL.path)[.size] as? NSNumber)?.int64Value ?? 0
-        DiagnosticsLogger.shared.log("Final visual pass complete • frames=\(frames) • order=ShadowChroma→Sharpie→FinalCompression • Sharpie style map=\(workingWidth)x\(workingHeight) • Sharpie=\(String(format: "%.1f", outlineSeconds*1000/Double(frames)))ms/frame • HEVC Main10 • file=\(formatStorageMB(completedBytes)) MB")
+        DiagnosticsLogger.shared.log("Final visual pass complete • frames=\(frames) • anime-profile frames=\(animeProfileFrames) • natural-contour frames=\(naturalContourFrames) • order=ShadowChroma→SceneAwareOutline→FinalCompression • HEVC Main10 • file=\(formatStorageMB(completedBytes)) MB")
         return completedURL
     }
 
@@ -301,13 +310,14 @@ final class FinalOutlinePass {
         streamHeight = height
         streamWorkingWidth = workingWidth
         streamWorkingHeight = workingHeight
-        streamEnhancer = sharpen ? try autoreleasepool { try OutlineEnhancer(computeUnits: sharpieUnits) } : nil
+        let hasAnimeScenes = upscaleRoutePlan?.segments.contains(where: { $0.engine == .realCUGAN }) ?? true
+        streamEnhancer = sharpen && hasAnimeScenes ? try autoreleasepool { try OutlineEnhancer(computeUnits: sharpieUnits) } : nil
         try preparePools(fullWidth: width, fullHeight: height, workingWidth: workingWidth, workingHeight: workingHeight)
     }
 
     /// Shadow chroma, optional rebuild, Sharpie, then light compression. Same order as the file pass.
-    func polishPrepared(_ decoded: CVPixelBuffer) throws -> PolishSplit {
-        var split = try prepareCPUPrefix(decoded)
+    func polishPrepared(_ decoded: CVPixelBuffer, at time: CMTime = .zero) throws -> PolishSplit {
+        var split = try prepareCPUPrefix(decoded, at: time)
         try finishSharpie(&split, compression: streamCompression)
         return split
     }
@@ -315,8 +325,10 @@ final class FinalOutlinePass {
     /// Shadow chroma, then color rebuild, then outline rebuild. Stays on the caller
     /// thread so the previous-frame chroma history stays in order. Safe to run while
     /// Sharpie of the previous frame uses the Neural Engine.
-    private func prepareCPUPrefix(_ decoded: CVPixelBuffer) throws -> PolishSplit {
+    private func prepareCPUPrefix(_ decoded: CVPixelBuffer, at time: CMTime) throws -> PolishSplit {
         var split = PolishSplit()
+        let usesAnimeOutline = upscaleRoutePlan?.usesAnimeOutline(at: CMTimeGetSeconds(time)) ?? true
+        split.usesAnimeOutline = usesAnimeOutline
         let shadowStart = CFAbsoluteTimeGetCurrent()
         let preSharpie: CVPixelBuffer
         if let cleaned = try? streamCompression.cleanShadowChroma(decoded) {
@@ -328,12 +340,12 @@ final class FinalOutlinePass {
         split.shadowSeconds = CFAbsoluteTimeGetCurrent() - shadowStart
 
         var rebuilt = preSharpie
-        if colorRebuildEnabled {
+        if usesAnimeOutline && colorRebuildEnabled {
             let started = CFAbsoluteTimeGetCurrent()
             rebuilt = streamColorRebuild.apply(rebuilt, strength: colorRebuildStrength)
             split.colorRebuildSeconds = CFAbsoluteTimeGetCurrent() - started
         }
-        if outlineRebuildEnabled {
+        if usesAnimeOutline && outlineRebuildEnabled {
             let started = CFAbsoluteTimeGetCurrent()
             rebuilt = streamOutlineRebuild.apply(rebuilt, strength: outlineRebuildStrength)
             split.outlineRebuildSeconds = CFAbsoluteTimeGetCurrent() - started
@@ -351,7 +363,7 @@ final class FinalOutlinePass {
         let outlineStart = CFAbsoluteTimeGetCurrent()
         let resizeStart = CFAbsoluteTimeGetCurrent()
         let narrowed: CVPixelBuffer
-        if let enhancer = streamEnhancer {
+        if split.usesAnimeOutline, let enhancer = streamEnhancer {
             let working = streamScale < 0.999 ? try resize(rebuilt, width: streamWorkingWidth, height: streamWorkingHeight, pool: workingPool) : rebuilt
             split.downscaleSeconds = CFAbsoluteTimeGetCurrent() - resizeStart
             let enhancedWorking = try autoreleasepool { try enhancer.enhance(working) }
