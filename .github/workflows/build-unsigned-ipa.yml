@@ -8,7 +8,7 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.ref_name }}
   # Cancel superseded PR runs and duplicate push/PR runs on this development branch.
   # Keep main/release builds protected from automatic cancellation.
-  cancel-in-progress: ${{ github.event_name == 'pull_request' || github.ref_name == 'cursor/edge-collapse-on-blush-stack-8e49' || github.ref_name == 'diagnostics/rife-real-stream-parity-gate' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || github.ref_name == 'feature/auto-cugan-esrgan-router' || github.ref_name == 'cursor/edge-collapse-on-blush-stack-8e49' || github.ref_name == 'diagnostics/rife-real-stream-parity-gate' }}
 
 # Rebuild trigger after reverting mobile compression restoration
 # Color Pop skin-state preservation fix build trigger
