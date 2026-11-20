@@ -13,7 +13,7 @@ mod structural;
 mod thin_line;
 mod warped;
 
-pub use chain::{clean_source_outlier, polish_inbetween, PolishStats};
+pub use chain::{clean_source_outlier, polish_inbetween, polish_inbetween_with, GuardFlags, PolishStats};
 pub use frame::Frame;
 pub use ghost::{endpoint_disposition, Disposition, GhostGuard, GhostGuardResult};
 pub use outlier::{OutlierResult, SourceFrameOutlierGuard};

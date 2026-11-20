@@ -1,1 +1,1 @@
-The Windows build downloads `flownet.param` and `flownet.bin` for rife-v4.6 into this folder. Those files are not stored in git.
+The Windows build downloads `flownet.param` and `flownet.bin` for rife-v4.6 and rife-v4.26 into the installer staging folder. Those files are not stored in git. Real-CUGAN noise 3 is staged beside them. MiniMax H3, Animagine XL, and converted ONNX networks are downloaded by the app on first use.

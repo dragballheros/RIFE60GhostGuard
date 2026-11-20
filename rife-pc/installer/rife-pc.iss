@@ -31,6 +31,13 @@ Source: "..\staging\ffmpeg.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\staging\ffprobe.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\staging\THIRD_PARTY.txt"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\staging\models\rife-v4.6\*"; DestDir: "{app}\models\rife-v4.6"; Flags: ignoreversion recursesubdirs
+Source: "..\staging\models\rife-v4.26\*"; DestDir: "{app}\models\rife-v4.26"; Flags: ignoreversion recursesubdirs
+Source: "..\staging\realcugan-ncnn-vulkan.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\staging\models\models-se\*"; DestDir: "{app}\models\models-se"; Flags: ignoreversion recursesubdirs
+Source: "..\staging\ort_capi.dll"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\staging\onnxruntime.dll"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\staging\DirectML.dll"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
+Source: "..\staging\vcomp140.dll"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 
 [Icons]
 Name: "{group}\RIFE60 GhostGuard"; Filename: "{app}\{#MyAppExe}"; Parameters: "gui"; Comment: "Interpolate a video with RIFE on Vulkan"

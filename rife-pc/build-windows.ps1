@@ -72,9 +72,14 @@ if ($LASTEXITCODE -ne 0) {
     git -C $srcRoot checkout FETCH_HEAD
 }
 git -C $srcRoot submodule update --init --recursive src/ncnn
+# RIFE 4.26 needs 64-pixel padding. 4.25-lite needs 128. 4.6 stays at 32.
+# The pinned runtime hardcodes 32. This edit keeps that commit building.
+& (Join-Path $Root "native\patch-rife-padding.ps1") -SrcRoot $srcRoot
 
 $build = Join-Path $Root "native\build"
 # Applies to this configure and to the ncnn and glslang subdirectories.
+# PowerShell splits an unquoted -DNAME=value argument on the equals sign when
+# the value looks like a number (for example -DX=3.5). Keep every -D quoted.
 $env:CMAKE_POLICY_VERSION_MINIMUM = "3.5"
 cmake -S (Join-Path $Root "native") -B $build "-DRIFE_SRC=$(Join-Path $srcRoot 'src')" "-DCMAKE_BUILD_TYPE=Release" "-DCMAKE_POLICY_VERSION_MINIMUM=3.5"
 if ($LASTEXITCODE -ne 0) { throw "CMake configure failed with exit code $LASTEXITCODE" }
@@ -129,6 +134,62 @@ Copy-Item $ffmpegExe.FullName (Join-Path $stage "ffmpeg.exe")
 Copy-Item $ffprobeExe.FullName (Join-Path $stage "ffprobe.exe")
 Copy-Item (Join-Path $model.FullName "*") (Join-Path $stage "models\rife-v4.6") -Recurse
 Copy-Item (Join-Path $Root "THIRD_PARTY.txt") (Join-Path $stage "THIRD_PARTY.txt")
+
+$rife426 = Join-Path $stage "models\rife-v4.26"
+New-Item -ItemType Directory -Force -Path $rife426 | Out-Null
+Write-Host "Downloading rife-v4.26 flownet (ncnn, about 11 MB)"
+Get-File "https://raw.githubusercontent.com/k4yt3x/video2x/master/models/rife/rife-v4.26/flownet.param" (Join-Path $rife426 "flownet.param")
+Get-File "https://raw.githubusercontent.com/k4yt3x/video2x/master/models/rife/rife-v4.26/flownet.bin" (Join-Path $rife426 "flownet.bin")
+if ((Get-Item (Join-Path $rife426 "flownet.bin")).Length -lt 1000000) {
+    throw "rife-v4.26 flownet.bin is too small. The download was not the weight file."
+}
+
+$cuganZip = Join-Path $cache "realcugan-ncnn-vulkan-20220728-windows.zip"
+if (-not (Test-Path $cuganZip)) {
+    Write-Host "Downloading realcugan-ncnn-vulkan"
+    Get-File "https://github.com/nihui/realcugan-ncnn-vulkan/releases/download/20220728/realcugan-ncnn-vulkan-20220728-windows.zip" $cuganZip
+}
+$cuganDir = Join-Path $cache "realcugan"
+if (Test-Path $cuganDir) { Remove-Item -Recurse -Force $cuganDir }
+Expand-Archive $cuganZip $cuganDir
+$cuganExe = Get-ChildItem $cuganDir -Recurse -Filter realcugan-ncnn-vulkan.exe | Select-Object -First 1
+if (-not $cuganExe) { throw "realcugan-ncnn-vulkan.exe was not in the zip" }
+Copy-Item $cuganExe.FullName (Join-Path $stage "realcugan-ncnn-vulkan.exe") -Force
+Get-ChildItem $cuganExe.DirectoryName -Filter *.dll | ForEach-Object {
+    Copy-Item $_.FullName (Join-Path $stage $_.Name) -Force
+}
+$denoise = Get-ChildItem $cuganDir -Recurse -Filter "up2x-denoise3x.param" | Select-Object -First 1
+if (-not $denoise) { throw "models-se up2x-denoise3x.param was not in the Real-CUGAN zip" }
+$seStage = Join-Path $stage "models\models-se"
+New-Item -ItemType Directory -Force -Path $seStage | Out-Null
+Copy-Item (Join-Path $denoise.DirectoryName "up2x-denoise3x.param") $seStage
+Copy-Item (Join-Path $denoise.DirectoryName "up2x-denoise3x.bin") $seStage
+
+$ortVersion = "1.24.4"
+$ortNupkg = Join-Path $cache "Microsoft.ML.OnnxRuntime.DirectML.$ortVersion.nupkg"
+if (-not (Test-Path $ortNupkg)) {
+    Write-Host "Downloading ONNX Runtime DirectML $ortVersion"
+    Get-File "https://api.nuget.org/v3-flatcontainer/microsoft.ml.onnxruntime.directml/$ortVersion/microsoft.ml.onnxruntime.directml.$ortVersion.nupkg" $ortNupkg
+}
+$ortDir = Join-Path $cache "onnxruntime-directml"
+if (Test-Path $ortDir) { Remove-Item -Recurse -Force $ortDir }
+Copy-Item $ortNupkg (Join-Path $cache "onnxruntime-directml.zip") -Force
+Expand-Archive (Join-Path $cache "onnxruntime-directml.zip") $ortDir
+$ortInclude = Get-ChildItem $ortDir -Recurse -Filter onnxruntime_cxx_api.h | Select-Object -First 1
+$ortLib = Get-ChildItem $ortDir -Recurse -Filter onnxruntime.lib | Select-Object -First 1
+if (-not $ortInclude -or -not $ortLib) { throw "ONNX Runtime headers or import library were not in the DirectML package" }
+$ortBuild = Join-Path $Root "native\ort-build"
+# Quoted -D because PowerShell would otherwise split -DNAME=value.
+cmake -S (Join-Path $Root "native\ort") -B $ortBuild "-DORT_INCLUDE=$($ortInclude.DirectoryName)" "-DORT_LIB=$($ortLib.FullName)" "-DCMAKE_BUILD_TYPE=Release" "-DCMAKE_POLICY_VERSION_MINIMUM=3.5"
+if ($LASTEXITCODE -ne 0) { throw "ONNX Runtime CMake configure failed with exit code $LASTEXITCODE" }
+cmake --build $ortBuild --config Release
+if ($LASTEXITCODE -ne 0) { throw "ONNX Runtime wrapper build failed with exit code $LASTEXITCODE" }
+$ortCapi = Get-ChildItem $ortBuild -Recurse -Filter ort_capi.dll | Select-Object -First 1
+if (-not $ortCapi) { throw "ort_capi.dll was not produced" }
+Copy-Item $ortCapi.FullName (Join-Path $stage "ort_capi.dll") -Force
+Get-ChildItem $ortDir -Recurse -Filter *.dll | ForEach-Object {
+    Copy-Item $_.FullName (Join-Path $stage $_.Name) -Force
+}
 
 $iscc = @(
     "$env:ProgramFiles\Inno Setup 7\ISCC.exe",

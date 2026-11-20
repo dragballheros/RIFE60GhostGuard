@@ -10,7 +10,7 @@ use anyhow::{anyhow, Context, Result};
 use rife_guards::Frame;
 
 use crate::schedule::{parse_rate, Rational};
-use crate::x265::{color_from_probe, encode_args, ColorMeta};
+use crate::x265::{color_from_probe, ColorMeta};
 
 #[derive(Clone, Debug)]
 pub struct Probe {
@@ -252,7 +252,21 @@ impl Encoder {
         fps_den: i64,
         color: &ColorMeta,
     ) -> Result<Self> {
-        let args = encode_args(
+        Self::spawn_audio(ffmpeg, source, output, width, height, fps_num, fps_den, color, true)
+    }
+
+    pub fn spawn_audio(
+        ffmpeg: &Path,
+        source: &Path,
+        output: &Path,
+        width: i32,
+        height: i32,
+        fps_num: i64,
+        fps_den: i64,
+        color: &ColorMeta,
+        preserve_audio: bool,
+    ) -> Result<Self> {
+        let args = crate::x265::encode_args_audio(
             &ffmpeg.display().to_string(),
             width,
             height,
@@ -261,8 +275,47 @@ impl Encoder {
             color,
             &source.display().to_string(),
             &output.display().to_string(),
+            preserve_audio,
         );
-        // encode_args starts with the program name.
+        Self::from_args(ffmpeg, width, height, &args)
+    }
+
+    pub fn spawn_ffv1(
+        ffmpeg: &Path,
+        output: &Path,
+        width: i32,
+        height: i32,
+        fps_num: i64,
+        fps_den: i64,
+    ) -> Result<Self> {
+        let rate = format!("{fps_num}/{fps_den}");
+        let args = vec![
+            ffmpeg.display().to_string(),
+            "-y".into(),
+            "-hide_banner".into(),
+            "-loglevel".into(),
+            "error".into(),
+            "-f".into(),
+            "rawvideo".into(),
+            "-pix_fmt".into(),
+            "bgra".into(),
+            "-s".into(),
+            format!("{width}x{height}"),
+            "-r".into(),
+            rate,
+            "-i".into(),
+            "-".into(),
+            "-an".into(),
+            "-c:v".into(),
+            "ffv1".into(),
+            "-pix_fmt".into(),
+            "gbrp".into(),
+            output.display().to_string(),
+        ];
+        Self::from_args(ffmpeg, width, height, &args)
+    }
+
+    fn from_args(ffmpeg: &Path, width: i32, height: i32, args: &[String]) -> Result<Self> {
         let mut cmd = Command::new(&args[0]);
         cmd.args(&args[1..]);
         cmd.stdin(Stdio::piped())

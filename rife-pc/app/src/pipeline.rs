@@ -11,11 +11,12 @@ use std::thread;
 use std::time::Instant;
 
 use anyhow::{anyhow, Result};
-use rife_guards::{clean_source_outlier, polish_inbetween, Frame};
+use rife_guards::{clean_source_outlier, polish_inbetween_with, Frame};
 
 use crate::ffmpeg::{tool_path, Decoder, Encoder};
 use crate::rife::Engine;
 use crate::schedule::{output_count, output_rate, slot_at, Rational, Slot};
+use crate::settings::ProcessingSettings;
 
 #[derive(Clone, Debug)]
 pub struct Options {
@@ -28,6 +29,9 @@ pub struct Options {
     pub tile: i32,
     pub sensitivity: f64,
     pub ffmpeg: Option<PathBuf>,
+    pub settings: ProcessingSettings,
+    /// Original file whose audio is copied. Empty means `input`.
+    pub audio_source: PathBuf,
 }
 
 #[derive(Clone, Debug)]
@@ -36,6 +40,11 @@ pub struct Progress {
     pub output_total: u64,
     pub fps: f64,
     pub source_frame: u64,
+    pub stage: String,
+    pub eta_seconds: f64,
+    pub ram_mb: u64,
+    pub seam: f32,
+    pub fraction: f32,
 }
 
 #[derive(Clone, Debug)]
@@ -47,6 +56,8 @@ pub struct Summary {
     pub stroke_repeats: u64,
     pub source_outliers: u64,
     pub gpu_name: String,
+    pub notes: Vec<String>,
+    pub diagnostics_path: Option<PathBuf>,
 }
 
 enum GuardJob {
@@ -75,7 +86,7 @@ impl CleanWindow {
         }
     }
 
-    fn push(&mut self, frame: Frame, sensitivity: f64, outliers: &mut u64) -> Vec<(usize, Frame)> {
+    fn push(&mut self, frame: Frame, sensitivity: f64, outliers: &mut u64, clean: bool) -> Vec<(usize, Frame)> {
         let index = self.next_index;
         self.next_index += 1;
         if self.pending.is_none() {
@@ -90,8 +101,12 @@ impl CleanWindow {
         let (a_index, a) = self.previous.take().unwrap();
         let (b_index, b) = self.pending.take().unwrap();
         let before = b.data.clone();
-        let corrected = clean_source_outlier(&a, &b, &frame, 0.5, sensitivity);
-        if corrected.data != before {
+        let corrected = if clean {
+            clean_source_outlier(&a, &b, &frame, 0.5, sensitivity)
+        } else {
+            b
+        };
+        if clean && corrected.data != before {
             *outliers += 1;
         }
         self.previous = Some((b_index, corrected));
@@ -114,7 +129,18 @@ impl CleanWindow {
 pub fn run(
     options: &Options,
     cancel: Arc<AtomicBool>,
+    progress: impl Fn(Progress) + Send + Sync + 'static,
+) -> Result<Summary> {
+    crate::passes::orchestrate(options, cancel, progress)
+}
+
+pub(crate) fn interpolate(
+    options: &Options,
+    cancel: Arc<AtomicBool>,
     progress: impl Fn(Progress) + Send + 'static,
+    apply_pre: bool,
+    apply_post: bool,
+    lossless: bool,
 ) -> Result<Summary> {
     if options.input == options.output {
         return Err(anyhow!("input and output are the same path"));
@@ -165,6 +191,9 @@ pub fn run(
     let produced = Arc::new(std::sync::atomic::AtomicU64::new(0));
 
     let input = options.input.clone();
+    let settings_decode = options.settings.clone();
+    let notes_decode: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let notes_guard = Arc::clone(&notes_decode);
     let width = info.width & !1;
     let height = info.height & !1;
     let source_width = info.width;
@@ -172,6 +201,7 @@ pub fn run(
     let ffmpeg_decode = ffmpeg.clone();
     let cancel_decode = Arc::clone(&cancel);
     let fail_decode = Arc::clone(&failure);
+    let notes_for_decode = Arc::clone(&notes_decode);
     let decode_thread = thread::spawn(move || {
         if let Err(err) = decode_loop(
             &ffmpeg_decode,
@@ -182,6 +212,9 @@ pub fn run(
             source_height,
             decoded_tx,
             &cancel_decode,
+            &settings_decode,
+            apply_pre,
+            &notes_for_decode,
         ) {
             *fail_decode.lock().unwrap() = Some(err.to_string());
         }
@@ -196,6 +229,7 @@ pub fn run(
     let outliers_gpu = Arc::clone(&outliers);
     let source_seen = Arc::new(std::sync::atomic::AtomicU64::new(0));
     let source_seen_gpu = Arc::clone(&source_seen);
+    let clean_outliers = options.settings.source_outlier;
     let gpu_thread = thread::spawn(move || {
         if let Err(err) = gpu_loop(
             engine,
@@ -208,6 +242,7 @@ pub fn run(
             &cancel_gpu,
             &outliers_gpu,
             &source_seen_gpu,
+            clean_outliers,
         ) {
             *fail_gpu.lock().unwrap() = Some(err.to_string());
         }
@@ -218,6 +253,7 @@ pub fn run(
     let fail_guard = Arc::clone(&failure);
     let scene = Arc::clone(&stats_scene);
     let stroke = Arc::clone(&stats_stroke);
+    let settings_guard = options.settings.clone();
     let guard_thread = thread::spawn(move || {
         if let Err(err) = guard_loop(
             guard_rx,
@@ -226,13 +262,21 @@ pub fn run(
             &cancel_guard,
             &scene,
             &stroke,
+            &settings_guard,
+            apply_post,
+            &notes_guard,
         ) {
             *fail_guard.lock().unwrap() = Some(err.to_string());
         }
     });
 
     let output = options.output.clone();
-    let source = options.input.clone();
+    let source = if options.audio_source.as_os_str().is_empty() {
+        options.input.clone()
+    } else {
+        options.audio_source.clone()
+    };
+    let preserve_audio = options.settings.preserve_audio && !lossless;
     let ffmpeg_enc = ffmpeg.clone();
     let color = info.color.clone();
     let expected = if info.frame_count > 0 {
@@ -263,6 +307,8 @@ pub fn run(
             &produced_enc,
             &source_for_progress,
             started,
+            preserve_audio,
+            lossless,
             progress,
         );
         if let Err(err) = result {
@@ -279,6 +325,7 @@ pub fn run(
     }
     let frames = produced.load(Ordering::Relaxed);
     let seconds = started.elapsed().as_secs_f64().max(0.001);
+    let notes = notes_decode.lock().unwrap().clone();
     Ok(Summary {
         output_frames: frames,
         seconds,
@@ -287,6 +334,8 @@ pub fn run(
         stroke_repeats: stats_stroke.load(Ordering::Relaxed),
         source_outliers: outliers.load(Ordering::Relaxed),
         gpu_name,
+        notes,
+        diagnostics_path: None,
     })
 }
 
@@ -299,21 +348,32 @@ fn decode_loop(
     source_height: i32,
     tx: SyncSender<Frame>,
     cancel: &AtomicBool,
+    settings: &ProcessingSettings,
+    apply_pre: bool,
+    notes: &Mutex<Vec<String>>,
 ) -> Result<()> {
     let mut decoder = Decoder::spawn(ffmpeg, input, width, height, source_width, source_height)?;
+    let mut filters = crate::filters::FilterState::default();
     loop {
         if cancel.load(Ordering::Relaxed) {
             return Err(anyhow!("cancelled"));
         }
         match decoder.read_frame()? {
             Some(frame) => {
+                let frame = if apply_pre {
+                    crate::filters::pre_frame(&frame, settings, &mut filters)
+                } else {
+                    frame
+                };
                 if tx.send(frame).is_err() {
+                    notes.lock().unwrap().extend(filters.notes.drain(..));
                     return Ok(());
                 }
             }
             None => break,
         }
     }
+    notes.lock().unwrap().extend(filters.notes);
     decoder.finish()?;
     Ok(())
 }
@@ -329,6 +389,7 @@ fn gpu_loop(
     cancel: &AtomicBool,
     outliers: &std::sync::atomic::AtomicU64,
     source_seen: &std::sync::atomic::AtomicU64,
+    clean_outliers: bool,
 ) -> Result<()> {
     let mut window = CleanWindow::new();
     let mut ready: VecDeque<(usize, Frame)> = VecDeque::new();
@@ -338,7 +399,7 @@ fn gpu_loop(
         if cancel.load(Ordering::Relaxed) {
             return Err(anyhow!("cancelled"));
         }
-        for cleaned in window.push(frame, sensitivity, &mut outlier_count) {
+        for cleaned in window.push(frame, sensitivity, &mut outlier_count, clean_outliers) {
             ready.push_back(cleaned);
             source_seen.store(
                 ready.back().map(|(i, _)| *i as u64 + 1).unwrap_or(0),
@@ -476,7 +537,15 @@ fn guard_loop(
     cancel: &AtomicBool,
     scene: &std::sync::atomic::AtomicU64,
     stroke: &std::sync::atomic::AtomicU64,
+    settings: &ProcessingSettings,
+    apply_post: bool,
+    notes: &Mutex<Vec<String>>,
 ) -> Result<()> {
+    let flags = settings.guard_flags();
+    let mut filters = crate::filters::FilterState::default();
+    let mut index = 0u64;
+    let diag_dir = crate::models::data_dir().join("Diagnostics");
+    let mut diag = crate::diagnostics::Recorder::new(diag_dir);
     while let Ok(job) = rx.recv() {
         if cancel.load(Ordering::Relaxed) {
             return Err(anyhow!("cancelled"));
@@ -490,13 +559,14 @@ fn guard_loop(
                 timestep,
                 context,
             } => {
-                let (frame, stats) = polish_inbetween(
+                let (frame, stats) = polish_inbetween_with(
                     &previous,
                     &mid,
                     &next,
                     timestep,
                     sensitivity,
                     context.as_ref(),
+                    &flags,
                 );
                 if stats.scene_boundary {
                     scene.fetch_add(1, Ordering::Relaxed);
@@ -507,8 +577,23 @@ fn guard_loop(
                 frame
             }
         };
+        let frame = if apply_post {
+            crate::filters::post_frame(&frame, settings, &mut filters)
+        } else {
+            frame
+        };
+        if settings.diagnostics {
+            diag.observe("output", index, &frame);
+        }
+        index += 1;
         if tx.send(frame).is_err() {
-            return Err(anyhow!("encoder stopped"));
+            break;
+        }
+    }
+    notes.lock().unwrap().extend(filters.notes);
+    if settings.diagnostics {
+        if let Ok(path) = diag.finish(0.0) {
+            notes.lock().unwrap().push(format!("Diagnostics: {}", path.display()));
         }
     }
     Ok(())
@@ -528,18 +613,25 @@ fn encode_loop(
     produced: &std::sync::atomic::AtomicU64,
     source_seen: &std::sync::atomic::AtomicU64,
     started: Instant,
+    preserve_audio: bool,
+    lossless: bool,
     progress: impl Fn(Progress),
 ) -> Result<()> {
-    let mut encoder = Encoder::spawn(
-        ffmpeg,
-        source,
-        output,
-        width,
-        height,
-        out_rate.num,
-        out_rate.den,
-        color,
-    )?;
+    let mut encoder = if lossless {
+        Encoder::spawn_ffv1(ffmpeg, output, width, height, out_rate.num, out_rate.den)?
+    } else {
+        Encoder::spawn_audio(
+            ffmpeg,
+            source,
+            output,
+            width,
+            height,
+            out_rate.num,
+            out_rate.den,
+            color,
+            preserve_audio,
+        )?
+    };
     let mut count = 0u64;
     let mut last_print = Instant::now();
     while let Ok(frame) = rx.recv() {
@@ -551,11 +643,18 @@ fn encode_loop(
         produced.store(count, Ordering::Relaxed);
         if last_print.elapsed().as_millis() >= 500 {
             let seconds = started.elapsed().as_secs_f64().max(0.001);
+            let fps = count as f64 / seconds;
+            let remaining = expected.saturating_sub(count) as f64;
             progress(Progress {
                 output_frame: count,
                 output_total: expected.max(count),
-                fps: count as f64 / seconds,
+                fps,
                 source_frame: source_seen.load(Ordering::Relaxed),
+                stage: "interpolate".into(),
+                eta_seconds: if fps > 0.0 { remaining / fps } else { 0.0 },
+                ram_mb: crate::perf::available_ram_mb(),
+                seam: 0.0,
+                fraction: count as f32 / expected.max(count) as f32,
             });
             last_print = Instant::now();
         }
@@ -567,6 +666,11 @@ fn encode_loop(
         output_total: count,
         fps: count as f64 / seconds,
         source_frame: source_seen.load(Ordering::Relaxed),
+        stage: "interpolate".into(),
+        eta_seconds: 0.0,
+        ram_mb: crate::perf::available_ram_mb(),
+        seam: 0.0,
+        fraction: 1.0,
     });
     Ok(())
 }

@@ -11,3 +11,17 @@ for those components is published by the FFmpeg project and by MulticoreWare
 GhostGuard repository.
 
 Vulkan-1.dll is supplied by the GPU driver and is not copied by this installer.
+
+realcugan-ncnn-vulkan (MIT) and its models-se noise-3 weights perform the 2× upscale. The executable and that one model are copied by the installer. Other Real-CUGAN noise levels are not.
+
+ONNX Runtime and DirectML (MIT) run converted Core ML networks when you add ONNX files later. The installer copies the runtime. It does not copy Anime Restore, Sharpie, LaMa, or DeepCream weights.
+
+stable-diffusion.cpp (MIT) is downloaded on first use for MiniMax H3 and AI Image Studio. It is not in the installer.
+
+MiniMax H3 weights are licensed by MiniMax. The Community License excludes the United States, the European Union, the United Kingdom, and South Korea unless MiniMax has separately authorized that use. Read the license before downloading. The Q4_K_M GGUF files are published by leejet/MiniMax-H3-GGUF. Q8_0 is not in that repository. The video and audio VAEs are the Comfy-Org MiniMax-H3 files.
+
+RIFE 4.26 flownet.param and flownet.bin are the ncnn export shipped with k4yt3x/video2x. RIFE 4.6 remains the official nihui release.
+
+DeepCreamPy is CC BY-NC-SA 4.0 (non-commercial, share-alike). LaMa is Apache-2.0. The anime LaMa fine-tune (dreMaz/AnimeMangaInpainting) is MIT. Those weights are not in the installer.
+
+Animagine XL is not bundled. Read its model card. Anima's upstream license is non-commercial; this build does not run it.

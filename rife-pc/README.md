@@ -4,7 +4,7 @@ Command-line and windowed RIFE interpolation for a Windows 11 PC, including an I
 
 The GPU path is **ncnn Vulkan**, the same runtime as [nihui/rife-ncnn-vulkan](https://github.com/nihui/rife-ncnn-vulkan). Navi 14 (the 5300M/5500M/5600M) is supported by AMD's Windows Vulkan driver, and that project already runs this network on it: custom warp shader, fp16 storage, and the published rife-v4.x `flownet` models. A wgpu port would not load those models. The build links that runtime in-process (`rife_capi.dll`). It does not shell out to `rife-ncnn-vulkan.exe`.
 
-The bundled model is **rife-v4.6**, the newest v4 model in the official ncnn-vulkan release (4.6). The iOS app's 4.26 weights are a Core ML build and are not in that release. A later v4 export with the same `in0` / `in1` / `in2` / `out0` flownet can be passed with `--model`.
+The installer includes **rife-v4.6** and **rife-v4.26**. 4.6 is the model from the official ncnn-vulkan release. 4.26 is the ncnn flownet published with video2x (about 11 MB). The Windows runtime is the pinned rife-ncnn-vulkan commit, patched so a directory named `rife-v4.26` uses 64-pixel padding and `rife-v4.6` stays at 32. The window defaults to 4.26. `--rife 4.6` keeps the previous command-line model. `--model <dir>` still points at any flownet directory.
 
 Default tile size is 512. That stays inside the 4 GB framebuffer on the 5300M and 5500M. `--tile 0` runs the whole frame when you know it fits (the 5600M has 8 GB). The loader picks a GPU whose name contains AMD or Radeon. On Boot Camp that is the discrete GPU, not the Intel iGPU. `--gpu N` overrides it.
 
@@ -14,7 +14,7 @@ Default tile size is 512. That stays inside the 4 GB framebuffer on the 5300M an
 
 `rife-pc\installer\output\RIFE60GhostGuard-Setup.exe`
 
-It installs to `C:\Program Files\RIFE60 GhostGuard`, adds that folder to the system PATH, adds a Start Menu entry that opens the window, and registers an uninstaller. The folder contains `rife-pc.exe`, `rife_capi.dll` (ncnn Vulkan), `ffmpeg.exe` / `ffprobe.exe` (GPL build with libx265), and `models\rife-v4.6`.
+It installs to `C:\Program Files\RIFE60 GhostGuard`, adds that folder to the system PATH, adds a Start Menu entry that opens the window, and registers an uninstaller. The folder contains `rife-pc.exe`, `rife_capi.dll` (ncnn Vulkan), `realcugan-ncnn-vulkan.exe`, `ort_capi.dll` and `onnxruntime.dll` (DirectML), `ffmpeg.exe` / `ffprobe.exe` (GPL build with libx265), `models\rife-v4.6`, `models\rife-v4.26`, and `models\models-se` (Real-CUGAN 2× noise 3). Multi-gigabyte H3, Animagine, and converted ONNX networks are downloaded later.
 
 Vulkan itself comes from the AMD driver (`vulkan-1.dll` in System32), not from this installer.
 
@@ -64,7 +64,37 @@ rife-pc input.mp4 -o output.mp4 --fps 60
 
 `--fps` wins when both are set. Progress lines look like `rife-pc: 120/1440 frames  36.2 fps  source 60`.
 
-Other flags: `--model <dir>`, `--gpu N`, `--tile 512`, `--sensitivity 1.35` (the iOS range is 0.65 to 1.35).
+Other flags follow the iOS toggles. The plain command above stays guards-on, audio-on, and does not upscale or grade. Add the flags to match a GUI setup:
+
+`--rife 4.26`, `--no-ghost`, `--no-scene-cuts`, `--no-thin-line`, `--no-line-stabilizers`, `--no-outlier`, `--no-audio`, `--render-power`, `--tier auto|performance|balanced|safe`, `--reddit`, `--gif`, `--compression`, `--color-pop`, `--color-pop-strength 1`, `--warmth off|original|processed|full`, `--skin-tone off|original|processed|full`, `--color-rebuild`, `--outline-rebuild`, `--sharpie`, `--anime-restore`, `--anime-quality auto|apisr|span`, `--upscale`, `--upscale-first`, `--watermark`, `--watermark-model lama|bar|mosaic`, `--diagnostics`, `--export-dir`, `--also clip2.mp4`, `--sensitivity 1.35`, `--gpu N`, `--tile 512`.
+
+`rife-pc h3 --prompt "..." --accept-license -o clip.mp4` runs MiniMax H3 through a downloaded stable-diffusion.cpp CPU build. `rife-pc studio --prompt "..."` runs Animagine XL. `rife-pc download <id>` fetches one catalog file. The window has the same controls.
+
+## What the window adds
+
+The iOS toggles are on the Interpolate, Picture, Scale, Watermark, Export, and Queue tabs. Wan VACE is not ported.
+
+- **RIFE 4.26 and 4.6.** Ghost protection, scene-cut protection, thin-line preservation, line stabilizers, and the source outlier guard.
+- **Render power mode** calls `SetThreadExecutionState` so Windows stays awake. It does not enlarge the RIFE tile past the 4 GB framebuffer on the 5300M and 5500M. Safe mode caps the tile at 256. Auto on a 64 GB machine with power mode on is the Performance tier.
+- **Preserve original audio** stream-copies the source audio onto the final HEVC file. GIF export drops audio.
+- **Reddit Mode** re-encodes toward 19.8 MB (20 MB hard cap). Stills try AVIF, then JPEG. **Convert video to GIF** searches frame rate and long-edge the way the iOS exporter does. The iOS GIF loop-seam picker is approximated by ffmpeg's palette.
+- **Compression Guard, Color Pop, Color Rebuild, automatic warmth, and the skin-tone picker** are the iOS pixel formulas on the CPU.
+- **Outline Rebuild** is the classical gap closer. **Final Sharpie Outline** runs `AnimeSharpieOutlineSubtle.onnx` when that file is present (94% network, 6% source, blush strokes put back). Without the file it darkens lines the mask already found and the status line says so.
+- **Anime Restore** tiles 256 with a 16-pixel overlap, runs APISR or SPAN, scales the 512 output back to 256, and blends by strength. Auto prefers APISR when one tile is under the iOS 1000 ms budget (the iOS measurement is halved, same as `duplicate_divisor`). Short-side 720 and below turns it on unless "do not auto-enable" is checked. The ONNX files are not in the installer. `tools/convert_coreml_to_onnx.py` is the conversion step from the iOS Core ML packages.
+- **Real-CUGAN 2×** is `realcugan-ncnn-vulkan.exe` with `models-se` noise 3 and sync gap 3. A second pass runs when the long edge is under 1080 and 4× stays within 40 megapixels. **Upscale before interpolation** matches the iOS upscale-first order. The iOS intensity 1.30 is an input of the Core ML graph and is not a separate ncnn flag. ncnn's default GPU is used unless you set the GPU index; RIFE itself still picks an AMD device by name.
+- **Watermark removal** paints a normalized mask in the window. Each queue item has its own toggle. LaMa and DeepCream run through ONNX when the files exist. Otherwise the marked pixels are filled from nearby unmasked pixels. DeepCream preprocessing keeps the iOS convention: 1 means preserve, 0 means inpaint, bar models blank unknown pixels to -1, mosaic models keep the mosaic texture, and the tensor is repeated to batch 8. DeepCreamPy is CC BY-NC-SA 4.0 (non-commercial). LaMa's fine-tune is MIT and the base model is Apache-2.0.
+- **Queue and export folder.** The queue runs one file after another.
+- **Live readout** shows the stage, frames, fps, free RAM, and a rough ETA. **Broken-tile diagnostics** score grid-aligned luminance steps every 15 frames and write `run.json` plus up to five BMP frames.
+- **MiniMax H3** and **AI Image Studio** download stable-diffusion.cpp on first use (CPU zip, or the Vulkan zip for low-VRAM offload) and the GGUF or safetensors weights into `%LOCALAPPDATA%\RIFE60GhostGuard`. They are not in the installer. H3 uses `leejet/MiniMax-H3-GGUF` Ref2VA `minimax_h3_ref2va_pruned-Q4_K_M.gguf` and `qwen3vl_32b_minimax_h3-Q4_K_M.gguf`, plus the Comfy-Org video and audio VAEs. That repo does not publish Q8_0. The Community License excludes the United States, the European Union, the United Kingdom, and South Korea unless MiniMax has authorized that use. The window shows the warning and will not download or generate until the box is checked. Generation uses `--offload-to-cpu` so the weights sit in the 64 GB of RAM. The time estimate is a rough 2019-laptop figure, not a benchmark: a 56-frame clip is hours on CPU.
+- **AI Image Studio** runs Animagine XL v3.1 (832×1216, 28 steps, CFG 5, Euler a, clip skip 2) and can run Outline Rebuild on the still. Anima is listed because the iOS picker has it. Its upstream license is non-commercial, and this build does not start the Cosmos flow-matching stack.
+
+## Licenses that affect use
+
+MiniMax H3: https://huggingface.co/MiniMaxAI/MiniMax-H3/blob/42ed227ee7df40d41602854ae760620d6eb651fe/LICENSE
+
+DeepCreamPy: CC BY-NC-SA 4.0. Do not use those weights commercially.
+
+Anima / the iOS catalog model: non-commercial upstream terms. Animagine XL is a separate SDXL checkpoint; read its model card before redistributing the weights. The app does not bundle either file.
 
 ## Encode
 

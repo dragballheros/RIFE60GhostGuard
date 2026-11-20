@@ -70,6 +70,22 @@ pub fn encode_args(
     source_for_audio: &str,
     output: &str,
 ) -> Vec<String> {
+    encode_args_audio(
+        ffmpeg, width, height, fps_num, fps_den, color, source_for_audio, output, true,
+    )
+}
+
+pub fn encode_args_audio(
+    ffmpeg: &str,
+    width: i32,
+    height: i32,
+    fps_num: i64,
+    fps_den: i64,
+    color: &ColorMeta,
+    source_for_audio: &str,
+    output: &str,
+    preserve_audio: bool,
+) -> Vec<String> {
     let params = x265_params(width, height, fps_num, fps_den, color);
     let rate = format!("{fps_num}/{fps_den}");
     let mut args = vec![
@@ -88,12 +104,20 @@ pub fn encode_args(
         rate.clone(),
         "-i".into(),
         "-".into(),
-        "-i".into(),
-        source_for_audio.to_string(),
-        "-map".into(),
-        "0:v:0".into(),
-        "-map".into(),
-        "1:a?".into(),
+    ];
+    if preserve_audio {
+        args.extend([
+            "-i".into(),
+            source_for_audio.to_string(),
+            "-map".into(),
+            "0:v:0".into(),
+            "-map".into(),
+            "1:a?".into(),
+        ]);
+    } else {
+        args.extend(["-map".into(), "0:v:0".into()]);
+    }
+    args.extend([
         "-c:v".into(),
         "libx265".into(),
         "-preset".into(),
@@ -106,9 +130,12 @@ pub fn encode_args(
         params,
         "-tag:v".into(),
         "hvc1".into(),
-        "-c:a".into(),
-        "copy".into(),
-    ];
+    ]);
+    if preserve_audio {
+        args.extend(["-c:a".into(), "copy".into()]);
+    } else {
+        args.push("-an".into());
+    }
     if let Some(value) = color.primaries.as_deref() {
         args.push("-color_primaries".into());
         args.push(value.to_string());
