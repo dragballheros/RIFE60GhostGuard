@@ -1,7 +1,10 @@
 cmake_minimum_required(VERSION 3.16)
+# The pinned ncnn and glslang trees call cmake_minimum_required(VERSION 2.8.12).
+# CMake 4 rejects that unless this floor is set before those calls.
+set(CMAKE_POLICY_VERSION_MINIMUM 3.5 CACHE STRING "" FORCE)
 project(rife_capi LANGUAGES CXX)
 
-set(CMAKE_CXX_STANDARD 11)
+set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 if(NOT RIFE_SRC)
@@ -22,9 +25,13 @@ set(NCNN_PIXEL_ROTATE OFF CACHE BOOL "" FORCE)
 set(NCNN_PIXEL_AFFINE OFF CACHE BOOL "" FORCE)
 set(NCNN_PIXEL_DRAWING OFF CACHE BOOL "" FORCE)
 set(NCNN_INSTALL_SDK OFF CACHE BOOL "" FORCE)
-set(NCNN_DISABLE_RTTI ON CACHE BOOL "" FORCE)
-set(NCNN_DISABLE_EXCEPTION ON CACHE BOOL "" FORCE)
+# Those two options inject GCC -fno-rtti / -fno-exceptions into every consumer,
+# which MSVC rejects. Leave RTTI and exceptions at the compiler default.
+set(NCNN_DISABLE_RTTI OFF CACHE BOOL "" FORCE)
+set(NCNN_DISABLE_EXCEPTION OFF CACHE BOOL "" FORCE)
 set(NCNN_INT8 OFF CACHE BOOL "" FORCE)
+# Old glslang's ChooseMSVCCRT.cmake breaks on current MSVC.
+set(OVERRIDE_MSVCCRT OFF CACHE BOOL "" FORCE)
 
 add_subdirectory(${RIFE_SRC}/ncnn ${CMAKE_BINARY_DIR}/ncnn)
 

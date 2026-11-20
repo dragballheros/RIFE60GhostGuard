@@ -2,10 +2,6 @@ name: RIFE PC Windows installer
 
 on:
   workflow_dispatch:
-  # One approved build. Removed after that run is queued so later pushes do not rebuild.
-  push:
-    branches:
-      - cursor/rife-pc-windows-a368
 
 permissions:
   contents: read

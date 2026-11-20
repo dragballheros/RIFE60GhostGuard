@@ -74,8 +74,12 @@ if ($LASTEXITCODE -ne 0) {
 git -C $srcRoot submodule update --init --recursive src/ncnn
 
 $build = Join-Path $Root "native\build"
-cmake -S (Join-Path $Root "native") -B $build "-DRIFE_SRC=$(Join-Path $srcRoot 'src')" -DCMAKE_BUILD_TYPE=Release
+# Applies to this configure and to the ncnn and glslang subdirectories.
+$env:CMAKE_POLICY_VERSION_MINIMUM = "3.5"
+cmake -S (Join-Path $Root "native") -B $build "-DRIFE_SRC=$(Join-Path $srcRoot 'src')" -DCMAKE_BUILD_TYPE=Release -DCMAKE_POLICY_VERSION_MINIMUM=3.5
+if ($LASTEXITCODE -ne 0) { throw "CMake configure failed with exit code $LASTEXITCODE" }
 cmake --build $build --config Release --parallel
+if ($LASTEXITCODE -ne 0) { throw "CMake build failed with exit code $LASTEXITCODE" }
 
 $dll = Get-ChildItem -Path $build -Recurse -Filter rife_capi.dll | Select-Object -First 1
 $lib = Get-ChildItem -Path $build -Recurse -Filter rife_capi.lib | Select-Object -First 1
@@ -87,6 +91,7 @@ Copy-Item $lib.FullName (Join-Path $dist "rife_capi.lib") -Force
 
 $env:RIFE_CAPI_DIR = $dist
 cargo build --release --manifest-path (Join-Path $Root "Cargo.toml") -p rife-pc --features ncnn,gui
+if ($LASTEXITCODE -ne 0) { throw "cargo build failed with exit code $LASTEXITCODE" }
 
 $cache = Join-Path $Root "third_party\cache"
 New-Item -ItemType Directory -Force -Path $cache | Out-Null
