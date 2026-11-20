@@ -19,9 +19,9 @@ pub fn run() -> anyhow::Result<()> {
     eframe::run_native(
         "RIFE60 GhostGuard",
         options,
-        Box::new(|_cc| Box::new(App::default())),
+        Box::new(|_cc| Ok(Box::new(App::default()))),
     )
-    .map_err(|err| anyhow::anyhow!(err))
+    .map_err(|err| anyhow::anyhow!("GUI failed to start: {err}"))
 }
 
 struct App {
