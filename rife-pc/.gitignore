@@ -1,0 +1,9 @@
+/target/
+/third_party/
+/staging/
+/installer/output/
+/models/**/*.param
+/models/**/*.bin
+*.exe
+*.dll
+*.pdb

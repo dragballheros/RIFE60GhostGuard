@@ -1,0 +1,13 @@
+RIFE60 GhostGuard for Windows bundles third-party software.
+
+ncnn (BSD 3-Clause) and the rife-ncnn-vulkan runtime (MIT) perform RIFE v4.6
+inference on Vulkan. The rife-v4.6 flownet weights ship with the official
+nihui/rife-ncnn-vulkan Windows release.
+
+FFmpeg and libx265 are GPL-2.0-or-later. The installer includes a GPL build of
+ffmpeg.exe so the app can decode video and encode 10-bit HEVC Main 10. Source
+for those components is published by the FFmpeg project and by MulticoreWare
+(x265). See the x265 license text in Licenses/x265-GPL-2.0.txt in the RIFE60
+GhostGuard repository.
+
+Vulkan-1.dll is supplied by the GPU driver and is not copied by this installer.
