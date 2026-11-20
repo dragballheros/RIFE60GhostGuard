@@ -76,7 +76,7 @@ git -C $srcRoot submodule update --init --recursive src/ncnn
 $build = Join-Path $Root "native\build"
 # Applies to this configure and to the ncnn and glslang subdirectories.
 $env:CMAKE_POLICY_VERSION_MINIMUM = "3.5"
-cmake -S (Join-Path $Root "native") -B $build "-DRIFE_SRC=$(Join-Path $srcRoot 'src')" -DCMAKE_BUILD_TYPE=Release -DCMAKE_POLICY_VERSION_MINIMUM=3.5
+cmake -S (Join-Path $Root "native") -B $build "-DRIFE_SRC=$(Join-Path $srcRoot 'src')" "-DCMAKE_BUILD_TYPE=Release" "-DCMAKE_POLICY_VERSION_MINIMUM=3.5"
 if ($LASTEXITCODE -ne 0) { throw "CMake configure failed with exit code $LASTEXITCODE" }
 cmake --build $build --config Release --parallel
 if ($LASTEXITCODE -ne 0) { throw "CMake build failed with exit code $LASTEXITCODE" }
