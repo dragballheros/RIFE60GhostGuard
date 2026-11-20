@@ -4,6 +4,7 @@
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::Mutex;
 
 use anyhow::{anyhow, Result};
 
@@ -62,6 +63,127 @@ pub fn onnx_dir() -> PathBuf {
     data_dir().join("models").join("onnx")
 }
 
+struct BundledOnnx {
+    name: &'static str,
+    sha256: &'static str,
+    url: Option<&'static str>,
+}
+
+fn bundled_onnx() -> &'static [BundledOnnx] {
+    &[
+        BundledOnnx {
+            name: "APISR2xRRDB.onnx",
+            sha256: "c80ac47ab07085ca6220a28840236d0b3bb5001b17204e967afb3748f7ee0f94",
+            url: None,
+        },
+        BundledOnnx {
+            name: "SPAN2xHFA2k.onnx",
+            sha256: "c2a18389b5dbf67fd83825db076d88c6d0b0a52974d974dd1c32e7fa50e1558b",
+            url: None,
+        },
+        BundledOnnx {
+            name: "AnimeSharpieOutlineSubtle.onnx",
+            sha256: "47e9a6db04c8b2ba492c1fbd3681d576d15c6027753c349fe186b1c65bfcdd90",
+            url: None,
+        },
+        BundledOnnx {
+            name: "DeepCreamBar.onnx",
+            sha256: "ba32b5abe0303cd452c466516c2f88f3cbf0337b34867470dbdf4ffa6ec55b2a",
+            url: Some("https://raw.githubusercontent.com/Cec1c/Aletheia-Lens/main/models/deepcreampy/bar.onnx"),
+        },
+        BundledOnnx {
+            name: "DeepCreamMosaic.onnx",
+            sha256: "339503f625ad0aea902b5acd4adc491741e53235e47b6c4ddd77aa3cc1d351f2",
+            url: Some("https://raw.githubusercontent.com/Cec1c/Aletheia-Lens/main/models/deepcreampy/mosaic.onnx"),
+        },
+        BundledOnnx {
+            name: "AnimeWatermarkLaMa512.onnx",
+            sha256: "4512adab295ee5a5e02ccd1bdf8d45dccbac88309d9cff1532ffd5de876f02a4",
+            url: Some("https://huggingface.co/mayocream/lama-manga-onnx/resolve/main/lama-manga.onnx"),
+        },
+    ]
+}
+
+pub fn onnx_file(name: &str) -> PathBuf {
+    for candidate in onnx_candidates(name) {
+        if candidate.is_file() {
+            return candidate;
+        }
+    }
+    data_dir().join("models").join("onnx").join(name)
+}
+
+fn onnx_candidates(name: &str) -> Vec<PathBuf> {
+    vec![
+        install_dir().join("models").join("onnx").join(name),
+        data_dir().join("models").join("onnx").join(name),
+        PathBuf::from("models").join("onnx").join(name),
+        PathBuf::from("rife-pc").join("models").join("onnx").join(name),
+    ]
+}
+
+/// Use a bundled network, or download it when a checksummed URL exists.
+/// A missing file with no URL is an error so the caller can use the classical fallback.
+fn verified_names() -> &'static Mutex<Vec<String>> {
+    static VERIFIED: Mutex<Vec<String>> = Mutex::new(Vec::new());
+    &VERIFIED
+}
+
+pub fn ensure_onnx(name: &str) -> Result<PathBuf> {
+    if let Ok(guard) = verified_names().lock() {
+        if guard.iter().any(|item| item == name) {
+            if let Some(found) = onnx_candidates(name).into_iter().find(|path| path.is_file()) {
+                return Ok(found);
+            }
+        }
+    }
+    if let Some(found) = onnx_candidates(name).into_iter().find(|path| path.is_file()) {
+        if let Some(spec) = bundled_onnx().iter().find(|item| item.name == name) {
+            let hash = sha256_file(&found)?;
+            if !hash.eq_ignore_ascii_case(spec.sha256) {
+                return Err(anyhow!(
+                    "{name} is present but its SHA-256 does not match the shipped model"
+                ));
+            }
+        }
+        if let Ok(mut guard) = verified_names().lock() {
+            guard.push(name.to_string());
+        }
+        return Ok(found);
+    }
+    let spec = bundled_onnx()
+        .iter()
+        .find(|item| item.name == name)
+        .ok_or_else(|| anyhow!("no ONNX model named {name}"))?;
+    let url = spec.url.ok_or_else(|| anyhow!("{name} is not installed"))?;
+    let dest = data_dir().join("models").join("onnx").join(name);
+    download_to(url, &dest)?;
+    let hash = sha256_file(&dest)?;
+    if !hash.eq_ignore_ascii_case(spec.sha256) {
+        let _ = std::fs::remove_file(&dest);
+        return Err(anyhow!("downloaded {name} did not match its checksum"));
+    }
+    if let Ok(mut guard) = verified_names().lock() {
+        guard.push(name.to_string());
+    }
+    Ok(dest)
+}
+
+fn sha256_file(path: &Path) -> Result<String> {
+    use sha2::{Digest, Sha256};
+    let mut file = std::fs::File::open(path)?;
+    let mut hasher = Sha256::new();
+    let mut buf = [0u8; 1 << 16];
+    loop {
+        let n = file.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
 #[derive(Clone, Debug)]
 pub struct Download {
     pub id: &'static str,
@@ -79,6 +201,13 @@ pub fn catalog() -> Vec<Download> {
             url: "https://raw.githubusercontent.com/k4yt3x/video2x/master/models/rife/rife-v4.26/flownet.bin",
             relative: "models/rife-v4.26/flownet.bin",
             note: "ncnn weights published with video2x. The param file is downloaded with it.",
+        },
+        Download {
+            id: "lama-onnx",
+            label: "Anime LaMa 512 (about 198 MB)",
+            url: "https://huggingface.co/mayocream/lama-manga-onnx/resolve/main/lama-manga.onnx",
+            relative: "models/onnx/AnimeWatermarkLaMa512.onnx",
+            note: "Same anime/manga LaMa fine-tune as the iOS app. Apache-2.0 export, MIT fine-tune, Apache-2.0 base. The installer downloads it; this button fetches it if it is missing. Checksummed.",
         },
         Download {
             id: "h3-dit-q4",
@@ -160,6 +289,15 @@ pub fn download_id(id: &str) -> Result<PathBuf> {
         .ok_or_else(|| anyhow!("unknown download {id}"))?;
     let dest = data_dir().join(item.relative);
     download_to(item.url, &dest)?;
+    if let Some(name) = dest.file_name().and_then(|value| value.to_str()) {
+        if let Some(spec) = bundled_onnx().iter().find(|spec| spec.name == name) {
+            let hash = sha256_file(&dest)?;
+            if !hash.eq_ignore_ascii_case(spec.sha256) {
+                let _ = std::fs::remove_file(&dest);
+                return Err(anyhow!("downloaded {name} did not match its checksum"));
+            }
+        }
+    }
     Ok(dest)
 }
 

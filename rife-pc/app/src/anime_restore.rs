@@ -17,8 +17,8 @@ use crate::settings::AnimeQuality;
 /// SPAN is the fallback. `duplicate_divisor` in the iOS chooser is 2, so the
 /// measured time is halved before the comparison.
 pub fn choose(dir: &Path, quality: AnimeQuality, frame: &Frame) -> Result<(PathBuf, &'static str)> {
-    let apisr = dir.join("APISR2xRRDB.onnx");
-    let span = dir.join("SPAN2xHFA2k.onnx");
+    let apisr = preferred(dir, "APISR2xRRDB.onnx");
+    let span = preferred(dir, "SPAN2xHFA2k.onnx");
     match quality {
         AnimeQuality::Apisr => {
             if apisr.is_file() {
@@ -123,6 +123,14 @@ pub fn restore_session(frame: &Frame, session: &Session, strength: f64) -> Resul
         }
     }
     Ok(out)
+}
+
+fn preferred(dir: &Path, name: &str) -> PathBuf {
+    let beside = dir.join(name);
+    if beside.is_file() {
+        return beside;
+    }
+    crate::models::onnx_file(name)
 }
 
 pub fn origins(length: i32, tile: i32, stride: i32) -> Vec<i32> {

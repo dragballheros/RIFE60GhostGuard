@@ -14,7 +14,7 @@ Vulkan-1.dll is supplied by the GPU driver and is not copied by this installer.
 
 realcugan-ncnn-vulkan (MIT) and its models-se noise-3 weights perform the 2× upscale. The executable and that one model are copied by the installer. Other Real-CUGAN noise levels are not.
 
-ONNX Runtime and DirectML (MIT) run converted Core ML networks when you add ONNX files later. The installer copies the runtime. It does not copy Anime Restore, Sharpie, LaMa, or DeepCream weights.
+ONNX Runtime and DirectML (MIT) run the converted networks. Inputs stay float32. Tiles are 256 (Anime Restore, Sharpie, DeepCream) or 512 (LaMa) so a 4 GB Radeon framebuffer can hold a pass. FP16 was measured for APISR (max abs about 0.0007) and SPAN (max abs about 0.0013) but the shipped graphs are FP32 so the runner does not have to convert tensors. LaMa stays FP32; full FP16 is unsafe for its BatchNorm and Fourier blocks.
 
 stable-diffusion.cpp (MIT) is downloaded on first use for MiniMax H3 and AI Image Studio. It is not in the installer.
 
@@ -22,6 +22,14 @@ MiniMax H3 weights are licensed by MiniMax. The Community License excludes the U
 
 RIFE 4.26 flownet.param and flownet.bin are the ncnn export shipped with k4yt3x/video2x. RIFE 4.6 remains the official nihui release.
 
-DeepCreamPy is CC BY-NC-SA 4.0 (non-commercial, share-alike). LaMa is Apache-2.0. The anime LaMa fine-tune (dreMaz/AnimeMangaInpainting) is MIT. Those weights are not in the installer.
+Anime Restore APISR 2× RRDB is the official Kiteretsu77 PyTorch weight (GPL-3.0; the iOS app also notes academic use). The installer ships APISR2xRRDB.onnx exported from that checkpoint. It matches the PyTorch reference to about 5e-7 max abs, including the fused 6×6 stride-2 convolution used by the iOS Core ML package.
+
+SPAN 2× HFA2k is Philip Hofmann's model, CC BY 4.0 (https://github.com/Phhofm/models/releases/tag/2xHFA2kSPAN). SPAN2xHFA2k.onnx is that project's FP32 ONNX file. Against the .pth, max abs error is about 1e-6 after the same 0–1 clamp the iOS wrapper uses.
+
+Final Sharpie Outline is the project's SRVGG (32 features, 12 conv+PReLU, residual add). AnimeSharpieOutlineSubtle.onnx was rebuilt from the iOS Core ML weight blob and MIL graph. ONNX matches that reconstruction to about 2e-7. Core ML itself was not executed here.
+
+DeepCreamPy v2 bar and mosaic generators are CC BY-NC-SA 4.0 (non-commercial, share-alike). DeepCreamBar.onnx and DeepCreamMosaic.onnx are the published ONNX conversions (batch 1, names Placeholder:0, Placeholder_1:0, Placeholder_2:0, output add:0). Do not use them commercially. The iOS input convention is kept: masked crop, original crop, known-pixel mask (1 = keep, 0 = inpaint), pixels in [-1, 1].
+
+Anime/manga LaMa is the dreMaz fine-tune (MIT) of LaMa (Apache-2.0). The ONNX file is mayocream/lama-manga-onnx (Apache-2.0), lama-manga.onnx. It is about 198 MB, above GitHub's 100 MB file limit, so it is not stored in git. The installer downloads it and checks SHA-256 4512adab295ee5a5e02ccd1bdf8d45dccbac88309d9cff1532ffd5de876f02a4. On a masked 512×512 sample, the inpainted hole matches the iOS TorchScript checkpoint (MD5 29f284f36a0a510bcacf39ecf4c4d54f) to about 3.6e-5 after the same composite. TorchScript could not be exported directly because aten::fft_rfftn is not in ONNX opset 17; this file is the FourierUnitJIT export of the same fine-tune. The app downloads it on first use if the installer copy is missing.
 
 Animagine XL is not bundled. Read its model card. Anima's upstream license is non-commercial; this build does not run it.

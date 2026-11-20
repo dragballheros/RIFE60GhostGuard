@@ -135,6 +135,19 @@ Copy-Item $ffprobeExe.FullName (Join-Path $stage "ffprobe.exe")
 Copy-Item (Join-Path $model.FullName "*") (Join-Path $stage "models\rife-v4.6") -Recurse
 Copy-Item (Join-Path $Root "THIRD_PARTY.txt") (Join-Path $stage "THIRD_PARTY.txt")
 
+$onnxStage = Join-Path $stage "models\onnx"
+New-Item -ItemType Directory -Force -Path $onnxStage | Out-Null
+Copy-Item (Join-Path $Root "models\onnx\*") $onnxStage -Force
+$lamaPath = Join-Path $onnxStage "AnimeWatermarkLaMa512.onnx"
+if (-not (Test-Path $lamaPath) -or (Get-Item $lamaPath).Length -lt 100000000) {
+    Write-Host "Downloading anime LaMa ONNX (about 198 MB, not stored in git)"
+    Get-File "https://huggingface.co/mayocream/lama-manga-onnx/resolve/main/lama-manga.onnx" $lamaPath
+}
+$lamaHash = (Get-FileHash -Algorithm SHA256 $lamaPath).Hash.ToLower()
+if ($lamaHash -ne "4512adab295ee5a5e02ccd1bdf8d45dccbac88309d9cff1532ffd5de876f02a4") {
+    throw "Anime LaMa ONNX checksum mismatch: $lamaHash"
+}
+
 $rife426 = Join-Path $stage "models\rife-v4.26"
 New-Item -ItemType Directory -Force -Path $rife426 | Out-Null
 Write-Host "Downloading rife-v4.26 flownet (ncnn, about 11 MB)"

@@ -42,6 +42,8 @@ impl Default for FilterState {
 pub fn pre_frame(frame: &Frame, settings: &ProcessingSettings, state: &mut FilterState) -> Frame {
     let mut current = frame.clone();
     if settings.anime_restore_active(frame.width, frame.height) {
+        let _ = crate::models::ensure_onnx("APISR2xRRDB.onnx");
+        let _ = crate::models::ensure_onnx("SPAN2xHFA2k.onnx");
         let dir = crate::models::onnx_dir();
         if !state.anime_decided {
             state.anime_decided = true;
@@ -83,7 +85,6 @@ pub fn pre_frame(frame: &Frame, settings: &ProcessingSettings, state: &mut Filte
             &settings.watermark_mask,
             settings.watermark_padding,
             settings.watermark_model,
-            &crate::models::onnx_dir(),
         ) {
             Ok(removal) => {
                 if !removal.used_network && !state.watermark_classical {
@@ -113,12 +114,12 @@ pub fn post_frame(frame: &Frame, settings: &ProcessingSettings, state: &mut Filt
         current = crate::outline::rebuild(&current, settings.outline_rebuild_strength);
     }
     if settings.sharpie {
-        let model = crate::models::onnx_dir().join("AnimeSharpieOutlineSubtle.onnx");
-        match crate::outline::sharpie(&current, Some(&model)) {
+        let model = crate::models::ensure_onnx("AnimeSharpieOutlineSubtle.onnx").ok();
+        match crate::outline::sharpie(&current, model.as_deref()) {
             Ok(result) => {
                 if !result.used_network && !state.sharpie_classical {
                     state.notes.push(
-                        "Final Sharpie Outline used the classical line emphasis. The ONNX conversion of AnimeSharpieOutlineSubtle.mlpackage is not installed."
+                        "Final Sharpie Outline used the classical line emphasis because AnimeSharpieOutlineSubtle.onnx was missing or failed to load."
                             .into(),
                     );
                     state.sharpie_classical = true;

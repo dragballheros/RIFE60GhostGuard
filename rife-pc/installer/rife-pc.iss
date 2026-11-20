@@ -34,6 +34,7 @@ Source: "..\staging\models\rife-v4.6\*"; DestDir: "{app}\models\rife-v4.6"; Flag
 Source: "..\staging\models\rife-v4.26\*"; DestDir: "{app}\models\rife-v4.26"; Flags: ignoreversion recursesubdirs
 Source: "..\staging\realcugan-ncnn-vulkan.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\staging\models\models-se\*"; DestDir: "{app}\models\models-se"; Flags: ignoreversion recursesubdirs
+Source: "..\staging\models\onnx\*"; DestDir: "{app}\models\onnx"; Flags: ignoreversion recursesubdirs
 Source: "..\staging\ort_capi.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\staging\onnxruntime.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\staging\DirectML.dll"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist

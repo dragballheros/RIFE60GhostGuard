@@ -59,7 +59,8 @@ pub struct DeepCreamTile {
     pub origin_y: i32,
     pub crop_w: i32,
     pub crop_h: i32,
-    /// NHWC float in [-1, 1], batch 8, the checkpoint's fixed batch.
+    /// NHWC float in [-1, 1], batch 1. The ONNX generators are batch 1.
+    /// The iOS Core ML packages were frozen at batch 8 and repeated one tile.
     pub masked_input: Vec<f32>,
     pub known_mask: Vec<f32>,
     pub source: Vec<f32>,
@@ -138,9 +139,9 @@ pub fn deepcream_tile(
         origin_y: y0,
         crop_w,
         crop_h,
-        masked_input: repeat_batch(&masked, 8),
-        known_mask: repeat_batch(&known, 8),
-        source: repeat_batch(&source, 8),
+        masked_input: masked,
+        known_mask: known,
+        source,
     })
 }
 
@@ -176,20 +177,12 @@ fn scale_mask(mask: &[u8], sw: i32, sh: i32, dw: i32, dh: i32) -> Vec<u8> {
     out
 }
 
-fn repeat_batch(spatial: &[f32], batch: usize) -> Vec<f32> {
-    let mut out = Vec::with_capacity(spatial.len() * batch);
-    for _ in 0..batch {
-        out.extend_from_slice(spatial);
-    }
-    out
-}
-
 pub struct Removal {
     pub frame: Frame,
     pub used_network: bool,
 }
 
-pub fn remove(frame: &Frame, mask: &MaskSpec, padding: f32, model: WatermarkModelKind, onnx_dir: &std::path::Path) -> Result<Removal> {
+pub fn remove(frame: &Frame, mask: &MaskSpec, padding: f32, model: WatermarkModelKind) -> Result<Removal> {
     if mask.is_empty() {
         return Ok(Removal {
             frame: frame.clone(),
@@ -197,8 +190,8 @@ pub fn remove(frame: &Frame, mask: &MaskSpec, padding: f32, model: WatermarkMode
         });
     }
     let raster = rasterize(frame.width, frame.height, mask, padding);
-    let path = onnx_dir.join(format!("{}.onnx", model.file_stem()));
-    if path.is_file() {
+    let name = format!("{}.onnx", model.file_stem());
+    if let Ok(path) = crate::models::ensure_onnx(&name) {
         if let Ok(frame) = inpaint_network(frame, &raster, model, &path) {
             return Ok(Removal {
                 frame,
@@ -270,15 +263,16 @@ fn lama(frame: &Frame, raster: &[u8], path: &std::path::Path) -> Result<Frame> {
 fn deepcream(frame: &Frame, raster: &[u8], model: WatermarkModelKind, path: &std::path::Path) -> Result<Frame> {
     let tile = deepcream_tile(frame, raster, model).ok_or_else(anyhow_empty)?;
     let session = crate::onnx_runtime::Session::open(path)?;
-    let shape = [8i64, 256, 256, 3];
+    let shape = [1i64, 256, 256, 3];
     let mut output = vec![0.0f32; tile.masked_input.len()];
+    // iOS / DeepCreamPy order: masked crop, original crop, known-pixel mask.
     session.run_named(
         &[
-            ("Placeholder", &tile.masked_input, &shape),
-            ("Placeholder_1", &tile.known_mask, &shape),
-            ("Placeholder_2", &tile.source, &shape),
+            ("Placeholder:0", &tile.masked_input, &shape),
+            ("Placeholder_1:0", &tile.source, &shape),
+            ("Placeholder_2:0", &tile.known_mask, &shape),
         ],
-        &[("add", &mut output)],
+        &[("add:0", &mut output)],
     )?;
     let mut patch = Frame::new(256, 256, false);
     for i in 0..(256 * 256) {

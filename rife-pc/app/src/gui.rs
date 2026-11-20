@@ -379,7 +379,7 @@ impl App {
         toggle_strength(ui, &mut self.settings.color_rebuild, &mut self.settings.color_rebuild_strength, "Color Rebuild");
         toggle_strength(ui, &mut self.settings.outline_rebuild, &mut self.settings.outline_rebuild_strength, "Outline Rebuild");
         ui.checkbox(&mut self.settings.sharpie, "Final Sharpie Outline");
-        ui.label("Sharpie uses AnimeSharpieOutlineSubtle.onnx when you convert the iOS Core ML package. Otherwise it darkens existing lines and says so.");
+        ui.label("Sharpie runs the SRVGG network from the iOS Core ML weights. If that ONNX file is missing it darkens existing lines and says so.");
         toggle_strength(ui, &mut self.settings.color_pop, &mut self.settings.color_pop_strength, "Color Pop");
         mode_row(ui, "Automatic warmth", &mut self.settings.warmth);
         mode_row(ui, "Color Pop skin tone", &mut self.settings.skin_tone);
@@ -398,7 +398,7 @@ impl App {
         ui.checkbox(&mut self.settings.anime_restore, "Anime Restore");
         ui.add(egui::Slider::new(&mut self.settings.anime_restore_strength, 0.1..=1.0).text("Anime Restore strength"));
         ui.checkbox(&mut self.settings.anime_restore_suppress_auto, "Do not auto-enable Anime Restore at 720p and below");
-        ui.label("Short videos auto-enable Anime Restore unless that box is checked. The APISR and SPAN networks run from ONNX through DirectML when the files are in the model folder. The installer does not contain those weights.");
+        ui.label("Short videos auto-enable Anime Restore unless that box is checked. APISR and SPAN run from the ONNX files shipped with the installer, on 256-pixel tiles, through DirectML. They are skipped only when those files are missing.");
     }
 
     fn watermark_tab(&mut self, ui: &mut egui::Ui) {
@@ -409,7 +409,7 @@ impl App {
                 ui.selectable_value(&mut self.settings.watermark_model, model, model.label());
             }
         });
-        ui.label("LaMa is MIT (fine-tune) and Apache-2.0 (base). DeepCreamPy source is CC BY-NC-SA 4.0: non-commercial. Without the ONNX file the marked pixels are filled from nearby unmasked pixels, and the status line says so.");
+        ui.label("LaMa is the anime/manga fine-tune (MIT) of Apache-2.0 LaMa. DeepCreamPy is CC BY-NC-SA 4.0, non-commercial. Both ship as ONNX. LaMa is downloaded into the installer because the file is about 198 MB. If a file is missing, marked pixels are filled from nearby pixels and the status line says so.");
         ui.add(egui::Slider::new(&mut self.settings.watermark_padding, 0.0..=16.0).text("Mask padding"));
         if ui.button("Clear mask").clicked() {
             self.settings.watermark_mask.strokes.clear();
@@ -536,8 +536,7 @@ impl App {
     }
 
     fn models_tab(&mut self, ui: &mut egui::Ui) {
-        ui.label("Large files download into %LOCALAPPDATA%\\RIFE60GhostGuard and are not part of RIFE60GhostGuard-Setup.exe. The installer does include RIFE 4.6, RIFE 4.26, Real-CUGAN noise 3, ffmpeg, and the ONNX Runtime DirectML wrapper.");
-        ui.label("Convert the iOS Core ML packages with rife-pc/tools/convert_coreml_to_onnx.py and place the ONNX files in models/onnx. Expected names: APISR2xRRDB, SPAN2xHFA2k, AnimeSharpieOutlineSubtle, AnimeWatermarkLaMa512, DeepCreamBar, DeepCreamMosaic.");
+        ui.label("RIFE, Real-CUGAN, APISR, SPAN, Sharpie, and DeepCream ship in the installer. LaMa, MiniMax H3, and Animagine download on first use and are checksummed. They land in %LOCALAPPDATA%\\RIFE60GhostGuard when they are not already beside the program.");
         for item in crate::models::catalog() {
             ui.horizontal(|ui| {
                 if ui.button(format!("Download {}", item.label)).clicked() && !self.running {
