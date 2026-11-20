@@ -121,7 +121,7 @@ fn cstr(buf: &[u8]) -> String {
 #[cfg(feature = "ncnn")]
 #[allow(non_camel_case_types)]
 mod ffi {
-    pub use super::libc_char;
+    use super::libc_char;
     #[repr(C)]
     pub struct RifeEngine {
         _private: [u8; 0],
@@ -146,4 +146,4 @@ mod ffi {
 
 #[cfg(feature = "ncnn")]
 #[allow(non_camel_case_types)]
-type libc_char = i8;
+pub(crate) type libc_char = std::os::raw::c_char;
