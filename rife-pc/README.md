@@ -24,7 +24,7 @@ Vulkan itself comes from the AMD driver (`vulkan-1.dll` in System32), not from t
 2. Install [Git for Windows](https://git-scm.com/download/win).
 3. Install [CMake](https://cmake.org/download/) and make sure `cmake` is on PATH.
 4. Install the [Rust](https://rustup.rs/) stable toolchain (`x86_64-pc-windows-msvc`). The script installs rustup if `rustc` is missing.
-5. The script installs the LunarG Vulkan SDK **1.3.290.0** if `VULKAN_SDK` is not set. That SDK is only needed to compile ncnn. The installed app uses the driver.
+5. The script installs the LunarG Vulkan SDK **1.4.363.1** if `VULKAN_SDK` is not set. That SDK is only needed to compile ncnn. The installed app uses the driver.
 6. From this folder:
 
 ```powershell
@@ -32,7 +32,7 @@ Set-ExecutionPolicy -Scope Process Bypass
 .\build-windows.ps1
 ```
 
-The script clones rife-ncnn-vulkan at `a7532fc3f9f8f008cd6eecd6f2ffe2a9698e0cf7`, builds `rife_capi.dll`, builds `rife-pc.exe` with `--features ncnn,gui`, downloads the BtbN FFmpeg 7.1 GPL build (libx265) and the rife-v4.6 model, then compiles the Inno Setup installer. It downloads Inno Setup 6.3.3 if `ISCC.exe` is not already installed.
+The script clones rife-ncnn-vulkan at `a7532fc3f9f8f008cd6eecd6f2ffe2a9698e0cf7`, builds `rife_capi.dll`, builds `rife-pc.exe` with `--features ncnn,gui`, downloads the FFmpeg 8.1 GPL build (libx265) and the rife-v4.6 model, then compiles the Inno Setup installer. It downloads Inno Setup 7.1.1 if `ISCC.exe` is not already installed.
 
 7. Run `installer\output\RIFE60GhostGuard-Setup.exe`. After it finishes, open a **new** terminal so PATH is picked up.
 

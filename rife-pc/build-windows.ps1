@@ -8,14 +8,28 @@ $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $Root
 
 $RifeCommit = "a7532fc3f9f8f008cd6eecd6f2ffe2a9698e0cf7"
-$VulkanVersion = "1.3.290.0"
-$FfmpegZip = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n7.1-latest-win64-gpl.zip"
+$VulkanVersion = "1.4.363.1"
+$FfmpegZip = "https://github.com/FFmpeg-Builds/FFmpeg-Builds/releases/download/latest/ffmpeg-n8.1-latest-win64-gpl-8.1.zip"
 $ModelZip = "https://github.com/nihui/rife-ncnn-vulkan/releases/download/20221029/rife-ncnn-vulkan-20221029-windows.zip"
-$InnoUrl = "https://files.jrsoftware.org/is/6/innosetup-6.3.3.exe"
+$InnoUrl = "https://github.com/jrsoftware/issrc/releases/download/is-7_1_1/innosetup-7.1.1-x64.exe"
 
 function Need([string]$Name) {
     if (-not (Get-Command $Name -ErrorAction SilentlyContinue)) {
         throw "Missing '$Name'. See rife-pc/README.md."
+    }
+}
+
+function Get-File([string]$Url, [string]$Dest) {
+    $headers = @{ "User-Agent" = "rife-pc-build" }
+    for ($attempt = 1; $attempt -le 3; $attempt++) {
+        try {
+            Invoke-WebRequest -Uri $Url -OutFile $Dest -Headers $headers
+            if ((Get-Item $Dest).Length -gt 0) { return }
+            throw "Downloaded file is empty: $Url"
+        } catch {
+            if ($attempt -eq 3) { throw }
+            Start-Sleep -Seconds (15 * $attempt)
+        }
     }
 }
 
@@ -35,10 +49,13 @@ if (-not $env:VULKAN_SDK) {
     $sdk = "C:\VulkanSDK\$VulkanVersion"
     if (-not (Test-Path $sdk)) {
         Write-Host "Installing Vulkan SDK $VulkanVersion (compile-time only)"
-        $sdkExe = Join-Path $env:TEMP "vulkan-sdk-$VulkanVersion.exe"
-        Invoke-WebRequest "https://sdk.lunarg.com/sdk/download/$VulkanVersion/windows/vulkan-sdk.exe" -OutFile $sdkExe
-        $proc = Start-Process -FilePath $sdkExe -ArgumentList "--accept-licenses","--default-answer","--confirm-command","install" -Wait -PassThru
+        $sdkExe = Join-Path $env:TEMP "vulkansdk-windows-X64-$VulkanVersion.exe"
+        Get-File "https://sdk.lunarg.com/sdk/download/$VulkanVersion/windows/vulkansdk-windows-X64-$VulkanVersion.exe?Human=true" $sdkExe
+        $proc = Start-Process -FilePath $sdkExe -ArgumentList @("install","--accept-licenses","--confirm-command","--accept-messages","--root=$sdk") -Wait -PassThru
         if ($proc.ExitCode -ne 0) { throw "Vulkan SDK installer exited $($proc.ExitCode)" }
+        if (-not (Test-Path (Join-Path $sdk "Include\vulkan\vulkan.h"))) {
+            throw "Vulkan SDK install did not produce $sdk\Include\vulkan\vulkan.h"
+        }
     }
     $env:VULKAN_SDK = $sdk
 }
@@ -77,7 +94,7 @@ New-Item -ItemType Directory -Force -Path $cache | Out-Null
 $ffmpegZipPath = Join-Path $cache "ffmpeg-gpl.zip"
 if (-not (Test-Path $ffmpegZipPath)) {
     Write-Host "Downloading FFmpeg GPL (libx265)"
-    Invoke-WebRequest $FfmpegZip -OutFile $ffmpegZipPath
+    Get-File $FfmpegZip $ffmpegZipPath
 }
 $ffmpegDir = Join-Path $cache "ffmpeg"
 if (Test-Path $ffmpegDir) { Remove-Item -Recurse -Force $ffmpegDir }
@@ -89,7 +106,7 @@ if (-not $ffmpegExe -or -not $ffprobeExe) { throw "ffmpeg.exe/ffprobe.exe not in
 $modelZipPath = Join-Path $cache "rife-ncnn-models.zip"
 if (-not (Test-Path $modelZipPath)) {
     Write-Host "Downloading rife-v4.6 from the official ncnn-vulkan release"
-    Invoke-WebRequest $ModelZip -OutFile $modelZipPath
+    Get-File $ModelZip $modelZipPath
 }
 $modelDir = Join-Path $cache "models"
 if (Test-Path $modelDir) { Remove-Item -Recurse -Force $modelDir }
@@ -109,16 +126,22 @@ Copy-Item (Join-Path $model.FullName "*") (Join-Path $stage "models\rife-v4.6") 
 Copy-Item (Join-Path $Root "THIRD_PARTY.txt") (Join-Path $stage "THIRD_PARTY.txt")
 
 $iscc = @(
-    "$env:ProgramFiles(x86)\Inno Setup 6\ISCC.exe",
-    "$env:ProgramFiles\Inno Setup 6\ISCC.exe"
+    "$env:ProgramFiles\Inno Setup 7\ISCC.exe",
+    "${env:ProgramFiles(x86)}\Inno Setup 7\ISCC.exe",
+    "$env:ProgramFiles\Inno Setup 6\ISCC.exe",
+    "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
 ) | Where-Object { Test-Path $_ } | Select-Object -First 1
 if (-not $iscc) {
-    Write-Host "Installing Inno Setup 6.3.3"
-    $inno = Join-Path $env:TEMP "innosetup-6.3.3.exe"
-    Invoke-WebRequest $InnoUrl -OutFile $inno
+    Write-Host "Installing Inno Setup 7.1.1"
+    $inno = Join-Path $env:TEMP "innosetup-7.1.1-x64.exe"
+    Get-File $InnoUrl $inno
     $proc = Start-Process -FilePath $inno -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART","/SP-" -Wait -PassThru
     if ($proc.ExitCode -ne 0) { throw "Inno Setup installer exited $($proc.ExitCode)" }
-    $iscc = "$env:ProgramFiles(x86)\Inno Setup 6\ISCC.exe"
+    $iscc = @(
+        "$env:ProgramFiles\Inno Setup 7\ISCC.exe",
+        "${env:ProgramFiles(x86)}\Inno Setup 7\ISCC.exe"
+    ) | Where-Object { Test-Path $_ } | Select-Object -First 1
+    if (-not $iscc) { throw "ISCC.exe was not found after installing Inno Setup." }
 }
 & $iscc (Join-Path $Root "installer\rife-pc.iss")
 Write-Host "Installer: $(Join-Path $Root 'installer\output\RIFE60GhostGuard-Setup.exe')"
