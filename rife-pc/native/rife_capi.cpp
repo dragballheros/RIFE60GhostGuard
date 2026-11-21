@@ -146,7 +146,7 @@ RIFE_API Engine* rife_create(const char* model_utf8, int gpu) {
     const ncnn::GpuInfo& gpu_info = ncnn::get_gpu_info(chosen);
     const char* name = gpu_info.device_name();
     std::snprintf(engine->name, sizeof(engine->name), "%s", name ? name : "Vulkan GPU");
-    const VkPhysicalDeviceMemoryProperties& memory = gpu_info.physicalDeviceMemoryProperties();
+    const VkPhysicalDeviceMemoryProperties& memory = gpu_info.physical_device_memory_properties();
     std::uint64_t local_bytes = 0;
     for (std::uint32_t i = 0; i < memory.memoryHeapCount; ++i) {
         if ((memory.memoryHeaps[i].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) != 0) {
