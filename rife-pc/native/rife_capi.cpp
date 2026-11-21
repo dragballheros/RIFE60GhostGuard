@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -25,6 +26,7 @@
 #endif
 
 thread_local std::string g_error;
+std::once_flag g_gpu_instance_once;
 
 void set_error(const std::string& message) { g_error = message; }
 
@@ -61,16 +63,16 @@ int pick_gpu(int requested) {
     return amd >= 0 ? amd : 0;
 }
 
-void bgra_to_bgr(const uint8_t* src, uint8_t* dst, int pixels) {
-    for (int i = 0; i < pixels; ++i) {
+void bgra_to_bgr(const uint8_t* src, uint8_t* dst, size_t pixels) {
+    for (size_t i = 0; i < pixels; ++i) {
         dst[i * 3] = src[i * 4];
         dst[i * 3 + 1] = src[i * 4 + 1];
         dst[i * 3 + 2] = src[i * 4 + 2];
     }
 }
 
-void bgr_to_bgra(const uint8_t* src, uint8_t* dst, int pixels) {
-    for (int i = 0; i < pixels; ++i) {
+void bgr_to_bgra(const uint8_t* src, uint8_t* dst, size_t pixels) {
+    for (size_t i = 0; i < pixels; ++i) {
         dst[i * 4] = src[i * 3];
         dst[i * 4 + 1] = src[i * 3 + 1];
         dst[i * 4 + 2] = src[i * 3 + 2];
@@ -86,39 +88,53 @@ struct Engine {
     Engine() { name[0] = 0; error[0] = 0; }
 };
 
+// Every RIFE worker owns its scratch on its own thread. This both avoids
+// cross-thread races and retains vector capacity between consecutive frames.
+struct Scratch {
+    std::vector<uint8_t> bgr0;
+    std::vector<uint8_t> bgr1;
+    std::vector<uint8_t> bgr_out;
+    std::vector<uint8_t> tile0;
+    std::vector<uint8_t> tile1;
+    std::vector<uint8_t> tile_out;
+    std::vector<float> accum;
+    std::vector<float> weights;
+};
+thread_local Scratch g_scratch;
+
 int run_full(Engine* engine, const uint8_t* bgr0, const uint8_t* bgr1, uint8_t* bgr_out, int w, int h, float timestep) {
+    const size_t bytes = static_cast<size_t>(w) * static_cast<size_t>(h) * 3;
     if (timestep <= 0.f) {
-        std::memcpy(bgr_out, bgr0, static_cast<size_t>(w) * h * 3);
+        std::memcpy(bgr_out, bgr0, bytes);
         return 0;
     }
     if (timestep >= 1.f) {
-        std::memcpy(bgr_out, bgr1, static_cast<size_t>(w) * h * 3);
+        std::memcpy(bgr_out, bgr1, bytes);
         return 0;
     }
-    std::vector<uint8_t> in0(bgr0, bgr0 + static_cast<size_t>(w) * h * 3);
-    std::vector<uint8_t> in1(bgr1, bgr1 + static_cast<size_t>(w) * h * 3);
-    std::vector<uint8_t> out(static_cast<size_t>(w) * h * 3);
-    ncnn::Mat in0m(w, h, in0.data(), static_cast<size_t>(3), 1);
-    ncnn::Mat in1m(w, h, in1.data(), static_cast<size_t>(3), 1);
-    ncnn::Mat outm(w, h, out.data(), static_cast<size_t>(3), 1);
-    int rc = engine->net->process(in0m, in1m, timestep, outm);
+
+    // RIFE::process consumes these external pixel buffers synchronously.
+    // Wrapping the caller's storage directly removes two input copies, one
+    // output allocation, and the final output copy per inference.
+    ncnn::Mat in0m(w, h, const_cast<uint8_t*>(bgr0), static_cast<size_t>(3), 1);
+    ncnn::Mat in1m(w, h, const_cast<uint8_t*>(bgr1), static_cast<size_t>(3), 1);
+    ncnn::Mat outm(w, h, bgr_out, static_cast<size_t>(3), 1);
+    const int rc = engine->net->process(in0m, in1m, timestep, outm);
     if (rc != 0) {
-        std::snprintf(engine->error, sizeof(engine->error), "RIFE process failed (%d)", rc);
-        return rc;
+        char message[128];
+        std::snprintf(message, sizeof(message), "RIFE process failed (%d)", rc);
+        set_error(message);
     }
-    std::memcpy(bgr_out, out.data(), out.size());
-    return 0;
+    return rc;
 }
 
 extern "C" {
 
 RIFE_API Engine* rife_create(const char* model_utf8, int gpu) {
     g_error.clear();
-    static bool instance = false;
-    if (!instance) {
+    std::call_once(g_gpu_instance_once, []() {
         ncnn::create_gpu_instance();
-        instance = true;
-    }
+    });
     int chosen = pick_gpu(gpu);
     if (chosen < 0) {
         set_error("No Vulkan device. Install the AMD Software: Adrenalin driver and reboot.");
@@ -190,30 +206,34 @@ RIFE_API int rife_interpolate(
     int height,
     float timestep,
     int tile) {
+    g_error.clear();
     if (!engine || !engine->net || !bgra0 || !bgra1 || !bgra_out || width < 8 || height < 8) {
-        if (engine) std::snprintf(engine->error, sizeof(engine->error), "Bad RIFE arguments.");
+        set_error("Bad RIFE arguments.");
         return -1;
     }
-    const int pixels = width * height;
-    std::vector<uint8_t> bgr0(static_cast<size_t>(pixels) * 3);
-    std::vector<uint8_t> bgr1(static_cast<size_t>(pixels) * 3);
-    std::vector<uint8_t> bgr_out(static_cast<size_t>(pixels) * 3);
-    bgra_to_bgr(bgra0, bgr0.data(), pixels);
-    bgra_to_bgr(bgra1, bgr1.data(), pixels);
+    const size_t pixels = static_cast<size_t>(width) * static_cast<size_t>(height);
+    const size_t frame_bytes = pixels * 3;
+    Scratch& scratch = g_scratch;
+    scratch.bgr0.resize(frame_bytes);
+    scratch.bgr1.resize(frame_bytes);
+    scratch.bgr_out.resize(frame_bytes);
+    bgra_to_bgr(bgra0, scratch.bgr0.data(), pixels);
+    bgra_to_bgr(bgra1, scratch.bgr1.data(), pixels);
 
     const bool whole = tile <= 0 || (tile >= width && tile >= height);
     if (whole) {
-        int rc = run_full(engine, bgr0.data(), bgr1.data(), bgr_out.data(), width, height, timestep);
+        const int rc = run_full(engine, scratch.bgr0.data(), scratch.bgr1.data(),
+                                scratch.bgr_out.data(), width, height, timestep);
         if (rc != 0) return rc;
-        bgr_to_bgra(bgr_out.data(), bgra_out, pixels);
+        bgr_to_bgra(scratch.bgr_out.data(), bgra_out, pixels);
         return 0;
     }
 
     int overlap = 32;
     if (overlap * 2 >= tile) overlap = std::max(8, tile / 4);
     const int step = std::max(32, tile - overlap);
-    std::vector<float> acc(static_cast<size_t>(pixels) * 3, 0.f);
-    std::vector<float> weight(static_cast<size_t>(pixels), 0.f);
+    scratch.accum.assign(pixels * 3, 0.f);
+    scratch.weights.assign(pixels, 0.f);
 
     for (int y0 = 0; y0 < height; y0 += step) {
         int y1 = std::min(height, y0 + tile);
@@ -223,16 +243,18 @@ RIFE_API int rife_interpolate(
             if (width - x1 > 0 && width - x1 < 32) x1 = width;
             const int tw = x1 - x0;
             const int th = y1 - y0;
-            std::vector<uint8_t> tile0(static_cast<size_t>(tw) * th * 3);
-            std::vector<uint8_t> tile1(static_cast<size_t>(tw) * th * 3);
-            std::vector<uint8_t> tile_out(static_cast<size_t>(tw) * th * 3);
+            const size_t tile_bytes = static_cast<size_t>(tw) * static_cast<size_t>(th) * 3;
+            scratch.tile0.resize(tile_bytes);
+            scratch.tile1.resize(tile_bytes);
+            scratch.tile_out.resize(tile_bytes);
             for (int y = 0; y < th; ++y) {
                 const uint8_t* row0 = bgr0.data() + (static_cast<size_t>(y0 + y) * width + x0) * 3;
                 const uint8_t* row1 = bgr1.data() + (static_cast<size_t>(y0 + y) * width + x0) * 3;
-                std::memcpy(tile0.data() + static_cast<size_t>(y) * tw * 3, row0, static_cast<size_t>(tw) * 3);
-                std::memcpy(tile1.data() + static_cast<size_t>(y) * tw * 3, row1, static_cast<size_t>(tw) * 3);
+                std::memcpy(scratch.tile0.data() + static_cast<size_t>(y) * tw * 3, row0, static_cast<size_t>(tw) * 3);
+                std::memcpy(scratch.tile1.data() + static_cast<size_t>(y) * tw * 3, row1, static_cast<size_t>(tw) * 3);
             }
-            int rc = run_full(engine, tile0.data(), tile1.data(), tile_out.data(), tw, th, timestep);
+            int rc = run_full(engine, scratch.tile0.data(), scratch.tile1.data(),
+                              scratch.tile_out.data(), tw, th, timestep);
             if (rc != 0) return rc;
             for (int y = 0; y < th; ++y) {
                 for (int x = 0; x < tw; ++x) {
@@ -244,11 +266,11 @@ RIFE_API int rife_interpolate(
                     if (y1 < height) wy = std::min(wy, (th - 1 - y + 0.5f) / static_cast<float>(overlap));
                     float wgt = std::max(0.f, wx) * std::max(0.f, wy);
                     const int dst = (y0 + y) * width + (x0 + x);
-                    const uint8_t* pix = tile_out.data() + (static_cast<size_t>(y) * tw + x) * 3;
-                    acc[static_cast<size_t>(dst) * 3] += pix[0] * wgt;
-                    acc[static_cast<size_t>(dst) * 3 + 1] += pix[1] * wgt;
-                    acc[static_cast<size_t>(dst) * 3 + 2] += pix[2] * wgt;
-                    weight[dst] += wgt;
+                    const uint8_t* pix = scratch.tile_out.data() + (static_cast<size_t>(y) * tw + x) * 3;
+                    scratch.accum[static_cast<size_t>(dst) * 3] += pix[0] * wgt;
+                    scratch.accum[static_cast<size_t>(dst) * 3 + 1] += pix[1] * wgt;
+                    scratch.accum[static_cast<size_t>(dst) * 3 + 2] += pix[2] * wgt;
+                    scratch.weights[dst] += wgt;
                 }
             }
             if (x1 >= width) break;
@@ -256,21 +278,21 @@ RIFE_API int rife_interpolate(
         if (y1 >= height) break;
     }
 
-    for (int i = 0; i < pixels; ++i) {
-        if (weight[i] <= 0.f) {
-            bgr_out[i * 3] = static_cast<uint8_t>((bgr0[i * 3] + bgr1[i * 3]) / 2);
-            bgr_out[i * 3 + 1] = static_cast<uint8_t>((bgr0[i * 3 + 1] + bgr1[i * 3 + 1]) / 2);
-            bgr_out[i * 3 + 2] = static_cast<uint8_t>((bgr0[i * 3 + 2] + bgr1[i * 3 + 2]) / 2);
+    for (size_t i = 0; i < pixels; ++i) {
+        if (scratch.weights[i] <= 0.f) {
+            scratch.bgr_out[i * 3] = static_cast<uint8_t>((scratch.bgr0[i * 3] + scratch.bgr1[i * 3]) / 2);
+            scratch.bgr_out[i * 3 + 1] = static_cast<uint8_t>((scratch.bgr0[i * 3 + 1] + scratch.bgr1[i * 3 + 1]) / 2);
+            scratch.bgr_out[i * 3 + 2] = static_cast<uint8_t>((scratch.bgr0[i * 3 + 2] + scratch.bgr1[i * 3 + 2]) / 2);
         } else {
-            for (int c = 0; c < 3; ++c) {
-                float value = acc[static_cast<size_t>(i) * 3 + c] / weight[i] + 0.5f;
+            for (size_t channel = 0; channel < 3; ++channel) {
+                float value = scratch.accum[i * 3 + channel] / scratch.weights[i] + 0.5f;
                 if (value < 0.f) value = 0.f;
                 if (value > 255.f) value = 255.f;
-                bgr_out[i * 3 + c] = static_cast<uint8_t>(value);
+                scratch.bgr_out[i * 3 + channel] = static_cast<uint8_t>(value);
             }
         }
     }
-    bgr_to_bgra(bgr_out.data(), bgra_out, pixels);
+    bgr_to_bgra(scratch.bgr_out.data(), bgra_out, pixels);
     return 0;
 }
 
