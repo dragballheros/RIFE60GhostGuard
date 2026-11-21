@@ -898,3 +898,27 @@ fn bin_name(stem: &str) -> &'static str {
         _ => "ffprobe",
     }
 }
+
+
+#[cfg(test)]
+mod rife_worker_tests {
+    use super::effective_rife_workers;
+
+    #[test]
+    fn auto_uses_two_workers_for_small_tiles() {
+        assert_eq!(effective_rife_workers(0, 512), 2);
+        assert_eq!(effective_rife_workers(0, 256), 2);
+    }
+
+    #[test]
+    fn auto_keeps_whole_frame_and_large_tiles_single_worker() {
+        assert_eq!(effective_rife_workers(0, 0), 1);
+        assert_eq!(effective_rife_workers(0, 768), 1);
+    }
+
+    #[test]
+    fn manual_worker_selection_is_respected() {
+        assert_eq!(effective_rife_workers(1, 512), 1);
+        assert_eq!(effective_rife_workers(2, 0), 2);
+    }
+}
