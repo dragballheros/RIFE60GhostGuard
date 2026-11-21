@@ -111,6 +111,7 @@ pub fn encode_args_amf_audio(
         // pixel-format conversion required by AMF.
         "-c:v".into(), "hevc_amf".into(),
         "-profile:v".into(), "main10".into(),
+        "-pix_fmt".into(), "p010le".into(),
         "-quality".into(), "balanced".into(),
         "-rc".into(), "cqp".into(),
         "-qp_i".into(), "20".into(),
