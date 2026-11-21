@@ -38,7 +38,9 @@ fn rgb_to_yuv_filter(color: &ColorMeta, output_format: &str) -> String {
         "scale=iw:ih:in_range=full:out_range={out_range}"
     );
     if let Some(matrix) = color.matrix.as_deref() {
-        filter.push_str(&format!(":in_color_matrix={matrix}:out_color_matrix={matrix}"));
+        // The pipe is RGB/BGRA, so only the destination YUV matrix is
+        // meaningful here. Supplying an input YUV matrix would be incorrect.
+        filter.push_str(&format!(":out_color_matrix={matrix}"));
     }
     filter.push_str(&format!(",format={output_format}"));
     filter
@@ -380,6 +382,19 @@ mod tests {
     }
 
     #[test]
+    fn rgb_to_yuv_filter_is_explicitly_range_preserving() {
+        let limited = color_from_probe("bt709", "bt709", "bt709", "tv");
+        let full = color_from_probe("bt709", "bt709", "bt709", "pc");
+        let limited_filter = rgb_to_yuv_filter(&limited, "p010le");
+        let full_filter = rgb_to_yuv_filter(&full, "yuv420p10le");
+        assert!(limited_filter.contains("in_range=full:out_range=tv"));
+        assert!(limited_filter.contains("out_color_matrix=bt709"));
+        assert!(full_filter.contains("in_range=full:out_range=pc"));
+        assert!(full_filter.contains("format=yuv420p10le"));
+        assert!(!limited_filter.contains("in_color_matrix"));
+    }
+
+    #[test]
     fn amf_args_use_hevc_main10_and_p010() {
         let color = color_from_probe("bt709", "bt709", "bt709", "tv");
         let args = encode_args_amf_audio("ffmpeg", 1920, 1080, 60, 1, &color, "in.mp4", "out.mp4", true);
@@ -392,6 +407,8 @@ mod tests {
         assert!(joined.contains("-qp_p 22"));
         assert!(joined.contains("-tag:v hvc1"));
         assert!(joined.contains("-c:a copy"));
+        assert!(joined.contains("in_range=full:out_range=tv"));
+        assert!(joined.contains("out_color_matrix=bt709"));
     }
 
     #[test]
