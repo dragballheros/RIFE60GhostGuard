@@ -69,9 +69,12 @@ if (-not (Test-Path (Join-Path $srcRoot "src\rife.cpp"))) {
 git -C $srcRoot checkout $RifeCommit
 if ($LASTEXITCODE -ne 0) {
     git -C $srcRoot fetch origin $RifeCommit
+    if ($LASTEXITCODE -ne 0) { throw "Could not fetch rife-ncnn-vulkan $RifeCommit" }
     git -C $srcRoot checkout FETCH_HEAD
+    if ($LASTEXITCODE -ne 0) { throw "Could not check out rife-ncnn-vulkan $RifeCommit" }
 }
 git -C $srcRoot submodule update --init --recursive src/ncnn
+if ($LASTEXITCODE -ne 0) { throw "ncnn submodule update failed" }
 # RIFE 4.26 needs 64-pixel padding. 4.25-lite needs 128. 4.6 stays at 32.
 # The pinned runtime hardcodes 32. This edit keeps that commit building.
 & (Join-Path $Root "native\patch-rife-padding.ps1") -SrcRoot $srcRoot
