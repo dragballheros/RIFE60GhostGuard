@@ -19,6 +19,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - name: Run Rust unit tests
+        shell: pwsh
+        run: cargo test --manifest-path ./rife-pc/Cargo.toml -p rife-pc
       - name: Build the setup executable
         shell: pwsh
         run: ./rife-pc/build-windows.ps1
