@@ -11,8 +11,8 @@ use eframe::egui;
 
 use crate::pipeline::{self, Options, Progress, Summary};
 use crate::settings::{
-    AnimeQuality, CorrectionMode, PerformanceTier, ProcessingSettings, QueueItem, RifeModelKind,
-    WatermarkModelKind,
+    clean_path, missing_input_message, plan_jobs, prune_queue, AnimeQuality, CorrectionMode,
+    PerformanceTier, ProcessingSettings, QueueItem, RifeModelKind, WatermarkModelKind,
 };
 
 pub fn run() -> anyhow::Result<()> {
@@ -68,6 +68,7 @@ struct App {
     preview: Option<WatermarkPreview>,
     preview_error: String,
     preview_rx: Option<Receiver<PreviewMsg>>,
+    skipped_note: String,
 }
 
 struct WatermarkPreview {
@@ -109,7 +110,14 @@ impl App {
                 settings = saved;
             }
         }
-        Self {
+        let before = settings.queue.clone();
+        let removed = prune_queue(&mut settings.queue, |path| Path::new(path).is_file());
+        let status = if removed.is_empty() {
+            "Choose a video or image. RIFE 4.26 is the iOS model. 4.6 stays available.".into()
+        } else {
+            format!("Removed missing queue files: {}", removed.join(", "))
+        };
+        let app = Self {
             settings,
             input: String::new(),
             output: String::new(),
@@ -123,7 +131,7 @@ impl App {
             running: false,
             cancel: None,
             events: None,
-            status: "Choose a video. RIFE 4.26 is the iOS model. 4.6 stays available.".into(),
+            status,
             fraction: 0.0,
             h3_prompt: String::new(),
             h3_frames: 56,
@@ -149,7 +157,12 @@ impl App {
             preview: None,
             preview_error: String::new(),
             preview_rx: None,
+            skipped_note: String::new(),
+        };
+        if before != app.settings.queue {
+            app.save_settings();
         }
+        app
     }
 
     fn save_settings(&self) {
@@ -163,15 +176,26 @@ impl App {
     }
 
     fn start(&mut self) {
-        let queued: Vec<QueueItem> = if self.settings.queue.is_empty() {
-            vec![QueueItem::new(self.input.trim())]
-        } else {
-            self.settings.queue.clone()
-        };
-        if queued.iter().all(|item| item.path.trim().is_empty() || !Path::new(item.path.trim()).is_file()) {
-            self.status = "Pick an input video that exists.".into();
+        self.input = clean_path(&self.input);
+        self.output = clean_path(&self.output);
+        self.settings.export_dir = clean_path(&self.settings.export_dir);
+        let (queued, missing) = plan_jobs(&self.input, &self.settings.queue, |path| Path::new(path).is_file());
+        prune_queue(&mut self.settings.queue, |path| Path::new(path).is_file());
+        if queued.is_empty() {
+            let failed = if !missing.is_empty() {
+                missing.join(", ")
+            } else {
+                self.input.clone()
+            };
+            self.status = missing_input_message(&failed);
+            self.save_settings();
             return;
         }
+        self.skipped_note = if missing.is_empty() {
+            String::new()
+        } else {
+            format!("Skipped missing files: {}", missing.join(", "))
+        };
         self.save_settings();
         let settings = self.settings.clone();
         let multi = self.multi.max(2) as u32;
@@ -179,21 +203,25 @@ impl App {
         let tile = self.tile;
         let gpu = self.gpu;
         let sensitivity = self.sensitivity;
-        let output_override = self.output.trim().to_string();
+        let output_override = self.output.clone();
         let cancel = Arc::new(AtomicBool::new(false));
         let (tx, rx) = mpsc::channel();
         self.cancel = Some(Arc::clone(&cancel));
         self.events = Some(rx);
         self.running = true;
         self.fraction = 0.0;
-        self.status = "Starting…".into();
+        self.status = if self.skipped_note.is_empty() {
+            "Starting…".into()
+        } else {
+            format!("Starting… {}", self.skipped_note)
+        };
         thread::spawn(move || {
             let mut last_summary = None;
             for (index, item) in queued.iter().enumerate() {
                 if cancel.load(Ordering::Relaxed) {
                     break;
                 }
-                let input = PathBuf::from(item.path.trim());
+                let input = PathBuf::from(clean_path(&item.path));
                 if !input.is_file() {
                     let _ = tx.send(UiEvent::Note(format!("Skipped missing file {}", input.display())));
                     continue;
@@ -329,10 +357,18 @@ impl eframe::App for App {
                         if let Some(path) = &summary.diagnostics_path {
                             self.status.push_str(&format!(" Diagnostics {}", path.display()));
                         }
+                        if !self.skipped_note.is_empty() {
+                            self.status.push(' ');
+                            self.status.push_str(&self.skipped_note);
+                        }
                     }
                     UiEvent::Done(Err(err)) => {
                         self.running = false;
-                        self.status = err;
+                        self.status = if self.skipped_note.is_empty() {
+                            err
+                        } else {
+                            format!("{err} {}", self.skipped_note)
+                        };
                     }
                 }
             }
@@ -454,7 +490,7 @@ impl App {
     }
 
     fn apply_preview(&mut self, ctx: &egui::Context, msg: PreviewMsg) {
-        if msg.path != self.input.trim() {
+        if msg.path != clean_path(&self.input) {
             return;
         }
         match msg.image {
@@ -478,7 +514,7 @@ impl App {
     }
 
     fn request_preview(&mut self) {
-        let path = self.input.trim().to_string();
+        let path = clean_path(&self.input);
         if path == self.preview_for {
             return;
         }
@@ -601,7 +637,7 @@ impl App {
             self.settings.queue.remove(index);
         }
         if self.settings.queue.is_empty() {
-            ui.label("The queue is empty. Start uses the Input field. With items here, Start runs them in order and the per-item watermark toggle overrides the global one.");
+            ui.label("The queue is empty. Start runs the Input file. When items are listed here, that file is added in front unless it is already queued, and missing files are skipped.");
         }
     }
 
@@ -683,11 +719,14 @@ impl App {
             frames: self.h3_frames,
             fps: 24.0,
             cfg: 1.0,
-            reference: if self.h3_reference.trim().is_empty() { None } else { Some(PathBuf::from(self.h3_reference.trim())) },
+            reference: {
+                let path = clean_path(&self.h3_reference);
+                if path.is_empty() { None } else { Some(PathBuf::from(path)) }
+            },
             keep_audio: self.h3_audio,
             vulkan: self.h3_vulkan,
             license_accepted: self.h3_license,
-            output: crate::export_media::placed_output(&self.settings.export_dir, &self.output, "h3.mp4"),
+            output: crate::export_media::placed_output(&clean_path(&self.settings.export_dir), &clean_path(&self.output), "h3.mp4"),
         }
     }
 
@@ -708,7 +747,7 @@ impl App {
             outline: self.studio_outline,
             outline_strength: self.studio_outline_strength,
             vulkan: self.studio_vulkan,
-            output: crate::export_media::placed_output(&self.settings.export_dir, &self.output, "studio.png"),
+            output: crate::export_media::placed_output(&clean_path(&self.settings.export_dir), &clean_path(&self.output), "studio.png"),
         }
     }
 

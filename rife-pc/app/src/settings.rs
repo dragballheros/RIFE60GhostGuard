@@ -163,7 +163,7 @@ impl MaskSpec {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct QueueItem {
     pub path: String,
@@ -186,6 +186,98 @@ impl QueueItem {
             remove_watermark: true,
         }
     }
+}
+
+/// Trim whitespace and one pair of surrounding quotes from a pasted Windows path.
+pub fn clean_path(text: &str) -> String {
+    let mut text = text.trim();
+    if text.len() >= 2 {
+        let quote = text.as_bytes()[0];
+        let end = text.as_bytes()[text.len() - 1];
+        if (quote == b'"' || quote == b'\'') && end == quote {
+            text = text[1..text.len() - 1].trim();
+        }
+    }
+    text.to_string()
+}
+
+pub fn missing_input_message(failed: &str) -> String {
+    let failed = failed.trim();
+    if failed.is_empty() {
+        "Pick an input file (video or image) that exists.".into()
+    } else {
+        format!("Pick an input file (video or image) that exists. {failed}")
+    }
+}
+
+fn same_path(left: &str, right: &str) -> bool {
+    let fold = |text: &str| text.replace('/', "\\");
+    if cfg!(windows) {
+        fold(left).eq_ignore_ascii_case(&fold(right))
+    } else {
+        fold(left) == fold(right)
+    }
+}
+
+/// The Input box runs even when a saved queue is present. It is prepended when
+/// it is not already queued. Missing files are returned separately and not run.
+pub fn plan_jobs(
+    input: &str,
+    queue: &[QueueItem],
+    mut exists: impl FnMut(&str) -> bool,
+) -> (Vec<QueueItem>, Vec<String>) {
+    let input = clean_path(input);
+    let mut run = Vec::new();
+    let mut missing = Vec::new();
+    let already = !input.is_empty()
+        && queue.iter().any(|item| same_path(&clean_path(&item.path), &input));
+    if !input.is_empty() && !already {
+        if exists(&input) {
+            run.push(QueueItem::new(input.clone()));
+        } else {
+            missing.push(input.clone());
+        }
+    }
+    for item in queue {
+        let path = clean_path(&item.path);
+        if path.is_empty() {
+            continue;
+        }
+        if !input.is_empty() && same_path(&path, &input) && missing.iter().any(|item| same_path(item, &input)) {
+            continue;
+        }
+        if exists(&path) {
+            run.push(QueueItem {
+                path,
+                remove_watermark: item.remove_watermark,
+            });
+        } else {
+            missing.push(path);
+        }
+    }
+    (run, missing)
+}
+
+/// Drop queued files that are gone and strip quotes from the ones that remain.
+pub fn prune_queue(queue: &mut Vec<QueueItem>, mut exists: impl FnMut(&str) -> bool) -> Vec<String> {
+    let mut missing = Vec::new();
+    let mut kept = Vec::new();
+    for item in std::mem::take(queue) {
+        let path = clean_path(&item.path);
+        if path.is_empty() {
+            continue;
+        }
+        if exists(&path) {
+            kept.push(QueueItem {
+                path,
+                remove_watermark: item.remove_watermark,
+            });
+        } else {
+            missing.push(path);
+        }
+    }
+    *queue = kept;
+    missing
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -388,5 +480,50 @@ mod tests {
         assert_eq!(gui.rife_model, RifeModelKind::V426);
         assert!(gui.anime_restore_active(1280, 720));
         assert!(!gui.anime_restore_active(1920, 1080));
+    }
+
+    #[test]
+    fn clean_path_strips_windows_copy_as_path_quotes() {
+        assert_eq!(clean_path("  \"C:\\clips\\shot.png\"  "), "C:\\clips\\shot.png");
+        assert_eq!(clean_path("'D:\\out.mp4'"), "D:\\out.mp4");
+        assert_eq!(clean_path("  plain.png  "), "plain.png");
+    }
+
+    #[test]
+    fn the_input_box_is_prepended_and_a_saved_queue_cannot_hide_it() {
+        let queue = vec![
+            QueueItem::new("C:\\old\\missing.mp4"),
+            QueueItem::new("\"C:\\old\\still.mp4\""),
+        ];
+        let (run, missing) = plan_jobs("  \"C:\\new\\shot.png\"  ", &queue, |path| path.ends_with("shot.png") || path.ends_with("still.mp4"));
+        assert_eq!(run[0].path, "C:\\new\\shot.png");
+        assert_eq!(run[1].path, "C:\\old\\still.mp4");
+        assert_eq!(missing, vec!["C:\\old\\missing.mp4".to_string()]);
+        assert!(missing_input_message("C:\\new\\shot.png").contains("shot.png"));
+        assert!(missing_input_message("").starts_with("Pick an input file (video or image) that exists."));
+    }
+
+    #[test]
+    fn an_input_already_in_the_queue_is_not_duplicated() {
+        let queue = vec![QueueItem {
+            path: "C:\\clips\\shot.png".into(),
+            remove_watermark: false,
+        }];
+        let (run, missing) = plan_jobs("C:\\clips\\shot.png", &queue, |_| true);
+        assert!(missing.is_empty());
+        assert_eq!(run.len(), 1);
+        assert!(!run[0].remove_watermark);
+    }
+
+    #[test]
+    fn startup_prune_drops_missing_files_and_keeps_quoted_ones_that_exist() {
+        let mut queue = vec![
+            QueueItem::new("\"C:\\keep.png\""),
+            QueueItem::new("C:\\gone.mp4"),
+        ];
+        let missing = prune_queue(&mut queue, |path| path.ends_with("keep.png"));
+        assert_eq!(queue.len(), 1);
+        assert_eq!(queue[0].path, "C:\\keep.png");
+        assert_eq!(missing, vec!["C:\\gone.mp4".to_string()]);
     }
 }
