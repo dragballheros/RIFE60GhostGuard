@@ -463,6 +463,15 @@ mod tests {
     use super::*;
 
     #[test]
+    fn worker_setting_defaults_to_vram_aware_auto_and_clamps_to_two() {
+        let mut gui = ProcessingSettings::gui();
+        assert_eq!(gui.rife_workers, 0);
+        gui.rife_workers = 9;
+        gui.clamp_ranges();
+        assert_eq!(gui.rife_workers, 2);
+    }
+
+    #[test]
     fn cli_defaults_do_not_turn_on_upscale_or_color() {
         let cli = ProcessingSettings::cli();
         assert!(!cli.upscale);
