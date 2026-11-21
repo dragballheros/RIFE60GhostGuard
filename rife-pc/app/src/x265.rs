@@ -29,6 +29,28 @@ impl ColorMeta {
     }
 }
 
+/// Build an explicit RGB -> YUV conversion so the encoder cannot silently
+/// choose a different range for the packed BGRA input. FFmpeg documents RGB
+/// as full-range input and allows the output YUV range to be forced explicitly.
+fn rgb_to_yuv_filter(color: &ColorMeta, output_format: &str) -> String {
+    let out_range = color.ffmpeg_range.as_deref().unwrap_or("tv");
+    let mut filter = format!(
+        "scale=iw:ih:in_range=full:out_range={out_range}"
+    );
+    if let Some(matrix) = color.matrix.as_deref() {
+        filter.push_str(&format!(":in_color_matrix={matrix}:out_color_matrix={matrix}"));
+    }
+    filter.push_str(&format!(",format={output_format}"));
+    filter
+}
+
+fn output_range(color: &ColorMeta) -> &'static str {
+    match color.ffmpeg_range.as_deref() {
+        Some("pc") => "pc",
+        _ => "tv",
+    }
+}
+
 pub fn x265_params(
     width: i32,
     height: i32,
@@ -38,6 +60,10 @@ pub fn x265_params(
 ) -> String {
     let mut parts = split_params(PRESET_TEXT.trim());
     set_key(&mut parts, "fps", &format!("{fps_num}/{fps_den}"));
+    // Never let the preset's baked-in range decide the output. The source
+    // range is supplied by the caller and the RGB->YUV filter uses the same
+    // range explicitly.
+    set_key(&mut parts, "range", output_range(color));
     let side = width.min(height);
     if side < 32 {
         set_key(&mut parts, "ctu", "16");
@@ -101,7 +127,7 @@ pub fn encode_args_amf_audio(
         args.extend(["-map".into(), "0:v:0".into()]);
     }
     args.extend([
-        "-vf".into(), "format=p010le".into(),
+        "-vf".into(), rgb_to_yuv_filter(color, "p010le").into(),
         "-c:v".into(), "hevc_amf".into(),
         "-profile:v".into(), "main10".into(),
         "-quality".into(), "balanced".into(),
@@ -198,10 +224,8 @@ pub fn encode_args_audio(
         args.push("-colorspace".into());
         args.push(value.to_string());
     }
-    if let Some(value) = color.ffmpeg_range.as_deref() {
-        args.push("-color_range".into());
-        args.push(value.to_string());
-    }
+    args.push("-color_range".into());
+    args.push(output_range(color).into());
     args.push(output.to_string());
     args
 }
