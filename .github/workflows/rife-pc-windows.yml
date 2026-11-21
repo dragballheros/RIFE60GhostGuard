@@ -22,9 +22,56 @@ jobs:
       - name: Run Rust unit tests
         shell: pwsh
         run: cargo test --manifest-path ./rife-pc/Cargo.toml -p rife-pc
+
+      - name: Build release binary smoke test
+        shell: pwsh
+        run: cargo build --manifest-path ./rife-pc/Cargo.toml -p rife-pc --release
+
+      - name: CLI startup smoke test
+        shell: pwsh
+        run: |
+          $exe = Resolve-Path "./rife-pc/target/release/rife-pc.exe"
+          & $exe --help | Out-File "$env:TEMP/rife-pc-help.txt"
+          if ($LASTEXITCODE -ne 0) { throw "rife-pc --help failed" }
+          $help = Get-Content "$env:TEMP/rife-pc-help.txt" -Raw
+          foreach ($required in @("--tile", "--sensitivity", "--anime-restore", "--upscale", "--upscale-first")) {
+            if ($help -notmatch [regex]::Escape($required)) {
+              throw "CLI smoke test missing $required"
+            }
+          }
+
+      - name: Pipeline source smoke checks
+        shell: pwsh
+        run: |
+          $pipeline = Get-Content "./rife-pc/app/src/pipeline.rs" -Raw
+          $cugan = Get-Content "./rife-pc/app/src/cugan.rs" -Raw
+          $ffmpeg = Get-Content "./rife-pc/app/src/ffmpeg.rs" -Raw
+          $gui = Get-Content "./rife-pc/app/src/gui.rs" -Raw
+
+          foreach ($required in @("RifeWorkerPool", "effective_rife_workers", "Vulkan VRAM", "RIFE workers")) {
+            if ($pipeline -notmatch [regex]::Escape($required)) {
+              throw "Pipeline smoke check missing $required"
+            }
+          }
+
+          foreach ($required in @("realcugan-ncnn-vulkan", "-j", "2:2:2", "3:3:3", "4:4:4")) {
+            if ($cugan -notmatch [regex]::Escape($required)) {
+              throw "Real-CUGAN smoke check missing $required"
+            }
+          }
+
+          if ($ffmpeg -notmatch "hevc_amf") {
+            throw "AMF smoke check missing hevc_amf"
+          }
+
+          if ($gui -notmatch "progress.stage") {
+            throw "GUI progress smoke check missing stage reporting"
+          }
+
       - name: Build the setup executable
         shell: pwsh
         run: ./rife-pc/build-windows.ps1
+
       - uses: actions/upload-artifact@v4
         with:
           name: RIFE60GhostGuard-Setup
