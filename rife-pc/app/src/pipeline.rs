@@ -912,8 +912,8 @@ mod rife_worker_tests {
 
     #[test]
     fn auto_uses_two_workers_for_small_tiles() {
-        assert_eq!(effective_rife_workers(0, 512), 2);
-        assert_eq!(effective_rife_workers(0, 256), 2);
+        assert_eq!(effective_rife_workers(0, 512, 4096), 2);
+        assert_eq!(effective_rife_workers(0, 256, 4096), 2);
     }
 
     #[test]
