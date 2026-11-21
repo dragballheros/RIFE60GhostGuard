@@ -1,7 +1,8 @@
 //! Real-CUGAN 2× through the official `realcugan-ncnn-vulkan` executable.
 //! Noise level 3 matches the iOS Real-CUGAN anime model. The iOS intensity
 //! of 1.30 is an input of the Core ML graph and is not a separate ncnn flag.
-//! Sync gap stays at 3, which is that tool's default.
+//! Sync gap stays at 3. The directory worker pool is tuned to keep the GPU fed
+//! without blindly multiplying VRAM use.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -96,6 +97,11 @@ pub fn upscale_file(
             .arg(tile.max(32).to_string())
             .arg("-c")
             .arg("3")
+            // Real-CUGAN supports independent load/proc/save worker counts.
+            // Large frames use 2:2:2 to limit VRAM pressure; smaller frames can
+            // safely keep four decode/inference/encode workers in flight.
+            .arg("-j")
+            .arg(if tile >= 768 { "2:2:2" } else if tile >= 512 { "3:3:3" } else { "4:4:4" })
             .arg("-m")
             .arg(&models);
         if gpu >= 0 {
