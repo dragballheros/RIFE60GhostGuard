@@ -163,6 +163,7 @@ pub fn orchestrate(
         let preserve = options.settings.preserve_audio;
         let source = options.input.clone();
         let progress_encode = Arc::clone(&progress);
+        let encode_started = std::time::Instant::now();
         map_video(
             &ffmpeg,
             &ffprobe,
@@ -185,13 +186,16 @@ pub fn orchestrate(
                 } else {
                     0.9 + 0.1 * (done as f32 / total as f32)
                 };
+                let elapsed = encode_started.elapsed().as_secs_f64().max(0.001);
+                let fps = done as f64 / elapsed;
+                let remaining = total.saturating_sub(done) as f64;
                 progress_encode(Progress {
                     output_frame: done,
                     output_total: total,
-                    fps: 0.0,
+                    fps,
                     source_frame: 0,
                     stage: "encode".into(),
-                    eta_seconds: 0.0,
+                    eta_seconds: if fps > 0.0 { remaining / fps } else { 0.0 },
                     ram_mb: perf::available_ram_mb(),
                     seam: 0.0,
                     fraction,
