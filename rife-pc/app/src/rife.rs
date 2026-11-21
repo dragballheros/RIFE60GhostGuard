@@ -14,6 +14,7 @@ pub struct Engine {
     #[cfg(feature = "ncnn")]
     raw: *mut ffi::RifeEngine,
     pub gpu_name: String,
+    pub gpu_memory_mb: u64,
 }
 
 // The upstream rife-ncnn-vulkan runner shares one const RIFE instance across
@@ -42,7 +43,12 @@ impl Engine {
                 return Err(anyhow!(error_text(std::ptr::null_mut())));
             }
             let gpu_name = name_text(raw);
-            Ok(Self { raw, gpu_name })
+            let gpu_memory_mb = unsafe { ffi::rife_gpu_memory_mb(raw) };
+            Ok(Self {
+                raw,
+                gpu_name,
+                gpu_memory_mb,
+            })
         }
     }
 
@@ -146,6 +152,7 @@ mod ffi {
         ) -> i32;
         pub fn rife_last_error(engine: *mut RifeEngine, buf: *mut libc_char, len: i32) -> i32;
         pub fn rife_gpu_name(engine: *mut RifeEngine, buf: *mut libc_char, len: i32) -> i32;
+        pub fn rife_gpu_memory_mb(engine: *mut RifeEngine) -> u64;
     }
 }
 
