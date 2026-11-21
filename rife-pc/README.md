@@ -114,4 +114,4 @@ CPU, row-parallel with rayon, same thresholds as the Swift code:
 
 `cargo test` in this folder runs those checks. They mirror `Scripts/check_thin_line_preservation.swift`.
 
-Decode, GPU inference, guards, and encode each have their own thread and a bounded queue (4 decoded frames, 2 in-flight GPU results, 2 frames waiting to encode).
+Decode, RIFE inference, guards, and encode are overlapped with bounded queues. RIFE uses the upstream ncnn multi-processing pattern: one shared immutable RIFE model, up to two processing workers, and thread-local reusable pixel buffers. Auto uses two workers for tiles up to 512 and one worker for whole-frame or larger-tile inference to limit VRAM pressure. The output reorder queue preserves exact presentation order before GhostGuard. Forcing two workers with whole-frame 1080p can exceed a small GPU's VRAM; use the 1-worker setting if that happens.
