@@ -1,0 +1,78 @@
+name: RIFE PC Windows smoke tests
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - cursor/rife-pc-windows-a368
+    paths:
+      - 'rife-pc/**'
+      - '.github/workflows/rife-pc-windows-smoke.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Run all Rust tests
+        shell: pwsh
+        run: cargo test --manifest-path ./rife-pc/Cargo.toml -p rife-pc --all-targets
+
+      - name: Build release binary
+        shell: pwsh
+        run: cargo build --manifest-path ./rife-pc/Cargo.toml -p rife-pc --release
+
+      - name: CLI startup smoke test
+        shell: pwsh
+        run: |
+          $exe = Resolve-Path "./rife-pc/target/release/rife-pc.exe"
+          & $exe --help | Out-File "$env:TEMP/rife-pc-help.txt"
+          if ($LASTEXITCODE -ne 0) { throw "rife-pc --help failed" }
+          $help = Get-Content "$env:TEMP/rife-pc-help.txt" -Raw
+          foreach ($required in @("--tile", "--sensitivity", "--anime-restore", "--upscale", "--upscale-first")) {
+            if ($help -notmatch [regex]::Escape($required)) {
+              throw "CLI smoke test missing $required"
+            }
+          }
+
+      - name: Pipeline source smoke checks
+        shell: pwsh
+        run: |
+          $pipeline = Get-Content "./rife-pc/app/src/pipeline.rs" -Raw
+          $cugan = Get-Content "./rife-pc/app/src/cugan.rs" -Raw
+          $ffmpeg = Get-Content "./rife-pc/app/src/ffmpeg.rs" -Raw
+          $gui = Get-Content "./rife-pc/app/src/gui.rs" -Raw
+
+          foreach ($required in @("RifeWorkerPool", "effective_rife_workers", "Vulkan VRAM", "RIFE workers")) {
+            if ($pipeline -notmatch [regex]::Escape($required)) {
+              throw "Pipeline smoke check missing $required"
+            }
+          }
+
+          foreach ($required in @("realcugan-ncnn-vulkan", "-j", "2:2:2", "3:3:3", "4:4:4")) {
+            if ($cugan -notmatch [regex]::Escape($required)) {
+              throw "Real-CUGAN smoke check missing $required"
+            }
+          }
+
+          if ($ffmpeg -notmatch "hevc_amf") {
+            throw "AMF smoke check missing hevc_amf"
+          }
+
+          if ($gui -notmatch "progress.stage") {
+            throw "GUI progress smoke check missing stage reporting"
+          }
+
+      - name: Report smoke-test limitations
+        shell: pwsh
+        run: |
+          Write-Host "PASS: source, Rust tests, release build, and CLI startup smoke checks completed."
+          Write-Host "LIMITATION: GitHub-hosted Windows runners do not provide the user's Radeon Pro 5500M."
+          Write-Host "Therefore this workflow cannot validate Vulkan RIFE throughput, Real-CUGAN GPU utilization, or AMD AMF hardware encoding on the target PC."
