@@ -1,0 +1,32 @@
+name: RIFE PC Windows installer
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - cursor/rife-pc-windows-a368
+    paths:
+      - 'rife-pc/**'
+      - '.github/workflows/rife-pc-windows.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  installer:
+    runs-on: windows-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Run Rust unit tests
+        shell: pwsh
+        run: cargo test --manifest-path ./rife-pc/Cargo.toml -p rife-pc
+      - name: Build the setup executable
+        shell: pwsh
+        run: ./rife-pc/build-windows.ps1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: RIFE60GhostGuard-Setup
+          path: rife-pc/installer/output/RIFE60GhostGuard-Setup.exe
+          if-no-files-found: error
