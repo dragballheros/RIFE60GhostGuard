@@ -34,16 +34,6 @@ impl ColorMeta {
 /// frames have already been decoded to display-space BGRA, and RIFE operates
 /// directly on those byte values. FFmpeg is only asked to select the encoder's
 /// required pixel format.
-fn rgb_to_yuv_filter(_color: &ColorMeta, output_format: &str) -> String {
-    format!("format={output_format}")
-}
-
-fn output_range(color: &ColorMeta) -> &'static str {
-    match color.ffmpeg_range.as_deref() {
-        Some("pc") => "pc",
-        _ => "tv",
-    }
-}
 
 pub fn x265_params(
     width: i32,
@@ -117,7 +107,8 @@ pub fn encode_args_amf_audio(
         args.extend(["-map".into(), "0:v:0".into()]);
     }
     args.extend([
-        "-vf".into(), rgb_to_yuv_filter(color, "p010le").into(),
+        // No custom RGB/YUV filter. FFmpeg performs only the mandatory
+        // pixel-format conversion required by AMF.
         "-c:v".into(), "hevc_amf".into(),
         "-profile:v".into(), "main10".into(),
         "-quality".into(), "balanced".into(),
@@ -369,13 +360,6 @@ mod tests {
     }
 
     #[test]
-    fn rgb_to_yuv_filter_is_pixel_neutral() {
-        let limited = color_from_probe("bt709", "bt709", "bt709", "tv");
-        let full = color_from_probe("bt709", "bt709", "bt709", "pc");
-        assert_eq!(rgb_to_yuv_filter(&limited, "p010le"), "format=p010le");
-        assert_eq!(rgb_to_yuv_filter(&full, "yuv420p10le"), "format=yuv420p10le");
-    }
-
     #[test]
     fn amf_args_use_hevc_main10_and_p010() {
         let color = color_from_probe("bt709", "bt709", "bt709", "tv");
@@ -383,13 +367,13 @@ mod tests {
         let joined = args.join(" ");
         assert!(joined.contains("hevc_amf"));
         assert!(joined.contains("main10"));
-        assert!(joined.contains("p010le"));
+        assert!(!joined.contains("-vf"));
         assert!(joined.contains("-rc cqp"));
         assert!(joined.contains("-qp_i 20"));
         assert!(joined.contains("-qp_p 22"));
         assert!(joined.contains("-tag:v hvc1"));
         assert!(joined.contains("-c:a copy"));
-        assert_eq!(rgb_to_yuv_filter(&color, "p010le"), "format=p010le");
+        assert!(!joined.contains("-vf"));
     }
 
     #[test]
