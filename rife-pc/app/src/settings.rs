@@ -290,6 +290,8 @@ pub struct ProcessingSettings {
     pub source_outlier: bool,
     pub render_power: bool,
     pub performance_tier: PerformanceTier,
+    /// 0 = VRAM-aware Auto, 1 = single worker, 2 = two concurrent RIFE calls.
+    pub rife_workers: u8,
     pub preserve_audio: bool,
     pub reddit_mode: bool,
     pub video_to_gif: bool,
@@ -337,6 +339,7 @@ impl ProcessingSettings {
             source_outlier: true,
             render_power: true,
             performance_tier: PerformanceTier::Auto,
+            rife_workers: 0,
             preserve_audio: true,
             reddit_mode: false,
             video_to_gif: false,
@@ -378,6 +381,7 @@ impl ProcessingSettings {
             source_outlier: true,
             render_power: false,
             performance_tier: PerformanceTier::Auto,
+            rife_workers: 0,
             preserve_audio: true,
             reddit_mode: false,
             video_to_gif: false,
@@ -444,6 +448,7 @@ impl ProcessingSettings {
     }
 
     pub fn clamp_ranges(&mut self) {
+        self.rife_workers = self.rife_workers.min(2);
         self.color_pop_strength = self.color_pop_strength.clamp(0.0, 1.0);
         self.color_rebuild_strength = self.color_rebuild_strength.clamp(0.1, 1.0);
         self.outline_rebuild_strength = self.outline_rebuild_strength.clamp(0.1, 1.0);
