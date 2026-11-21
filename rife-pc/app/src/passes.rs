@@ -3,7 +3,7 @@
 //! Real-CUGAN is either before RIFE (`upscale_first`) or after it.
 //! Color Rebuild, Outline Rebuild, Sharpie, and Color Pop run on the last picture.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
@@ -47,7 +47,12 @@ pub fn orchestrate(
         bin_name("ffprobe"),
     );
 
-    if is_still(&options.input) {
+    if crate::export_media::is_still_path(&options.input) {
+        options.output = crate::export_media::coerce_still_output(
+            &options.input,
+            &options.output,
+            options.settings.reddit_mode,
+        );
         return still(&options, &ffmpeg, &ffprobe, &power_note, cancel, progress);
     }
 
@@ -68,7 +73,7 @@ pub fn orchestrate(
         let settings = options.settings.clone();
         map_video(&ffmpeg, &ffprobe, &current, &prepared, false, &options.input, true, cancel.clone(), |frame| {
             crate::filters::pre_frame(&frame, &settings, &mut state)
-        })?;
+        }, |_, _| {})?;
         notes.extend(state.notes);
         current = prepared;
     }
@@ -152,11 +157,12 @@ pub fn orchestrate(
 
     if upscale_after {
         check_cancel(&cancel)?;
-        emit(progress.as_ref(), "polish", 0.9);
+        emit(progress.as_ref(), "encode", 0.9);
         let mut state = crate::filters::FilterState::default();
         let settings = options.settings.clone();
         let preserve = options.settings.preserve_audio;
         let source = options.input.clone();
+        let progress_encode = Arc::clone(&progress);
         map_video(
             &ffmpeg,
             &ffprobe,
@@ -173,6 +179,24 @@ pub fn orchestrate(
                     frame
                 }
             },
+            move |done, total| {
+                let fraction = if total == 0 {
+                    0.9
+                } else {
+                    0.9 + 0.1 * (done as f32 / total as f32)
+                };
+                progress_encode(Progress {
+                    output_frame: done,
+                    output_total: total,
+                    fps: 0.0,
+                    source_frame: 0,
+                    stage: "encode".into(),
+                    eta_seconds: 0.0,
+                    ram_mb: perf::available_ram_mb(),
+                    seam: 0.0,
+                    fraction,
+                });
+            },
         )?;
         notes.extend(state.notes);
         current = video_dest.clone();
@@ -180,9 +204,11 @@ pub fn orchestrate(
         current = video_dest.clone();
     }
 
-    finish_delivery(&options, &ffmpeg, &ffprobe, &current, &mut notes, &cancel)?;
+    let saved = finish_delivery(&options, &ffmpeg, &ffprobe, &current, &mut notes, &cancel)?;
+    notes.push(format!("Saved {}", saved.display()));
     let mut summary = summary;
     summary.notes = notes;
+    summary.output_path = saved;
     if options.settings.diagnostics {
         let dir = crate::models::data_dir().join("Diagnostics");
         let mut recorder = crate::diagnostics::Recorder::new(dir);
@@ -207,15 +233,14 @@ fn still(
     progress: Arc<impl Fn(Progress)>,
 ) -> Result<Summary> {
     emit(progress.as_ref(), "still", 0.1);
-    let info = ffmpeg::probe(ffprobe, &options.input)?;
+    let (width, height) = ffmpeg::pixel_size(ffprobe, &options.input)?;
     let mut state = crate::filters::FilterState::default();
-    let mut frame = decode_one(ffmpeg, &options.input, info.width, info.height)?;
+    let mut frame = ffmpeg::decode_image(ffmpeg, &options.input, width, height, false)?;
     frame = crate::filters::pre_frame(&frame, &options.settings, &mut state);
-    let mut current_path = options.input.clone();
     let scratch = Scratch::create("still")?;
     if options.settings.upscale {
         let staged = scratch.path.join("still-src.png");
-        write_png(ffmpeg, &frame, &staged)?;
+        ffmpeg::write_image(ffmpeg, &frame, &staged)?;
         let up = scratch.path.join("still-up.mkv");
         crate::cugan::upscale_file(
             ffmpeg,
@@ -228,20 +253,31 @@ fn still(
         )?;
         let probed = ffmpeg::probe(ffprobe, &up)?;
         frame = decode_one(ffmpeg, &up, probed.width, probed.height)?;
-        current_path = up;
     }
     frame = crate::filters::post_frame(&frame, &options.settings, &mut state);
-    write_png(ffmpeg, &frame, &options.output)?;
+    emit(progress.as_ref(), "save", 0.9);
+    if options.settings.reddit_mode {
+        let staged = scratch.path.join("still.png");
+        ffmpeg::write_image(ffmpeg, &frame, &staged)?;
+        crate::export_media::write_still_capped(
+            ffmpeg,
+            &staged,
+            &options.output,
+            frame.width.max(frame.height),
+        )?;
+    } else {
+        ffmpeg::write_image(ffmpeg, &frame, &options.output)?;
+    }
+    if !options.output.is_file() {
+        return Err(anyhow!("the still was not written to {}", options.output.display()));
+    }
     let mut notes = state.notes;
     notes.insert(0, power_note.to_string());
+    notes.push(format!("Saved {}", options.output.display()));
     if options.settings.reddit_mode {
-        let capped = options.output.with_extension("reddit.jpg");
-        crate::export_media::write_still_capped(ffmpeg, &options.output, &capped, frame.width.max(frame.height))?;
-        let _ = std::fs::rename(&capped, &options.output);
         notes.push("Reddit Mode kept the still at or under 20 MB.".into());
     }
     check_cancel(&cancel)?;
-    let _ = current_path;
     Ok(Summary {
         output_frames: 1,
         seconds: 0.0,
@@ -252,6 +288,7 @@ fn still(
         gpu_name: String::new(),
         notes,
         diagnostics_path: None,
+        output_path: options.output.clone(),
     })
 }
 
@@ -262,15 +299,19 @@ fn finish_delivery(
     current: &Path,
     notes: &mut Vec<String>,
     cancel: &AtomicBool,
-) -> Result<()> {
+) -> Result<PathBuf> {
     check_cancel(cancel)?;
     if !options.settings.video_to_gif && current != options.output && current.is_file() {
         if std::fs::rename(current, &options.output).is_err() {
             std::fs::copy(current, &options.output)?;
         }
     }
-    let delivered = current.to_path_buf();
-    if options.settings.video_to_gif {
+    let delivered = if options.settings.video_to_gif {
+        current.to_path_buf()
+    } else {
+        options.output.clone()
+    };
+    let saved = if options.settings.video_to_gif {
         let gif = if options.output.extension().and_then(|e| e.to_str()) == Some("gif") {
             options.output.clone()
         } else {
@@ -283,6 +324,7 @@ fn finish_delivery(
             "GIF written to {}. Audio is dropped. The iOS loop-seam search is approximated by ffmpeg's palette.",
             gif.display()
         ));
+        gif
     } else if options.settings.reddit_mode {
         let info = ffmpeg::probe(ffprobe, &delivered)?;
         let scratch = Scratch::create("reddit")?;
@@ -290,10 +332,17 @@ fn finish_delivery(
         crate::export_media::cap_video(ffmpeg, &delivered, &tmp, info.duration.max(0.1), options.settings.preserve_audio && info.has_audio)?;
         std::fs::copy(&tmp, &delivered)?;
         notes.push("Reddit Mode re-encoded the video toward 19.8 MB.".into());
-    } else if options.settings.preserve_audio {
-        notes.push("Original audio was stream-copied when the final encode ran.".into());
+        delivered
+    } else {
+        if options.settings.preserve_audio {
+            notes.push("Original audio was stream-copied when the final encode ran.".into());
+        }
+        delivered
+    };
+    if !saved.is_file() {
+        return Err(anyhow!("the export was not written to {}", saved.display()));
     }
-    Ok(())
+    Ok(saved)
 }
 
 pub fn map_video(
@@ -306,21 +355,33 @@ pub fn map_video(
     lossless: bool,
     cancel: Arc<AtomicBool>,
     mut map: impl FnMut(Frame) -> Frame,
+    mut on_frame: impl FnMut(u64, u64),
 ) -> Result<()> {
     let info = ffmpeg::probe(ffprobe, input)?;
     let width = info.width & !1;
     let height = info.height & !1;
+    let total = info.frame_count.max(0) as u64;
     let mut decoder = Decoder::spawn(ffmpeg, input, width, height, info.width, info.height)?;
-    if lossless {
+    let mut written = 0u64;
+    let encode_result = if lossless {
         let mut encoder = Encoder::spawn_ffv1(ffmpeg, output, width, height, info.rate.num, info.rate.den)?;
+        let mut failed = None;
         while let Some(frame) = decoder.read_frame()? {
             if cancel.load(Ordering::Relaxed) {
-                return Err(anyhow!("cancelled"));
+                failed = Some(anyhow!("cancelled"));
+                break;
             }
-            encoder.write_frame(&map(frame))?;
+            if let Err(err) = encoder.write_frame(&map(frame)) {
+                failed = Some(err);
+                break;
+            }
+            written += 1;
+            on_frame(written, total);
         }
-        decoder.finish()?;
-        encoder.finish()?;
+        // Close the encoder stdin before waiting on the decoder so libx265
+        // sees EOF even if the decoder process is still shutting down.
+        let finished = failed.map(Err).unwrap_or_else(|| encoder.finish());
+        finish_both(finished, decoder.finish())
     } else {
         let mut encoder = Encoder::spawn_audio(
             ffmpeg,
@@ -333,16 +394,30 @@ pub fn map_video(
             &info.color,
             preserve_audio,
         )?;
+        let mut failed = None;
         while let Some(frame) = decoder.read_frame()? {
             if cancel.load(Ordering::Relaxed) {
-                return Err(anyhow!("cancelled"));
+                failed = Some(anyhow!("cancelled"));
+                break;
             }
-            encoder.write_frame(&map(frame))?;
+            if let Err(err) = encoder.write_frame(&map(frame)) {
+                failed = Some(err);
+                break;
+            }
+            written += 1;
+            on_frame(written, total);
         }
-        decoder.finish()?;
-        encoder.finish()?;
+        let finished = failed.map(Err).unwrap_or_else(|| encoder.finish());
+        finish_both(finished, decoder.finish())
+    };
+    encode_result
+}
+
+fn finish_both(encoded: Result<()>, decoded: Result<()>) -> Result<()> {
+    match (encoded, decoded) {
+        (Ok(()), decoded) => decoded,
+        (Err(err), _) => Err(err),
     }
-    Ok(())
 }
 
 fn decode_one(ffmpeg: &Path, input: &Path, width: i32, height: i32) -> Result<Frame> {
@@ -352,23 +427,6 @@ fn decode_one(ffmpeg: &Path, input: &Path, width: i32, height: i32) -> Result<Fr
     let frame = decoder.read_frame()?.ok_or_else(|| anyhow!("no frames in {}", input.display()))?;
     decoder.finish()?;
     Ok(frame)
-}
-
-fn write_png(ffmpeg: &Path, frame: &Frame, output: &Path) -> Result<()> {
-    let raw = output.with_extension("bgra");
-    std::fs::write(&raw, &frame.data)?;
-    let status = std::process::Command::new(ffmpeg)
-        .args(["-y", "-hide_banner", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "bgra", "-s"])
-        .arg(format!("{}x{}", frame.width, frame.height))
-        .arg("-i")
-        .arg(&raw)
-        .arg(output)
-        .status()?;
-    let _ = std::fs::remove_file(&raw);
-    if !status.success() {
-        return Err(anyhow!("could not write {}", output.display()));
-    }
-    Ok(())
 }
 
 fn emit(progress: &dyn Fn(Progress), stage: &str, fraction: f32) {
@@ -391,13 +449,6 @@ fn check_cancel(cancel: &AtomicBool) -> Result<()> {
     } else {
         Ok(())
     }
-}
-
-fn is_still(path: &Path) -> bool {
-    matches!(
-        path.extension().and_then(|ext| ext.to_str()).unwrap_or("").to_ascii_lowercase().as_str(),
-        "png" | "jpg" | "jpeg" | "webp" | "bmp"
-    )
 }
 
 fn bin_name(stem: &str) -> &'static str {

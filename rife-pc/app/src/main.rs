@@ -165,15 +165,19 @@ fn dispatch() -> Result<()> {
     inputs.extend(cli.also.iter().cloned());
     let cancel = Arc::new(AtomicBool::new(false));
     for (index, input) in inputs.into_iter().enumerate() {
-        let output = if index == 0 {
-            cli.output.clone()
-        } else if let Some(dir) = &cli.export_dir {
-            let name = input.file_name().unwrap_or_default();
-            dir.join(name)
+        let export_dir = cli.export_dir.as_ref().map(|dir| dir.display().to_string()).unwrap_or_default();
+        let override_path = if index == 0 {
+            cli.output.display().to_string()
         } else {
-            let stem = input.file_stem().and_then(|s| s.to_str()).unwrap_or("output");
-            input.with_file_name(format!("{stem}-60.mp4"))
+            String::new()
         };
+        let output = export_media::delivery_path(
+            &input,
+            &export_dir,
+            &override_path,
+            settings.video_to_gif,
+            settings.reddit_mode,
+        );
         let summary = pipeline::run(
         &Options {
             audio_source: input.clone(),

@@ -64,6 +64,21 @@ struct App {
     studio_vulkan: bool,
     studio_anima: bool,
     mask_stroke: Vec<[f32; 2]>,
+    preview_for: String,
+    preview: Option<WatermarkPreview>,
+    preview_error: String,
+    preview_rx: Option<Receiver<PreviewMsg>>,
+}
+
+struct WatermarkPreview {
+    texture: egui::TextureHandle,
+    width: i32,
+    height: i32,
+}
+
+struct PreviewMsg {
+    path: String,
+    image: Result<crate::ffmpeg::RgbaImage, String>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -130,6 +145,10 @@ impl App {
             studio_vulkan: false,
             studio_anima: false,
             mask_stroke: Vec::new(),
+            preview_for: String::new(),
+            preview: None,
+            preview_error: String::new(),
+            preview_rx: None,
         }
     }
 
@@ -179,14 +198,22 @@ impl App {
                     let _ = tx.send(UiEvent::Note(format!("Skipped missing file {}", input.display())));
                     continue;
                 }
-                let output = if index == 0 && !output_override.is_empty() {
-                    PathBuf::from(&output_override)
-                } else if !settings.export_dir.is_empty() {
-                    let stem = input.file_stem().and_then(|s| s.to_str()).unwrap_or("output");
-                    let ext = if settings.video_to_gif { "gif" } else { "mp4" };
-                    PathBuf::from(&settings.export_dir).join(format!("{stem}-60.{ext}"))
+                let output = if index == 0 {
+                    crate::export_media::delivery_path(
+                        &input,
+                        &settings.export_dir,
+                        &output_override,
+                        settings.video_to_gif,
+                        settings.reddit_mode,
+                    )
                 } else {
-                    PathBuf::from(default_output(&input, settings.video_to_gif))
+                    crate::export_media::delivery_path(
+                        &input,
+                        &settings.export_dir,
+                        "",
+                        settings.video_to_gif,
+                        settings.reddit_mode,
+                    )
                 };
                 let mut item_settings = settings.clone();
                 if !item.remove_watermark {
@@ -233,6 +260,26 @@ impl App {
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        let preview_msg = if let Some(rx) = &self.preview_rx {
+            match rx.try_recv() {
+                Ok(msg) => Some(Ok(msg)),
+                Err(mpsc::TryRecvError::Empty) => None,
+                Err(mpsc::TryRecvError::Disconnected) => Some(Err(())),
+            }
+        } else {
+            None
+        };
+        match preview_msg {
+            Some(Ok(msg)) => {
+                self.preview_rx = None;
+                self.apply_preview(ctx, msg);
+            }
+            Some(Err(())) => self.preview_rx = None,
+            None => {}
+        }
+        if self.preview_rx.is_some() {
+            ctx.request_repaint_after(Duration::from_millis(100));
+        }
         if let Some(rx) = &self.events {
             while let Ok(event) = rx.try_recv() {
                 match event {
@@ -264,8 +311,13 @@ impl eframe::App for App {
                     UiEvent::Done(Ok(summary)) => {
                         self.running = false;
                         self.fraction = 1.0;
+                        let saved = if summary.output_path.as_os_str().is_empty() {
+                            String::new()
+                        } else {
+                            format!("Saved {}. ", summary.output_path.display())
+                        };
                         self.status = format!(
-                            "Finished {} frames in {:.1}s ({:.1} fps) on {}. Scene boundaries {}, stroke repeats {}, source outliers {}.",
+                            "{saved}Finished {} frames in {:.1}s ({:.1} fps) on {}. Scene boundaries {}, stroke repeats {}, source outliers {}.",
                             summary.output_frames,
                             summary.seconds,
                             summary.fps,
@@ -401,7 +453,54 @@ impl App {
         ui.label("Short videos auto-enable Anime Restore unless that box is checked. APISR and SPAN run from the ONNX files shipped with the installer, on 256-pixel tiles, through DirectML. They are skipped only when those files are missing.");
     }
 
+    fn apply_preview(&mut self, ctx: &egui::Context, msg: PreviewMsg) {
+        if msg.path != self.input.trim() {
+            return;
+        }
+        match msg.image {
+            Ok(image) => {
+                let color = egui::ColorImage::from_rgba_unmultiplied(
+                    [image.width as usize, image.height as usize],
+                    &image.rgba,
+                );
+                self.preview = Some(WatermarkPreview {
+                    texture: ctx.load_texture("watermark-input", color, egui::TextureOptions::LINEAR),
+                    width: image.width,
+                    height: image.height,
+                });
+                self.preview_error.clear();
+            }
+            Err(err) => {
+                self.preview = None;
+                self.preview_error = err;
+            }
+        }
+    }
+
+    fn request_preview(&mut self) {
+        let path = self.input.trim().to_string();
+        if path == self.preview_for {
+            return;
+        }
+        self.preview_for = path.clone();
+        self.preview = None;
+        self.mask_stroke.clear();
+        if path.is_empty() || !Path::new(&path).is_file() {
+            self.preview_error = "Pick an input on the Interpolate tab to see it here.".into();
+            self.preview_rx = None;
+            return;
+        }
+        self.preview_error = "Loading the input into the mask view…".into();
+        let (tx, rx) = mpsc::channel();
+        self.preview_rx = Some(rx);
+        thread::spawn(move || {
+            let image = crate::ffmpeg::preview_rgba(Path::new(&path)).map_err(|err| err.to_string());
+            let _ = tx.send(PreviewMsg { path, image });
+        });
+    }
+
     fn watermark_tab(&mut self, ui: &mut egui::Ui) {
+        self.request_preview();
         ui.checkbox(&mut self.settings.watermark, "Remove marked watermarks");
         ui.horizontal(|ui| {
             ui.label("Inpainting model");
@@ -417,19 +516,39 @@ impl App {
         }
         let (response, painter) = ui.allocate_painter(egui::vec2(ui.available_width(), 280.0), egui::Sense::click_and_drag());
         painter.rect_filled(response.rect, 4.0, egui::Color32::from_rgb(24, 24, 28));
+        let image_rect = self.preview.as_ref().map(|preview| {
+            let rect = fitted_rect(response.rect, preview.width, preview.height);
+            painter.image(
+                preview.texture.id(),
+                rect,
+                egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                egui::Color32::WHITE,
+            );
+            rect
+        });
+        let stroke_rect = image_rect.unwrap_or(response.rect);
         for stroke in &self.settings.watermark_mask.strokes {
-            paint_stroke(&painter, response.rect, stroke);
+            paint_stroke(&painter, stroke_rect, stroke);
         }
-        paint_stroke(&painter, response.rect, &self.mask_stroke);
-        if let Some(pointer) = response.interact_pointer_pos() {
-            if response.dragged() {
-                self.mask_stroke.push(norm(response.rect, pointer));
+        paint_stroke(&painter, stroke_rect, &self.mask_stroke);
+        if image_rect.is_some() {
+            if let Some(pointer) = response.interact_pointer_pos() {
+                if response.dragged() {
+                    if let Some(point) = norm_inside(stroke_rect, pointer) {
+                        self.mask_stroke.push(point);
+                    }
+                }
+            }
+            if response.drag_stopped() && self.mask_stroke.len() >= 2 {
+                self.settings.watermark_mask.strokes.push(std::mem::take(&mut self.mask_stroke));
+            } else if response.drag_stopped() {
+                self.mask_stroke.clear();
             }
         }
-        if response.drag_stopped() && self.mask_stroke.len() >= 2 {
-            self.settings.watermark_mask.strokes.push(std::mem::take(&mut self.mask_stroke));
+        if !self.preview_error.is_empty() {
+            ui.label(&self.preview_error);
         }
-        ui.label("Drag on the canvas to paint the watermark. Coordinates are saved with the queue and reused for every item whose per-item toggle is on.");
+        ui.label("The picture is the input's first frame, scaled to fit. Brush points are stored as fractions of that frame and applied to the source pixels.");
     }
 
     fn export_tab(&mut self, ui: &mut egui::Ui) {
@@ -568,7 +687,7 @@ impl App {
             keep_audio: self.h3_audio,
             vulkan: self.h3_vulkan,
             license_accepted: self.h3_license,
-            output: PathBuf::from(if self.output.trim().is_empty() { "h3.mp4" } else { self.output.trim() }),
+            output: crate::export_media::placed_output(&self.settings.export_dir, &self.output, "h3.mp4"),
         }
     }
 
@@ -589,7 +708,7 @@ impl App {
             outline: self.studio_outline,
             outline_strength: self.studio_outline_strength,
             vulkan: self.studio_vulkan,
-            output: PathBuf::from(if self.output.trim().is_empty() { "studio.png" } else { self.output.trim() }),
+            output: crate::export_media::placed_output(&self.settings.export_dir, &self.output, "studio.png"),
         }
     }
 
@@ -599,6 +718,7 @@ impl App {
         let (tx, rx) = mpsc::channel();
         self.events = Some(rx);
         thread::spawn(move || {
+            let saved = request.output.clone();
             let result = crate::h3::run(&request).map(|_| Summary {
                 output_frames: request.frames as u64,
                 seconds: 0.0,
@@ -607,8 +727,9 @@ impl App {
                 stroke_repeats: 0,
                 source_outliers: 0,
                 gpu_name: "CPU".into(),
-                notes: vec!["MiniMax H3 finished.".into()],
+                notes: vec![format!("Saved {}", saved.display())],
                 diagnostics_path: None,
+                output_path: saved,
             });
             let _ = tx.send(UiEvent::Done(result.map_err(|err| err.to_string())));
         });
@@ -628,8 +749,9 @@ impl App {
                 stroke_repeats: 0,
                 source_outliers: 0,
                 gpu_name: path.display().to_string(),
-                notes: vec![format!("Wrote {}", path.display())],
+                notes: vec![format!("Saved {}", path.display())],
                 diagnostics_path: None,
+                output_path: path,
             });
             let _ = tx.send(UiEvent::Done(result.map_err(|err| err.to_string())));
         });
@@ -651,6 +773,7 @@ impl App {
                 gpu_name: String::new(),
                 notes: vec![format!("Downloaded {}", path.display())],
                 diagnostics_path: None,
+                output_path: path,
             });
             let _ = tx.send(UiEvent::Done(result.map_err(|err| err.to_string())));
         });
@@ -664,7 +787,10 @@ fn path_row(ui: &mut egui::Ui, label: &str, text: &mut String, save: bool, enabl
         if ui.add_enabled(enabled, egui::Button::new("Browse…")).clicked() {
             let dialog = rfd::FileDialog::new();
             let picked = if save {
-                dialog.add_filter("Video", &["mp4", "mov", "gif", "png"]).save_file()
+                dialog
+                    .add_filter("Image", &["png", "jpg", "jpeg", "webp"])
+                    .add_filter("Video", &["mp4", "mov", "gif"])
+                    .save_file()
             } else {
                 dialog
                     .add_filter("Media", &["mp4", "mov", "mkv", "webm", "m4v", "gif", "png", "jpg", "jpeg", "webp"])
@@ -701,21 +827,32 @@ fn paint_stroke(painter: &egui::Painter, rect: egui::Rect, stroke: &[[f32; 2]]) 
     painter.add(egui::Shape::line(points, egui::Stroke::new(3.0_f32, egui::Color32::from_rgb(220, 70, 90))));
 }
 
-fn norm(rect: egui::Rect, pos: egui::Pos2) -> [f32; 2] {
-    [
+fn norm_inside(rect: egui::Rect, pos: egui::Pos2) -> Option<[f32; 2]> {
+    if rect.width() < 1.0 || rect.height() < 1.0 || !rect.contains(pos) {
+        return None;
+    }
+    Some([
         ((pos.x - rect.min.x) / rect.width()).clamp(0.0, 1.0),
         ((pos.y - rect.min.y) / rect.height()).clamp(0.0, 1.0),
-    ]
+    ])
+}
+
+fn fitted_rect(canvas: egui::Rect, width: i32, height: i32) -> egui::Rect {
+    let aspect = width.max(1) as f32 / height.max(1) as f32;
+    let canvas_aspect = canvas.width() / canvas.height().max(1.0);
+    if aspect > canvas_aspect {
+        let h = canvas.width() / aspect;
+        let y = canvas.center().y - h * 0.5;
+        egui::Rect::from_min_size(egui::pos2(canvas.min.x, y), egui::vec2(canvas.width(), h))
+    } else {
+        let w = canvas.height() * aspect;
+        let x = canvas.center().x - w * 0.5;
+        egui::Rect::from_min_size(egui::pos2(x, canvas.min.y), egui::vec2(w, canvas.height()))
+    }
 }
 
 fn denorm(rect: egui::Rect, p: [f32; 2]) -> egui::Pos2 {
     egui::pos2(rect.min.x + p[0] * rect.width(), rect.min.y + p[1] * rect.height())
-}
-
-fn default_output(input: &Path, gif: bool) -> String {
-    let stem = input.file_stem().and_then(|s| s.to_str()).unwrap_or("output");
-    let ext = if gif { "gif" } else { "mp4" };
-    input.with_file_name(format!("{stem}-60.{ext}")).display().to_string()
 }
 
 fn settings_path() -> PathBuf {

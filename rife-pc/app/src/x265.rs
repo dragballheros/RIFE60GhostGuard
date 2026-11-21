@@ -92,8 +92,13 @@ pub fn encode_args_audio(
         ffmpeg.to_string(),
         "-y".into(),
         "-hide_banner".into(),
+        "-nostats".into(),
         "-loglevel".into(),
         "error".into(),
+        // The raw pipe and the audio file are read together. A short queue
+        // deadlocks once libx265 stops pulling frames and the pipe fills.
+        "-thread_queue_size".into(),
+        "1024".into(),
         "-f".into(),
         "rawvideo".into(),
         "-pix_fmt".into(),
@@ -290,6 +295,8 @@ mod tests {
         );
         let joined = args.join(" ");
         assert!(joined.contains("libx265"));
+        assert!(joined.contains("-nostats"));
+        assert!(joined.contains("-thread_queue_size 1024"));
         assert!(joined.contains("-profile:v main10"));
         assert!(joined.contains("yuv420p10le"));
         assert!(joined.contains("-preset medium"));

@@ -3,8 +3,10 @@
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::mpsc::{self, TrySendError};
 use std::sync::{Arc, Mutex};
 use std::thread;
+use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Context, Result};
 use rife_guards::Frame;
@@ -163,15 +165,9 @@ impl Decoder {
             .spawn()
             .with_context(|| format!("failed to start {}", ffmpeg.display()))?;
         let stderr = Arc::new(Mutex::new(String::new()));
-        let pipe = child.stderr.take();
-        let log = Arc::clone(&stderr);
-        thread::spawn(move || {
-            if let Some(mut pipe) = pipe {
-                let mut buf = Vec::new();
-                let _ = pipe.read_to_end(&mut buf);
-                *log.lock().unwrap() = String::from_utf8_lossy(&buf).into_owned();
-            }
-        });
+        if let Some(pipe) = child.stderr.take() {
+            drain_pipe(pipe, Arc::clone(&stderr));
+        }
         Ok(Self {
             child: Some(child),
             stderr,
@@ -239,7 +235,13 @@ pub struct Encoder {
     child: Option<Child>,
     stderr: Arc<Mutex<String>>,
     frame_bytes: usize,
+    /// `None` asks the writer to drop stdin so ffmpeg sees EOF.
+    writer_tx: Option<mpsc::SyncSender<Option<Vec<u8>>>>,
+    writer: Option<thread::JoinHandle<std::io::Result<()>>>,
 }
+
+const WRITE_TIMEOUT: Duration = Duration::from_secs(120);
+const FINISH_TIMEOUT: Duration = Duration::from_secs(180);
 
 impl Encoder {
     pub fn spawn(
@@ -293,8 +295,11 @@ impl Encoder {
             ffmpeg.display().to_string(),
             "-y".into(),
             "-hide_banner".into(),
+            "-nostats".into(),
             "-loglevel".into(),
             "error".into(),
+            "-thread_queue_size".into(),
+            "1024".into(),
             "-f".into(),
             "rawvideo".into(),
             "-pix_fmt".into(),
@@ -319,25 +324,40 @@ impl Encoder {
         let mut cmd = Command::new(&args[0]);
         cmd.args(&args[1..]);
         cmd.stdin(Stdio::piped())
-            .stdout(Stdio::null())
+            .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         let mut child = cmd
             .spawn()
             .with_context(|| format!("failed to start {}", ffmpeg.display()))?;
         let stderr = Arc::new(Mutex::new(String::new()));
-        let pipe = child.stderr.take();
-        let log = Arc::clone(&stderr);
-        thread::spawn(move || {
-            if let Some(mut pipe) = pipe {
-                let mut buf = Vec::new();
-                let _ = pipe.read_to_end(&mut buf);
-                *log.lock().unwrap() = String::from_utf8_lossy(&buf).into_owned();
+        if let Some(pipe) = child.stderr.take() {
+            drain_pipe(pipe, Arc::clone(&stderr));
+        }
+        if let Some(pipe) = child.stdout.take() {
+            drain_pipe(pipe, Arc::clone(&stderr));
+        }
+        let stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| anyhow!("encoder stdin was not piped"))?;
+        let (tx, rx) = mpsc::sync_channel::<Option<Vec<u8>>>(1);
+        let writer = thread::spawn(move || {
+            let mut stdin = stdin;
+            while let Ok(Some(frame)) = rx.recv() {
+                stdin.write_all(&frame)?;
+                stdin.flush()?;
             }
+            // Dropping stdin is the EOF libx265 waits on. Do it before the
+            // parent calls wait, or the muxer blocks forever.
+            drop(stdin);
+            Ok(())
         });
         Ok(Self {
             child: Some(child),
             stderr,
             frame_bytes: (width as usize) * (height as usize) * 4,
+            writer_tx: Some(tx),
+            writer: Some(writer),
         })
     }
 
@@ -349,39 +369,313 @@ impl Encoder {
                 self.frame_bytes
             ));
         }
-        let stdin = self
-            .child
-            .as_mut()
-            .and_then(|child| child.stdin.as_mut())
-            .ok_or_else(|| anyhow!("encoder stdin closed"))?;
-        stdin
-            .write_all(&frame.data)
-            .context("writing a frame to libx265")?;
-        Ok(())
+        if let Some(message) = self.exited_early() {
+            return Err(message);
+        }
+        if self.writer_tx.is_none() {
+            return Err(anyhow!("encoder stdin is already closed"));
+        }
+        let mut payload = Some(frame.data.clone());
+        let deadline = Instant::now() + WRITE_TIMEOUT;
+        loop {
+            let send_result = {
+                let tx = self
+                    .writer_tx
+                    .as_ref()
+                    .ok_or_else(|| anyhow!("encoder stdin is already closed"))?;
+                payload.take().map(|bytes| tx.try_send(Some(bytes)))
+            };
+            match send_result {
+                Some(Ok(())) => return Ok(()),
+                Some(Err(TrySendError::Disconnected(_))) => {
+                    return Err(self.stopped_error("libx265 closed its input while a frame was waiting"));
+                }
+                Some(Err(TrySendError::Full(returned))) => {
+                    payload = returned;
+                }
+                None => {}
+            }
+            if let Some(message) = self.exited_early() {
+                return Err(message);
+            }
+            if Instant::now() >= deadline {
+                self.kill_child();
+                return Err(self.stopped_error(&format!(
+                    "libx265 stopped consuming frames for {}s",
+                    WRITE_TIMEOUT.as_secs()
+                )));
+            }
+            thread::sleep(Duration::from_millis(40));
+        }
     }
 
     pub fn finish(mut self) -> Result<()> {
+        // Closing the sender makes the writer drop stdin, which is EOF.
+        self.writer_tx.take();
+        let deadline = Instant::now() + FINISH_TIMEOUT;
+        while self.writer.as_ref().is_some_and(|handle| !handle.is_finished()) {
+            if Instant::now() >= deadline {
+                self.kill_child();
+                return Err(self.stopped_error("timed out closing libx265 input"));
+            }
+            thread::sleep(Duration::from_millis(40));
+        }
+        if let Some(handle) = self.writer.take() {
+            match handle.join() {
+                Ok(Err(err)) => {
+                    self.kill_child();
+                    return Err(self.stopped_error(&format!("writing a frame to libx265: {err}")));
+                }
+                Err(_) => {
+                    self.kill_child();
+                    return Err(self.stopped_error("the libx265 writer thread panicked"));
+                }
+                Ok(Ok(())) => {}
+            }
+        }
         let Some(mut child) = self.child.take() else {
             return Ok(());
         };
-        drop(child.stdin.take());
-        let status = child.wait().context("waiting for libx265")?;
-        if !status.success() {
-            return Err(anyhow!(
-                "libx265 encode failed\n{}",
-                self.stderr.lock().unwrap()
-            ));
+        loop {
+            match child.try_wait() {
+                Ok(Some(status)) => {
+                    if status.success() {
+                        return Ok(());
+                    }
+                    return Err(anyhow!(
+                        "libx265 encode failed ({status})\n{}",
+                        self.stderr.lock().unwrap()
+                    ));
+                }
+                Ok(None) if Instant::now() >= deadline => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(self.stopped_error("timed out waiting for libx265 to exit after EOF"));
+                }
+                Ok(None) => thread::sleep(Duration::from_millis(40)),
+                Err(err) => return Err(err).context("waiting for libx265"),
+            }
         }
-        Ok(())
+    }
+
+    fn exited_early(&mut self) -> Option<anyhow::Error> {
+        let status = self.child.as_mut().and_then(|child| child.try_wait().ok()).flatten()?;
+        Some(anyhow!(
+            "libx265 exited with {status} before the frame was written\n{}",
+            self.stderr.lock().unwrap()
+        ))
+    }
+
+    fn stopped_error(&self, why: &str) -> anyhow::Error {
+        anyhow!("{why}\n{}", self.stderr.lock().unwrap())
+    }
+
+    fn kill_child(&mut self) {
+        if let Some(mut child) = self.child.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
     }
 }
 
 impl Drop for Encoder {
     fn drop(&mut self) {
-        if let Some(mut child) = self.child.take() {
-            let _ = child.kill();
-            let _ = child.wait();
+        self.writer_tx.take();
+        self.kill_child();
+        if let Some(handle) = self.writer.take() {
+            let _ = handle.join();
         }
+    }
+}
+
+fn drain_pipe(mut pipe: impl Read + Send + 'static, log: Arc<Mutex<String>>) {
+    thread::spawn(move || {
+        let mut buf = [0u8; 4096];
+        loop {
+            match pipe.read(&mut buf) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => {
+                    let mut guard = log.lock().unwrap();
+                    guard.push_str(&String::from_utf8_lossy(&buf[..n]));
+                    if guard.len() > 64_000 {
+                        let drop_to = guard.len() - 32_000;
+                        guard.drain(..drop_to);
+                    }
+                }
+            }
+        }
+    });
+}
+
+pub struct RgbaImage {
+    pub width: i32,
+    pub height: i32,
+    pub rgba: Vec<u8>,
+}
+
+pub fn pixel_size(ffprobe: &Path, input: &Path) -> Result<(i32, i32)> {
+    let output = Command::new(ffprobe)
+        .args(["-v", "error", "-print_format", "json", "-show_streams"])
+        .arg(input)
+        .output()
+        .with_context(|| format!("failed to run {}", ffprobe.display()))?;
+    if !output.status.success() {
+        return Err(anyhow!(
+            "ffprobe failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).context("ffprobe json")?;
+    let streams = json
+        .get("streams")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| anyhow!("ffprobe returned no streams for {}", input.display()))?;
+    let video = streams
+        .iter()
+        .find(|s| s.get("codec_type").and_then(|v| v.as_str()) == Some("video"))
+        .or_else(|| streams.first())
+        .ok_or_else(|| anyhow!("{} has no picture stream", input.display()))?;
+    let width = video.get("width").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+    let height = video.get("height").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+    if width < 1 || height < 1 {
+        return Err(anyhow!("could not read the picture size of {}", input.display()));
+    }
+    Ok((width, height))
+}
+
+pub fn decode_image(ffmpeg: &Path, input: &Path, width: i32, height: i32, rgba: bool) -> Result<Frame> {
+    if width < 1 || height < 1 {
+        return Err(anyhow!("picture size {width}x{height} is empty"));
+    }
+    let pix = if rgba { "rgba" } else { "bgra" };
+    let output = Command::new(ffmpeg)
+        .args(["-hide_banner", "-loglevel", "error", "-i"])
+        .arg(input)
+        .args(["-frames:v", "1", "-f", "rawvideo", "-pix_fmt", pix, "-s"])
+        .arg(format!("{width}x{height}"))
+        .arg("-")
+        .output()
+        .with_context(|| format!("failed to start {}", ffmpeg.display()))?;
+    if !output.status.success() {
+        return Err(anyhow!(
+            "could not read {}\n{}",
+            input.display(),
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+    let expected = (width as usize) * (height as usize) * 4;
+    if output.stdout.len() < expected {
+        return Err(anyhow!(
+            "read {} bytes from {}, expected {expected}\n{}",
+            output.stdout.len(),
+            input.display(),
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+    Ok(Frame {
+        width,
+        height,
+        rgba,
+        data: output.stdout[..expected].to_vec(),
+    })
+}
+
+pub fn preview_rgba(input: &Path) -> Result<RgbaImage> {
+    let ffmpeg = tool_path(None, preview_bin("ffmpeg"));
+    let ffprobe = tool_path(None, preview_bin("ffprobe"));
+    let (width, height) = pixel_size(&ffprobe, input)?;
+    let (width, height) = fit_edge(width, height, 1280);
+    let frame = decode_image(&ffmpeg, input, width, height, true)?;
+    Ok(RgbaImage {
+        width: frame.width,
+        height: frame.height,
+        rgba: frame.data,
+    })
+}
+
+pub fn write_image(ffmpeg: &Path, frame: &Frame, output: &Path) -> Result<()> {
+    if let Some(parent) = output.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)?;
+        }
+    }
+    let expected = (frame.width as usize) * (frame.height as usize) * 4;
+    if frame.data.len() < expected || frame.width < 1 || frame.height < 1 {
+        return Err(anyhow!(
+            "refusing to write {}x{} from {} bytes",
+            frame.width,
+            frame.height,
+            frame.data.len()
+        ));
+    }
+    let raw = output.with_extension("bgra");
+    std::fs::write(&raw, &frame.data[..expected])?;
+    let ext = crate::export_media::extension(output);
+    let mut cmd = Command::new(ffmpeg);
+    cmd.args([
+        "-y",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-f",
+        "rawvideo",
+        "-pix_fmt",
+        if frame.rgba { "rgba" } else { "bgra" },
+        "-s",
+    ])
+    .arg(format!("{}x{}", frame.width, frame.height))
+    .arg("-i")
+    .arg(&raw)
+    .args(["-frames:v", "1"]);
+    match ext.as_str() {
+        "jpg" | "jpeg" => {
+            cmd.args(["-c:v", "mjpeg", "-q:v", "2"]);
+        }
+        "webp" => {
+            cmd.args(["-c:v", "libwebp", "-q:v", "90"]);
+        }
+        "bmp" => {
+            cmd.args(["-c:v", "bmp"]);
+        }
+        _ => {
+            cmd.args(["-c:v", "png"]);
+        }
+    }
+    let result = cmd.arg(output).output();
+    let _ = std::fs::remove_file(&raw);
+    let result = result.with_context(|| format!("failed to start {}", ffmpeg.display()))?;
+    if !result.status.success() {
+        return Err(anyhow!(
+            "could not write {}\n{}",
+            output.display(),
+            String::from_utf8_lossy(&result.stderr)
+        ));
+    }
+    let len = std::fs::metadata(output).map(|meta| meta.len()).unwrap_or(0);
+    if len == 0 {
+        return Err(anyhow!("wrote an empty image at {}", output.display()));
+    }
+    Ok(())
+}
+
+fn fit_edge(width: i32, height: i32, edge: i32) -> (i32, i32) {
+    let long = width.max(height).max(1);
+    if long <= edge {
+        return (width.max(1), height.max(1));
+    }
+    let scale = edge as f32 / long as f32;
+    (
+        ((width as f32) * scale).round().max(1.0) as i32,
+        ((height as f32) * scale).round().max(1.0) as i32,
+    )
+}
+
+fn preview_bin(stem: &str) -> &'static str {
+    match stem {
+        "ffmpeg" if cfg!(windows) => "ffmpeg.exe",
+        "ffprobe" if cfg!(windows) => "ffprobe.exe",
+        "ffmpeg" => "ffmpeg",
+        _ => "ffprobe",
     }
 }
 

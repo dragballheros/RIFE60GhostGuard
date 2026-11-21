@@ -58,6 +58,7 @@ pub struct Summary {
     pub gpu_name: String,
     pub notes: Vec<String>,
     pub diagnostics_path: Option<PathBuf>,
+    pub output_path: PathBuf,
 }
 
 enum GuardJob {
@@ -336,6 +337,7 @@ pub(crate) fn interpolate(
         gpu_name,
         notes,
         diagnostics_path: None,
+        output_path: options.output.clone(),
     })
 }
 
