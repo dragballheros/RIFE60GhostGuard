@@ -332,11 +332,12 @@ impl Drop for RifeWorkerPool {
     }
 }
 
-fn effective_rife_workers(requested: u8, tile: i32) -> usize {
+fn effective_rife_workers(requested: u8, tile: i32, gpu_memory_mb: u64) -> usize {
     match requested {
         1 => 1,
         2 => 2,
         _ if tile > 0 && tile <= 512 => 2,
+        _ if gpu_memory_mb >= 7 * 1024 => 2,
         _ => 1,
     }
 }
@@ -385,9 +386,13 @@ pub(crate) fn interpolate(
     let out_rate = output_rate(info.rate, options.multi, options.fps);
     let engine = Engine::open(&options.model, options.gpu)?;
     let gpu_name = engine.gpu_name.clone();
-    let rife_workers = effective_rife_workers(options.settings.rife_workers, options.tile);
+    let rife_workers = effective_rife_workers(
+        options.settings.rife_workers,
+        options.tile,
+        engine.gpu_memory_mb,
+    );
     eprintln!(
-        "rife-pc: ncnn Vulkan on \"{gpu_name}\"  {}x{}  {}/{} -> {}/{}  model {}  RIFE workers {} (setting {})",
+        "rife-pc: ncnn Vulkan on \"{gpu_name}\"  {}x{}  {}/{} -> {}/{}  model {}  Vulkan VRAM {} MB  RIFE workers {} (setting {})",
         info.width,
         info.height,
         info.rate.num,
@@ -395,6 +400,7 @@ pub(crate) fn interpolate(
         out_rate.num,
         out_rate.den,
         options.model.display(),
+        engine.gpu_memory_mb,
         rife_workers,
         options.settings.rife_workers
     );
@@ -911,14 +917,20 @@ mod rife_worker_tests {
     }
 
     #[test]
-    fn auto_keeps_whole_frame_and_large_tiles_single_worker() {
-        assert_eq!(effective_rife_workers(0, 0), 1);
-        assert_eq!(effective_rife_workers(0, 768), 1);
+    fn auto_keeps_whole_frame_and_large_tiles_single_worker_on_4gb_cards() {
+        assert_eq!(effective_rife_workers(0, 0, 4096), 1);
+        assert_eq!(effective_rife_workers(0, 768, 4096), 1);
+    }
+
+    #[test]
+    fn auto_uses_two_workers_for_8gb_whole_frame_gpu() {
+        assert_eq!(effective_rife_workers(0, 0, 8192), 2);
+        assert_eq!(effective_rife_workers(0, 768, 8192), 2);
     }
 
     #[test]
     fn manual_worker_selection_is_respected() {
-        assert_eq!(effective_rife_workers(1, 512), 1);
-        assert_eq!(effective_rife_workers(2, 0), 2);
+        assert_eq!(effective_rife_workers(1, 512, 8192), 1);
+        assert_eq!(effective_rife_workers(2, 0, 4096), 2);
     }
 }
