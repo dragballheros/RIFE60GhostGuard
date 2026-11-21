@@ -36,8 +36,11 @@ Source: "..\staging\realcugan-ncnn-vulkan.exe"; DestDir: "{app}"; Flags: ignorev
 Source: "..\staging\models\models-se\*"; DestDir: "{app}\models\models-se"; Flags: ignoreversion recursesubdirs
 Source: "..\staging\models\onnx\*"; DestDir: "{app}\models\onnx"; Flags: ignoreversion recursesubdirs
 Source: "..\staging\ort_capi.dll"; DestDir: "{app}"; Flags: ignoreversion
+; onnxruntime.dll is runtimes/win-x64/native from Microsoft.ML.OnnxRuntime.DirectML.
+; DirectML.dll is bin/x64-win from Microsoft.AI.DirectML. build-windows.ps1 copies
+; those two files by path and checks the PE machine is x64 before staging them.
 Source: "..\staging\onnxruntime.dll"; DestDir: "{app}"; Flags: ignoreversion
-Source: "..\staging\DirectML.dll"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
+Source: "..\staging\DirectML.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\staging\vcomp140.dll"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 
 [Icons]

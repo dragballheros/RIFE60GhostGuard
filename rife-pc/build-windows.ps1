@@ -182,6 +182,8 @@ Copy-Item (Join-Path $denoise.DirectoryName "up2x-denoise3x.param") $seStage
 Copy-Item (Join-Path $denoise.DirectoryName "up2x-denoise3x.bin") $seStage
 
 $ortVersion = "1.24.4"
+# Microsoft.ML.OnnxRuntime.DirectML 1.24.4 depends on this DirectML package.
+$dmlVersion = "1.15.4"
 $ortNupkg = Join-Path $cache "Microsoft.ML.OnnxRuntime.DirectML.$ortVersion.nupkg"
 if (-not (Test-Path $ortNupkg)) {
     Write-Host "Downloading ONNX Runtime DirectML $ortVersion"
@@ -191,21 +193,58 @@ $ortDir = Join-Path $cache "onnxruntime-directml"
 if (Test-Path $ortDir) { Remove-Item -Recurse -Force $ortDir }
 Copy-Item $ortNupkg (Join-Path $cache "onnxruntime-directml.zip") -Force
 Expand-Archive (Join-Path $cache "onnxruntime-directml.zip") $ortDir
-$ortInclude = Get-ChildItem $ortDir -Recurse -Filter onnxruntime_cxx_api.h | Select-Object -First 1
-$ortLib = Get-ChildItem $ortDir -Recurse -Filter onnxruntime.lib | Select-Object -First 1
-if (-not $ortInclude -or -not $ortLib) { throw "ONNX Runtime headers or import library were not in the DirectML package" }
+# Fixed paths. A recursive search of the nupkg matches win-arm64 before win-x64.
+$ortInclude = Join-Path $ortDir "build\native\include"
+$ortNative = Join-Path $ortDir "runtimes\win-x64\native"
+$ortLib = Join-Path $ortNative "onnxruntime.lib"
+$ortDll = Join-Path $ortNative "onnxruntime.dll"
+if (-not (Test-Path (Join-Path $ortInclude "onnxruntime_cxx_api.h")) -or -not (Test-Path $ortLib) -or -not (Test-Path $ortDll)) {
+    throw "win-x64 ONNX Runtime headers, onnxruntime.lib, or onnxruntime.dll were not in the DirectML package"
+}
+$dmlNupkg = Join-Path $cache "Microsoft.AI.DirectML.$dmlVersion.nupkg"
+if (-not (Test-Path $dmlNupkg)) {
+    Write-Host "Downloading DirectML $dmlVersion"
+    Get-File "https://api.nuget.org/v3-flatcontainer/microsoft.ai.directml/$dmlVersion/microsoft.ai.directml.$dmlVersion.nupkg" $dmlNupkg
+}
+$dmlDir = Join-Path $cache "directml"
+if (Test-Path $dmlDir) { Remove-Item -Recurse -Force $dmlDir }
+Copy-Item $dmlNupkg (Join-Path $cache "directml.zip") -Force
+Expand-Archive (Join-Path $cache "directml.zip") $dmlDir
+$dmlDll = Join-Path $dmlDir "bin\x64-win\DirectML.dll"
+if (-not (Test-Path $dmlDll)) { throw "bin\x64-win\DirectML.dll was not in Microsoft.AI.DirectML $dmlVersion" }
+function Assert-X64Dll([string]$Path) {
+    $fs = [IO.File]::OpenRead($Path)
+    try {
+        $header = New-Object byte[] 64
+        if ($fs.Read($header, 0, 64) -ne 64) { throw "$Path is too small to be a DLL" }
+        $pe = [BitConverter]::ToInt32($header, 0x3C)
+        $fs.Position = $pe + 4
+        $machineBytes = New-Object byte[] 2
+        if ($fs.Read($machineBytes, 0, 2) -ne 2) { throw "$Path has no PE machine field" }
+        $machine = [BitConverter]::ToUInt16($machineBytes, 0)
+    } finally {
+        $fs.Dispose()
+    }
+    # IMAGE_FILE_MACHINE_AMD64. ARM64 is 0xAA64 and x86 is 0x14C.
+    if ($machine -ne 0x8664) {
+        throw "$Path is not an x64 DLL (PE machine 0x$($machine.ToString('X4')))."
+    }
+}
+Assert-X64Dll $ortDll
+Assert-X64Dll $dmlDll
+Write-Host "Linking ort_capi against $ortLib"
 $ortBuild = Join-Path $Root "native\ort-build"
 # Quoted -D because PowerShell would otherwise split -DNAME=value.
-cmake -S (Join-Path $Root "native\ort") -B $ortBuild "-DORT_INCLUDE=$($ortInclude.DirectoryName)" "-DORT_LIB=$($ortLib.FullName)" "-DCMAKE_BUILD_TYPE=Release" "-DCMAKE_POLICY_VERSION_MINIMUM=3.5"
+cmake -S (Join-Path $Root "native\ort") -B $ortBuild "-DORT_INCLUDE=$ortInclude" "-DORT_LIB=$ortLib" "-DCMAKE_BUILD_TYPE=Release" "-DCMAKE_POLICY_VERSION_MINIMUM=3.5"
 if ($LASTEXITCODE -ne 0) { throw "ONNX Runtime CMake configure failed with exit code $LASTEXITCODE" }
 cmake --build $ortBuild --config Release
 if ($LASTEXITCODE -ne 0) { throw "ONNX Runtime wrapper build failed with exit code $LASTEXITCODE" }
-$ortCapi = Get-ChildItem $ortBuild -Recurse -Filter ort_capi.dll | Select-Object -First 1
-if (-not $ortCapi) { throw "ort_capi.dll was not produced" }
-Copy-Item $ortCapi.FullName (Join-Path $stage "ort_capi.dll") -Force
-Get-ChildItem $ortDir -Recurse -Filter *.dll | ForEach-Object {
-    Copy-Item $_.FullName (Join-Path $stage $_.Name) -Force
-}
+$ortCapi = Join-Path $ortBuild "Release\ort_capi.dll"
+if (-not (Test-Path $ortCapi)) { $ortCapi = Join-Path $ortBuild "ort_capi.dll" }
+if (-not (Test-Path $ortCapi)) { throw "ort_capi.dll was not produced under $ortBuild" }
+Copy-Item $ortCapi (Join-Path $stage "ort_capi.dll") -Force
+Copy-Item $ortDll (Join-Path $stage "onnxruntime.dll") -Force
+Copy-Item $dmlDll (Join-Path $stage "DirectML.dll") -Force
 
 $iscc = @(
     "$env:ProgramFiles\Inno Setup 7\ISCC.exe",
