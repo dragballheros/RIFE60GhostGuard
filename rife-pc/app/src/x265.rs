@@ -75,6 +75,51 @@ pub fn encode_args(
     )
 }
 
+/// FFmpeg argv for AMD AMF HEVC Main10. This path keeps the raw BGRA pipe but
+/// converts to 10-bit P010 for the hardware encoder. Audio is stream-copied.
+pub fn encode_args_amf_audio(
+    ffmpeg: &str,
+    width: i32,
+    height: i32,
+    fps_num: i64,
+    fps_den: i64,
+    color: &ColorMeta,
+    source_for_audio: &str,
+    output: &str,
+    preserve_audio: bool,
+) -> Vec<String> {
+    let rate = format!("{fps_num}/{fps_den}");
+    let mut args = vec![
+        ffmpeg.to_string(), "-y".into(), "-hide_banner".into(), "-nostats".into(),
+        "-loglevel".into(), "error".into(), "-thread_queue_size".into(), "1024".into(),
+        "-f".into(), "rawvideo".into(), "-pix_fmt".into(), "bgra".into(),
+        "-s".into(), format!("{width}x{height}"), "-r".into(), rate.clone(), "-i".into(), "-".into(),
+    ];
+    if preserve_audio {
+        args.extend(["-i".into(), source_for_audio.to_string(), "-map".into(), "0:v:0".into(), "-map".into(), "1:a?".into()]);
+    } else {
+        args.extend(["-map".into(), "0:v:0".into()]);
+    }
+    args.extend([
+        "-vf".into(), "format=p010le".into(),
+        "-c:v".into(), "hevc_amf".into(),
+        "-profile:v".into(), "main10".into(),
+        "-quality".into(), "balanced".into(),
+        "-rc".into(), "cqp".into(),
+        "-qp_i".into(), "20".into(),
+        "-qp_p".into(), "22".into(),
+        "-tag:v".into(), "hvc1".into(),
+        "-r".into(), rate,
+    ]);
+    if preserve_audio { args.extend(["-c:a".into(), "copy".into()]); } else { args.push("-an".into()); }
+    if let Some(value) = color.primaries.as_deref() { args.extend(["-color_primaries".into(), value.to_string()]); }
+    if let Some(value) = color.transfer.as_deref() { args.extend(["-color_trc".into(), value.to_string()]); }
+    if let Some(value) = color.matrix.as_deref() { args.extend(["-colorspace".into(), value.to_string()]); }
+    if let Some(value) = color.ffmpeg_range.as_deref() { args.extend(["-color_range".into(), value.to_string()]); }
+    args.push(output.to_string());
+    args
+}
+
 pub fn encode_args_audio(
     ffmpeg: &str,
     width: i32,
@@ -308,6 +353,21 @@ mod tests {
         assert!(joined.contains("-color_range pc"));
         assert!(args.iter().any(|arg| arg.contains("crf=20.0")));
         assert_eq!(args.last().map(String::as_str), Some("out.mp4"));
+    }
+
+    #[test]
+    fn amf_args_use_hevc_main10_and_p010() {
+        let color = color_from_probe("bt709", "bt709", "bt709", "tv");
+        let args = encode_args_amf_audio("ffmpeg", 1920, 1080, 60, 1, &color, "in.mp4", "out.mp4", true);
+        let joined = args.join(" ");
+        assert!(joined.contains("hevc_amf"));
+        assert!(joined.contains("main10"));
+        assert!(joined.contains("p010le"));
+        assert!(joined.contains("-rc cqp"));
+        assert!(joined.contains("-qp_i 20"));
+        assert!(joined.contains("-qp_p 22"));
+        assert!(joined.contains("-tag:v hvc1"));
+        assert!(joined.contains("-c:a copy"));
     }
 
     #[test]
