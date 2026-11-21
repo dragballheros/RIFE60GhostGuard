@@ -83,6 +83,7 @@ void bgr_to_bgra(const uint8_t* src, uint8_t* dst, size_t pixels) {
 struct Engine {
     RIFE* net = nullptr;
     int gpu = 0;
+    uint64_t gpu_memory_mb = 0;
     char name[256];
     char error[512];
     Engine() { name[0] = 0; error[0] = 0; }
@@ -142,8 +143,17 @@ RIFE_API Engine* rife_create(const char* model_utf8, int gpu) {
     }
     Engine* engine = new Engine();
     engine->gpu = chosen;
-    const char* name = ncnn::get_gpu_info(chosen).device_name();
+    const ncnn::GpuInfo& gpu_info = ncnn::get_gpu_info(chosen);
+    const char* name = gpu_info.device_name();
     std::snprintf(engine->name, sizeof(engine->name), "%s", name ? name : "Vulkan GPU");
+    const VkPhysicalDeviceMemoryProperties& memory = gpu_info.physicalDeviceMemoryProperties();
+    uint64_t local_bytes = 0;
+    for (uint32_t i = 0; i < memory.memoryHeapCount; ++i) {
+        if ((memory.memoryHeaps[i].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) != 0) {
+            local_bytes += memory.memoryHeaps[i].size;
+        }
+    }
+    engine->gpu_memory_mb = local_bytes / (1024ull * 1024ull);
     engine->net = new RIFE(chosen, false, false, false, 4, false, true);
 #if defined(_WIN32)
     std::wstring wide = utf8_to_wide(model_utf8);
@@ -188,6 +198,10 @@ RIFE_API int rife_gpu_name(Engine* engine, char* buf, int len) {
     const char* name = engine ? engine->name : "";
     std::snprintf(buf, static_cast<size_t>(len), "%s", name);
     return 0;
+}
+
+RIFE_API uint64_t rife_gpu_memory_mb(Engine* engine) {
+    return engine ? engine->gpu_memory_mb : 0;
 }
 
 RIFE_API int rife_last_error(Engine* engine, char* buf, int len) {
