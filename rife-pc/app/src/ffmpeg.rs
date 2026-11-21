@@ -1,4 +1,4 @@
-//! ffmpeg subprocess pipes. Decode yields packed BGRA. Windows uses AMD AMF HEVC Main10 when available, with libx265 as a compatibility fallback.
+//! ffmpeg subprocess pipes. Decode yields packed BGRA. Windows uses AMD AMF HEVC when available, with libx265 as a compatibility fallback.
 
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -288,9 +288,10 @@ impl Encoder {
         preserve_audio: bool,
     ) -> Result<Self> {
         let args = if hevc_amf_available(ffmpeg) {
+            let profile = if width.max(height) >= 3840 { "Main 8-bit" } else { "Main10" };
             eprintln!(
-                "rife-pc: using AMD AMF hardware HEVC Main10 encoder for {}x{}",
-                width, height
+                "rife-pc: using AMD AMF hardware HEVC {} encoder for {}x{}",
+                profile, width, height
             );
             crate::x265::encode_args_amf_audio(
                 &ffmpeg.display().to_string(),
@@ -388,8 +389,8 @@ impl Encoder {
                 stdin.write_all(&frame)?;
                 stdin.flush()?;
             }
-            // Dropping stdin is the EOF libx265 waits on. Do it before the
-            // parent calls wait, or the muxer blocks forever.
+            // Dropping stdin sends EOF to FFmpeg. Do it before the parent calls wait,
+            // or the muxer can block forever.
             drop(stdin);
             Ok(())
         });
@@ -457,7 +458,7 @@ impl Encoder {
         while self.writer.as_ref().is_some_and(|handle| !handle.is_finished()) {
             if Instant::now() >= deadline {
                 self.kill_child();
-                return Err(self.stopped_error("timed out closing libx265 input"));
+                return Err(self.stopped_error("timed out closing encoder input"));
             }
             thread::sleep(Duration::from_millis(40));
         }
@@ -465,11 +466,11 @@ impl Encoder {
             match handle.join() {
                 Ok(Err(err)) => {
                     self.kill_child();
-                    return Err(self.stopped_error(&format!("writing a frame to libx265: {err}")));
+                    return Err(self.stopped_error(&format!("writing a frame to encoder: {err}")));
                 }
                 Err(_) => {
                     self.kill_child();
-                    return Err(self.stopped_error("the libx265 writer thread panicked"));
+                    return Err(self.stopped_error("the encoder writer thread panicked"));
                 }
                 Ok(Ok(())) => {}
             }
@@ -491,7 +492,7 @@ impl Encoder {
                 Ok(None) if Instant::now() >= deadline => {
                     let _ = child.kill();
                     let _ = child.wait();
-                    return Err(self.stopped_error("timed out waiting for libx265 to exit after EOF"));
+                    return Err(self.stopped_error("timed out waiting for encoder to exit after EOF"));
                 }
                 Ok(None) => thread::sleep(Duration::from_millis(40)),
                 Err(err) => return Err(err).context("waiting for libx265"),
@@ -502,7 +503,7 @@ impl Encoder {
     fn exited_early(&mut self) -> Option<anyhow::Error> {
         let status = self.child.as_mut().and_then(|child| child.try_wait().ok()).flatten()?;
         Some(anyhow!(
-            "libx265 exited with {status} before the frame was written\n{}",
+            "encoder exited with {status} before the frame was written\n{}",
             self.stderr.lock().unwrap()
         ))
     }
