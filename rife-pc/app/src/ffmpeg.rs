@@ -1,4 +1,4 @@
-//! ffmpeg subprocess pipes. Decode yields packed BGRA. Encode is libx265 Main10.
+//! ffmpeg subprocess pipes. Decode yields packed BGRA. Windows uses AMD AMF HEVC Main10 when available, with libx265 as a compatibility fallback.
 
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -13,6 +13,25 @@ use rife_guards::Frame;
 
 use crate::schedule::{parse_rate, Rational};
 use crate::x265::{color_from_probe, ColorMeta};
+
+/// Returns true when the bundled FFmpeg exposes the AMD AMF HEVC encoder.
+/// The driver is still validated by FFmpeg when the encoder process starts.
+pub fn hevc_amf_available(ffmpeg: &Path) -> bool {
+    if !cfg!(windows) {
+        return false;
+    }
+    Command::new(ffmpeg)
+        .args(["-hide_banner", "-encoders"])
+        .output()
+        .map(|output| {
+            output.status.success()
+                && String::from_utf8_lossy(&output.stdout).lines().any(|line| {
+                    let fields: Vec<&str> = line.split_whitespace().collect();
+                    fields.iter().any(|field| *field == "hevc_amf")
+                })
+        })
+        .unwrap_or(false)
+}
 
 #[derive(Clone, Debug)]
 pub struct Probe {
@@ -268,17 +287,39 @@ impl Encoder {
         color: &ColorMeta,
         preserve_audio: bool,
     ) -> Result<Self> {
-        let args = crate::x265::encode_args_audio(
-            &ffmpeg.display().to_string(),
-            width,
-            height,
-            fps_num,
-            fps_den,
-            color,
-            &source.display().to_string(),
-            &output.display().to_string(),
-            preserve_audio,
-        );
+        let args = if hevc_amf_available(ffmpeg) {
+            eprintln!(
+                "rife-pc: using AMD AMF hardware HEVC Main10 encoder for {}x{}",
+                width, height
+            );
+            crate::x265::encode_args_amf_audio(
+                &ffmpeg.display().to_string(),
+                width,
+                height,
+                fps_num,
+                fps_den,
+                color,
+                &source.display().to_string(),
+                &output.display().to_string(),
+                preserve_audio,
+            )
+        } else {
+            eprintln!(
+                "rife-pc: AMD AMF HEVC is unavailable; using libx265 software fallback for {}x{}",
+                width, height
+            );
+            crate::x265::encode_args_audio(
+                &ffmpeg.display().to_string(),
+                width,
+                height,
+                fps_num,
+                fps_den,
+                color,
+                &source.display().to_string(),
+                &output.display().to_string(),
+                preserve_audio,
+            )
+        };
         Self::from_args(ffmpeg, width, height, &args)
     }
 
