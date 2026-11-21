@@ -248,8 +248,8 @@ RIFE_API int rife_interpolate(
             scratch.tile1.resize(tile_bytes);
             scratch.tile_out.resize(tile_bytes);
             for (int y = 0; y < th; ++y) {
-                const uint8_t* row0 = bgr0.data() + (static_cast<size_t>(y0 + y) * width + x0) * 3;
-                const uint8_t* row1 = bgr1.data() + (static_cast<size_t>(y0 + y) * width + x0) * 3;
+                const uint8_t* row0 = scratch.bgr0.data() + (static_cast<size_t>(y0 + y) * width + x0) * 3;
+                const uint8_t* row1 = scratch.bgr1.data() + (static_cast<size_t>(y0 + y) * width + x0) * 3;
                 std::memcpy(scratch.tile0.data() + static_cast<size_t>(y) * tw * 3, row0, static_cast<size_t>(tw) * 3);
                 std::memcpy(scratch.tile1.data() + static_cast<size_t>(y) * tw * 3, row1, static_cast<size_t>(tw) * 3);
             }
