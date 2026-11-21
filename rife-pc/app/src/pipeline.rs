@@ -2,10 +2,10 @@
 //! Bounded channels keep a couple of frames in flight so the GPU is not idle
 //! while the CPU guards or libx265 run.
 
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
+use std::sync::mpsc::{sync_channel, Receiver, SyncSender, TryRecvError};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Instant;
@@ -127,6 +127,220 @@ impl CleanWindow {
     }
 }
 
+struct RifeWork {
+    sequence: u64,
+    previous: Frame,
+    next: Frame,
+    context: Option<Frame>,
+    timestep: f32,
+    tile: i32,
+}
+
+enum RifeMessage {
+    Run(RifeWork),
+    Stop,
+}
+
+struct RifeResult {
+    sequence: u64,
+    job: Result<GuardJob>,
+}
+
+/// Ordered, bounded worker pool. Inference may finish out of order, but jobs
+/// are emitted to GhostGuard in the exact output-timestamp order.
+struct RifeWorkerPool {
+    task_tx: SyncSender<RifeMessage>,
+    result_rx: Receiver<RifeResult>,
+    workers: Vec<thread::JoinHandle<()>>,
+    outstanding: usize,
+    max_outstanding: usize,
+    next_sequence: u64,
+    next_emit: u64,
+    ready: BTreeMap<u64, Result<GuardJob>>,
+}
+
+impl RifeWorkerPool {
+    fn new(engine: Engine, worker_count: usize) -> Self {
+        let worker_count = worker_count.clamp(1, 2);
+        let max_outstanding = (worker_count * 2).max(2);
+        let (task_tx, task_rx) = sync_channel::<RifeMessage>(max_outstanding);
+        let (result_tx, result_rx) = sync_channel::<RifeResult>(max_outstanding);
+        let shared_rx = Arc::new(Mutex::new(task_rx));
+        let engine = Arc::new(engine);
+        let mut workers = Vec::with_capacity(worker_count);
+
+        for _ in 0..worker_count {
+            let rx = Arc::clone(&shared_rx);
+            let tx = result_tx.clone();
+            let engine = Arc::clone(&engine);
+            workers.push(thread::spawn(move || loop {
+                let message = match rx.lock() {
+                    Ok(receiver) => receiver.recv(),
+                    Err(_) => break,
+                };
+                let work = match message {
+                    Ok(RifeMessage::Run(work)) => work,
+                    Ok(RifeMessage::Stop) | Err(_) => break,
+                };
+                let sequence = work.sequence;
+                let job = engine
+                    .interpolate(&work.previous, &work.next, work.timestep, work.tile)
+                    .map(|mid| GuardJob::Synth {
+                        previous: work.previous,
+                        mid,
+                        next: work.next,
+                        timestep: work.timestep as f64,
+                        context: work.context,
+                    });
+                if tx.send(RifeResult { sequence, job }).is_err() {
+                    break;
+                }
+            }));
+        }
+        drop(result_tx);
+
+        Self {
+            task_tx,
+            result_rx,
+            workers,
+            outstanding: 0,
+            max_outstanding,
+            next_sequence: 0,
+            next_emit: 0,
+            ready: BTreeMap::new(),
+        }
+    }
+
+    fn submit_real(&mut self, frame: Frame, tx: &SyncSender<GuardJob>) -> Result<()> {
+        self.collect_available()?;
+        let sequence = self.next_sequence;
+        self.next_sequence += 1;
+        self.ready.insert(sequence, Ok(GuardJob::Real(frame)));
+        self.flush_ready(tx)
+    }
+
+    fn submit_interpolation(
+        &mut self,
+        previous: Frame,
+        next: Frame,
+        context: Option<Frame>,
+        timestep: f32,
+        tile: i32,
+        tx: &SyncSender<GuardJob>,
+    ) -> Result<()> {
+        while self.outstanding >= self.max_outstanding {
+            self.collect_one()?;
+            self.flush_ready(tx)?;
+        }
+
+        let sequence = self.next_sequence;
+        self.next_sequence += 1;
+        self.task_tx
+            .send(RifeMessage::Run(RifeWork {
+                sequence,
+                previous,
+                next,
+                context,
+                timestep,
+                tile,
+            }))
+            .map_err(|_| anyhow!("RIFE worker queue stopped"))?;
+        self.outstanding += 1;
+        self.collect_available()?;
+        self.flush_ready(tx)
+    }
+
+    fn collect_available(&mut self) -> Result<()> {
+        loop {
+            match self.result_rx.try_recv() {
+                Ok(result) => self.accept_result(result)?,
+                Err(TryRecvError::Empty) => return Ok(()),
+                Err(TryRecvError::Disconnected) => {
+                    if self.outstanding != 0 {
+                        return Err(anyhow!("RIFE workers stopped before returning all frames"));
+                    }
+                    return Ok(());
+                }
+            }
+        }
+    }
+
+    fn collect_one(&mut self) -> Result<()> {
+        let result = self
+            .result_rx
+            .recv()
+            .map_err(|_| anyhow!("RIFE worker result channel closed unexpectedly"))?;
+        self.accept_result(result)
+    }
+
+    fn accept_result(&mut self, result: RifeResult) -> Result<()> {
+        self.outstanding = self
+            .outstanding
+            .checked_sub(1)
+            .ok_or_else(|| anyhow!("received an unexpected RIFE worker result"))?;
+        if self.ready.insert(result.sequence, result.job).is_some() {
+            return Err(anyhow!("duplicate RIFE worker result sequence"));
+        }
+        Ok(())
+    }
+
+    fn flush_ready(&mut self, tx: &SyncSender<GuardJob>) -> Result<()> {
+        while let Some(result) = self.ready.remove(&self.next_emit) {
+            let job = result?;
+            tx.send(job)
+                .map_err(|_| anyhow!("guard stage stopped"))?;
+            self.next_emit += 1;
+        }
+        Ok(())
+    }
+
+    fn finish(&mut self, tx: &SyncSender<GuardJob>) -> Result<()> {
+        while self.outstanding > 0 {
+            self.collect_one()?;
+            self.flush_ready(tx)?;
+        }
+        self.flush_ready(tx)?;
+        if self.next_emit != self.next_sequence {
+            return Err(anyhow!("RIFE output ordering gap at sequence {}", self.next_emit));
+        }
+
+        for _ in 0..self.workers.len() {
+            self.task_tx
+                .send(RifeMessage::Stop)
+                .map_err(|_| anyhow!("could not stop RIFE worker"))?;
+        }
+        for worker in self.workers.drain(..) {
+            if worker.join().is_err() {
+                return Err(anyhow!("RIFE worker thread panicked"));
+            }
+        }
+        Ok(())
+    }
+}
+
+impl Drop for RifeWorkerPool {
+    fn drop(&mut self) {
+        // Also shut down cleanly on cancellation or an inference error. The
+        // result queue is sized to the maximum outstanding work, so workers
+        // can finish already-submitted calls while this owner joins them.
+        for _ in 0..self.workers.len() {
+            let _ = self.task_tx.send(RifeMessage::Stop);
+        }
+        for worker in self.workers.drain(..) {
+            let _ = worker.join();
+        }
+    }
+}
+
+fn effective_rife_workers(requested: u8, tile: i32) -> usize {
+    match requested {
+        1 => 1,
+        2 => 2,
+        _ if tile > 0 && tile <= 512 => 2,
+        _ => 1,
+    }
+}
+
 pub fn run(
     options: &Options,
     cancel: Arc<AtomicBool>,
@@ -171,15 +385,18 @@ pub(crate) fn interpolate(
     let out_rate = output_rate(info.rate, options.multi, options.fps);
     let engine = Engine::open(&options.model, options.gpu)?;
     let gpu_name = engine.gpu_name.clone();
+    let rife_workers = effective_rife_workers(options.settings.rife_workers, options.tile);
     eprintln!(
-        "rife-pc: ncnn Vulkan on \"{gpu_name}\"  {}x{}  {}/{} -> {}/{}  model {}",
+        "rife-pc: ncnn Vulkan on \"{gpu_name}\"  {}x{}  {}/{} -> {}/{}  model {}  RIFE workers {} (setting {})",
         info.width,
         info.height,
         info.rate.num,
         info.rate.den,
         out_rate.num,
         out_rate.den,
-        options.model.display()
+        options.model.display(),
+        rife_workers,
+        options.settings.rife_workers
     );
 
     let (decoded_tx, decoded_rx) = sync_channel::<Frame>(4);
@@ -244,6 +461,7 @@ pub(crate) fn interpolate(
             &outliers_gpu,
             &source_seen_gpu,
             clean_outliers,
+            rife_workers,
         ) {
             *fail_gpu.lock().unwrap() = Some(err.to_string());
         }
@@ -392,7 +610,9 @@ fn gpu_loop(
     outliers: &std::sync::atomic::AtomicU64,
     source_seen: &std::sync::atomic::AtomicU64,
     clean_outliers: bool,
+    worker_count: usize,
 ) -> Result<()> {
+    let mut worker_pool = RifeWorkerPool::new(engine, worker_count);
     let mut window = CleanWindow::new();
     let mut ready: VecDeque<(usize, Frame)> = VecDeque::new();
     let mut next_j = 0i64;
@@ -408,7 +628,7 @@ fn gpu_loop(
                 Ordering::Relaxed,
             );
             drain(
-                &engine,
+                &mut worker_pool,
                 &mut ready,
                 &mut next_j,
                 source_rate,
@@ -430,7 +650,7 @@ fn gpu_loop(
         return Err(anyhow!("the input has no video frames"));
     }
     drain(
-        &engine,
+        &mut worker_pool,
         &mut ready,
         &mut next_j,
         source_rate,
@@ -444,7 +664,7 @@ fn gpu_loop(
 }
 
 fn drain(
-    engine: &Engine,
+    worker_pool: &mut RifeWorkerPool,
     ready: &mut VecDeque<(usize, Frame)>,
     next_j: &mut i64,
     source_rate: Rational,
@@ -469,11 +689,11 @@ fn drain(
             return Err(anyhow!("cancelled"));
         }
         let slot = slot_at(*next_j, have, source_rate, out_rate);
-        let job = match slot {
+        match slot {
             Slot::Source(index) => {
                 let frame = frame_at(ready, index)
                     .ok_or_else(|| anyhow!("missing source frame {index}"))?;
-                GuardJob::Real(frame)
+                worker_pool.submit_real(frame, tx)?;
             }
             Slot::Interp { left, timestep } => {
                 let previous =
@@ -485,18 +705,8 @@ fn drain(
                 } else {
                     None
                 };
-                let mid = engine.interpolate(&previous, &next, timestep, tile)?;
-                GuardJob::Synth {
-                    previous,
-                    mid,
-                    next,
-                    timestep: timestep as f64,
-                    context,
-                }
+                worker_pool.submit_interpolation(previous, next, context, timestep, tile, tx)?;
             }
-        };
-        if tx.send(job).is_err() {
-            return Err(anyhow!("guard stage stopped"));
         }
         *next_j += 1;
     }
@@ -511,6 +721,9 @@ fn drain(
         .unwrap_or(false)
     {
         ready.pop_front();
+    }
+    if eof {
+        worker_pool.finish(tx)?;
     }
     Ok(())
 }
