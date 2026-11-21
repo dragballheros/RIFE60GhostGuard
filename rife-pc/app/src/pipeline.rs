@@ -333,11 +333,17 @@ impl Drop for RifeWorkerPool {
 }
 
 fn effective_rife_workers(requested: u8, tile: i32, gpu_memory_mb: u64) -> usize {
+    // A 1080p whole-frame RIFE inference needs enough Vulkan device-local
+    // memory for the model, activations, command buffers, and the second
+    // concurrent inference. On a ~4 GB Radeon this is not safe: two workers
+    // can reach VK_ERROR_OUT_OF_DEVICE_MEMORY even though one worker is fine.
+    // Treat "2" as a maximum request, not a promise to oversubscribe the GPU.
+    let can_run_two = (tile > 0 && tile <= 512) || gpu_memory_mb >= 7 * 1024;
     match requested {
         1 => 1,
-        2 => 2,
-        _ if tile > 0 && tile <= 512 => 2,
-        _ if gpu_memory_mb >= 7 * 1024 => 2,
+        2 if can_run_two => 2,
+        2 => 1,
+        _ if can_run_two => 2,
         _ => 1,
     }
 }
@@ -929,8 +935,19 @@ mod rife_worker_tests {
     }
 
     #[test]
-    fn manual_worker_selection_is_respected() {
+    fn manual_worker_selection_is_respected_when_safe() {
         assert_eq!(effective_rife_workers(1, 512, 8192), 1);
-        assert_eq!(effective_rife_workers(2, 0, 4096), 2);
+        assert_eq!(effective_rife_workers(2, 0, 8192), 2);
+    }
+
+    #[test]
+    fn manual_two_workers_are_capped_on_4gb_whole_frame_gpu() {
+        assert_eq!(effective_rife_workers(2, 0, 4096), 1);
+        assert_eq!(effective_rife_workers(2, 1080, 4096), 1);
+    }
+
+    #[test]
+    fn manual_two_workers_remain_available_for_small_tiles() {
+        assert_eq!(effective_rife_workers(2, 512, 4096), 2);
     }
 }
