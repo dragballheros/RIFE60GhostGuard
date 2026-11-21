@@ -1,5 +1,6 @@
 //! DJATOM x265 preset from `X265PresetParams.h` / commit 126d4ed.
-//! Output is 10-bit Main 10. `fps` and color tags are rewritten from the source
+//! The software fallback remains 10-bit Main10. The AMD AMF path uses Main10
+//! below 4K and a conservative Main/NV12 configuration at 4K+ for Radeon compatibility.
 //! so the file keeps the real rate and the source color metadata.
 
 use std::fmt::Write as _;
@@ -106,16 +107,33 @@ pub fn encode_args_amf_audio(
     } else {
         args.extend(["-map".into(), "0:v:0".into()]);
     }
+    // Radeon Pro 5500M AMF compatibility: at 4K and above, use the
+    // 8-bit Main/NV12 path with a single async surface and preanalysis off.
+    // This avoids the more demanding P010/Main10 path at the exact output
+    // size where the desktop pipeline has been observed to stop consuming
+    // frames. Lower resolutions retain Main10/P010.
+    let use_4k_compat = width.max(height) >= 3840;
+    let profile = if use_4k_compat { "main" } else { "main10" };
+    let pix_fmt = if use_4k_compat { "nv12" } else { "p010le" };
+
     args.extend([
-        // No custom RGB/YUV filter. FFmpeg performs only the mandatory
-        // pixel-format conversion required by AMF.
+        // No custom RGB/YUV filter. FFmpeg performs the required conversion
+        // to the encoder's selected input pixel format.
         "-c:v".into(), "hevc_amf".into(),
-        "-profile:v".into(), "main10".into(),
-        "-pix_fmt".into(), "p010le".into(),
+        "-profile:v".into(), profile.into(),
+        "-pix_fmt".into(), pix_fmt.into(),
         "-quality".into(), "balanced".into(),
         "-rc".into(), "cqp".into(),
         "-qp_i".into(), "20".into(),
         "-qp_p".into(), "22".into(),
+    ]);
+    if use_4k_compat {
+        args.extend([
+            "-async_depth".into(), "1".into(),
+            "-preanalysis".into(), "0".into(),
+        ]);
+    }
+    args.extend([
         "-tag:v".into(), "hvc1".into(),
         "-r".into(), rate,
     ]);
@@ -361,19 +379,35 @@ mod tests {
     }
 
     #[test]
-    #[test]
-    fn amf_args_use_hevc_main10_and_p010() {
+    fn amf_args_use_main10_p010_below_4k() {
         let color = color_from_probe("bt709", "bt709", "bt709", "tv");
         let args = encode_args_amf_audio("ffmpeg", 1920, 1080, 60, 1, &color, "in.mp4", "out.mp4", true);
         let joined = args.join(" ");
         assert!(joined.contains("hevc_amf"));
-        assert!(joined.contains("main10"));
-        assert!(!joined.contains("-vf"));
+        assert!(joined.contains("-profile:v main10"));
+        assert!(joined.contains("-pix_fmt p010le"));
+        assert!(!joined.contains("-async_depth"));
+        assert!(!joined.contains("-preanalysis"));
         assert!(joined.contains("-rc cqp"));
         assert!(joined.contains("-qp_i 20"));
         assert!(joined.contains("-qp_p 22"));
         assert!(joined.contains("-tag:v hvc1"));
         assert!(joined.contains("-c:a copy"));
+        assert!(!joined.contains("-vf"));
+    }
+
+    #[test]
+    fn amf_args_use_main_nv12_and_shallow_async_at_4k() {
+        let color = color_from_probe("bt709", "bt709", "bt709", "tv");
+        let args = encode_args_amf_audio("ffmpeg", 3840, 2160, 60, 1, &color, "in.mp4", "out.mp4", true);
+        let joined = args.join(" ");
+        assert!(joined.contains("hevc_amf"));
+        assert!(joined.contains("-profile:v main"));
+        assert!(joined.contains("-pix_fmt nv12"));
+        assert!(joined.contains("-async_depth 1"));
+        assert!(joined.contains("-preanalysis 0"));
+        assert!(!joined.contains("main10"));
+        assert!(!joined.contains("p010le"));
         assert!(!joined.contains("-vf"));
     }
 
