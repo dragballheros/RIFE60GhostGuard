@@ -16,7 +16,12 @@ pub struct Engine {
     pub gpu_name: String,
 }
 
+// The upstream rife-ncnn-vulkan runner shares one const RIFE instance across
+// multiple processing threads. RIFE::process is const and allocates per-call
+// extractors/command buffers; each C-API caller keeps its own thread-local
+// pixel scratch. The engine is immutable after open().
 unsafe impl Send for Engine {}
+unsafe impl Sync for Engine {}
 
 impl Engine {
     pub fn open(model_dir: &Path, gpu: i32) -> Result<Self> {
