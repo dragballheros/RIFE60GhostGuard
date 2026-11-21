@@ -29,21 +29,13 @@ impl ColorMeta {
     }
 }
 
-/// Build an explicit RGB -> YUV conversion so the encoder cannot silently
-/// choose a different range for the packed BGRA input. FFmpeg documents RGB
-/// as full-range input and allows the output YUV range to be forced explicitly.
-fn rgb_to_yuv_filter(color: &ColorMeta, output_format: &str) -> String {
-    let out_range = color.ffmpeg_range.as_deref().unwrap_or("tv");
-    let mut filter = format!(
-        "scale=iw:ih:in_range=full:out_range={out_range}"
-    );
-    if let Some(matrix) = color.matrix.as_deref() {
-        // The pipe is RGB/BGRA, so only the destination YUV matrix is
-        // meaningful here. Supplying an input YUV matrix would be incorrect.
-        filter.push_str(&format!(":out_color_matrix={matrix}"));
-    }
-    filter.push_str(&format!(",format={output_format}"));
-    filter
+/// Keep the raw BGRA pipeline neutral. Do not apply a brightness, range,
+/// or matrix correction to the pixels before hardware encoding. The source
+/// frames have already been decoded to display-space BGRA, and RIFE operates
+/// directly on those byte values. FFmpeg is only asked to select the encoder's
+/// required pixel format.
+fn rgb_to_yuv_filter(_color: &ColorMeta, output_format: &str) -> String {
+    format!("format={output_format}")
 }
 
 fn output_range(color: &ColorMeta) -> &'static str {
@@ -62,10 +54,8 @@ pub fn x265_params(
 ) -> String {
     let mut parts = split_params(PRESET_TEXT.trim());
     set_key(&mut parts, "fps", &format!("{fps_num}/{fps_den}"));
-    // Never let the preset's baked-in range decide the output. The source
-    // range is supplied by the caller and the RGB->YUV filter uses the same
-    // range explicitly.
-    set_key(&mut parts, "range", output_range(color));
+    // Keep the encoder preset's normal range handling. Pixel values are not
+    // brightness-adjusted here.
     let side = width.min(height);
     if side < 32 {
         set_key(&mut parts, "ctu", "16");
@@ -81,9 +71,7 @@ pub fn x265_params(
     if let Some(value) = color.matrix.as_deref() {
         set_key(&mut parts, "colormatrix", value);
     }
-    if let Some(value) = color.range.as_deref() {
-        set_key(&mut parts, "range", value);
-    }
+
     parts.join(":")
 }
 
@@ -143,7 +131,8 @@ pub fn encode_args_amf_audio(
     if let Some(value) = color.primaries.as_deref() { args.extend(["-color_primaries".into(), value.to_string()]); }
     if let Some(value) = color.transfer.as_deref() { args.extend(["-color_trc".into(), value.to_string()]); }
     if let Some(value) = color.matrix.as_deref() { args.extend(["-colorspace".into(), value.to_string()]); }
-    args.extend(["-color_range".into(), output_range(color).into()]);
+    // Color metadata is descriptive only. Do not force a range conversion on
+    // the BGRA pixels.
     args.push(output.to_string());
     args
 }
@@ -226,8 +215,6 @@ pub fn encode_args_audio(
         args.push("-colorspace".into());
         args.push(value.to_string());
     }
-    args.push("-color_range".into());
-    args.push(output_range(color).into());
     args.push(output.to_string());
     args
 }
@@ -376,22 +363,17 @@ mod tests {
         assert!(joined.contains("-color_primaries bt709"));
         assert!(joined.contains("-color_trc smpte2084"));
         assert!(joined.contains("-colorspace bt2020nc"));
-        assert!(joined.contains("-color_range pc"));
+        assert!(!joined.contains("-color_range pc"));
         assert!(args.iter().any(|arg| arg.contains("crf=20.0")));
         assert_eq!(args.last().map(String::as_str), Some("out.mp4"));
     }
 
     #[test]
-    fn rgb_to_yuv_filter_is_explicitly_range_preserving() {
+    fn rgb_to_yuv_filter_is_pixel_neutral() {
         let limited = color_from_probe("bt709", "bt709", "bt709", "tv");
         let full = color_from_probe("bt709", "bt709", "bt709", "pc");
-        let limited_filter = rgb_to_yuv_filter(&limited, "p010le");
-        let full_filter = rgb_to_yuv_filter(&full, "yuv420p10le");
-        assert!(limited_filter.contains("in_range=full:out_range=tv"));
-        assert!(limited_filter.contains("out_color_matrix=bt709"));
-        assert!(full_filter.contains("in_range=full:out_range=pc"));
-        assert!(full_filter.contains("format=yuv420p10le"));
-        assert!(!limited_filter.contains("in_color_matrix"));
+        assert_eq!(rgb_to_yuv_filter(&limited, "p010le"), "format=p010le");
+        assert_eq!(rgb_to_yuv_filter(&full, "yuv420p10le"), "format=yuv420p10le");
     }
 
     #[test]
@@ -407,8 +389,7 @@ mod tests {
         assert!(joined.contains("-qp_p 22"));
         assert!(joined.contains("-tag:v hvc1"));
         assert!(joined.contains("-c:a copy"));
-        assert!(joined.contains("in_range=full:out_range=tv"));
-        assert!(joined.contains("out_color_matrix=bt709"));
+        assert_eq!(rgb_to_yuv_filter(&color, "p010le"), "format=p010le");
     }
 
     #[test]
