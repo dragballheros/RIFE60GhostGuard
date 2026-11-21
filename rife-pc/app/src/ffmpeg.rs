@@ -1,4 +1,4 @@
-//! ffmpeg subprocess pipes. Decode yields packed BGRA. Windows uses AMD AMF HEVC when available, with libx265 as a compatibility fallback.
+//! ffmpeg subprocess pipes. Decode yields packed BGRA. Windows uses AMD AMF HEVC when available, with libx265 as a compatibility fallback. 4K+ AMF uses the Radeon-compatible Main/NV12 path.
 
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
