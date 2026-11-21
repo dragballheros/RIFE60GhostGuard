@@ -467,7 +467,7 @@ impl App {
                 ui.selectable_value(&mut self.settings.rife_workers, 1, "1 worker");
                 ui.selectable_value(&mut self.settings.rife_workers, 2, "2 workers");
             });
-        ui.label("Auto uses two concurrent RIFE calls for tiles up to 512 and one for whole-frame or larger-tile inference. Forcing two on whole-frame 1080p increases VRAM use and may fail on a 4 GB GPU.");
+        ui.label("Auto uses two workers for tiles up to 512. For whole-frame or larger tiles, it enables two workers only when Vulkan reports at least 7 GiB of device-local memory; smaller GPUs stay single-worker to avoid out-of-memory failures.");
         ui.horizontal(|ui| {
             ui.add(egui::Slider::new(&mut self.tile, 0..=1024).text("Tile (0 = whole frame)"));
             ui.add(egui::Slider::new(&mut self.gpu, -1..=8).text("GPU index"));
