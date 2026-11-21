@@ -143,7 +143,7 @@ pub fn encode_args_amf_audio(
     if let Some(value) = color.primaries.as_deref() { args.extend(["-color_primaries".into(), value.to_string()]); }
     if let Some(value) = color.transfer.as_deref() { args.extend(["-color_trc".into(), value.to_string()]); }
     if let Some(value) = color.matrix.as_deref() { args.extend(["-colorspace".into(), value.to_string()]); }
-    if let Some(value) = color.ffmpeg_range.as_deref() { args.extend(["-color_range".into(), value.to_string()]); }
+    args.extend(["-color_range".into(), output_range(color).into()]);
     args.push(output.to_string());
     args
 }
