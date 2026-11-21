@@ -455,7 +455,19 @@ impl App {
                 ui.selectable_value(&mut self.settings.performance_tier, tier, tier.label());
             }
         });
-        ui.label("Render power mode keeps Windows awake during the job. On this 64 GB machine Auto picks Performance and keeps the 512 tile, because the Radeon Pro 5300M and 5500M have a 4 GB framebuffer. Safe caps the tile at 256.");
+        ui.label("Render power mode keeps Windows awake during the job. Safe caps the tile at 256.");
+        egui::ComboBox::from_label("RIFE GPU workers")
+            .selected_text(match self.settings.rife_workers {
+                1 => "1 worker",
+                2 => "2 workers",
+                _ => "Auto (VRAM-aware)",
+            })
+            .show_ui(ui, |ui| {
+                ui.selectable_value(&mut self.settings.rife_workers, 0, "Auto (VRAM-aware)");
+                ui.selectable_value(&mut self.settings.rife_workers, 1, "1 worker");
+                ui.selectable_value(&mut self.settings.rife_workers, 2, "2 workers");
+            });
+        ui.label("Auto uses two concurrent RIFE calls for tiles up to 512 and one for whole-frame or larger-tile inference. Forcing two on whole-frame 1080p increases VRAM use and may fail on a 4 GB GPU.");
         ui.horizontal(|ui| {
             ui.add(egui::Slider::new(&mut self.tile, 0..=1024).text("Tile (0 = whole frame)"));
             ui.add(egui::Slider::new(&mut self.gpu, -1..=8).text("GPU index"));
