@@ -1,0 +1,9 @@
+[package]
+name = "rife-guards"
+version = "1.0.0"
+edition = "2021"
+description = "Quality guards ported from the RIFE60 GhostGuard iOS app"
+publish = false
+
+[dependencies]
+rayon = "1.10"

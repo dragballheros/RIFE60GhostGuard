@@ -1,0 +1,24 @@
+ONNX networks used by the Windows build. See rife-pc/THIRD_PARTY.txt for the full notice.
+
+APISR2xRRDB.onnx
+  Upstream: Kiteretsu77/APISR 2x_APISR_RRDB_GAN_generator.pth
+  License: GPL-3.0. The iOS app also describes this weight as academic use.
+
+SPAN2xHFA2k.onnx
+  Upstream: Phhofm 2xHFA2kSPAN_fp32_opset17.onnx
+  License: CC BY 4.0
+
+AnimeSharpieOutlineSubtle.onnx
+  Rebuilt from the iOS Core ML package 1x_AnimeSharpieOutline_Subtle_SRVGG_32f_12c.
+  The weights are the project's own SRVGG outline model.
+
+DeepCreamBar.onnx
+DeepCreamMosaic.onnx
+  Upstream: DeepCreamPy v2 generators, ONNX conversion published with Cec1c/Aletheia-Lens.
+  License: CC BY-NC-SA 4.0. Non-commercial. Share-alike.
+
+AnimeWatermarkLaMa512.onnx
+  Not stored in git (about 198 MB). Downloaded from mayocream/lama-manga-onnx.
+  Anime/manga fine-tune: MIT (dreMaz/AnimeMangaInpainting).
+  Base LaMa: Apache-2.0.
+  ONNX export: Apache-2.0.
