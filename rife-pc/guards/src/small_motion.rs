@@ -53,13 +53,25 @@ impl SmallMotionLineStabilizer {
                 return None;
             }
         }
+        let line_contrast = (0.11 / self.sensitivity).max(0.055) as f32;
+        let shift = global_shift(previous, next, self.sensitivity);
+        self.stabilize_with_shift(previous, interpolated, next, progress, shift, line_contrast)
+    }
+
+    pub fn stabilize_with_shift(
+        &self,
+        previous: &Frame,
+        interpolated: &Frame,
+        next: &Frame,
+        progress: f64,
+        shift: Shift,
+        line_contrast: f32,
+    ) -> Option<Frame> {
         let t = if progress.is_finite() {
             progress.clamp(0.0, 1.0)
         } else {
             0.5
         };
-        let line_contrast = (0.11 / self.sensitivity).max(0.055) as f32;
-        let shift = global_shift(previous, next, self.sensitivity);
         if !shift.explained {
             return None;
         }
@@ -102,26 +114,30 @@ pub fn global_shift(a: &Frame, c: &Frame, sensitivity: f64) -> Shift {
             half_c[index] = half_c[index].min(luma_at(c_line, x, rgba));
         }
     }
-    let mut best = (0i32, 0i32, f32::MAX);
-    for sy in -6..=6 {
-        for sx in -6..=6 {
-            let score = half_sad(&half_a, &half_c, half_w, half_h, sx, sy);
-            if score < best.2 {
-                best = (sx * 2, sy * 2, score);
-            }
-        }
-    }
-    let mut refined = (best.0, best.1, f32::MAX);
-    for dy in -2..=2 {
-        for dx in -2..=2 {
+    // Same winner as the old serial scan: lowest score, and on a tie the
+    // earlier (sy, sx). This search used to run twice per in-between.
+    let coarse: Vec<(i32, i32)> = (-6..=6)
+        .flat_map(|sy| (-6..=6).map(move |sx| (sx, sy)))
+        .collect();
+    let best = coarse
+        .par_iter()
+        .map(|(sx, sy)| {
+            let score = half_sad(&half_a, &half_c, half_w, half_h, *sx, *sy);
+            (*sx * 2, *sy * 2, score)
+        })
+        .reduce(|| (0, 0, f32::MAX), prefer_shift);
+    let refine: Vec<(i32, i32)> = (-2..=2)
+        .flat_map(|dy| (-2..=2).map(move |dx| (dx, dy)))
+        .collect();
+    let refined = refine
+        .par_iter()
+        .map(|(dx, dy)| {
             let sx = (best.0 + dx).clamp(-12, 12);
             let sy = (best.1 + dy).clamp(-12, 12);
             let score = full_sad(a, c, sx, sy);
-            if score < refined.2 {
-                refined = (sx, sy, score);
-            }
-        }
-    }
+            (sx, sy, score)
+        })
+        .reduce(|| (0, 0, f32::MAX), prefer_shift);
     let zero = full_sad(a, c, 0, 0);
     let sad_limit = (0.034 + 0.014 * (sensitivity - 0.65) / 0.70) as f32;
     let moved = refined.0 != 0 || refined.1 != 0;
@@ -137,6 +153,16 @@ pub fn global_shift(a: &Frame, c: &Frame, sensitivity: f64) -> Shift {
         dy: refined.1,
         residual: refined.2,
         explained,
+    }
+}
+
+fn prefer_shift(current: (i32, i32, f32), other: (i32, i32, f32)) -> (i32, i32, f32) {
+    if other.2 < current.2 {
+        other
+    } else if other.2 == current.2 && (other.1, other.0) < (current.1, current.0) {
+        other
+    } else {
+        current
     }
 }
 

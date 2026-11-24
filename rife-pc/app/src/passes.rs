@@ -199,6 +199,10 @@ pub fn orchestrate(
                     ram_mb: perf::available_ram_mb(),
                     seam: 0.0,
                     fraction,
+                    decode_ms: 0.0,
+                    rife_ms: 0.0,
+                    guard_ms: 0.0,
+                    encode_ms: 0.0,
                 });
             },
         )?;
@@ -221,6 +225,10 @@ pub fn orchestrate(
         }
         recorder.metric("output_frames", summary.output_frames as f64);
         recorder.metric("fps", summary.fps);
+        recorder.metric("decode_ms", summary.decode_ms as f64);
+        recorder.metric("rife_ms", summary.rife_ms as f64);
+        recorder.metric("guard_ms", summary.guard_ms as f64);
+        recorder.metric("encode_ms", summary.encode_ms as f64);
         if let Ok(path) = recorder.finish(summary.seconds) {
             summary.diagnostics_path = Some(path);
         }
@@ -293,6 +301,10 @@ fn still(
         notes,
         diagnostics_path: None,
         output_path: options.output.clone(),
+        decode_ms: 0.0,
+        rife_ms: 0.0,
+        guard_ms: 0.0,
+        encode_ms: 0.0,
     })
 }
 
@@ -444,6 +456,10 @@ fn emit(progress: &dyn Fn(Progress), stage: &str, fraction: f32) {
         ram_mb: perf::available_ram_mb(),
         seam: 0.0,
         fraction,
+        decode_ms: 0.0,
+        rife_ms: 0.0,
+        guard_ms: 0.0,
+        encode_ms: 0.0,
     });
 }
 

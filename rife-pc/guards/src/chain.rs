@@ -5,9 +5,9 @@
 use crate::frame::Frame;
 use crate::ghost::{endpoint_disposition, Disposition, GhostGuard};
 use crate::outlier::SourceFrameOutlierGuard;
-use crate::small_motion::SmallMotionLineStabilizer;
+use crate::small_motion::{global_shift, SmallMotionLineStabilizer};
 use crate::static_lock::StaticRegionLock;
-use crate::stroke::{stroke_width_decision, StrokeDecision};
+use crate::stroke::{stroke_width_with_shift, StrokeDecision};
 use crate::thin_line::ThinLinePreservationPass;
 
 #[derive(Clone, Debug)]
@@ -111,17 +111,47 @@ pub fn polish_inbetween_with(
             stats.static_lock = true;
         }
     }
+    let shared_shift = if flags.small_motion || flags.stroke {
+        Some(global_shift(previous, next, sensitivity))
+    } else {
+        None
+    };
     if flags.small_motion {
         let stabilizer = SmallMotionLineStabilizer::new(sensitivity);
-        if let Some(stable) = stabilizer.stabilize(previous, &frame, next, progress) {
-            frame = stable;
-            stats.small_motion = true;
+        let line_contrast = (0.11 / stabilizer.sensitivity).max(0.055) as f32;
+        if let Some(shift) = shared_shift {
+            if let Some(stable) = stabilizer.stabilize_with_shift(
+                previous,
+                &frame,
+                next,
+                progress,
+                shift,
+                line_contrast,
+            ) {
+                frame = stable;
+                stats.small_motion = true;
+            }
         }
     }
     if flags.stroke {
-        if let StrokeDecision::RepeatNearer { nearer_is_next } =
-            stroke_width_decision(previous, &frame, next, progress, sensitivity)
-        {
+        let t = if progress.is_finite() {
+            progress.clamp(0.0, 1.0)
+        } else {
+            0.5
+        };
+        let decision = match shared_shift {
+            Some(shift) => stroke_width_with_shift(
+                previous,
+                &frame,
+                next,
+                t > 0.5,
+                t,
+                sensitivity,
+                shift,
+            ),
+            None => StrokeDecision::Keep,
+        };
+        if let StrokeDecision::RepeatNearer { nearer_is_next } = decision {
             frame = if nearer_is_next {
                 next.clone()
             } else {

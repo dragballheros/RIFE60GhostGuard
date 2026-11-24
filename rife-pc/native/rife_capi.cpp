@@ -234,26 +234,32 @@ RIFE_API int rife_interpolate(
     bgra_to_bgr(bgra0, scratch.bgr0.data(), pixels);
     bgra_to_bgr(bgra1, scratch.bgr1.data(), pixels);
 
-    const bool whole = tile <= 0 || (tile >= width && tile >= height);
-    if (whole) {
+    int active = tile;
+    const bool requested_whole = active <= 0 || (active >= width && active >= height);
+    if (requested_whole) {
         const int rc = run_full(engine, scratch.bgr0.data(), scratch.bgr1.data(),
                                 scratch.bgr_out.data(), width, height, timestep);
-        if (rc != 0) return rc;
-        bgr_to_bgra(scratch.bgr_out.data(), bgra_out, pixels);
-        return 0;
+        if (rc == 0) {
+            bgr_to_bgra(scratch.bgr_out.data(), bgra_out, pixels);
+            return 0;
+        }
+        // A 4 GB framebuffer can refuse one 1080p 4.26 pass. Fall back to tiles.
+        if (active > 0 || width <= 512 || height <= 512) return rc;
+        active = 512;
+        set_error("full-frame RIFE did not fit; retrying 512-pixel tiles");
     }
 
     int overlap = 32;
-    if (overlap * 2 >= tile) overlap = std::max(8, tile / 4);
-    const int step = std::max(32, tile - overlap);
+    if (overlap * 2 >= active) overlap = std::max(8, active / 4);
+    const int step = std::max(32, active - overlap);
     scratch.accum.assign(pixels * 3, 0.f);
     scratch.weights.assign(pixels, 0.f);
 
     for (int y0 = 0; y0 < height; y0 += step) {
-        int y1 = std::min(height, y0 + tile);
+        int y1 = std::min(height, y0 + active);
         if (height - y1 > 0 && height - y1 < 32) y1 = height;
         for (int x0 = 0; x0 < width; x0 += step) {
-            int x1 = std::min(width, x0 + tile);
+            int x1 = std::min(width, x0 + active);
             if (width - x1 > 0 && width - x1 < 32) x1 = width;
             const int tw = x1 - x0;
             const int th = y1 - y0;

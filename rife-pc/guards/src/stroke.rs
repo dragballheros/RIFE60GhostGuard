@@ -42,6 +42,25 @@ pub fn stroke_width_decision(
     };
     let nearer_is_next = t > 0.5;
     let shift = global_shift(previous, next, sensitivity);
+    stroke_width_with_shift(previous, mid, next, nearer_is_next, t, sensitivity, shift)
+}
+
+pub fn stroke_width_with_shift(
+    previous: &Frame,
+    mid: &Frame,
+    next: &Frame,
+    nearer_is_next: bool,
+    t: f64,
+    sensitivity: f64,
+    shift: crate::small_motion::Shift,
+) -> StrokeDecision {
+    if previous.width != mid.width
+        || next.width != mid.width
+        || previous.height != mid.height
+        || next.height != mid.height
+    {
+        return StrokeDecision::Keep;
+    }
     let place_scale = if nearer_is_next { t - 1.0 } else { t };
     let (dx, dy) = if shift.explained {
         (

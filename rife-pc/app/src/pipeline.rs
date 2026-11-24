@@ -15,7 +15,7 @@ use rife_guards::{clean_source_outlier, polish_inbetween_with, Frame};
 
 use crate::ffmpeg::{tool_path, Decoder, Encoder};
 use crate::rife::Engine;
-use crate::schedule::{output_count, output_rate, slot_at, Rational, Slot};
+use crate::schedule::{output_count, output_rate, slot_at, slots_from_pts, Rational, Slot};
 use crate::settings::ProcessingSettings;
 
 #[derive(Clone, Debug)]
@@ -45,6 +45,10 @@ pub struct Progress {
     pub ram_mb: u64,
     pub seam: f32,
     pub fraction: f32,
+    pub decode_ms: f32,
+    pub rife_ms: f32,
+    pub guard_ms: f32,
+    pub encode_ms: f32,
 }
 
 #[derive(Clone, Debug)]
@@ -59,6 +63,57 @@ pub struct Summary {
     pub notes: Vec<String>,
     pub diagnostics_path: Option<PathBuf>,
     pub output_path: PathBuf,
+    pub decode_ms: f32,
+    pub rife_ms: f32,
+    pub guard_ms: f32,
+    pub encode_ms: f32,
+}
+
+struct StageClock {
+    decode_us: std::sync::atomic::AtomicU64,
+    decode_n: std::sync::atomic::AtomicU64,
+    rife_us: std::sync::atomic::AtomicU64,
+    rife_n: std::sync::atomic::AtomicU64,
+    guard_us: std::sync::atomic::AtomicU64,
+    guard_n: std::sync::atomic::AtomicU64,
+    encode_us: std::sync::atomic::AtomicU64,
+    encode_n: std::sync::atomic::AtomicU64,
+}
+
+impl StageClock {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            decode_us: std::sync::atomic::AtomicU64::new(0),
+            decode_n: std::sync::atomic::AtomicU64::new(0),
+            rife_us: std::sync::atomic::AtomicU64::new(0),
+            rife_n: std::sync::atomic::AtomicU64::new(0),
+            guard_us: std::sync::atomic::AtomicU64::new(0),
+            guard_n: std::sync::atomic::AtomicU64::new(0),
+            encode_us: std::sync::atomic::AtomicU64::new(0),
+            encode_n: std::sync::atomic::AtomicU64::new(0),
+        })
+    }
+
+    fn add(total: &std::sync::atomic::AtomicU64, count: &std::sync::atomic::AtomicU64, started: Instant) {
+        total.fetch_add(started.elapsed().as_micros() as u64, Ordering::Relaxed);
+        count.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn avg(total: &std::sync::atomic::AtomicU64, count: &std::sync::atomic::AtomicU64) -> f32 {
+        let count = count.load(Ordering::Relaxed);
+        if count == 0 {
+            0.0
+        } else {
+            total.load(Ordering::Relaxed) as f32 / count as f32 / 1000.0
+        }
+    }
+
+    fn apply(&self, progress: &mut Progress) {
+        progress.decode_ms = Self::avg(&self.decode_us, &self.decode_n);
+        progress.rife_ms = Self::avg(&self.rife_us, &self.rife_n);
+        progress.guard_ms = Self::avg(&self.guard_us, &self.guard_n);
+        progress.encode_ms = Self::avg(&self.encode_us, &self.encode_n);
+    }
 }
 
 enum GuardJob {
@@ -160,7 +215,7 @@ struct RifeWorkerPool {
 }
 
 impl RifeWorkerPool {
-    fn new(engine: Engine, worker_count: usize) -> Self {
+    fn new(engine: Engine, worker_count: usize, clock: Arc<StageClock>) -> Self {
         let worker_count = worker_count.clamp(1, 2);
         let max_outstanding = (worker_count * 2).max(2);
         let (task_tx, task_rx) = sync_channel::<RifeMessage>(max_outstanding);
@@ -173,6 +228,7 @@ impl RifeWorkerPool {
             let rx = Arc::clone(&shared_rx);
             let tx = result_tx.clone();
             let engine = Arc::clone(&engine);
+            let clock = Arc::clone(&clock);
             workers.push(thread::spawn(move || loop {
                 let message = match rx.lock() {
                     Ok(receiver) => receiver.recv(),
@@ -183,6 +239,7 @@ impl RifeWorkerPool {
                     Ok(RifeMessage::Stop) | Err(_) => break,
                 };
                 let sequence = work.sequence;
+                let started = Instant::now();
                 let job = engine
                     .interpolate(&work.previous, &work.next, work.timestep, work.tile)
                     .map(|mid| GuardJob::Synth {
@@ -192,6 +249,7 @@ impl RifeWorkerPool {
                         timestep: work.timestep as f64,
                         context: work.context,
                     });
+                StageClock::add(&clock.rife_us, &clock.rife_n, started);
                 if tx.send(RifeResult { sequence, job }).is_err() {
                     break;
                 }
@@ -392,13 +450,28 @@ pub(crate) fn interpolate(
     let out_rate = output_rate(info.rate, options.multi, options.fps);
     let engine = Engine::open(&options.model, options.gpu)?;
     let gpu_name = engine.gpu_name.clone();
-    let rife_workers = effective_rife_workers(
-        options.settings.rife_workers,
+    let rife_tile = crate::perf::rife_tile(
+        options.settings.performance_tier,
         options.tile,
+        info.width,
+        info.height,
         engine.gpu_memory_mb,
     );
+    let rife_workers = effective_rife_workers(
+        options.settings.rife_workers,
+        rife_tile,
+        engine.gpu_memory_mb,
+    );
+    let target_fps = out_rate.num as f64 / out_rate.den.max(1) as f64;
+    let slots = match crate::ffmpeg::frame_pts(&ffprobe, &options.input) {
+        Ok(pts) if pts.len() >= 2 && pts.windows(2).all(|pair| pair[1] > pair[0] + 1e-5) => {
+            Some(Arc::new(slots_from_pts(&pts, target_fps)))
+        }
+        _ => None,
+    };
+    let slot_count = slots.as_ref().map(|slots| slots.len());
     eprintln!(
-        "rife-pc: ncnn Vulkan on \"{gpu_name}\"  {}x{}  {}/{} -> {}/{}  model {}  Vulkan VRAM {} MB  RIFE workers {} (setting {})",
+        "rife-pc: ncnn Vulkan on \"{gpu_name}\"  {}x{}  {}/{} -> {}/{}  model {}  Vulkan VRAM {} MB  RIFE tile {}  workers {} (setting {})",
         info.width,
         info.height,
         info.rate.num,
@@ -407,6 +480,7 @@ pub(crate) fn interpolate(
         out_rate.den,
         options.model.display(),
         engine.gpu_memory_mb,
+        if rife_tile <= 0 { "full".to_string() } else { rife_tile.to_string() },
         rife_workers,
         options.settings.rife_workers
     );
@@ -414,6 +488,7 @@ pub(crate) fn interpolate(
     let (decoded_tx, decoded_rx) = sync_channel::<Frame>(4);
     let (guard_tx, guard_rx) = sync_channel::<GuardJob>(2);
     let (encode_tx, encode_rx) = sync_channel::<Frame>(2);
+    let clock = StageClock::new();
     let failure: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
     let started = Instant::now();
     let stats_scene = Arc::new(std::sync::atomic::AtomicU64::new(0));
@@ -432,6 +507,7 @@ pub(crate) fn interpolate(
     let cancel_decode = Arc::clone(&cancel);
     let fail_decode = Arc::clone(&failure);
     let notes_for_decode = Arc::clone(&notes_decode);
+    let clock_decode = Arc::clone(&clock);
     let decode_thread = thread::spawn(move || {
         if let Err(err) = decode_loop(
             &ffmpeg_decode,
@@ -445,13 +521,13 @@ pub(crate) fn interpolate(
             &settings_decode,
             apply_pre,
             &notes_for_decode,
+            &clock_decode,
         ) {
             *fail_decode.lock().unwrap() = Some(err.to_string());
         }
     });
 
     let sensitivity = options.sensitivity;
-    let tile = options.tile;
     let rate = info.rate;
     let cancel_gpu = Arc::clone(&cancel);
     let fail_gpu = Arc::clone(&failure);
@@ -460,6 +536,7 @@ pub(crate) fn interpolate(
     let source_seen = Arc::new(std::sync::atomic::AtomicU64::new(0));
     let source_seen_gpu = Arc::clone(&source_seen);
     let clean_outliers = options.settings.source_outlier;
+    let clock_gpu = Arc::clone(&clock);
     let gpu_thread = thread::spawn(move || {
         if let Err(err) = gpu_loop(
             engine,
@@ -468,12 +545,14 @@ pub(crate) fn interpolate(
             rate,
             out_rate,
             sensitivity,
-            tile,
+            rife_tile,
             &cancel_gpu,
             &outliers_gpu,
             &source_seen_gpu,
             clean_outliers,
             rife_workers,
+            slots,
+            clock_gpu,
         ) {
             *fail_gpu.lock().unwrap() = Some(err.to_string());
         }
@@ -485,6 +564,7 @@ pub(crate) fn interpolate(
     let scene = Arc::clone(&stats_scene);
     let stroke = Arc::clone(&stats_stroke);
     let settings_guard = options.settings.clone();
+    let clock_guard = Arc::clone(&clock);
     let guard_thread = thread::spawn(move || {
         if let Err(err) = guard_loop(
             guard_rx,
@@ -496,6 +576,7 @@ pub(crate) fn interpolate(
             &settings_guard,
             apply_post,
             &notes_guard,
+            &clock_guard,
         ) {
             *fail_guard.lock().unwrap() = Some(err.to_string());
         }
@@ -510,7 +591,9 @@ pub(crate) fn interpolate(
     let preserve_audio = options.settings.preserve_audio && !lossless;
     let ffmpeg_enc = ffmpeg.clone();
     let color = info.color.clone();
-    let expected = if info.frame_count > 0 {
+    let expected = if let Some(count) = slot_count {
+        count as u64
+    } else if info.frame_count > 0 {
         output_count(info.frame_count, info.rate, out_rate) as u64
     } else if info.duration > 0.0 {
         (info.duration * out_rate.num as f64 / out_rate.den as f64)
@@ -523,6 +606,7 @@ pub(crate) fn interpolate(
     let fail_enc = Arc::clone(&failure);
     let produced_enc = Arc::clone(&produced);
     let source_for_progress = Arc::clone(&source_seen);
+    let clock_encode = Arc::clone(&clock);
     let encode_thread = thread::spawn(move || {
         let result = encode_loop(
             &ffmpeg_enc,
@@ -541,6 +625,7 @@ pub(crate) fn interpolate(
             preserve_audio,
             lossless,
             progress,
+            &clock_encode,
         );
         if let Err(err) = result {
             *fail_enc.lock().unwrap() = Some(err.to_string());
@@ -568,6 +653,10 @@ pub(crate) fn interpolate(
         notes,
         diagnostics_path: None,
         output_path: options.output.clone(),
+        decode_ms: StageClock::avg(&clock.decode_us, &clock.decode_n),
+        rife_ms: StageClock::avg(&clock.rife_us, &clock.rife_n),
+        guard_ms: StageClock::avg(&clock.guard_us, &clock.guard_n),
+        encode_ms: StageClock::avg(&clock.encode_us, &clock.encode_n),
     })
 }
 
@@ -583,6 +672,7 @@ fn decode_loop(
     settings: &ProcessingSettings,
     apply_pre: bool,
     notes: &Mutex<Vec<String>>,
+    clock: &StageClock,
 ) -> Result<()> {
     let mut decoder = Decoder::spawn(ffmpeg, input, width, height, source_width, source_height)?;
     let mut filters = crate::filters::FilterState::default();
@@ -590,6 +680,7 @@ fn decode_loop(
         if cancel.load(Ordering::Relaxed) {
             return Err(anyhow!("cancelled"));
         }
+        let started = Instant::now();
         match decoder.read_frame()? {
             Some(frame) => {
                 let frame = if apply_pre {
@@ -597,6 +688,7 @@ fn decode_loop(
                 } else {
                     frame
                 };
+                StageClock::add(&clock.decode_us, &clock.decode_n, started);
                 if tx.send(frame).is_err() {
                     notes.lock().unwrap().extend(filters.notes.drain(..));
                     return Ok(());
@@ -623,8 +715,10 @@ fn gpu_loop(
     source_seen: &std::sync::atomic::AtomicU64,
     clean_outliers: bool,
     worker_count: usize,
+    slots: Option<Arc<Vec<Slot>>>,
+    clock: Arc<StageClock>,
 ) -> Result<()> {
-    let mut worker_pool = RifeWorkerPool::new(engine, worker_count);
+    let mut worker_pool = RifeWorkerPool::new(engine, worker_count, Arc::clone(&clock));
     let mut window = CleanWindow::new();
     let mut ready: VecDeque<(usize, Frame)> = VecDeque::new();
     let mut next_j = 0i64;
@@ -649,6 +743,7 @@ fn gpu_loop(
                 false,
                 &tx,
                 cancel,
+                slots.as_ref().map(|slots| slots.as_slice()),
             )?;
         }
     }
@@ -671,6 +766,7 @@ fn gpu_loop(
         true,
         &tx,
         cancel,
+        slots.as_ref().map(|slots| slots.as_slice()),
     )?;
     Ok(())
 }
@@ -685,12 +781,15 @@ fn drain(
     eof: bool,
     tx: &SyncSender<GuardJob>,
     cancel: &AtomicBool,
+    pts_slots: Option<&[Slot]>,
 ) -> Result<()> {
     let Some(&(last_index, _)) = ready.back() else {
         return Ok(());
     };
     let have = last_index as i64 + 1;
-    let limit = if eof {
+    let limit = if let Some(pts_slots) = pts_slots {
+        pts_limit(pts_slots, *next_j, have)
+    } else if eof {
         output_count(have, source_rate, out_rate)
     } else {
         // Slots whose timestamp is at or before the newest cleaned source frame.
@@ -700,7 +799,14 @@ fn drain(
         if cancel.load(Ordering::Relaxed) {
             return Err(anyhow!("cancelled"));
         }
-        let slot = slot_at(*next_j, have, source_rate, out_rate);
+        let slot = if let Some(pts_slots) = pts_slots {
+            pts_slots
+                .get(*next_j as usize)
+                .copied()
+                .ok_or_else(|| anyhow!("missing output slot {}", *next_j))?
+        } else {
+            slot_at(*next_j, have, source_rate, out_rate)
+        };
         match slot {
             Slot::Source(index) => {
                 let frame = frame_at(ready, index)
@@ -722,7 +828,14 @@ fn drain(
         }
         *next_j += 1;
     }
-    let upcoming = slot_at(*next_j, have.max(1), source_rate, out_rate);
+    let upcoming = if let Some(pts_slots) = pts_slots {
+        pts_slots
+            .get(*next_j as usize)
+            .copied()
+            .unwrap_or(Slot::Source(have.max(1) as usize))
+    } else {
+        slot_at(*next_j, have.max(1), source_rate, out_rate)
+    };
     let oldest_index = match upcoming {
         Slot::Source(index) => index.saturating_sub(1),
         Slot::Interp { left, .. } => left.saturating_sub(1),
@@ -738,6 +851,21 @@ fn drain(
         worker_pool.finish(tx)?;
     }
     Ok(())
+}
+
+fn pts_limit(slots: &[Slot], next_j: i64, have: i64) -> i64 {
+    let mut index = next_j.max(0) as usize;
+    while index < slots.len() {
+        let ready = match slots[index] {
+            Slot::Source(frame) => (frame as i64) < have,
+            Slot::Interp { left, .. } => (left as i64) + 1 < have,
+        };
+        if !ready {
+            break;
+        }
+        index += 1;
+    }
+    index as i64
 }
 
 fn slots_ready(last_index: i64, source_rate: Rational, out_rate: Rational) -> i64 {
@@ -767,6 +895,7 @@ fn guard_loop(
     settings: &ProcessingSettings,
     apply_post: bool,
     notes: &Mutex<Vec<String>>,
+    clock: &StageClock,
 ) -> Result<()> {
     let flags = settings.guard_flags();
     let mut filters = crate::filters::FilterState::default();
@@ -777,6 +906,7 @@ fn guard_loop(
         if cancel.load(Ordering::Relaxed) {
             return Err(anyhow!("cancelled"));
         }
+        let started = Instant::now();
         let frame = match job {
             GuardJob::Real(frame) => frame,
             GuardJob::Synth {
@@ -812,6 +942,7 @@ fn guard_loop(
         if settings.diagnostics {
             diag.observe("output", index, &frame);
         }
+        StageClock::add(&clock.guard_us, &clock.guard_n, started);
         index += 1;
         if tx.send(frame).is_err() {
             break;
@@ -842,7 +973,8 @@ fn encode_loop(
     started: Instant,
     preserve_audio: bool,
     lossless: bool,
-    progress: impl Fn(Progress),
+    mut progress: impl FnMut(Progress),
+    clock: &StageClock,
 ) -> Result<()> {
     let mut encoder = if lossless {
         Encoder::spawn_ffv1(ffmpeg, output, width, height, out_rate.num, out_rate.den)?
@@ -865,14 +997,16 @@ fn encode_loop(
         if cancel.load(Ordering::Relaxed) {
             return Err(anyhow!("cancelled"));
         }
+        let frame_started = Instant::now();
         encoder.write_frame(&frame)?;
+        StageClock::add(&clock.encode_us, &clock.encode_n, frame_started);
         count += 1;
         produced.store(count, Ordering::Relaxed);
         if last_print.elapsed().as_millis() >= 500 {
             let seconds = started.elapsed().as_secs_f64().max(0.001);
             let fps = count as f64 / seconds;
             let remaining = expected.saturating_sub(count) as f64;
-            progress(Progress {
+            let mut event = Progress {
                 output_frame: count,
                 output_total: expected.max(count),
                 fps,
@@ -882,13 +1016,19 @@ fn encode_loop(
                 ram_mb: crate::perf::available_ram_mb(),
                 seam: 0.0,
                 fraction: count as f32 / expected.max(count) as f32,
-            });
+                decode_ms: 0.0,
+                rife_ms: 0.0,
+                guard_ms: 0.0,
+                encode_ms: 0.0,
+            };
+            clock.apply(&mut event);
+            progress(event);
             last_print = Instant::now();
         }
     }
     encoder.finish()?;
     let seconds = started.elapsed().as_secs_f64().max(0.001);
-    progress(Progress {
+    let mut event = Progress {
         output_frame: count,
         output_total: count,
         fps: count as f64 / seconds,
@@ -898,7 +1038,13 @@ fn encode_loop(
         ram_mb: crate::perf::available_ram_mb(),
         seam: 0.0,
         fraction: 1.0,
-    });
+        decode_ms: 0.0,
+        rife_ms: 0.0,
+        guard_ms: 0.0,
+        encode_ms: 0.0,
+    };
+    clock.apply(&mut event);
+    progress(event);
     Ok(())
 }
 

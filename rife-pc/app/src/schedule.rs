@@ -45,6 +45,46 @@ pub fn output_count(source_frames: i64, source: Rational, out: Rational) -> i64 
     div_round(source_frames * source.den * out.num, source.num * out.den).max(1)
 }
 
+/// iOS cadence. Output times step at `target_fps`, but each step is placed on
+/// the real gap between source presentation timestamps. A long phone-video gap
+/// gets more in-betweens than a short one. Constant 60 → 60 stays on the
+/// source frames.
+pub fn slots_from_pts(pts: &[f64], target_fps: f64) -> Vec<Slot> {
+    if pts.is_empty() {
+        return Vec::new();
+    }
+    if pts.len() == 1 || !pts.windows(2).all(|pair| pair[1] > pair[0] + 1e-5) {
+        return (0..pts.len()).map(Slot::Source).collect();
+    }
+    let step = 1.0 / target_fps.max(1.0);
+    let mut slots = vec![Slot::Source(0)];
+    let mut next_t = pts[0] + step;
+    let last = pts.len() - 1;
+    for index in 0..last {
+        let start = pts[index];
+        let end = pts[index + 1];
+        let span = (end - start).max(1.0 / 240.0);
+        while next_t < end - 1e-5 {
+            let rel = ((next_t - start) / span) as f32;
+            slots.push(if rel <= 0.001 {
+                Slot::Source(index)
+            } else if rel >= 0.999 {
+                Slot::Source(index + 1)
+            } else {
+                Slot::Interp {
+                    left: index,
+                    timestep: rel.clamp(0.001, 0.999),
+                }
+            });
+            next_t += step;
+        }
+    }
+    if !matches!(slots.last(), Some(Slot::Source(index)) if *index == last) {
+        slots.push(Slot::Source(last));
+    }
+    slots
+}
+
 pub fn slot_at(j: i64, source_frames: i64, source: Rational, out: Rational) -> Slot {
     if source_frames <= 1 || j <= 0 {
         return Slot::Source(0);
@@ -173,6 +213,23 @@ mod tests {
     }
 
     #[test]
+    #[test]
+    fn timestamps_keep_60_to_60_on_source_frames_and_a_long_gap_adds_frames() {
+        let pts: Vec<f64> = (0..8).map(|i| i as f64 / 60.0).collect();
+        let locked = slots_from_pts(&pts, 60.0);
+        assert_eq!(locked.len(), pts.len());
+        assert!(locked.iter().all(|slot| matches!(slot, Slot::Source(_))));
+        let even = slots_from_pts(&[0.0, 0.1, 0.2, 0.3], 60.0);
+        let vfr = slots_from_pts(&[0.0, 0.02, 0.04, 0.5], 60.0);
+        let interps = |slots: &[Slot]| {
+            slots
+                .iter()
+                .filter(|slot| matches!(slot, Slot::Interp { .. }))
+                .count()
+        };
+        assert!(interps(&vfr) > interps(&even));
+    }
+
     fn fps_flag_overrides_the_multiplier() {
         let src = Rational::new(24000, 1001);
         let out = output_rate(src, 2, Some(60.0));

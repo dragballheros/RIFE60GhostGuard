@@ -67,6 +67,45 @@ pub fn probe(ffprobe: &Path, input: &Path) -> Result<Probe> {
     parse_probe(&json)
 }
 
+/// Presentation timestamps in seconds, in decode order. Empty when the file
+/// has no usable pts; the caller then keeps the constant-rate schedule.
+pub fn frame_pts(ffprobe: &Path, input: &Path) -> Result<Vec<f64>> {
+    let output = Command::new(ffprobe)
+        .args([
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-show_entries",
+            "frame=best_effort_timestamp_time",
+            "-of",
+            "csv=p=0",
+        ])
+        .arg(input)
+        .output()
+        .with_context(|| format!("failed to run {}", ffprobe.display()))?;
+    if !output.status.success() {
+        return Err(anyhow!(
+            "ffprobe timestamps failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    let mut pts = Vec::new();
+    for line in text.lines() {
+        let token = line.split(',').next().unwrap_or(line).trim();
+        if token.is_empty() || token.eq_ignore_ascii_case("N/A") {
+            continue;
+        }
+        if let Ok(value) = token.parse::<f64>() {
+            if value.is_finite() {
+                pts.push(value);
+            }
+        }
+    }
+    Ok(pts)
+}
+
 pub fn parse_probe(json: &serde_json::Value) -> Result<Probe> {
     let streams = json
         .get("streams")

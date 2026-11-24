@@ -131,6 +131,33 @@ pub fn tile_for(tier: PerformanceTier, requested: i32) -> i32 {
     }
 }
 
+/// Size passed to one RIFE call. `0` is the whole frame.
+/// 1080p used to be cut into about twelve 512-pixel passes. iOS keeps that
+/// size on one pass. A small reported framebuffer, or Safe mode, keeps tiles.
+pub fn rife_tile(
+    tier: PerformanceTier,
+    requested: i32,
+    width: i32,
+    height: i32,
+    vram_mb: u64,
+) -> i32 {
+    if requested <= 0 {
+        return 0;
+    }
+    if matches!(tier, PerformanceTier::Safe) {
+        return requested.min(256).max(32);
+    }
+    let low_vram = vram_mb > 0 && vram_mb < 3072;
+    let ten_eighty = width <= 1920 && height <= 1200;
+    if requested == 512 && ten_eighty && !low_vram {
+        return 0;
+    }
+    if low_vram {
+        return requested.min(512).max(32);
+    }
+    requested
+}
+
 pub fn tier_note(tier: PerformanceTier, render_power: bool, ram_mb: u64) -> String {
     let power = if render_power {
         "render power mode is holding the display awake"
@@ -155,6 +182,16 @@ mod tests {
     fn safe_caps_the_tile() {
         assert_eq!(tile_for(PerformanceTier::Safe, 512), 256);
         assert_eq!(tile_for(PerformanceTier::Safe, 0), 256);
+        assert_eq!(rife_tile(PerformanceTier::Safe, 512, 1920, 1080, 8192), 256);
+    }
+
+    #[test]
+    fn ten_eighty_p_is_one_rife_pass_unless_vram_is_low_or_the_tile_was_chosen() {
+        assert_eq!(rife_tile(PerformanceTier::Performance, 512, 1920, 1080, 4096), 0);
+        assert_eq!(rife_tile(PerformanceTier::Auto, 512, 1920, 1080, 0), 0);
+        assert_eq!(rife_tile(PerformanceTier::Performance, 512, 1920, 1080, 2048), 512);
+        assert_eq!(rife_tile(PerformanceTier::Performance, 768, 1920, 1080, 8192), 768);
+        assert_eq!(rife_tile(PerformanceTier::Performance, 512, 3840, 2160, 8192), 512);
     }
 
     #[test]

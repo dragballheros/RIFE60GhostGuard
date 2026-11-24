@@ -324,13 +324,17 @@ impl eframe::App for App {
                             String::new()
                         };
                         self.status = format!(
-                            "{}  {} / {}   {:.1} fps   {} MB free{}",
+                            "{}  {} / {}   {:.1} fps   {} MB free{}   decode {:.0} ms  RIFE {:.0} ms  guard {:.0} ms  encode {:.0} ms",
                             progress.stage,
                             progress.output_frame,
                             progress.output_total,
                             progress.fps,
                             progress.ram_mb,
-                            eta
+                            eta,
+                            progress.decode_ms,
+                            progress.rife_ms,
+                            progress.guard_ms,
+                            progress.encode_ms
                         );
                     }
                     UiEvent::Note(text) => {
@@ -438,7 +442,7 @@ impl App {
         });
         ui.horizontal(|ui| {
             ui.label("Multiplier");
-            ui.add(egui::Slider::new(&mut self.multi, 2..=8).text("×"));
+            ui.add_enabled(!self.use_fps, egui::Slider::new(&mut self.multi, 2..=8).text("×"));
             ui.checkbox(&mut self.use_fps, "Target fps");
             ui.add_enabled(self.use_fps, egui::Slider::new(&mut self.fps, 24.0..=120.0));
         });
@@ -455,7 +459,7 @@ impl App {
                 ui.selectable_value(&mut self.settings.performance_tier, tier, tier.label());
             }
         });
-        ui.label("Render power mode keeps Windows awake during the job. Safe caps the tile at 256.");
+        ui.label("Render power mode keeps Windows awake. At 1080p RIFE runs as one full frame, the same as iOS, and tiles only when the framebuffer is under 3 GB or Safe is selected. The multiplier is unused while a target fps is set.");
         egui::ComboBox::from_label("RIFE GPU workers")
             .selected_text(match self.settings.rife_workers {
                 1 => "1 worker",
@@ -781,6 +785,10 @@ impl App {
                 notes: vec![format!("Saved {}", saved.display())],
                 diagnostics_path: None,
                 output_path: saved,
+                decode_ms: 0.0,
+                rife_ms: 0.0,
+                guard_ms: 0.0,
+                encode_ms: 0.0,
             });
             let _ = tx.send(UiEvent::Done(result.map_err(|err| err.to_string())));
         });
@@ -803,6 +811,10 @@ impl App {
                 notes: vec![format!("Saved {}", path.display())],
                 diagnostics_path: None,
                 output_path: path,
+                decode_ms: 0.0,
+                rife_ms: 0.0,
+                guard_ms: 0.0,
+                encode_ms: 0.0,
             });
             let _ = tx.send(UiEvent::Done(result.map_err(|err| err.to_string())));
         });
@@ -825,6 +837,10 @@ impl App {
                 notes: vec![format!("Downloaded {}", path.display())],
                 diagnostics_path: None,
                 output_path: path,
+                decode_ms: 0.0,
+                rife_ms: 0.0,
+                guard_ms: 0.0,
+                encode_ms: 0.0,
             });
             let _ = tx.send(UiEvent::Done(result.map_err(|err| err.to_string())));
         });
